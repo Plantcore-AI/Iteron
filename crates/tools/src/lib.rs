@@ -38,7 +38,10 @@ pub use edit::apply_unique_edit;
 pub use lsp::LanguageServerRoute;
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 use memo::{Lookup, Memo};
-pub use process::{ProcessControl, ProcessControlError};
+pub use process::{
+    ProcessControl, ProcessControlError, ProcessLifecycleKind, ProcessLifecycleNotice,
+    ProcessLifecycleObserver,
+};
 pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
     ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,

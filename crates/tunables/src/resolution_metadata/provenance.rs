@@ -131,7 +131,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Builtin, Builtin, "crates/cli/src/runtime.rs"), // 66 schema_retry_jitter
     source!(Builtin, Builtin, "crates/provider/src/catalog.rs"), // 67 provider_connect_tls_timeout
     source!(Builtin, Builtin, "crates/cli/src/image_input.rs"), // 68 multimodal_input_admission_decode_envelope
-    source!(Builtin, Builtin, "crates/cli/src/tui/app_server.rs"), // 69 app_server_sq_eq_backpressure
+    source!(Builtin, Builtin, "crates/cli/src/app_server.rs"), // 69 app_server_sq_eq_backpressure
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 70 provider_discovery_account_probe_cache_policy
     source!(OperatorInput, Operator, "core_protocol::Op"), // 71 operator_prompt_stream
     source!(Catalog, Repository, "crates/cli/src/main.rs"), // 72 builtin_prompt_corpus
@@ -295,7 +295,7 @@ pub(super) const ACTIVATIONS: [ActivationSpec; crate::EXPECTED_FAMILY_COUNT] = [
     runtime_derived!("crates/cli/src/runtime.rs"), // 66 schema_retry_jitter
     always!(), // 67 provider_connect_tls_timeout
     runtime_derived!("crates/cli/src/image_input.rs"), // 68 multimodal_input_admission_decode_envelope
-    runtime_derived!("crates/cli/src/tui/app_server.rs"), // 69 app_server_sq_eq_backpressure
+    runtime_derived!("crates/cli/src/app_server.rs"), // 69 app_server_sq_eq_backpressure
     runtime_derived!("crates/cli/src/providers.rs"), // 70 provider_discovery_account_probe_cache_policy
     configured!(OperatorInput), // 71 operator_prompt_stream
     always!(), // 72 builtin_prompt_corpus

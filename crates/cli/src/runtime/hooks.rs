@@ -33,6 +33,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::time::Duration;
 
+use self::journal::HookEffectJournal;
+
+pub(crate) mod journal;
+
 const HOOK_CAPTURE_HEAD_BYTES: usize = 32 * 1024;
 const HOOK_CAPTURE_TAIL_BYTES: usize = 32 * 1024;
 const HOOK_READ_CHUNK_BYTES: usize = 8 * 1024;
@@ -86,6 +90,23 @@ pub enum HookDecision {
     Deny(String),
 }
 
+/// Bounded result of a canonical lifecycle hook chain. Augmentations are admitted only for the
+/// catalog's fixed Augment events and are kept in-memory for the owning boundary; the lifecycle
+/// recorder stores counts and outcome codes, never hook-provided content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LifecycleHookReport {
+    pub decision: HookDecision,
+    pub matched: u32,
+    pub completed: u32,
+    pub failed: u32,
+    pub timed_out: u32,
+    pub augmentations: Vec<core_protocol::LifecyclePayload>,
+}
+
+const MAX_LIFECYCLE_HOOK_AUGMENTATIONS: usize = 32;
+const LIFECYCLE_GATE_TIMEOUT: Duration = Duration::from_secs(2);
+const LIFECYCLE_OBSERVER_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl Hooks {
     /// Load hooks from the USER config `<home>/.core/config.json` only. A project config is
     /// NEVER read here — a cloned repo must not be able to run a command (trust-by-origin). A
@@ -112,15 +133,14 @@ impl Hooks {
         event: &str,
         command: String,
     ) -> Result<(), &'static str> {
-        if ![
+        let legacy = [
             HookEvent::PreToolUse.key(),
             HookEvent::PostToolUse.key(),
             HookEvent::Stop.key(),
             HookEvent::UserPromptSubmit.key(),
             HookEvent::SessionStart.key(),
-        ]
-        .contains(&event)
-        {
+        ];
+        if !legacy.contains(&event) && !core_protocol::lifecycle::is_registered(event) {
             return Err("unknown lifecycle event");
         }
         if command.is_empty() || command.len() > 4096 || command.chars().any(char::is_control) {
@@ -170,15 +190,74 @@ impl Hooks {
     /// Run every command bound to `event`, passing `context_json` on stdin. For `PreToolUse` the
     /// FIRST command that exits 2 DENIES the tool (its bounded stderr is the reason). All other
     /// events are observational (the exit code is ignored). Bounded by the per-hook timeout.
+    #[cfg(test)]
     pub async fn run(&self, event: HookEvent, context_json: &str) -> HookDecision {
+        self.run_cancellable(event, context_json, None).await
+    }
+
+    #[cfg(test)]
+    pub async fn run_cancellable(
+        &self,
+        event: HookEvent,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> HookDecision {
+        self.run_cancellable_inner(event, context_json, cancel, None, None)
+            .await
+    }
+
+    pub(crate) async fn run_cancellable_journaled(
+        &self,
+        event: HookEvent,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        drain: Option<&std::sync::atomic::AtomicBool>,
+        journal: &HookEffectJournal,
+    ) -> HookDecision {
+        self.run_cancellable_inner(event, context_json, cancel, drain, Some(journal))
+            .await
+    }
+
+    async fn run_cancellable_inner(
+        &self,
+        event: HookEvent,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        drain: Option<&std::sync::atomic::AtomicBool>,
+        journal: Option<&HookEffectJournal>,
+    ) -> HookDecision {
+        // Compatibility and canonical lifecycle subscriptions are deliberately disjoint. The
+        // lifecycle dispatcher owns canonical IDs; chaining their commands here made
+        // `tool.call_completed` and `session.idle` execute once through this compatibility path
+        // and a second time through the dispatcher.
         for cmd in self.commands(event) {
-            let out = run_one(
+            let ticket = match journal.map(|journal| journal.begin(event.key())) {
+                Some(Ok(ticket)) => Some(ticket),
+                Some(Err(reason)) => {
+                    eprintln!(
+                        "warning: {} hook intent was not durable and the command was not started: {reason}",
+                        event.key()
+                    );
+                    continue;
+                }
+                None => None,
+            };
+            let mut out = run_one_cancellable(
                 cmd,
                 context_json,
                 self.timeout_secs,
                 &self.sensitive_env_names,
+                cancel,
+                drain,
             )
             .await;
+            if let (Some(journal), Some(ticket)) = (journal, ticket)
+                && journal
+                    .finish(ticket, event.key(), hook_run_outcome(&out))
+                    .is_err()
+            {
+                out = HookRun::Failed;
+            }
             // A hook that never started is still fail-open, but it is no longer SILENT. The
             // operator configured a guardrail; if the interpreter or the script is missing the
             // hook no-ops forever with nothing to see. Say so once per dispatch, on stderr.
@@ -205,6 +284,182 @@ impl Hooks {
         }
         HookDecision::Allow
     }
+
+    /// Dispatch one canonical lifecycle event. Every one of the 192 catalog IDs is subscribable;
+    /// only the catalog's fixed 12 Gate events may deny by exit code 2.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub async fn run_lifecycle(
+        &self,
+        event_id: &str,
+        context_json: &str,
+    ) -> Result<LifecycleHookReport, &'static str> {
+        self.run_lifecycle_cancellable(event_id, context_json, None)
+            .await
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub async fn run_lifecycle_cancellable(
+        &self,
+        event_id: &str,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<LifecycleHookReport, &'static str> {
+        self.run_lifecycle_cancellable_inner(event_id, context_json, cancel, None, None)
+            .await
+    }
+
+    pub(crate) async fn run_lifecycle_cancellable_journaled(
+        &self,
+        event_id: &str,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        drain: Option<&std::sync::atomic::AtomicBool>,
+        journal: &HookEffectJournal,
+    ) -> Result<LifecycleHookReport, &'static str> {
+        self.run_lifecycle_cancellable_inner(event_id, context_json, cancel, drain, Some(journal))
+            .await
+    }
+
+    async fn run_lifecycle_cancellable_inner(
+        &self,
+        event_id: &str,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        drain: Option<&std::sync::atomic::AtomicBool>,
+        journal: Option<&HookEffectJournal>,
+    ) -> Result<LifecycleHookReport, &'static str> {
+        let Some(spec) = core_protocol::lifecycle::event_spec(event_id) else {
+            return Err("unknown lifecycle event");
+        };
+        let Some(commands) = self.by_event.get(event_id) else {
+            return Ok(LifecycleHookReport {
+                decision: HookDecision::Allow,
+                matched: 0,
+                completed: 0,
+                failed: 0,
+                timed_out: 0,
+                augmentations: Vec::new(),
+            });
+        };
+        let timeout = if spec.hook_capability == core_protocol::HookCapability::Gate {
+            LIFECYCLE_GATE_TIMEOUT
+        } else {
+            LIFECYCLE_OBSERVER_TIMEOUT
+        };
+        let mut report = LifecycleHookReport {
+            decision: HookDecision::Allow,
+            matched: u32::try_from(commands.len()).unwrap_or(u32::MAX),
+            completed: 0,
+            failed: 0,
+            timed_out: 0,
+            augmentations: Vec::new(),
+        };
+        for command in commands {
+            let ticket = match journal.map(|journal| journal.begin(event_id)) {
+                Some(Ok(ticket)) => Some(ticket),
+                Some(Err(_)) => {
+                    report.failed = report.failed.saturating_add(1);
+                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                        report.decision = HookDecision::Deny(format!(
+                            "{event_id} gate hook intent could not be recorded"
+                        ));
+                        return Ok(report);
+                    }
+                    continue;
+                }
+                None => None,
+            };
+            let mut outcome = run_one_with_sensitive_env_names_cancellable(
+                command,
+                context_json,
+                timeout,
+                &self.sensitive_env_names,
+                cancel,
+                drain,
+            )
+            .await;
+            if let (Some(journal), Some(ticket)) = (journal, ticket)
+                && journal
+                    .finish(ticket, event_id, hook_run_outcome(&outcome))
+                    .is_err()
+            {
+                outcome = HookRun::Failed;
+            }
+            match outcome {
+                HookRun::Completed(output)
+                    if output.code == 2
+                        && spec.hook_capability == core_protocol::HookCapability::Gate =>
+                {
+                    report.completed = report.completed.saturating_add(1);
+                    report.decision = HookDecision::Deny(if output.stderr.trim().is_empty() {
+                        format!("blocked by {event_id} hook (exit 2)")
+                    } else {
+                        output.stderr.trim().to_owned()
+                    });
+                    return Ok(report);
+                }
+                HookRun::Completed(output) => {
+                    report.completed = report.completed.saturating_add(1);
+                    if output.code != 0 {
+                        report.failed = report.failed.saturating_add(1);
+                    } else if spec.hook_capability == core_protocol::HookCapability::Augment
+                        && !output.stdout.trim().is_empty()
+                    {
+                        let augmentation = serde_json::from_str::<core_protocol::LifecyclePayload>(
+                            output.stdout.trim(),
+                        )
+                        .ok()
+                        .filter(|payload| payload.validate().is_ok());
+                        if let Some(augmentation) = augmentation {
+                            if report.augmentations.len() < MAX_LIFECYCLE_HOOK_AUGMENTATIONS {
+                                report.augmentations.push(augmentation);
+                            } else {
+                                report.failed = report.failed.saturating_add(1);
+                            }
+                        } else {
+                            report.failed = report.failed.saturating_add(1);
+                        }
+                    }
+                }
+                HookRun::TimedOut => {
+                    report.timed_out = report.timed_out.saturating_add(1);
+                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                        report.decision = HookDecision::Deny(format!(
+                            "{event_id} gate hook timed out without an allow decision"
+                        ));
+                        return Ok(report);
+                    }
+                }
+                HookRun::NotStarted(_) | HookRun::Failed | HookRun::Cancelled => {
+                    report.failed = report.failed.saturating_add(1);
+                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                        report.decision = HookDecision::Deny(format!(
+                            "{event_id} gate hook failed without an allow decision"
+                        ));
+                        return Ok(report);
+                    }
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    pub fn subscribed_lifecycle_events(&self) -> Vec<&'static str> {
+        core_protocol::lifecycle::EVENTS
+            .into_iter()
+            .filter(|event| {
+                self.by_event
+                    .get(*event)
+                    .is_some_and(|hooks| !hooks.is_empty())
+            })
+            .collect()
+    }
+
+    pub(crate) fn is_empty_for_lifecycle(&self, event_id: &str) -> bool {
+        self.by_event.get(event_id).is_none_or(Vec::is_empty)
+    }
 }
 
 /// What one hook dispatch actually did. `NotStarted` used to be indistinguishable from a timeout
@@ -215,8 +470,22 @@ enum HookRun {
     Completed(HookRunOutput),
     /// The process never started (missing path, not executable, no pipe). The string says why.
     NotStarted(String),
-    /// It started but produced no usable opinion: a timeout, or a read/wait failure.
-    NoOpinion,
+    /// It started but its bounded deadline expired.
+    TimedOut,
+    /// It started but a read/wait boundary failed before a terminal exit was observed.
+    Failed,
+    /// The session was cancelled while this command was running.
+    Cancelled,
+}
+
+fn hook_run_outcome(run: &HookRun) -> &'static str {
+    match run {
+        HookRun::Completed(output) if output.code == 2 => "blocked",
+        HookRun::Completed(output) if output.code == 0 => "completed",
+        HookRun::Completed(_) | HookRun::NotStarted(_) | HookRun::Failed => "failed",
+        HookRun::TimedOut => "timed_out",
+        HookRun::Cancelled => "cancelled",
+    }
 }
 
 impl HookRun {
@@ -225,7 +494,9 @@ impl HookRun {
     fn completed(self) -> Option<HookRunOutput> {
         match self {
             HookRun::Completed(output) => Some(output),
-            HookRun::NotStarted(_) | HookRun::NoOpinion => None,
+            HookRun::NotStarted(_) | HookRun::TimedOut | HookRun::Failed | HookRun::Cancelled => {
+                None
+            }
         }
     }
 }
@@ -335,17 +606,21 @@ where
 /// bounded, marked output if it ran to completion; spawn/read/wait errors and timeouts remain no
 /// opinion, preserving the existing fail-open hook semantics, but a hook that could not be STARTED
 /// is reported as such rather than collapsing into the same silent `None` as a timeout.
-async fn run_one(
+async fn run_one_cancellable(
     cmd: &str,
     ctx: &str,
     timeout_secs: u64,
     sensitive_env_names: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
 ) -> HookRun {
-    run_one_with_sensitive_env_names(
+    run_one_with_sensitive_env_names_cancellable(
         cmd,
         ctx,
         Duration::from_secs(timeout_secs),
         sensitive_env_names,
+        cancel,
+        drain,
     )
     .await
 }
@@ -355,11 +630,24 @@ async fn run_one_with_timeout(cmd: &str, ctx: &str, timeout: Duration) -> HookRu
     run_one_with_sensitive_env_names(cmd, ctx, timeout, &[]).await
 }
 
+#[cfg(test)]
 async fn run_one_with_sensitive_env_names(
     cmd: &str,
     ctx: &str,
     timeout: Duration,
     sensitive_env_names: &[String],
+) -> HookRun {
+    run_one_with_sensitive_env_names_cancellable(cmd, ctx, timeout, sensitive_env_names, None, None)
+        .await
+}
+
+async fn run_one_with_sensitive_env_names_cancellable(
+    cmd: &str,
+    ctx: &str,
+    timeout: Duration,
+    sensitive_env_names: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
 ) -> HookRun {
     // The interpreter is resolved rather than hardcoded: the Linux musl artifact's natural home
     // has `/bin/sh` and no `/bin/bash`, and on a platform with neither the hook must say so
@@ -370,6 +658,8 @@ async fn run_one_with_sensitive_env_names(
         ctx,
         timeout,
         sensitive_env_names,
+        cancel,
+        drain,
     )
     .await
 }
@@ -380,6 +670,8 @@ async fn run_one_with_shell(
     ctx: &str,
     timeout: Duration,
     sensitive_env_names: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
 ) -> HookRun {
     use tokio::io::AsyncWriteExt;
 
@@ -398,6 +690,7 @@ async fn run_one_with_shell(
         Ok(child) => child,
         Err(error) => return HookRun::NotStarted(format!("{shell} -c: {error}")),
     };
+    let mut group_guard = HookProcessGroupDropGuard::new(child.id());
 
     let Some(mut stdin) = child.stdin.take() else {
         terminate_and_reap(&mut child).await;
@@ -411,6 +704,17 @@ async fn run_one_with_shell(
         terminate_and_reap(&mut child).await;
         return HookRun::NotStarted("hook stderr was not piped".to_string());
     };
+
+    use std::sync::atomic::Ordering;
+    let stopped = || {
+        cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
+            || drain.is_some_and(|flag| flag.load(Ordering::Relaxed))
+    };
+    if stopped() {
+        terminate_and_reap(&mut child).await;
+        group_guard.disarm();
+        return HookRun::Cancelled;
+    }
 
     // Stdin, stdout and stderr progress concurrently. Unlike `wait_with_output`, both readers
     // continuously drain their pipes while retaining a fixed-size head/tail only.
@@ -434,14 +738,85 @@ async fn run_one_with_shell(
         })
     };
 
-    match tokio::time::timeout(timeout, work).await {
-        Ok(Some(output)) => HookRun::Completed(output),
-        Ok(None) => HookRun::NoOpinion,
-        Err(_) => {
+    enum WaitOutcome {
+        Completed(Option<HookRunOutput>),
+        TimedOut,
+        Cancelled,
+    }
+    let outcome = {
+        tokio::pin!(work);
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                result = &mut work => break WaitOutcome::Completed(result),
+                () = &mut deadline => break WaitOutcome::TimedOut,
+                () = tokio::time::sleep(Duration::from_millis(25)),
+                    if cancel.is_some() || drain.is_some() =>
+                {
+                    if stopped() {
+                        break WaitOutcome::Cancelled;
+                    }
+                }
+            }
+        }
+    };
+
+    match outcome {
+        WaitOutcome::Completed(Some(output)) => {
+            group_guard.disarm();
+            HookRun::Completed(output)
+        }
+        WaitOutcome::Completed(None) => {
+            terminate_and_reap(&mut child).await;
+            group_guard.disarm();
+            HookRun::Failed
+        }
+        WaitOutcome::TimedOut => {
             // Do not rely on `kill_on_drop`: a timed-out hook is explicitly killed and waited so
             // the direct child cannot survive the decision or remain as a zombie.
             terminate_and_reap(&mut child).await;
-            HookRun::NoOpinion
+            group_guard.disarm();
+            HookRun::TimedOut
+        }
+        WaitOutcome::Cancelled => {
+            // Ctrl-C/drain has the same ownership rule as timeout: terminate the dedicated process
+            // group and reap the direct child before publishing the cancelled terminal.
+            terminate_and_reap(&mut child).await;
+            group_guard.disarm();
+            HookRun::Cancelled
+        }
+    }
+}
+
+/// Cancellation-by-future-drop must kill the whole dedicated hook process group. The ordinary
+/// completion/timeout paths disarm after reaping; task abortion remains a last-resort SIGKILL.
+struct HookProcessGroupDropGuard {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl HookProcessGroupDropGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for HookProcessGroupDropGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.armed
+            && let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok())
+        {
+            // SAFETY: hooks are spawned with `process_group(0)`, so `-pid` addresses only the
+            // hook-owned group and cannot signal Core's own process group.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
         }
     }
 }
@@ -520,6 +895,8 @@ mod tests {
             "",
             Duration::from_secs(2),
             &[],
+            None,
+            None,
         )
         .await;
         let HookRun::NotStarted(reason) = &outcome else {
@@ -629,7 +1006,7 @@ mod tests {
         let command = format!("echo $$ > {}; exec sleep 60", shell_quote(&pid_path));
         let output = run_one_with_timeout(&command, "", Duration::from_millis(500)).await;
         assert!(
-            matches!(output, HookRun::NoOpinion),
+            matches!(output, HookRun::TimedOut),
             "timed-out hook must have no opinion: {output:?}"
         );
 
@@ -640,5 +1017,94 @@ mod tests {
             .unwrap();
         assert!(!process_exists(pid), "timed-out hook {pid} was not reaped");
         let _ = std::fs::remove_file(pid_path);
+    }
+
+    #[tokio::test]
+    async fn journal_brackets_each_external_command_not_the_chain() {
+        let home = tmp("journal-per-command");
+        std::fs::write(
+            home.join(".core").join("config.json"),
+            serde_json::json!({"hooks": {"SessionStart": [":", ":"]}}).to_string(),
+        )
+        .unwrap();
+        let hooks = Hooks::load_user(&home);
+        let journal_path = home.join("hooks.jsonl");
+        let journal = HookEffectJournal::open(&journal_path).unwrap();
+
+        assert_eq!(
+            hooks
+                .run_cancellable_journaled(HookEvent::SessionStart, "{}", None, None, &journal,)
+                .await,
+            HookDecision::Allow
+        );
+        drop(journal);
+
+        let entries = std::fs::read_to_string(&journal_path).unwrap();
+        assert_eq!(
+            entries.lines().count(),
+            4,
+            "two commands each own an intent and terminal"
+        );
+        assert_eq!(
+            HookEffectJournal::open(&journal_path)
+                .unwrap()
+                .recovered_unknown(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_cancels_kills_reaps_and_journals_a_running_hook() {
+        let home = tmp("drain-running-hook");
+        let pid_path = home.join("hook.pid");
+        let command = format!("echo $$ > {}; exec sleep 60", shell_quote(&pid_path));
+        std::fs::write(
+            home.join(".core").join("config.json"),
+            serde_json::json!({"hooks": {"SessionStart": [command]}}).to_string(),
+        )
+        .unwrap();
+        let hooks = Hooks::load_user(&home);
+        let journal_path = home.join("hooks.jsonl");
+        let journal = HookEffectJournal::open(&journal_path).unwrap();
+        let drain = std::sync::atomic::AtomicBool::new(false);
+        let started = std::time::Instant::now();
+
+        let (decision, ()) = tokio::join!(
+            hooks.run_cancellable_journaled(
+                HookEvent::SessionStart,
+                "{}",
+                None,
+                Some(&drain),
+                &journal,
+            ),
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                drain.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        );
+        assert_eq!(decision, HookDecision::Allow);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "drain must not wait for the hook timeout"
+        );
+        let pid: u32 = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!process_exists(pid), "cancelled hook {pid} was not reaped");
+        drop(journal);
+        let entries = std::fs::read_to_string(&journal_path).unwrap();
+        assert_eq!(entries.lines().count(), 2);
+        assert!(entries.contains("\"outcome\":\"cancelled\""));
+        assert_eq!(
+            HookEffectJournal::open(&journal_path)
+                .unwrap()
+                .recovered_unknown(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 }

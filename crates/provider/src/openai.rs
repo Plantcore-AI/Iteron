@@ -120,8 +120,19 @@ impl OpenAiCompat {
     fn body(&self, req: &TurnRequest) -> Result<serde_json::Value, ProviderError> {
         let mut messages: Vec<serde_json::Value> =
             vec![serde_json::json!({"role":"system","content":req.system})];
-        for m in &req.messages {
-            messages.extend(msg_to_openai(m, self.error_profile, &self.route_scope)?);
+        let image_target = image_target(&req.messages, &req.input_images)?;
+        for (index, m) in req.messages.iter().enumerate() {
+            let input_images = if image_target == Some(index) {
+                req.input_images.as_slice()
+            } else {
+                &[]
+            };
+            messages.extend(msg_to_openai(
+                m,
+                self.error_profile,
+                &self.route_scope,
+                input_images,
+            )?);
         }
         let tools: Vec<serde_json::Value> = req
             .tools
@@ -362,6 +373,7 @@ fn msg_to_openai(
     m: &core_protocol::Message,
     error_profile: ErrorProfile,
     route_scope: &str,
+    input_images: &[core_protocol::ImageContent],
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_chat_route_scope(route_scope)?;
     match m.role {
@@ -378,8 +390,26 @@ fn msg_to_openai(
                     _ => {}
                 }
             }
-            if !text.is_empty() {
-                out.push(serde_json::json!({"role":"user","content":text}));
+            if !text.is_empty() || !input_images.is_empty() {
+                let content = if input_images.is_empty() {
+                    serde_json::json!(text)
+                } else {
+                    let mut parts = vec![serde_json::json!({"type":"text","text":text})];
+                    parts.extend(input_images.iter().map(|image| {
+                        serde_json::json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!(
+                                    "data:{};base64,{}",
+                                    image.media_type.as_str(),
+                                    image.data.as_str()
+                                )
+                            }
+                        })
+                    }));
+                    serde_json::Value::Array(parts)
+                };
+                out.push(serde_json::json!({"role":"user","content":content}));
             }
             if out.is_empty() {
                 out.push(serde_json::json!({"role":"user","content":""}));
@@ -421,6 +451,31 @@ fn msg_to_openai(
             Ok(vec![msg])
         }
     }
+}
+
+fn image_target(
+    messages: &[core_protocol::Message],
+    input_images: &[core_protocol::ImageContent],
+) -> Result<Option<usize>, ProviderError> {
+    if input_images.is_empty() {
+        return Ok(None);
+    }
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            (message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::Text { .. })))
+            .then_some(index)
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            ProviderError::Decode("Chat image input lacked a user text submission".into())
+        })
 }
 
 fn matching_reasoning_content(
@@ -1125,7 +1180,7 @@ impl Provider for OpenAiCompat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::Message;
+    use core_protocol::{ImageContent, ImageMediaType, Message};
 
     const TEST_SCOPE: &str = "test-openai-chat";
 
@@ -1139,7 +1194,7 @@ mod tests {
                 input: serde_json::json!({"path":"a.rs"}),
             })],
         };
-        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE).unwrap();
+        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[]).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "read_file");
         assert_eq!(out[0]["tool_calls"][0]["id"], "c1");
@@ -1157,9 +1212,65 @@ mod tests {
                 latency_ms: 0,
             })],
         };
-        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE).unwrap();
+        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[]).unwrap();
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn chat_body_encodes_image_data_urls_on_the_latest_user_text() {
+        let provider = OpenAiCompat::with_root(
+            "key".into(),
+            ApiRoot::parse("https://api.fireworks.ai/inference/v1").unwrap(),
+        )
+        .unwrap()
+        .with_error_profile(ErrorProfile::Fireworks);
+        let request = TurnRequest {
+            model: "accounts/fireworks/models/minimax-m3".into(),
+            system: "system".into(),
+            messages: vec![Message::user_text("describe it")],
+            input_images: vec![
+                ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap(),
+                ImageContent::new(ImageMediaType::Jpeg, "/9j/").unwrap(),
+            ],
+            tools: Vec::new(),
+            max_tokens: 1_024,
+            cache_system: false,
+            thinking_budget: 0,
+            reasoning_effort: ReasoningEffort::Medium,
+        };
+
+        let body = provider.body(&request).unwrap();
+        assert_eq!(
+            body["messages"][1]["content"],
+            serde_json::json!([
+                {"type":"text","text":"describe it"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}},
+                {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/"}}
+            ])
+        );
+    }
+
+    #[test]
+    fn chat_images_fail_closed_without_a_user_text_target() {
+        let provider = OpenAiCompat::new("key".into(), None);
+        let mut request = TurnRequest {
+            model: "gpt-5".into(),
+            system: "system".into(),
+            messages: Vec::new(),
+            input_images: Vec::new(),
+            tools: Vec::new(),
+            max_tokens: 1_024,
+            cache_system: false,
+            thinking_budget: 0,
+            reasoning_effort: ReasoningEffort::Medium,
+        };
+        request.input_images =
+            vec![ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap()];
+        assert!(matches!(
+            provider.body(&request).unwrap_err(),
+            ProviderError::Decode(message) if message == "Chat image input lacked a user text submission"
+        ));
     }
 
     #[test]
@@ -1184,7 +1295,7 @@ mod tests {
             ErrorProfile::Glm,
             ErrorProfile::Fireworks,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
             assert_eq!(mapped[0]["reasoning_content"], "private provider reasoning");
         }
         for profile in [
@@ -1192,12 +1303,12 @@ mod tests {
             ErrorProfile::MiniMax,
             ErrorProfile::CustomConservative,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
             assert!(mapped[0].get("reasoning_content").is_none());
         }
 
         let cross_route =
-            msg_to_openai(&message, ErrorProfile::DeepSeek, "other-instance").unwrap();
+            msg_to_openai(&message, ErrorProfile::DeepSeek, "other-instance", &[]).unwrap();
         assert!(cross_route[0].get("reasoning_content").is_none());
     }
 
@@ -1221,7 +1332,7 @@ mod tests {
             ErrorProfile::Glm,
             ErrorProfile::Fireworks,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
             assert!(mapped[0].get("reasoning_content").is_none());
         }
     }
@@ -1246,8 +1357,9 @@ mod tests {
                 }),
             ],
         };
-        assert!(msg_to_openai(&malformed, ErrorProfile::DeepSeek, TEST_SCOPE).is_err());
-        let portable = msg_to_openai(&malformed, ErrorProfile::DeepSeek, "other-instance").unwrap();
+        assert!(msg_to_openai(&malformed, ErrorProfile::DeepSeek, TEST_SCOPE, &[]).is_err());
+        let portable =
+            msg_to_openai(&malformed, ErrorProfile::DeepSeek, "other-instance", &[]).unwrap();
         assert!(portable[0].get("reasoning_content").is_none());
 
         let oversized = "x".repeat(MAX_REASONING_STATE_PAYLOAD_BYTES + 1);
@@ -1266,7 +1378,7 @@ mod tests {
                 }),
             ],
         };
-        assert!(msg_to_openai(&oversized, ErrorProfile::DeepSeek, TEST_SCOPE).is_err());
+        assert!(msg_to_openai(&oversized, ErrorProfile::DeepSeek, TEST_SCOPE, &[]).is_err());
     }
 
     #[test]

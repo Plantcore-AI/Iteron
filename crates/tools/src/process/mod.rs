@@ -49,6 +49,31 @@ pub struct ProcessControl {
     supervisor: Arc<Supervisor>,
 }
 
+/// Content-free terminal notification from the process owner itself.
+///
+/// Polling is a presentation concern, not a lifecycle authority.  The supervisor invokes this
+/// observer exactly once when its actor commits a terminal state, including natural exits and
+/// deadline/output-limit cleanup that no caller ever polls.  Keeping the callback typed prevents
+/// the tools crate from depending on any frontend or telemetry vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessLifecycleKind {
+    Spawned,
+    Exited,
+    Stopped,
+    TimedOut,
+    OutputLimitExceeded,
+    IoFailed,
+    CleanupUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessLifecycleNotice {
+    pub job_id: String,
+    pub kind: ProcessLifecycleKind,
+}
+
+pub type ProcessLifecycleObserver = Arc<dyn Fn(ProcessLifecycleNotice) + Send + Sync>;
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct ProcessControlError {
@@ -58,6 +83,12 @@ pub struct ProcessControlError {
 }
 
 impl ProcessControl {
+    /// Bind the session-owned observation sink before the first process is admitted.
+    /// Rebinding replaces only the observer; it never changes or recreates the job table.
+    pub fn bind_lifecycle_observer(&self, observer: ProcessLifecycleObserver) {
+        self.supervisor.bind_lifecycle_observer(observer);
+    }
+
     pub fn list(&self) -> Result<serde_json::Value, ProcessControlError> {
         encode_control(self.supervisor.list())
     }
@@ -105,6 +136,12 @@ impl ProcessControl {
 
     pub async fn stop(&self, job_id: &str) -> Result<serde_json::Value, ProcessControlError> {
         encode_action(self.supervisor.stop(job_id).await)
+    }
+
+    /// Stop all jobs owned by this session's one supervisor. This is deliberately separate from
+    /// turn cancellation, session drain, and process exit.
+    pub async fn clean(&self) -> Result<serde_json::Value, ProcessControlError> {
+        encode_action(self.supervisor.clean().await)
     }
 }
 

@@ -16,10 +16,13 @@
 
 pub mod compact;
 mod context_assembly;
+pub mod context_ledger;
 mod context_port;
 mod context_strategy;
+pub mod decision_store;
 pub mod instructions;
 pub mod memory;
+pub mod memory_trace;
 pub mod outline;
 pub mod skills;
 pub mod source;
@@ -30,12 +33,21 @@ pub use compact::{
     estimate_request_context, replay_compaction,
 };
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
+pub use context_ledger::{
+    CacheClass, CacheEvidence, ContextDecision, ContextDecisionReason, ContextLedger,
+    ContextObservation, ContextObserver, ContextSegmentEvidence, ContextSegmentId,
+    ContextSourceClass, ContextTotals, ContextTransformEvidence, ContextTransformKind,
+    NullContextObserver, TokenRange, TokenizerIdentity,
+};
 pub use context_port::{
     ContextPort, ContextPortError, ContextPortInput, ContextValue, DefaultContextPort, PortStub,
 };
 pub use context_strategy::{
     CONTEXT_SLOT_VERSION, ContextPlan, ContextSlotDecision, ContextSlotObservation,
     ContextStrategy, MAX_CONTEXT_OUTLINE_DEPTH,
+};
+pub use decision_store::{
+    ContextLedgerSnapshot, ContextLedgerStore, MemoryTraceSnapshot, MemoryTraceStore,
 };
 pub use instructions::{
     InstructionBundle, InstructionRejection, InstructionSource, Instructions,
@@ -45,10 +57,17 @@ pub use instructions::{
 pub use memory::{
     Fact, FactRef, FileMemory, Framed, MAX_MEMORY_CANDIDATE_TEXT_BYTES, MAX_MEMORY_CANDIDATES,
     MAX_MEMORY_SLUG_BYTES, MAX_MEMORY_TASK_BYTES, MEMORY_SLOT_VERSION, MemBudget, MemError,
-    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallPlan, MemoryRecallProposal,
-    MemoryRecallStrategy, MemorySegment, MemorySlotDecision, MemorySlotError,
+    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallAudit, MemoryRecallPlan,
+    MemoryRecallProposal, MemoryRecallStrategy, MemorySegment, MemorySlotDecision, MemorySlotError,
     MemorySlotObservation, MemoryStore, MemoryStrategy, MemoryWriteProposal, StoredFact,
     merged_index,
+};
+pub use memory_trace::{
+    MAX_MEMORY_TRACE_VISIBILITY, MemoryAttributionEvidence, MemoryBudgetEvidence,
+    MemoryCandidateDecision, MemoryCandidateEvidence, MemoryDecisionTrace, MemoryFactId,
+    MemoryInjectionEvidence, MemoryObservation, MemoryObserver, MemoryQueryEvidence, MemoryQueryId,
+    MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence, MemoryStoreEvidence,
+    MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState, NullMemoryObserver,
 };
 pub use outline::{repo_outline, repo_outline_for_task};
 

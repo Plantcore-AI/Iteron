@@ -943,6 +943,8 @@ pub struct RawModel {
     pub display_name: Option<String>,
     pub created_at: Option<String>,
     pub owned_by: Option<String>,
+    /// Model-level evidence from the provider catalog. `None` is unknown, never false.
+    pub supports_image_input: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1057,6 +1059,7 @@ pub fn glm_standard_schema_catalog(
             display_name: Some(model_id.clone()),
             created_at: None,
             owned_by: None,
+            supports_image_input: None,
         })
         .map(|raw| describe_model(instance.adapter, raw))
         .collect();
@@ -2070,6 +2073,7 @@ struct FireworksModel {
     conversation_config: bool,
     supports_tools: Option<bool>,
     supports_serverless: Option<bool>,
+    supports_image_input: Option<bool>,
 }
 
 fn deserialize_conversation_config<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -2096,6 +2100,7 @@ fn raw_anthropic_model(model: AnthropicModel) -> Result<RawModel, ProviderError>
         display_name: model.display_name,
         created_at: model.created_at,
         owned_by: Some("anthropic".into()),
+        supports_image_input: None,
     })
 }
 
@@ -2109,6 +2114,7 @@ fn raw_openai_model(model: OpenAiModel) -> Result<RawModel, ProviderError> {
         id: model.id,
         created_at: model.created.map(|value| value.to_string()),
         owned_by: model.owned_by,
+        supports_image_input: None,
     })
 }
 
@@ -2209,6 +2215,7 @@ fn describe_fireworks_model(
         display_name: model.display_name,
         created_at: model.create_time,
         owned_by,
+        supports_image_input: model.supports_image_input,
     };
     Ok(ModelDescriptor {
         family_id: model_family(&raw.id),
@@ -3436,7 +3443,7 @@ mod tests {
         let page: FireworksModelsPage = decode_page(
             br#"{
               "models": [
-                {"name":"accounts/fireworks/models/qwen-good","displayName":"Qwen good","createTime":"2026-01-01T00:00:00Z","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","baseModelDetails":{"modelType":"qwen"},"public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/qwen-good","displayName":"Qwen good","createTime":"2026-01-01T00:00:00Z","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","baseModelDetails":{"modelType":"qwen"},"public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true,"supportsImageInput":true},
                 {"name":"accounts/fireworks/models/no-tools","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":false,"supportsServerless":true},
                 {"name":"accounts/fireworks/models/uploading","state":"UPLOADING","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
                 {"name":"accounts/fireworks/models/bad-status","state":"READY","status":{"code":"INTERNAL"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
@@ -3485,6 +3492,7 @@ mod tests {
             .find(|model| model.raw.id.ends_with("qwen-good"))
             .unwrap();
         assert_eq!(good.raw.owned_by.as_deref(), Some("fireworks"));
+        assert_eq!(good.raw.supports_image_input, Some(true));
         assert_eq!(good.family_id, "qwen");
         for id in ["no-tools", "no-chat", "embed"] {
             assert_eq!(

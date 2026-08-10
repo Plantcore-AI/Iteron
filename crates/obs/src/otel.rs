@@ -30,6 +30,9 @@ use crate::timeline::Timeline;
 use core_protocol::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 
+pub mod catalog;
+pub mod lifecycle;
+
 /// Maximum spans in one exported payload. A run that exceeds it reports the overflow rather than
 /// quietly shipping a prefix.
 pub const MAX_SPANS: usize = 4096;
@@ -65,6 +68,10 @@ pub struct Export {
     pub run_id: String,
     pub spans: Vec<Span>,
     pub metrics: Vec<Metric>,
+    /// Live canonical lifecycle projection. Bounded independently from the durable projection and
+    /// content-free by construction; absent for legacy/one-shot callers without a live bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<lifecycle::LifecycleTelemetrySnapshot>,
     /// Spans that did not fit the bound. **Always present, even at zero**, so a consumer never has
     /// to infer completeness from the absence of a field.
     pub dropped: u64,

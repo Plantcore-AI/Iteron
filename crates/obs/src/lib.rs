@@ -9,9 +9,10 @@
 //!   - tool-error counts,
 //!   - the cache-hit ratio per turn (the append-only-discipline health signal).
 //!
-//! Vertical slice: an in-memory ledger with a human summary. `tau_steps`, `RR(k)` curves,
-//! and the OTel GenAI export are interface-present / TODO against ADR-002; the token/latency/
-//! phase substrate they need is all collected here.
+//! The in-memory ledger remains the pricing/attribution authority. Canonical lifecycle telemetry
+//! and the bounded OTel GenAI projection are read-only projections of already-owned evidence;
+//! neither may measure, price, or change a run. `tau_steps` and `RR(k)` research curves remain
+//! outside this runtime contract.
 
 use core_protocol::{
     CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS, SignedRateCard, Usage,
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+pub mod lifecycle;
 mod metrics;
 pub mod otel;
 mod phase;

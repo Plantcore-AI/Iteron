@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use syn::visit::{self, Visit};
 
-const RUNTIME_SOURCE: &str = "crates/cli/src/runtime.rs";
+const RUNTIME_SOURCE: &str = "crates/cli/src/runtime/workflow_collect.rs";
 const KERNEL_MANIFEST: &str = "crates/kernel/Cargo.toml";
 const KERNEL_SOURCE_DIR: &str = "crates/kernel/src";
 const MAX_RUNTIME_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -18,7 +18,7 @@ const MAX_EVIDENCE_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_READ_ONLY_TOOLS: usize = 256;
 const MAX_POLICY_TOOLS: usize = 256;
 const MAX_W1_PLACEMENT_ROWS: usize = 16;
-const SPAWN_SIGNATURE: &str = "    async fn spawn_subagent(";
+const SPAWN_SIGNATURE: &str = "    pub(super) async fn spawn_subagent(";
 const BUDGET_BINDING: &str = "let Some(budget) = core_agents::subagent_budget(";
 const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] = ["core-obs", "core-protocol", "core-record"];
 const FORBIDDEN_WORLD_CRATES: [&str; 8] = [
@@ -971,6 +971,9 @@ fn runtime_spawn_body(source: &str) -> Result<&str> {
         "\n    async fn ",
         "\n    pub fn ",
         "\n    pub async fn ",
+        "\n    pub(super) fn ",
+        "\n    pub(super) async fn ",
+        "\n}",
     ]
     .into_iter()
     .filter_map(|signature| after_start.find(signature))

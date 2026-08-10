@@ -215,9 +215,10 @@ bounded `models` manifest, and a bounded `model_capabilities` manifest. See
 ### `model_capabilities`
 
 A map from model id to facts no account-scoped API reports. At most 256 entries; each key follows
-the same bound as a `models` id. One field is declarable:
+the same bound as a `models` id. Two fields are declarable:
 
 - `context_window_tokens`: positive integer, at most 1000000000.
+- `image_input`: boolean for this exact route/model pair.
 
 Core cannot discover this. A `GET models` response is not capability evidence, and the
 [static provider metadata](provider-metadata.md) document is a bounded set of official vendor
@@ -225,6 +226,8 @@ snapshots, so it can only speak for the vendors it ships. Declaring the window i
 two behaviours that are otherwise silently unavailable: window-relative compaction, which triggers
 at a share of the window instead of the absolute `compaction_trigger_tokens`, and the pre-flight
 context-admission check, which rejects an over-large request before it is paid for.
+Declaring `image_input: true` enables the adapter's multimodal wire encoding; absent capability
+evidence remains unknown and an attachment submission fails before either text or images are sent.
 
 An official vendor snapshot outranks a declaration for the same route. A declared value is
 recorded with operator provenance rather than a vendor version, so it changes the route's

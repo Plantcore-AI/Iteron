@@ -139,6 +139,8 @@ nav:
           - Review process: development/review-process.md
           - Provider adapters: development/provider-adapters.md
           - TUI testing: development/tui-testing.md
+          - Control, benchmark, tunables, and trainable harness plan: development/control-benchmark-harness-implementation-plan.md
+          - Hooks, OpenTelemetry, memory, and context observability plan: development/observability-memory-context-implementation-plan.md
           - Releasing: development/releasing.md
       - License: project/license.md
 

@@ -9,7 +9,10 @@
 use std::path::PathBuf;
 #[cfg(all(test, unix))]
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -36,11 +39,35 @@ pub(crate) enum Disposition {
     OutcomeUnknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControlKind {
+    Compact,
+    Side,
+}
+
+impl ControlKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compaction",
+            Self::Side => "side conversation",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ControlCompletion {
+    pub(crate) kind: ControlKind,
+    pub(crate) reply: Option<crate::app_server::ControlReply>,
+    pub(crate) cancellation_requested: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct Event {
     pub(crate) origin: Origin,
     pub(crate) outcome: Disposition,
     pub(crate) message: String,
+    pub(crate) shell: Option<super::inline_shell::ShellCompletion>,
+    pub(crate) control: Option<ControlCompletion>,
     final_slot: bool,
 }
 
@@ -64,6 +91,19 @@ pub(crate) enum Request {
         collision: transcript_export::CollisionPolicy,
         origin: Origin,
     },
+    Shell {
+        workspace: PathBuf,
+        command: String,
+        sensitive_env_names: Vec<String>,
+        mode: core_protocol::PermissionMode,
+        rules: core_protocol::PermissionRules,
+    },
+    Control {
+        sender: tokio::sync::mpsc::Sender<crate::app_server::ControlRequest>,
+        control: crate::app_server::Control,
+        interrupt: Arc<AtomicBool>,
+        kind: ControlKind,
+    },
     #[cfg(test)]
     Delay { duration: Duration, origin: Origin },
     #[cfg(all(test, unix))]
@@ -78,10 +118,19 @@ impl Request {
         match self {
             Self::Copy { .. } => "copy",
             Self::Export { .. } => "export",
+            Self::Shell { .. } => "shell",
+            Self::Control { kind, .. } => kind.label(),
             #[cfg(test)]
             Self::Delay { .. } => "test effect",
             #[cfg(all(test, unix))]
             Self::ProcessDelay { .. } => "test process",
+        }
+    }
+
+    fn interrupt_flag(&self) -> Option<Arc<AtomicBool>> {
+        match self {
+            Self::Control { interrupt, .. } => Some(interrupt.clone()),
+            _ => None,
         }
     }
 }
@@ -94,6 +143,7 @@ pub(crate) struct Supervisor {
     receiver: tokio::sync::mpsc::Receiver<Event>,
     task: Option<tokio::task::JoinHandle<()>>,
     cancel: Option<tokio::sync::watch::Sender<bool>>,
+    cancel_interrupt: Option<Arc<AtomicBool>>,
     label: Option<&'static str>,
     processes: ProcessRegistry,
 }
@@ -106,6 +156,7 @@ impl Default for Supervisor {
             receiver,
             task: None,
             cancel: None,
+            cancel_interrupt: None,
             label: None,
             processes: ProcessRegistry::default(),
         }
@@ -126,10 +177,12 @@ impl Supervisor {
             return Err(Busy);
         }
         let label = request.label();
+        let cancel_interrupt = request.interrupt_flag();
         let sender = self.sender.clone();
         let (cancel, cancelled) = tokio::sync::watch::channel(false);
         self.label = Some(label);
         self.cancel = Some(cancel);
+        self.cancel_interrupt = cancel_interrupt;
         self.task = Some(tokio::spawn(run(
             request,
             sender,
@@ -146,9 +199,21 @@ impl Supervisor {
                 let _ = task.await;
             }
             self.cancel = None;
+            self.cancel_interrupt = None;
             self.label = None;
         }
         Some(event)
+    }
+
+    /// Request cancellation without waiting for process cleanup. The render/input loop stays live;
+    /// the existing completion channel reports the bounded cleanup terminal asynchronously.
+    pub(crate) fn cancel(&self) -> bool {
+        if let Some(interrupt) = &self.cancel_interrupt {
+            interrupt.store(true, Ordering::SeqCst);
+        }
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.send(true).is_ok())
     }
 
     /// Cancel the active effect and join its owned task after its finite exact-handle cleanup path.
@@ -159,6 +224,9 @@ impl Supervisor {
             return;
         };
         if let Some(cancel) = self.cancel.take() {
+            if let Some(interrupt) = &self.cancel_interrupt {
+                interrupt.store(true, Ordering::SeqCst);
+            }
             let _ = cancel.send(true);
         }
         // Every production branch owns its own bounded deadline and typed kill/reap attempt.
@@ -166,6 +234,7 @@ impl Supervisor {
         // cleanup state machine between signal and its finite evidence window.
         let _ = task.await;
         self.label = None;
+        self.cancel_interrupt = None;
         while self.receiver.try_recv().is_ok() {}
     }
 
@@ -183,11 +252,15 @@ impl Drop for Supervisor {
             return;
         };
         if let Some(cancel) = self.cancel.take() {
+            if let Some(interrupt) = &self.cancel_interrupt {
+                interrupt.store(true, Ordering::SeqCst);
+            }
             let _ = cancel.send(true);
         }
         self.processes.close_and_reap();
         task.abort();
         self.label = None;
+        self.cancel_interrupt = None;
     }
 }
 
@@ -229,6 +302,8 @@ async fn run(
                     origin,
                     outcome,
                     message,
+                    shell: None,
+                    control: None,
                     final_slot: true,
                 },
             )
@@ -251,6 +326,8 @@ async fn run(
                             origin,
                             outcome: Disposition::KnownFailure,
                             message: format!("export failed before dispatch: {error}"),
+                            shell: None,
+                            control: None,
                             final_slot: true,
                         },
                     )
@@ -273,6 +350,125 @@ async fn run(
                 send(&sender, event).await;
             }
         }
+        Request::Shell {
+            workspace,
+            command,
+            sensitive_env_names,
+            mode,
+            rules,
+        } => {
+            let completion = super::inline_shell::run_bash_inline(
+                &workspace,
+                &command,
+                &sensitive_env_names,
+                mode,
+                &rules,
+                &mut cancelled,
+            )
+            .await;
+            let outcome = if completion.ok {
+                Disposition::Success
+            } else {
+                Disposition::KnownFailure
+            };
+            send(
+                &sender,
+                Event {
+                    origin: Origin::Slash,
+                    outcome,
+                    message: if completion.ok {
+                        "shell completed".into()
+                    } else {
+                        "shell stopped".into()
+                    },
+                    shell: Some(completion),
+                    control: None,
+                    final_slot: true,
+                },
+            )
+            .await;
+        }
+        Request::Control {
+            sender: control_sender,
+            control,
+            interrupt,
+            kind,
+        } => {
+            let (reply, reply_rx) = tokio::sync::oneshot::channel();
+            let request = crate::app_server::ControlRequest { control, reply };
+            let dispatch = tokio::select! {
+                biased;
+                _ = cancelled.changed() => None,
+                sent = control_sender.send(request) => Some(sent.is_ok()),
+            };
+            if dispatch != Some(true) {
+                // No runtime request owns the flag, so this branch must clear the eager signal set
+                // synchronously by `Supervisor::cancel`.
+                interrupt.store(false, Ordering::SeqCst);
+                let cancellation_requested = dispatch.is_none();
+                send(
+                    &sender,
+                    Event {
+                        origin: Origin::Slash,
+                        outcome: Disposition::KnownFailure,
+                        message: if cancellation_requested {
+                            format!("{} cancelled before dispatch", kind.label())
+                        } else {
+                            format!("{} could not reach the runtime", kind.label())
+                        },
+                        shell: None,
+                        control: Some(ControlCompletion {
+                            kind,
+                            reply: None,
+                            cancellation_requested,
+                        }),
+                        final_slot: true,
+                    },
+                )
+                .await;
+                return;
+            }
+
+            let mut reply_rx = reply_rx;
+            let mut cancellation_requested = false;
+            let reply = loop {
+                tokio::select! {
+                    biased;
+                    changed = cancelled.changed(), if !cancellation_requested => {
+                        cancellation_requested = true;
+                        let _ = changed;
+                    }
+                    reply = &mut reply_rx => break reply.ok(),
+                }
+            };
+            let outcome = if matches!(&reply, Some(crate::app_server::ControlReply::Refused(_)))
+                || reply.is_none()
+            {
+                Disposition::KnownFailure
+            } else {
+                Disposition::Success
+            };
+            send(
+                &sender,
+                Event {
+                    origin: Origin::Slash,
+                    outcome,
+                    message: if reply.is_some() {
+                        format!("{} settled", kind.label())
+                    } else {
+                        format!("{} lost its runtime reply", kind.label())
+                    },
+                    shell: None,
+                    control: Some(ControlCompletion {
+                        kind,
+                        reply,
+                        cancellation_requested,
+                    }),
+                    final_slot: true,
+                },
+            )
+            .await;
+        }
         #[cfg(test)]
         Request::Delay { duration, origin } => {
             tokio::select! {
@@ -285,6 +481,8 @@ async fn run(
                     origin,
                     outcome: Disposition::Success,
                     message: "test effect complete".into(),
+                    shell: None,
+                    control: None,
                     final_slot: true,
                 },
             )
@@ -321,6 +519,8 @@ fn export_event(origin: Origin, run: WorkerRun) -> Option<Event> {
         origin,
         outcome,
         message,
+        shell: None,
+        control: None,
         final_slot: true,
     })
 }
@@ -358,6 +558,8 @@ async fn run_test_process(
                 origin,
                 outcome: Disposition::Success,
                 message: "test process complete".into(),
+                shell: None,
+                control: None,
                 final_slot: true,
             }).await;
         }
@@ -469,6 +671,43 @@ mod tests {
         supervisor.shutdown().await;
         assert!(!supervisor.is_active());
         assert_eq!(supervisor.label(), None);
+    }
+
+    #[tokio::test]
+    async fn control_cancel_interrupts_eagerly_and_waits_for_authoritative_settlement() {
+        let mut supervisor = Supervisor::default();
+        let (control, mut requests) = tokio::sync::mpsc::channel(1);
+        let interrupt = Arc::new(AtomicBool::new(false));
+        supervisor
+            .start(Request::Control {
+                sender: control,
+                control: crate::app_server::Control::Side(crate::app_server::SideRequest::Status),
+                interrupt: interrupt.clone(),
+                kind: ControlKind::Side,
+            })
+            .unwrap();
+
+        let request = requests.recv().await.expect("control was dispatched");
+        assert!(supervisor.cancel());
+        assert!(
+            interrupt.load(Ordering::SeqCst),
+            "the input path must not wait for the supervisor task to wake"
+        );
+
+        // The resident runtime owns terminal settlement and clears the standalone flag only after
+        // its provider/Hook work has stopped. Model that ordering before sending its reply.
+        interrupt.store(false, Ordering::SeqCst);
+        request
+            .reply
+            .send(crate::app_server::ControlReply::Refused(
+                "interrupted".into(),
+            ))
+            .unwrap();
+        let event = supervisor.recv().await.expect("control terminal event");
+        let completion = event.control.expect("typed control completion");
+        assert!(completion.cancellation_requested);
+        assert!(!interrupt.load(Ordering::SeqCst));
+        assert!(!supervisor.is_active());
     }
 
     #[cfg(unix)]

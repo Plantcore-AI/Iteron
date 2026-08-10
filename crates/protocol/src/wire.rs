@@ -37,12 +37,12 @@
 //! A peer built against version 1 would accept such an envelope by its stamp and then read its
 //! contents against a shape it does not have; the bump is what turns that into a typed refusal.
 
-use crate::{Event, Op};
+use crate::{Event, Op, SubmissionId};
 use serde::{Deserialize, Serialize};
 
 /// Current SQ/EQ wire version. Changes to the `protocol-compat` boundary must bump this value;
 /// `core-xtask boundaries check-pr` compares it with the trusted base revision.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtocolVersionError {
@@ -73,10 +73,18 @@ fn require_current(actual: u32) -> Result<(), ProtocolVersionError> {
     }
 }
 
+fn submission_id_is_zero(id: &SubmissionId) -> bool {
+    id.0 == 0
+}
+
 /// One item on the submission queue (SQ).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqEnvelope {
     pub protocol_version: u32,
+    /// Stable client-minted correlation identity. Zero is reserved for historical/internal
+    /// envelopes whose producer predates identified submission transport.
+    #[serde(default, skip_serializing_if = "submission_id_is_zero")]
+    pub submission_id: SubmissionId,
     pub op: Op,
 }
 
@@ -84,6 +92,15 @@ impl SqEnvelope {
     pub fn current(op: Op) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
+            submission_id: SubmissionId::default(),
+            op,
+        }
+    }
+
+    pub fn identified(submission_id: SubmissionId, op: Op) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            submission_id,
             op,
         }
     }
@@ -91,8 +108,22 @@ impl SqEnvelope {
     pub fn with_version(protocol_version: u32, op: Op) -> Self {
         Self {
             protocol_version,
+            submission_id: SubmissionId::default(),
             op,
         }
+    }
+
+    pub fn with_version_and_id(protocol_version: u32, submission_id: SubmissionId, op: Op) -> Self {
+        Self {
+            protocol_version,
+            submission_id,
+            op,
+        }
+    }
+
+    pub fn into_current_identified(self) -> Result<(SubmissionId, Op), ProtocolVersionError> {
+        require_current(self.protocol_version)?;
+        Ok((self.submission_id, self.op))
     }
 
     pub fn into_current(self) -> Result<Op, ProtocolVersionError> {
@@ -144,14 +175,13 @@ mod tests {
     /// constructor call this build made against itself. The op tag is one no version of this
     /// crate has ever defined, because a real v3 producer is free to send exactly that.
     ///
-    /// This was the v2 fixture while `PROTOCOL_VERSION` was 1. The bump to 2 made v2 the version
-    /// this build speaks, so the skew case moved up with it rather than staying pointed at a
-    /// version that is now current -- which is what the literal assertion below exists to force.
-    const SKEWED_SUBMISSION_JSON: &str =
-        r#"{"protocol_version":3,"op":{"op":"reprioritize","lane":"background"}}"#;
+    /// The v3 bump added stable submission identity. The skew case moves to v4 rather than staying
+    /// pointed at a version that is now current.
+    const SKEWED_SUBMISSION_JSON: &str = r#"{"protocol_version":4,"submission_id":9,"op":{"op":"reprioritize","lane":"background"}}"#;
 
     /// The same unknown op tag under the version this build does speak.
-    const CURRENT_UNKNOWN_OP_JSON: &str = r#"{"protocol_version":2,"op":{"op":"reprioritize"}}"#;
+    const CURRENT_UNKNOWN_OP_JSON: &str =
+        r#"{"protocol_version":3,"submission_id":9,"op":{"op":"reprioritize"}}"#;
 
     #[test]
     fn d1_02_sq_and_eq_are_stamped_and_reject_version_skew() {
@@ -179,7 +209,7 @@ mod tests {
         // test one version higher and leaving the version it used to guard untested. The bump from
         // 1 to 2 did exactly that: the fixture moved to v3, and v2 -- now current -- is covered by
         // the decode-and-accept case above.
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_VERSION, 3);
         let skewed: SqEnvelope = serde_json::from_str(SKEWED_SUBMISSION_JSON)
             .expect("a v3 envelope decodes; it is the version gate that refuses it, not serde");
         let refused = skewed
@@ -188,8 +218,8 @@ mod tests {
         assert_eq!(
             refused,
             ProtocolVersionError {
-                expected: 2,
-                actual: 3,
+                expected: 3,
+                actual: 4,
             }
         );
 
@@ -199,7 +229,7 @@ mod tests {
         let propagated: &dyn std::error::Error = &refused;
         let rendered = propagated.to_string();
         assert!(
-            rendered.contains("version 3") && rendered.contains("expected 2"),
+            rendered.contains("version 4") && rendered.contains("expected 3"),
             "the refusal must say which version arrived and which one this build speaks: {rendered}"
         );
 

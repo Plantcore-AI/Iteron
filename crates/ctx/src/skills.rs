@@ -1,14 +1,15 @@
 //! Skills — progressive-disclosure instruction bundles (Claude Code SKILL.md parity, R5).
 //!
-//! A skill is `<root>/.core/skills/<name>/SKILL.md`: bounded frontmatter plus a body of
-//! instructions. Only model-invocable, path-relevant listing metadata is injected into the stable
+//! A skill is a bounded `SKILL.md` discovered from Core's native roots or the operator's portable
+//! agent roots. Only model-invocable, path-relevant listing metadata is injected into the stable
 //! prefix (a bounded index); the model pulls a skill's full body on demand with the `use_skill`
 //! tool when its listing looks relevant — the same progressive-disclosure shape as memory (so a
 //! large skill library costs a few tokens per skill until one is actually used).
 //!
 //! Trust-by-origin (ADR-007, the same posture as memory/agent definitions): a skill under the
-//! user dir (`~/.core/skills`) is Trusted; under the project (`<repo>/.core/skills`) it is
-//! Workspace; anything discovered under a vendored/cloned dependency path is Untrusted and STRIPPED
+//! user roots (`~/.core/skills`, `~/.agents/skills`, and Codex skill roots) are Trusted; under the
+//! project (`<repo>/.core/skills` or `<repo>/.agents/skills`) it is Workspace; anything discovered
+//! under a vendored/cloned dependency path is Untrusted and STRIPPED
 //! (never injected) — the recon-injection incident this repo's own Errors.md records. Every skill's
 //! frontmatter and body is bidi/invisible-Unicode scanned; a suspicious skill is rejected, not run.
 
@@ -24,6 +25,7 @@ pub use metadata::{SKILL_REFUSED_TOOLS, SkillMetadata, active_paths_from_text};
 /// Discovery ceilings apply before parsing or prompt construction.
 const MAX_SKILL_DIRS: usize = 1_024;
 const MAX_SKILL_SOURCE_BYTES: usize = 256 * 1024;
+const MAX_CODEX_CONFIG_BYTES: usize = 256 * 1024;
 
 /// Where a skill was discovered — sets its trust (ADR-007).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,7 @@ pub struct SkillDef {
     pub trust: Trust,
     /// Optional advertisement controls. These fields never grant tools or other authority.
     pub metadata: SkillMetadata,
+    source_path: PathBuf,
 }
 
 impl SkillDef {
@@ -86,6 +89,52 @@ pub struct SkillCatalog {
 }
 
 impl SkillCatalog {
+    /// Discover all operator-portable skill roots plus Core's repository roots.
+    ///
+    /// Precedence is deterministic and user-controlled: native Core skills win name collisions,
+    /// then the portable `~/.agents` root, then legacy Codex user skills, then Codex system skills.
+    /// Codex `[[skills.config]]` path/name rules are applied in declaration order, including
+    /// explicit disables. The same constructor is used for prompt listing and on-demand loading.
+    pub fn discover_for_operator(operator_home: Option<&Path>, repo: &Path) -> Self {
+        Self::discover_for_operator_with_dependencies(operator_home, repo, &[])
+    }
+
+    pub fn discover_for_operator_with_dependencies(
+        operator_home: Option<&Path>,
+        repo: &Path,
+        dependencies: &[(PathBuf, PathBuf)],
+    ) -> Self {
+        let mut cat = SkillCatalog::default();
+        if let Some(home) = operator_home {
+            cat.scan(
+                &home.join(".core/skills"),
+                &home.join(".core/skills"),
+                SkillTier::User,
+            );
+            cat.scan(
+                &home.join(".agents/skills"),
+                &home.join(".agents/skills"),
+                SkillTier::User,
+            );
+            let codex_skills = home.join(".codex/skills");
+            cat.scan(&codex_skills, &codex_skills, SkillTier::User);
+            let codex_system = codex_skills.join(".system");
+            cat.scan(&codex_system, &codex_system, SkillTier::User);
+        }
+        let core_project = core_protocol::home::path(repo, "skills");
+        cat.scan(repo, &core_project, SkillTier::Project);
+        let agents_project = repo.join(".agents/skills");
+        cat.scan(repo, &agents_project, SkillTier::Project);
+        for (root, directory) in dependencies {
+            cat.scan(root, directory, SkillTier::Dependency);
+        }
+        if let Some(home) = operator_home {
+            cat.apply_codex_config(home);
+        }
+        cat.sort_and_dedup();
+        cat
+    }
+
     /// Discover skills under the user dir (Trusted) and the repo (Workspace). A skill directory
     /// found under a vendored dependency path is stripped (Untrusted, never injected). Sorted by
     /// name for a stable, reproducible listing.
@@ -114,8 +163,7 @@ impl SkillCatalog {
         for (root, directory) in dependencies {
             cat.scan(root, directory, SkillTier::Dependency);
         }
-        cat.defs.sort_by(|a, b| a.name.cmp(&b.name));
-        cat.defs.dedup_by(|a, b| a.name == b.name);
+        cat.sort_and_dedup();
         cat
     }
 
@@ -133,9 +181,75 @@ impl SkillCatalog {
         // Project tier: the repo's `.core/skills` directory only.
         let project_dir = core_protocol::home::path(repo, "skills");
         cat.scan(repo, &project_dir, SkillTier::Project);
-        cat.defs.sort_by(|a, b| a.name.cmp(&b.name));
-        cat.defs.dedup_by(|a, b| a.name == b.name);
+        cat.sort_and_dedup();
         cat
+    }
+
+    fn sort_and_dedup(&mut self) {
+        // Stable sort preserves source precedence for duplicate names.
+        self.defs.sort_by(|a, b| a.name.cmp(&b.name));
+        self.defs.dedup_by(|a, b| a.name == b.name);
+    }
+
+    fn apply_codex_config(&mut self, operator_home: &Path) {
+        let config = operator_home.join(".codex/config.toml");
+        let raw = match read_bounded_utf8(
+            operator_home,
+            &config,
+            MAX_CODEX_CONFIG_BYTES,
+            SourceScope::User,
+        ) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return,
+            Err(error) => {
+                self.errors.push(SkillError {
+                    source: config.display().to_string(),
+                    reason: error.reason().to_string(),
+                });
+                return;
+            }
+        };
+        let value = match toml::from_str::<toml::Value>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                self.errors.push(SkillError {
+                    source: config.display().to_string(),
+                    reason: format!("invalid Codex skills config: {error}"),
+                });
+                return;
+            }
+        };
+        let Some(rules) = value
+            .get("skills")
+            .and_then(|skills| skills.get("config"))
+            .and_then(toml::Value::as_array)
+        else {
+            return;
+        };
+        self.defs.retain(|definition| {
+            let mut enabled = true;
+            for rule in rules {
+                let Some(table) = rule.as_table() else {
+                    continue;
+                };
+                let matches_path = table
+                    .get("path")
+                    .and_then(toml::Value::as_str)
+                    .map(Path::new)
+                    .is_some_and(|path| same_skill_path(path, &definition.source_path));
+                let matches_name = table
+                    .get("name")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|name| name.trim() == definition.name);
+                if matches_path || matches_name {
+                    enabled = table
+                        .get("enabled")
+                        .and_then(toml::Value::as_bool)
+                        .unwrap_or(true);
+                }
+            }
+            enabled
+        });
     }
 
     fn scan(&mut self, root: &Path, dir: &Path, tier: SkillTier) {
@@ -198,7 +312,10 @@ impl SkillCatalog {
                 }
             };
             match parse_skill(&raw, &p, tier) {
-                Ok(def) => self.defs.push(def),
+                Ok(mut def) => {
+                    def.source_path = skill_md;
+                    self.defs.push(def);
+                }
                 Err(reason) => self.errors.push(SkillError {
                     source: skill_md.display().to_string(),
                     reason,
@@ -338,7 +455,18 @@ fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, Strin
         tier,
         trust: tier.trust(),
         metadata,
+        source_path: dir.join("SKILL.md"),
     })
+}
+
+fn same_skill_path(configured: &Path, discovered: &Path) -> bool {
+    if configured == discovered {
+        return true;
+    }
+    matches!(
+        (configured.canonicalize(), discovered.canonicalize()),
+        (Ok(configured), Ok(discovered)) if configured == discovered
+    )
 }
 
 /// Split a leading `---` fenced frontmatter block from the body. Returns (frontmatter, body).
@@ -383,6 +511,61 @@ mod tests {
         let dir = root.join(".core").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), front_body).unwrap();
+    }
+
+    fn write_skill_in(root: &Path, relative: &str, name: &str) -> PathBuf {
+        let dir = root.join(relative).join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            format!("---\nname: {name}\ndescription: {name} helper\n---\n{name} body\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn operator_portable_roots_share_one_index_and_honor_codex_enablement() {
+        let base = tmp("portable-operator-roots");
+        let home = base.join("home");
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        write_skill_in(&home, ".core/skills", "native");
+        write_skill_in(&home, ".agents/skills", "portable");
+        let legacy = write_skill_in(&home, ".codex/skills", "legacy");
+        let system = write_skill_in(&home, ".codex/skills/.system", "system");
+        write_skill_in(&repo, ".agents/skills", "project");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let escaped = |path: &Path| path.display().to_string().replace('\\', "\\\\");
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            format!(
+                "[[skills.config]]\npath = \"{}\"\nenabled = false\n\n[[skills.config]]\npath = \"{}\"\nenabled = true\n",
+                escaped(&legacy),
+                escaped(&system)
+            ),
+        )
+        .unwrap();
+
+        let catalog = SkillCatalog::discover_for_operator(Some(&home), &repo);
+        let names = catalog
+            .defs()
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["native", "portable", "project", "system"],
+            "errors={:?}",
+            catalog.errors()
+        );
+        assert!(catalog.get("legacy").is_none());
+        let listing = catalog.listing(4_000);
+        for name in ["native", "portable", "project", "system"] {
+            assert!(listing.contains(&format!("- {name}")), "{listing}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A skill may narrow the registry it runs against, and only narrow it.

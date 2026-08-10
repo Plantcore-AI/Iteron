@@ -1297,6 +1297,7 @@ pub struct HealthReportingProvider {
     health: ProviderHealthStore,
     account_failures_are_model_scoped: bool,
     static_metadata_notice: Option<StaticMetadataNoticeRoute>,
+    image_input_support: Option<bool>,
 }
 
 impl HealthReportingProvider {
@@ -1311,6 +1312,7 @@ impl HealthReportingProvider {
             health,
             account_failures_are_model_scoped: false,
             static_metadata_notice: None,
+            image_input_support: None,
         }
     }
 
@@ -1318,6 +1320,14 @@ impl HealthReportingProvider {
     /// runtime billing/permission failure onto every sibling/public model in the instance.
     pub fn with_model_scoped_account_failures(mut self, enabled: bool) -> Self {
         self.account_failures_are_model_scoped = enabled;
+        self
+    }
+
+    /// Bind image admission to evidence for the exact selected model. `None` preserves an
+    /// adapter's own first-party proof (for example official OpenAI Responses); custom and
+    /// catalog-backed routes pass an explicit model-level answer.
+    pub fn with_image_input_support(mut self, supported: Option<bool>) -> Self {
+        self.image_input_support = supported;
         self
     }
 
@@ -1358,7 +1368,8 @@ impl Provider for HealthReportingProvider {
     }
 
     fn supports_image_input(&self) -> bool {
-        self.inner.supports_image_input()
+        self.image_input_support
+            .unwrap_or_else(|| self.inner.supports_image_input())
     }
 
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {

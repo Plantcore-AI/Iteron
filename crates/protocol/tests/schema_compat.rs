@@ -243,6 +243,7 @@ fn op_tag(op: &Op) -> &'static str {
         Op::ApprovalResponse { .. } => "approval_response",
         Op::Steer { .. } => "steer",
         Op::Interrupt => "interrupt",
+        Op::ForceCancel => "force_cancel",
         Op::Drain => "drain",
         Op::Unknown => "unknown",
     }
@@ -316,6 +317,7 @@ fn d13_14_every_manifest_sq_op_fixture_typed_round_trips() {
         BTreeSet::from([
             "approval_response".to_owned(),
             "drain".to_owned(),
+            "force_cancel".to_owned(),
             "interrupt".to_owned(),
             "steer".to_owned(),
             "user_input".to_owned(),

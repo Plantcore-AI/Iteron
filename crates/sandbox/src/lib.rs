@@ -158,7 +158,7 @@ pub struct RunOutput {
 
 const POST_KILL_DRAIN_SECS: u64 = 1;
 #[cfg(unix)]
-const TERMINATION_GRACE_MS: u64 = 250;
+const TERMINATION_GRACE_MS: u64 = 50;
 
 #[derive(Default)]
 struct BoundedCapture {
@@ -241,6 +241,35 @@ fn signal_process_group(pid: Option<u32>, signal: libc::c_int) {
     }
 }
 
+/// Last-resort cleanup for cancellation-by-future-drop. Tokio's `kill_on_drop` targets the direct
+/// child only; a shell can already have launched background descendants in the dedicated process
+/// group. The normal timeout path below remains graceful. This guard is armed only while the
+/// collector owns a live group and force-kills that group if an upper runtime layer drops the
+/// collector in response to Ctrl-C/Esc.
+struct ProcessGroupDropGuard {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl ProcessGroupDropGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupDropGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.armed {
+            signal_process_group(self.pid, libc::SIGKILL);
+        }
+    }
+}
+
 async fn terminate_with_grace(
     child: &mut tokio::process::Child,
 ) -> Option<std::process::ExitStatus> {
@@ -285,6 +314,7 @@ pub(crate) async fn collect_child_output(
     mut stderr: tokio::process::ChildStderr,
     conf: &Confinement,
 ) -> Result<RunOutput, SandboxError> {
+    let mut group_drop_guard = ProcessGroupDropGuard::new(child.id());
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
     let mut err = BoundedCapture::with_limit(conf.max_output_bytes);
     let completed =
@@ -301,9 +331,14 @@ pub(crate) async fn collect_child_output(
         .await;
 
     let (timed_out, status) = match completed {
-        Ok(status) => (false, Some(status?)),
+        Ok(status) => {
+            let status = status?;
+            group_drop_guard.disarm();
+            (false, Some(status))
+        }
         Err(_) => {
             let status = terminate_with_grace(&mut child).await;
+            group_drop_guard.disarm();
             // The first drain futures were cancelled with the timeout, but their captures live
             // outside it. Resume both drains concurrently to retain buffered tail bytes and close
             // the pipes. This cleanup itself is bounded in case a hostile daemon escaped the group.

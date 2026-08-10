@@ -144,6 +144,7 @@ impl Anthropic {
         let transcript_breakpoint = cache_prompt
             .then(|| req.messages.len().checked_sub(2))
             .flatten();
+        let image_target = image_target(&req.messages, &req.input_images)?;
         let messages: Vec<serde_json::Value> = req
             .messages
             .iter()
@@ -153,6 +154,11 @@ impl Anthropic {
                     message,
                     &self.route_scope,
                     transcript_breakpoint == Some(index),
+                    if image_target == Some(index) {
+                        req.input_images.as_slice()
+                    } else {
+                        &[]
+                    },
                 )
             })
             .collect::<Result<_, _>>()?;
@@ -279,6 +285,7 @@ fn msg_to_json(
     m: &Message,
     route_scope: &str,
     cache_breakpoint: bool,
+    input_images: &[core_protocol::ImageContent],
 ) -> Result<serde_json::Value, ProviderError> {
     let role = match m.role {
         Role::User => "user",
@@ -290,7 +297,19 @@ fn msg_to_json(
         mark_cache_breakpoint(&mut native_content, cache_breakpoint);
         return Ok(serde_json::json!({"role": role, "content": native_content}));
     }
-    let mut content: Vec<serde_json::Value> = m
+    let mut content: Vec<serde_json::Value> = input_images
+        .iter()
+        .map(|image| {
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type.as_str(),
+                    "data": image.data.as_str(),
+                }
+            })
+        })
+        .chain(m
         .content
         .iter()
         // Naked thinking lacks the provider signature and must never be replayed. Only a matching,
@@ -308,10 +327,35 @@ fn msg_to_json(
                 "content": r.content,
                 "is_error": r.is_error,
             })),
-        })
+        }))
         .collect();
     mark_cache_breakpoint(&mut content, cache_breakpoint);
     Ok(serde_json::json!({"role": role, "content": content}))
+}
+
+fn image_target(
+    messages: &[Message],
+    input_images: &[core_protocol::ImageContent],
+) -> Result<Option<usize>, ProviderError> {
+    if input_images.is_empty() {
+        return Ok(None);
+    }
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            (message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::Text { .. })))
+            .then_some(index)
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            ProviderError::Decode("Anthropic image input lacked a user text submission".into())
+        })
 }
 
 /// Mark the rolling transcript breakpoint on the last block of one message that can carry it. A
@@ -729,6 +773,7 @@ impl Provider for Anthropic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_protocol::{ImageContent, ImageMediaType};
 
     fn request(model: &str) -> TurnRequest {
         TurnRequest {
@@ -777,6 +822,27 @@ mod tests {
             })
             .map(|(index, _)| index)
             .collect()
+    }
+
+    #[test]
+    fn messages_body_encodes_base64_images_on_the_latest_user_text() {
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
+        let mut request = conversation("claude-sonnet-4-5", 3);
+        request.input_images = vec![
+            ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap(),
+            ImageContent::new(ImageMediaType::Webp, "UklGRg==").unwrap(),
+        ];
+
+        let body = provider.body(&request).unwrap();
+        assert_eq!(
+            body["messages"][2]["content"],
+            serde_json::json!([
+                {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},
+                {"type":"image","source":{"type":"base64","media_type":"image/webp","data":"UklGRg=="}},
+                {"type":"text","text":"turn 2"}
+            ])
+        );
     }
 
     #[test]
@@ -1164,10 +1230,10 @@ mod tests {
             ],
         };
 
-        let exact = msg_to_json(&message, "anthropic-a", false).unwrap();
+        let exact = msg_to_json(&message, "anthropic-a", false, &[]).unwrap();
         assert_eq!(exact["content"], native);
 
-        let portable = msg_to_json(&message, "anthropic-b", false).unwrap();
+        let portable = msg_to_json(&message, "anthropic-b", false, &[]).unwrap();
         assert_eq!(
             portable["content"],
             serde_json::json!([
@@ -1205,9 +1271,9 @@ mod tests {
                 },
             ],
         };
-        assert!(msg_to_json(&message, "anthropic-a", false).is_err());
+        assert!(msg_to_json(&message, "anthropic-a", false, &[]).is_err());
         assert_eq!(
-            msg_to_json(&message, "anthropic-b", false).unwrap()["content"],
+            msg_to_json(&message, "anthropic-b", false, &[]).unwrap()["content"],
             serde_json::json!([{"type":"text","text":"portable"}])
         );
     }
@@ -1226,7 +1292,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            msg_to_json(&message, "anthropic-a", false).unwrap()["content"],
+            msg_to_json(&message, "anthropic-a", false, &[]).unwrap()["content"],
             serde_json::json!([{"type":"text","text":"visible"}])
         );
     }

@@ -29,9 +29,9 @@ const MAX_PROVIDER_INSTANCES: usize = 70;
 const OPENAI_API_ROOT: &str = "https://api.openai.com/v1";
 const DEEPSEEK_API_ROOT: &str = "https://api.deepseek.com";
 const MINIMAX_API_ROOT: &str = "https://api.minimax.io/v1";
-const CATALOG_CACHE_VERSION: u32 = 3;
+const CATALOG_CACHE_VERSION: u32 = 4;
 const CATALOG_CLASSIFIER_VERSION: u32 = 1;
-const CATALOG_CACHE_FILE: &str = "catalogs-v3.json";
+const CATALOG_CACHE_FILE: &str = "catalogs-v4.json";
 const CATALOG_CACHE_SCOPE_KEY_FILE: &str = "catalog-scope-v1.key";
 const CATALOG_CACHE_SCOPE_KEY_BYTES: usize = 32;
 const CATALOG_CACHE_SCOPE_PREFIX: &str = "hmac-sha256:";
@@ -41,6 +41,9 @@ const CATALOG_CACHE_SCOPE_PREFIX: &str = "hmac-sha256:";
 const OPERATOR_DECLARED_CAPABILITY_VERSION: &str = "operator-declared-capability-v1";
 const OPERATOR_DECLARED_CAPABILITY_SOURCE: &str =
     "operator config (providers[].model_capabilities)";
+const FIREWORKS_IMAGE_CAPABILITY_VERSION: &str = "fireworks-model-catalog.supportsImageInput-v1";
+const FIREWORKS_IMAGE_CAPABILITY_SOURCE: &str =
+    "https://docs.fireworks.ai/api-reference/list-models";
 const CATALOG_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const CATALOG_CACHE_FUTURE_SKEW_SECS: u64 = 24 * 60 * 60;
 const MAX_CATALOG_CACHE_BYTES: usize = 16 * 1024 * 1024;
@@ -84,6 +87,9 @@ pub(crate) struct ModelCapabilities {
     pub max_output_tokens: Option<u32>,
     pub tool_calling: Option<bool>,
     pub semantic_effort: Option<bool>,
+    pub image_input: Option<bool>,
+    pub image_input_version: Option<String>,
+    pub image_input_source: Option<String>,
     pub version: Option<String>,
     pub source: Option<String>,
 }
@@ -95,6 +101,9 @@ impl ModelCapabilities {
             max_output_tokens: None,
             tool_calling: None,
             semantic_effort: None,
+            image_input: None,
+            image_input_version: None,
+            image_input_source: None,
             version: None,
             source: None,
         }
@@ -219,6 +228,7 @@ struct CachedModel {
     display_name: Option<String>,
     created_at: Option<String>,
     owned_by: Option<String>,
+    supports_image_input: Option<bool>,
     compatibility: CachedCompatibility,
     selectability: CachedSelectability,
 }
@@ -915,6 +925,7 @@ impl CachedCatalog {
                             display_name: model.raw.display_name.clone(),
                             created_at: model.raw.created_at.clone(),
                             owned_by: model.raw.owned_by.clone(),
+                            supports_image_input: model.raw.supports_image_input,
                             compatibility: match model.compatibility {
                                 Compatibility::Compatible => CachedCompatibility::Compatible,
                                 Compatibility::Unknown => CachedCompatibility::Unknown,
@@ -1026,6 +1037,7 @@ impl CachedCatalog {
                             display_name: model.display_name.clone(),
                             created_at: model.created_at.clone(),
                             owned_by: model.owned_by.clone(),
+                            supports_image_input: model.supports_image_input,
                         },
                         family_id: family.id.clone(),
                         compatibility: match model.compatibility {
@@ -2399,6 +2411,7 @@ impl ProviderDirectory {
             .instance
             .build_turn_provider()
             .map_err(|error| error.to_string())?;
+        let image_input = self.selection_capabilities(selection).image_input;
         Ok(Arc::new(
             HealthReportingProvider::new(
                 provider,
@@ -2408,6 +2421,7 @@ impl ProviderDirectory {
             .with_model_scoped_account_failures(
                 entry.instance.error_profile() == ErrorProfile::Fireworks,
             )
+            .with_image_input_support(image_input)
             .with_static_metadata_notice(
                 entry.instance.static_metadata_handle(),
                 entry.instance.adapter(),
@@ -2427,37 +2441,63 @@ impl ProviderDirectory {
         let Some(entry) = self.entry(&selection.provider_id) else {
             return ModelCapabilities::unknown();
         };
+        let mut resolved = ModelCapabilities::unknown();
         let metadata = entry.instance.static_metadata();
         if let Some(capabilities) = metadata
             .route_model_capabilities(entry.instance.api_root().as_str(), &selection.model_id)
         {
-            return ModelCapabilities {
-                context_window_tokens: capabilities.context_window_tokens,
-                max_output_tokens: capabilities.max_output_tokens,
-                tool_calling: capabilities.tool_calling,
-                semantic_effort: capabilities.semantic_effort,
-                version: Some(capabilities.version.clone()),
-                source: Some(capabilities.source.clone()),
-            };
+            resolved.context_window_tokens = capabilities.context_window_tokens;
+            resolved.max_output_tokens = capabilities.max_output_tokens;
+            resolved.tool_calling = capabilities.tool_calling;
+            resolved.semantic_effort = capabilities.semantic_effort;
+            resolved.image_input = capabilities.image_input;
+            resolved.version = Some(capabilities.version.clone());
+            resolved.source = Some(capabilities.source.clone());
+            if capabilities.image_input.is_some() {
+                resolved.image_input_version = Some(capabilities.version.clone());
+                resolved.image_input_source = Some(capabilities.source.clone());
+            }
+        }
+        if resolved.image_input.is_none()
+            && entry.instance.error_profile() == ErrorProfile::Fireworks
+            && let Some(supported) = entry
+                .catalog
+                .as_ref()
+                .filter(|_| !entry.catalog_fallback_explicit)
+                .and_then(|snapshot| {
+                    snapshot
+                        .models
+                        .iter()
+                        .find(|model| model.raw.id == selection.model_id)
+                })
+                .and_then(|model| model.raw.supports_image_input)
+        {
+            resolved.image_input = Some(supported);
+            resolved.image_input_version = Some(FIREWORKS_IMAGE_CAPABILITY_VERSION.into());
+            resolved.image_input_source = Some(FIREWORKS_IMAGE_CAPABILITY_SOURCE.into());
         }
         // An official vendor snapshot outranks a hand-written number, so this is reached only
         // when the static document cannot speak for this route. The declaration is marked as
         // operator provenance rather than borrowing a version/source that would read like
         // captured vendor evidence, which keeps the capability digest honest about where the
         // number came from.
-        if let Some(declared) = entry.declared_capabilities.get(&selection.model_id)
-            && declared.context_window_tokens.is_some()
-        {
-            return ModelCapabilities {
-                context_window_tokens: declared.context_window_tokens,
-                max_output_tokens: None,
-                tool_calling: None,
-                semantic_effort: None,
-                version: Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into()),
-                source: Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into()),
-            };
+        if let Some(declared) = entry.declared_capabilities.get(&selection.model_id) {
+            if resolved.context_window_tokens.is_none()
+                && let Some(window) = declared.context_window_tokens
+            {
+                resolved.context_window_tokens = Some(window);
+                resolved.version = Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into());
+                resolved.source = Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into());
+            }
+            if resolved.image_input.is_none()
+                && let Some(supported) = declared.image_input
+            {
+                resolved.image_input = Some(supported);
+                resolved.image_input_version = Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into());
+                resolved.image_input_source = Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into());
+            }
         }
-        ModelCapabilities::unknown()
+        resolved
     }
 
     /// Deterministic, content-only provenance for the route recorded in the rollout. The digest
@@ -2503,6 +2543,14 @@ impl ProviderDirectory {
                     compatibility_key(model.compatibility).as_bytes(),
                 );
                 hash_selectability(&mut catalog, &model.selectability);
+                hash_part(
+                    &mut catalog,
+                    match model.raw.supports_image_input {
+                        Some(true) => b"images:true",
+                        Some(false) => b"images:false",
+                        None => b"images:unknown",
+                    },
+                );
             }
         } else {
             hash_part(&mut catalog, b"no-snapshot");
@@ -2563,6 +2611,30 @@ impl ProviderDirectory {
                 Some(false) => b"effort:false",
                 None => b"effort:unknown",
             },
+        );
+        hash_part(
+            &mut capability,
+            match documented.image_input {
+                Some(true) => b"images:true",
+                Some(false) => b"images:false",
+                None => b"images:unknown",
+            },
+        );
+        hash_part(
+            &mut capability,
+            documented
+                .image_input_version
+                .as_deref()
+                .unwrap_or("unknown-image-version")
+                .as_bytes(),
+        );
+        hash_part(
+            &mut capability,
+            documented
+                .image_input_source
+                .as_deref()
+                .unwrap_or("unknown-image-source")
+                .as_bytes(),
         );
         hash_part(
             &mut capability,
@@ -2881,6 +2953,7 @@ fn operator_manifest_catalog(
                 id,
                 created_at: None,
                 owned_by: None,
+                supports_image_input: None,
             },
             family_id: "manual".into(),
             compatibility: Compatibility::Compatible,
@@ -3420,6 +3493,7 @@ mod tests {
                 display_name: Some(id.into()),
                 created_at: None,
                 owned_by: None,
+                supports_image_input: None,
             },
             family_id: "other".into(),
             compatibility,
@@ -3498,6 +3572,12 @@ mod tests {
         let path = test_cache_path("round-trip");
         let mut source =
             catalogued_entry("cache-test", "https://gateway.example/v1/", "gpt-4o-mini");
+        source.catalog.as_mut().unwrap().models[0]
+            .raw
+            .supports_image_input = Some(true);
+        source.catalog.as_mut().unwrap().families[0].models[0]
+            .raw
+            .supports_image_input = Some(true);
         let disabled = descriptor(
             "zzz-unknown",
             Compatibility::Unknown,
@@ -3582,6 +3662,7 @@ mod tests {
         let snapshot = loaded.lookup(&source, &scope_key).unwrap();
         assert_eq!(snapshot, source.catalog.clone().unwrap());
         assert_eq!(snapshot.models[0].raw.id, "gpt-4o-mini");
+        assert_eq!(snapshot.models[0].raw.supports_image_input, Some(true));
         assert_eq!(snapshot.models[0].selectability, Selectability::Selectable);
 
         let wrong_root = policy_entry("cache-test", "https://other.example/v1");
@@ -3620,6 +3701,7 @@ mod tests {
                 display_name: None,
                 created_at: None,
                 owned_by: None,
+                supports_image_input: None,
                 compatibility: CachedCompatibility::Compatible,
                 selectability: CachedSelectability::Selectable,
             })
@@ -4608,6 +4690,38 @@ mod tests {
         assert_eq!(catalog, before);
     }
 
+    #[test]
+    fn fireworks_model_image_evidence_reaches_runtime_provider() {
+        let mut entry = policy_entry("fireworks", "https://api.fireworks.ai/inference/v1");
+        let mut minimax = descriptor(
+            "accounts/fireworks/models/minimax-m3",
+            Compatibility::Compatible,
+            Selectability::Selectable,
+        );
+        minimax.raw.supports_image_input = Some(true);
+        entry.catalog = Some(snapshot("fireworks", vec![minimax]));
+        entry.catalog_provenance = CatalogProvenance::DynamicFresh;
+        let health = ProviderHealthStore::new(4);
+        health.mark_ready("fireworks");
+        let directory = ProviderDirectory {
+            entries: Arc::new(vec![entry]),
+            health,
+            deferred: None,
+        };
+        let selection = ModelSelection {
+            provider_id: "fireworks".into(),
+            model_id: "accounts/fireworks/models/minimax-m3".into(),
+        };
+
+        let capabilities = directory.selection_capabilities(&selection);
+        assert_eq!(capabilities.image_input, Some(true));
+        assert_eq!(
+            capabilities.image_input_source.as_deref(),
+            Some(FIREWORKS_IMAGE_CAPABILITY_SOURCE)
+        );
+        assert!(directory.build(&selection).unwrap().supports_image_input());
+    }
+
     #[tokio::test]
     async fn glm_static_schema_is_account_neutral_and_uses_documented_default() {
         let directory = ProviderDirectory::discover_entries(
@@ -4955,8 +5069,53 @@ mod tests {
             model_id.to_owned(),
             crate::config::ProviderModelCapabilities {
                 context_window_tokens: Some(window),
+                image_input: None,
             },
         )])
+    }
+
+    fn declared_images(
+        model_id: &str,
+        supported: bool,
+    ) -> BTreeMap<String, crate::config::ProviderModelCapabilities> {
+        BTreeMap::from([(
+            model_id.to_owned(),
+            crate::config::ProviderModelCapabilities {
+                context_window_tokens: None,
+                image_input: Some(supported),
+            },
+        )])
+    }
+
+    #[tokio::test]
+    async fn operator_can_declare_images_for_one_exact_custom_route_model() {
+        let config = declaring_config(
+            "gateway",
+            "https://gateway.example/v1",
+            None,
+            declared_images("k3", true),
+        );
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+        let supported = ModelSelection {
+            provider_id: "gateway".into(),
+            model_id: "k3".into(),
+        };
+        assert_eq!(
+            directory.selection_capabilities(&supported).image_input,
+            Some(true)
+        );
+        assert_eq!(
+            directory
+                .selection_capabilities(&ModelSelection {
+                    provider_id: "gateway".into(),
+                    model_id: "k3-256k".into(),
+                })
+                .image_input,
+            None
+        );
     }
 
     #[tokio::test]

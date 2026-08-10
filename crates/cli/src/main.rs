@@ -4,6 +4,7 @@
 //! wires the five collaborators, and streams events. A server frontend can follow without
 //! touching the kernel.
 
+mod app_server;
 mod block;
 mod commands;
 mod config;
@@ -2015,14 +2016,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     eprintln!("permission mode: {}", agent.permission_mode().label());
 
     if let Some(LocalCommand::Serve { listen }) = &cli.command {
-        let attached = tui::app_server::attach(agent, false, true)?;
+        let attached = app_server::attach(agent, false, true)?;
         tui::headless::serve(attached, *listen).await?;
         diagnostic_drain.flush();
         return Ok(output::EXIT_SUCCESS);
     }
 
     if !one_shot {
-        let attached = match tui::app_server::attach(agent, true, false) {
+        let attached = match app_server::attach(agent, true, false) {
             Ok(attached) => attached,
             Err(error) => {
                 eprintln!("app server: refusing to attach — {error}");
@@ -2060,16 +2061,19 @@ async fn run_cli() -> anyhow::Result<u8> {
     // A one-shot invocation is a sibling client of the same resident App Server as the TUI. It
     // deliberately leaves interactive approvals disabled, preserving the historical fail-closed
     // behavior of non-interactive runs.
-    let attached = tui::app_server::attach(agent, false, true)?;
-    let tui::app_server::Attached {
+    let attached = app_server::attach(agent, false, true)?;
+    let app_server::Attached {
         handle,
         task: server_task,
         interrupt,
         ..
     } = attached;
-    let tui::app_server::AppServerHandle {
+    let app_server::AppServerHandle {
         client,
         mut events,
+        lifecycle: _,
+        lifecycle_otel: _,
+        hook_health: _,
         control,
     } = handle;
 
@@ -2123,12 +2127,13 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
-            tui::app_server::ServerEvent::Ui(event) => event,
-            tui::app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
-            tui::app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
+            app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
+            app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
-            tui::app_server::ServerEvent::RunEnded {
+            app_server::ServerEvent::Submission { .. } => continue,
+            app_server::ServerEvent::RunEnded {
                 snapshot, summary, ..
             } => break (*summary, snapshot.ledger_summary),
             // ADR-0001 step 1: the QuickJS workflow tree is an interactive-TUI surface. It has no
@@ -2136,7 +2141,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             // would change a published schema as a side effect of a renderer change — the thing
             // ADR-0001 keeps as its own release-contract PR. The run is still announced by the
             // launch notice above it, and `core workflow list` still tracks it.
-            tui::app_server::ServerEvent::WorkflowRun(_) => continue,
+            app_server::ServerEvent::WorkflowRun(_) => continue,
         };
         if output_error.is_none()
             && let Err(error) = emitter.event(event)
@@ -2155,14 +2160,15 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
-            tui::app_server::ServerEvent::Ui(event) => event,
-            tui::app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
-            tui::app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
+            app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
+            app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
-            tui::app_server::ServerEvent::RunEnded { .. } => continue,
+            app_server::ServerEvent::Submission { .. } => continue,
+            app_server::ServerEvent::RunEnded { .. } => continue,
             // Same as the drain above: no `stream-json` record type exists for it yet.
-            tui::app_server::ServerEvent::WorkflowRun(_) => continue,
+            app_server::ServerEvent::WorkflowRun(_) => continue,
         };
         if output_error.is_none()
             && let Err(error) = emitter.event(event)
@@ -2249,7 +2255,7 @@ fn build_one_shot_submission(
 /// Returning metadata only after the bounded submission queue accepts the operation prevents a
 /// validation or backpressure refusal from leaving a plausible-looking partial machine stream.
 fn submit_one_shot(
-    client: &tui::app_server::AppServerClient,
+    client: &app_server::AppServerClient,
     task: String,
     images: image_input::ImageAttachments,
 ) -> anyhow::Result<Vec<(core_protocol::ImageMediaType, usize)>> {
@@ -2977,20 +2983,17 @@ mod tests {
 
         let (closed_sender, closed_receiver) = tokio::sync::mpsc::channel(1);
         drop(closed_receiver);
-        let closed_client = tui::app_server::AppServerClient::connect(
-            core_protocol::PROTOCOL_VERSION,
-            closed_sender,
-        )
-        .expect("matching protocol");
+        let closed_client =
+            app_server::AppServerClient::connect(core_protocol::PROTOCOL_VERSION, closed_sender)
+                .expect("matching protocol");
         assert!(
             submit_one_shot(&closed_client, "compare".into(), images.clone()).is_err(),
             "a closed SQ must not release attachment metadata"
         );
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let client =
-            tui::app_server::AppServerClient::connect(core_protocol::PROTOCOL_VERSION, sender)
-                .expect("matching protocol");
+        let client = app_server::AppServerClient::connect(core_protocol::PROTOCOL_VERSION, sender)
+            .expect("matching protocol");
         let oversized = "x".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES + 1);
         assert!(
             submit_one_shot(&client, oversized, images.clone()).is_err(),

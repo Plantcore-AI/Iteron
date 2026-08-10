@@ -150,9 +150,10 @@ mod tests {
             .expect("xtask is directly below the repository root");
         let source = read_bounded(root, OP_SOURCE, MAX_SOURCE_BYTES).unwrap();
         let shapes = tagged_enum_fields(&source, OP_SIGNATURE, "op", 1, &BTreeMap::new()).unwrap();
-        // Six original tags plus `user_input_v3`, the file-attachment tag (UX-6). Additive: it
-        // declares its own compatibility surface and fixtures, and every tag below is unchanged.
-        assert_eq!(shapes.len(), 7);
+        // Six original tags plus `user_input_v3`, the file-attachment tag (UX-6), and
+        // `force_cancel`, the escalated in-flight-turn cancellation added with protocol v3. Both
+        // additions declare their own compatibility surfaces and fixtures.
+        assert_eq!(shapes.len(), 8);
         assert_eq!(
             shapes["user_input"],
             BTreeSet::from(["op".to_owned(), "text".to_owned()])
@@ -170,6 +171,7 @@ mod tests {
                 "files".to_owned(),
             ])
         );
+        assert_eq!(shapes["force_cancel"], BTreeSet::from(["op".to_owned()]));
         assert_eq!(
             shapes["approval_response"],
             BTreeSet::from([

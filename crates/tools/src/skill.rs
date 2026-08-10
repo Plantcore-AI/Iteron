@@ -7,8 +7,31 @@
 //! taints the turn's egress via `ToolResult.trust`, ADR-007).
 
 use crate::{Registry, ToolError, boxfut, err_result};
-use core_ctx::skills::{SkillCatalog, user_skills_dir};
+use core_ctx::skills::SkillCatalog;
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use std::path::Path;
+
+fn load_skill(id: String, name: &str, root: &Path, operator_home: Option<&Path>) -> ToolResult {
+    let catalog = SkillCatalog::discover_for_operator(operator_home, root);
+    match catalog.get(name) {
+        Some(skill) => {
+            let trust = skill.trust;
+            ToolResult {
+                tool_use_id: id,
+                content: skill.framed(),
+                // A skill below the user tier taints the turn (never elevate above Workspace).
+                trust: if trust == Trust::Trusted {
+                    Trust::Workspace
+                } else {
+                    trust
+                },
+                is_error: false,
+                latency_ms: 0,
+            }
+        }
+        None => err_result(id, format!("no skill `{name}` (see the skills index)")),
+    }
+}
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
@@ -32,24 +55,8 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 if name.is_empty() {
                     return err_result(id, "use_skill needs a `name`".into());
                 }
-                let catalog = match user_skills_dir() {
-                    Some(user) => SkillCatalog::discover(&user, &root),
-                    None => SkillCatalog::discover_without_user(&root),
-                };
-                match catalog.get(&name) {
-                    Some(skill) => {
-                        let trust = skill.trust;
-                        ToolResult {
-                            tool_use_id: id,
-                            content: skill.framed(),
-                            // A skill below the user tier taints the turn (never elevate above Workspace).
-                            trust: if trust == Trust::Trusted { Trust::Workspace } else { trust },
-                            is_error: false,
-                            latency_ms: 0,
-                        }
-                    }
-                    None => err_result(id, format!("no skill `{name}` (see the skills index)")),
-                }
+                let home = core_protocol::home::operator();
+                load_skill(id, &name, &root, home.as_deref())
             })
         },
     )
@@ -65,5 +72,26 @@ mod tests {
         let r = Registry::read_only(&dir).unwrap();
         assert_eq!(r.purity_of("use_skill"), Some(Purity::Pure));
         assert_eq!(r.capability_of("use_skill"), Some(Capability::ReadOnly));
+    }
+
+    #[test]
+    fn use_skill_loads_the_same_portable_operator_root_as_the_index() {
+        let base =
+            std::env::temp_dir().join(format!("core-use-portable-skill-{}", std::process::id()));
+        let home = base.join("home");
+        let repo = base.join("repo");
+        let skill = home.join(".agents/skills/portable");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: portable\ndescription: shared helper\n---\nPortable body.\n",
+        )
+        .unwrap();
+
+        let result = load_skill("call-1".into(), "portable", &repo, Some(&home));
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("Portable body."));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

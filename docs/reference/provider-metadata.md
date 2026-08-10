@@ -25,7 +25,8 @@ suffixes after an offline editor changes the complete JSON value. The file is
 limited to 256 KiB, the official API roots cannot be changed, and omitted
 capabilities remain unknown.
 In particular, listing a model never implicitly grants tool calling, token limits,
-or semantic effort.
+semantic effort, or image input. A provider catalog field dedicated to image support is retained
+as model-level evidence; a generic model id is not.
 
 For example, after preparing and reviewing a complete replacement:
 

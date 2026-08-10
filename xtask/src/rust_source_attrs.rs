@@ -345,17 +345,24 @@ pub(super) fn reject_manual_serde_impls_and_item_macros(
                 }
             }
             syn::Item::Macro(item) => {
+                if exact_cfg_test(&item.attrs) {
+                    continue;
+                }
                 let trusted_thread_local = item.mac.path.leading_colon.is_none()
                     && item.mac.path.segments.len() == 2
                     && item.mac.path.segments[0].ident == "std"
                     && item.mac.path.segments[1].ident == "thread_local";
                 if !trusted_thread_local {
                     bail!(
-                        "managed schema source contains an item macro that could replace serde authority"
+                        "managed schema source for '{target}' contains item macro '{}' that could replace serde authority",
+                        path_to_string(&item.mac.path)
                     );
                 }
             }
             syn::Item::Mod(module) => {
+                if exact_cfg_test(&module.attrs) {
+                    continue;
+                }
                 if let Some((_, items)) = &module.content {
                     reject_manual_serde_impls_and_item_macros(items, target)?;
                 }
@@ -364,6 +371,16 @@ pub(super) fn reject_manual_serde_impls_and_item_macros(
         }
     }
     Ok(())
+}
+
+fn exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
+    let [attribute] = attributes else {
+        return false;
+    };
+    let syn::Meta::List(meta) = &attribute.meta else {
+        return false;
+    };
+    meta.path.is_ident("cfg") && meta.tokens.to_string() == "test"
 }
 
 fn type_path_last_ident(ty: &syn::Type) -> Option<&syn::Ident> {

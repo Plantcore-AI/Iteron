@@ -1,6 +1,7 @@
 mod client_conformance;
 mod conformance;
 mod docs_cli;
+mod lifecycle_coverage;
 mod model;
 mod render;
 mod rust_source;
@@ -30,6 +31,14 @@ fn main() -> Result<()> {
         [group, command] if group == "docs" && command == "check" => {
             docs_cli::check(&root)?;
             println!("CLI reference matches the argument parser");
+            return Ok(());
+        }
+        [group, command] if group == "lifecycle" && command == "check" => {
+            let report = lifecycle_coverage::check(&root)?;
+            println!(
+                "lifecycle production coverage valid: {} registered, {} active, {} reserved",
+                report.registered, report.active, report.reserved
+            );
             return Ok(());
         }
         [group, command] if group == "docs" && command == "generate" => {
@@ -73,13 +82,16 @@ fn main() -> Result<()> {
     match args.as_slice() {
         [group, command] if group == "boundaries" && command == "check" => {
             let report = validate::validate(&root, &registry)?;
+            let lifecycle = lifecycle_coverage::check(&root)?;
             render::check_generated(&root, &registry)?;
             println!(
-                "boundary contract valid: {} files, {} boundaries, {} overlays, {} packages",
+                "boundary contract valid: {} files, {} boundaries, {} overlays, {} packages; lifecycle {} active / {} reserved",
                 report.files,
                 registry.boundaries.len(),
                 registry.overlays.len(),
-                report.packages
+                report.packages,
+                lifecycle.active,
+                lifecycle.reserved,
             );
         }
         [group, command] if group == "boundaries" && command == "generate" => {
@@ -136,7 +148,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

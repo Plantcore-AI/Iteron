@@ -71,13 +71,13 @@
         },
         {
           "kind": "test",
-          "path": "crates/cli/src/tui.rs",
+          "path": "crates/cli/src/tui/tests.rs",
           "selector": "fn composer_attachment_submits_one_multimodal_sq_envelope()"
         },
         {
           "kind": "test",
           "path": "crates/cli/tests/one_shot_output.rs",
-          "selector": "fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider()"
+          "selector": "fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider()"
         },
         {
           "kind": "test",
@@ -130,7 +130,7 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/tui/app_server.rs",
+          "path": "crates/cli/src/app_server.rs",
           "selector": "fn version_skew_is_refused_up_front()"
         },
         {
@@ -148,7 +148,7 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/tui/app_server.rs",
+          "path": "crates/cli/src/app_server.rs",
           "selector": "fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events()"
         },
         {
@@ -165,7 +165,7 @@
     "transcript": "governance/client-conformance/client-parity-v5.json",
     "test": {
       "kind": "test",
-      "path": "crates/cli/src/tui.rs",
+      "path": "crates/cli/src/tui/tests.rs",
       "selector": "fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome()"
     }
   },
@@ -176,7 +176,7 @@
     "evidence": [
       {
         "kind": "test",
-        "path": "crates/cli/src/tui/app_server.rs",
+        "path": "crates/cli/src/app_server.rs",
         "selector": "fn version_skew_is_refused_up_front()"
       },
       {

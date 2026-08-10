@@ -347,7 +347,8 @@ pub struct ProviderConfig {
 /// instead of a share of the window, and the pre-flight admission check cannot run at all.
 ///
 /// This is the operator saying "I read my provider's documentation, and this is the number".
-/// It is deliberately narrow. `max_output_tokens` is not declarable because it is the reservation
+/// It is deliberately narrow. Image input is declarable because it is a binary wire capability
+/// that custom gateways do not expose through a portable discovery API. `max_output_tokens` is not declarable because it is the reservation
 /// the request actually asks the provider for, and an over-declared ceiling is rejected at the
 /// wire rather than merely mis-sizing an estimate; `tool_calling` and `semantic_effort` are not
 /// declarable because they gate a request feature rather than an arithmetic bound, and a
@@ -358,6 +359,9 @@ pub struct ProviderModelCapabilities {
     /// Total input+output window the provider documents for this model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
+    /// Whether this exact route/model accepts image content on its configured adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
 }
 
 fn default_true() -> bool {

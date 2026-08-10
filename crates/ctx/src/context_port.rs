@@ -3,7 +3,8 @@
 use crate::context_strategy::MAX_CONTEXT_OUTLINE_DEPTH;
 use crate::instructions::framed;
 use crate::memory::{
-    FileMemory, MemBudget, MemStore, MemTier, MemoryRecallStrategy, MemoryStrategy,
+    FileMemory, MemBudget, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy,
+    MemoryStrategy,
 };
 use crate::{outline, skills};
 use core_protocol::context::{
@@ -64,6 +65,18 @@ pub trait ContextPort: Send + Sync {
         _memory_strategy: &dyn StrategySlot,
     ) -> Result<ContextGrant, ContextPortError> {
         self.resolve(plan, input)
+    }
+
+    /// Resolve plus an ephemeral explanation of the pinned memory decision. Replacement ports may
+    /// decline the explanation by using this default; they may not fabricate one.
+    fn resolve_with_memory_audit(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
+    ) -> Result<(ContextGrant, Option<MemoryRecallAudit>), ContextPortError> {
+        self.resolve_with_memory_strategy(plan, input, memory_strategy)
+            .map(|grant| (grant, None))
     }
 }
 
@@ -172,12 +185,8 @@ impl ContextPort for DefaultContextPort {
         }
 
         if plan.include_skills && builder.remaining_bytes() > 0 {
-            let user = input
-                .home_dir
-                .as_deref()
-                .map(|home| home::path(home, "skills"));
-            let catalog = skills::SkillCatalog::discover_with_dependencies(
-                user.as_deref(),
+            let catalog = skills::SkillCatalog::discover_for_operator_with_dependencies(
+                input.home_dir.as_deref(),
                 &workspace,
                 &input.dependency_skill_dirs,
             );
@@ -194,6 +203,27 @@ impl ContextPort for DefaultContextPort {
             .validate_for(&plan.request)
             .map_err(|reason| ContextPortError(reason.into()))?;
         Ok(grant)
+    }
+
+    fn resolve_with_memory_audit(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
+    ) -> Result<(ContextGrant, Option<MemoryRecallAudit>), ContextPortError> {
+        let grant = self.resolve_with_memory_strategy(plan, input, memory_strategy)?;
+        if !plan.recall_memory {
+            return Ok((grant, None));
+        }
+        let workspace = explicit_workspace(input)?;
+        let stores = memory_stores(&workspace, input.home_dir.as_deref());
+        let audit = FileMemory::audit_recall_with_slot(
+            &stores,
+            &plan.task,
+            &MemBudget::default(),
+            memory_strategy,
+        );
+        Ok((grant, Some(audit)))
     }
 }
 

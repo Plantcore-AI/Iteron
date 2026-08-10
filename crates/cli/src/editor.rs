@@ -84,7 +84,7 @@ pub struct Editor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChipKind {
     Image(u32),
-    File,
+    File(u32),
     Paste(u32),
 }
 
@@ -131,12 +131,11 @@ impl Editor {
     }
 
     pub fn chips(&self) -> Vec<DraftChip<'_>> {
-        let mut files = self.files.as_slice().iter();
         self.chip_order
             .iter()
             .filter_map(|kind| match kind {
                 ChipKind::Image(id) => self.attachments.get(*id).map(DraftChip::Image),
-                ChipKind::File => files.next().map(DraftChip::File),
+                ChipKind::File(id) => self.files.get(*id).map(DraftChip::File),
                 ChipKind::Paste(id) => self.pastes.get(*id).map(DraftChip::Paste),
             })
             .collect()
@@ -247,11 +246,9 @@ impl Editor {
         workspace: &Path,
         path: &Path,
     ) -> Result<&FileAttachment, FileInputError> {
-        let attached = self.files.attach_path(workspace, path);
-        if attached.is_ok() {
-            self.chip_order.push(ChipKind::File);
-        }
-        attached
+        let id = self.files.attach_path(workspace, path)?.id();
+        self.admit_file(id);
+        Ok(self.files.get(id).expect("a file was just attached"))
     }
 
     /// Attach a complete integration-produced context document. The file-input store owns the
@@ -262,11 +259,9 @@ impl Editor {
         display_label: &str,
         text: String,
     ) -> Result<&FileAttachment, FileInputError> {
-        let attached = self.files.attach_generated(kind, display_label, text);
-        if attached.is_ok() {
-            self.chip_order.push(ChipKind::File);
-        }
-        attached
+        let id = self.files.attach_generated(kind, display_label, text)?.id();
+        self.admit_file(id);
+        Ok(self.files.get(id).expect("a context was just attached"))
     }
 
     pub fn attach_context_path(
@@ -275,11 +270,19 @@ impl Editor {
         workspace: &Path,
         path: &Path,
     ) -> Result<&FileAttachment, FileInputError> {
-        let attached = self.files.attach_typed_path(kind, workspace, path);
-        if attached.is_ok() {
-            self.chip_order.push(ChipKind::File);
+        let id = self.files.attach_typed_path(kind, workspace, path)?.id();
+        self.admit_file(id);
+        Ok(self
+            .files
+            .get(id)
+            .expect("a context file was just attached"))
+    }
+
+    fn admit_file(&mut self, id: u32) {
+        self.chip_order.push(ChipKind::File(id));
+        for character in crate::paste_input::file_anchor(id).chars() {
+            self.insert(character);
         }
-        attached
     }
 
     /// Remove one text context chip by its visible one-based index. This is deliberately separate
@@ -289,19 +292,12 @@ impl Editor {
         let Some(index) = one_based.checked_sub(1) else {
             return false;
         };
-        if self.files.remove(index).is_none() {
+        let Some(id) = self.files.as_slice().get(index).map(FileAttachment::id) else {
             return false;
-        }
-        if let Some(position) = self
-            .chip_order
-            .iter()
-            .enumerate()
-            .filter(|(_, kind)| **kind == ChipKind::File)
-            .nth(index)
-            .map(|(position, _)| position)
-        {
-            self.chip_order.remove(position);
-        }
+        };
+        self.files.remove(index);
+        self.chip_order.retain(|kind| *kind != ChipKind::File(id));
+        self.remove_tag_occurrences(crate::paste_input::TagKind::File, id);
         true
     }
 
@@ -318,7 +314,7 @@ impl Editor {
             .expect("an image was just attached under this id"))
     }
 
-    /// Remove the most recently added chip of either kind.
+    /// Remove the most recently added chip of any kind.
     ///
     /// Removing an image chip is the operator saying "this image is not part of my prompt", so its
     /// anchors go with it: an anchor for an image nobody is sending points at nothing, and leaving
@@ -339,12 +335,19 @@ impl Editor {
                 self.remove_tag_occurrences(crate::paste_input::TagKind::Image, id);
                 true
             }
-            Some(ChipKind::File) => self
-                .files
-                .len()
-                .checked_sub(1)
-                .and_then(|index| self.files.remove(index))
-                .is_some(),
+            Some(ChipKind::File(id)) => {
+                let Some(index) = self
+                    .files
+                    .as_slice()
+                    .iter()
+                    .position(|attachment| attachment.id() == id)
+                else {
+                    return false;
+                };
+                self.files.remove(index);
+                self.remove_tag_occurrences(crate::paste_input::TagKind::File, id);
+                true
+            }
             Some(ChipKind::Paste(id)) => {
                 let removed = self.pastes.remove(id);
                 self.remove_tag_occurrences(crate::paste_input::TagKind::PastedText, id);
@@ -410,6 +413,7 @@ impl Editor {
             .filter(|found| match found.kind {
                 crate::paste_input::TagKind::Image => self.attachments.holds_image(found.id),
                 crate::paste_input::TagKind::PastedText => self.pastes.get(found.id).is_some(),
+                crate::paste_input::TagKind::File => self.files.get(found.id).is_some(),
             })
             .map(|found| {
                 (
@@ -440,7 +444,7 @@ impl Editor {
     }
 
     /// Bidirectional draft invariant: a tag-backed chip exists iff at least one complete live tag
-    /// still names it. File/context chips are out-of-band and intentionally excluded.
+    /// still names it.
     fn reconcile_tagged_chips(&mut self) {
         let tags = crate::paste_input::find_tags(&self.text());
         let detached_images = self
@@ -480,6 +484,28 @@ impl Editor {
             self.pastes.remove(id);
             self.chip_order.retain(|kind| *kind != ChipKind::Paste(id));
         }
+        let detached_files = self
+            .files
+            .as_slice()
+            .iter()
+            .map(FileAttachment::id)
+            .filter(|id| {
+                !tags
+                    .iter()
+                    .any(|tag| tag.kind == crate::paste_input::TagKind::File && tag.id == *id)
+            })
+            .collect::<Vec<_>>();
+        for id in detached_files {
+            if let Some(index) = self
+                .files
+                .as_slice()
+                .iter()
+                .position(|attachment| attachment.id() == id)
+            {
+                self.files.remove(index);
+            }
+            self.chip_order.retain(|kind| *kind != ChipKind::File(id));
+        }
     }
 
     pub fn backspace(&mut self) {
@@ -492,6 +518,7 @@ impl Editor {
             self.cursor,
             &self.pastes,
             &self.attachments,
+            &self.files,
         ) {
             let _ = (id, kind); // identity is reconciled from the post-delete complete tag set.
             self.delete_range_synchronized(range.start, range.end);
@@ -800,6 +827,7 @@ impl Editor {
             joined.trim_end_matches('\\'),
             &self.pastes,
             &self.attachments,
+            &self.files,
         )
     }
 
@@ -830,7 +858,7 @@ impl Editor {
         self.pastes.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
-        // Both stores promise that an id names a moment, and both keep that promise with a counter
+        // All stores promise that an id names a moment, and keep that promise with a counter
         // that a restart destroys. The restored text is the only surviving evidence of the previous
         // process's ids, so step the counters past every id it names: without this, the first paste
         // or screenshot of a fresh process would answer a stale placeholder with unrelated content.
@@ -839,13 +867,14 @@ impl Editor {
             match found.kind {
                 crate::paste_input::TagKind::PastedText => self.pastes.reserve_id(found.id),
                 crate::paste_input::TagKind::Image => self.attachments.reserve_id(found.id),
+                crate::paste_input::TagKind::File => self.files.reserve_id(found.id),
             }
         }
     }
 
-    /// Replace composer text after a trusted external-editor round trip. Out-of-band file/context
-    /// chips remain; tag-backed image/paste chips survive only when the returned text still names
-    /// them, under the same invariant as keyboard deletion.
+    /// Replace composer text after a trusted external-editor round trip. Every tag-backed chip
+    /// survives only when the returned text still names it, under the same invariant as keyboard
+    /// deletion.
     pub fn replace_text(&mut self, text: &str) {
         self.buf.clear();
         self.cursor = 0;
@@ -1050,8 +1079,8 @@ mod tests {
         assert_eq!(editor.chip_count(), 3);
         assert_eq!(
             editor.text(),
-            "review[Image #1]",
-            "a file chip has no in-line anchor, and no chip's contents ever enter the buffer"
+            "review[File #1][Image #1][File #2]",
+            "every chip has one in-line identity tag, while no payload enters the buffer"
         );
 
         // Newest first, across both kinds: the operator removes what they last saw appear.
@@ -1065,15 +1094,16 @@ mod tests {
         assert_eq!(editor.chip_count(), 0);
         assert!(!editor.remove_last_attachment());
 
-        // A submitted draft carries nothing forward, and file text never reaches history.
+        // A submitted draft carries nothing forward. History retains only the visible identity tag,
+        // never file contents, and cannot reattach the prior payload.
         editor
             .attach_file_path(&root, Path::new("a.txt"))
             .expect("re-attach");
         assert!(editor.has_submission());
-        assert_eq!(editor.take_submit(), "review");
+        assert_eq!(editor.take_submit(), "review[File #3]");
         assert!(editor.files().is_empty());
         editor.history_prev();
-        assert_eq!(editor.text(), "review");
+        assert_eq!(editor.text(), "review[File #3]");
         assert!(editor.files().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1104,6 +1134,39 @@ mod tests {
             "image remains after both text chips"
         );
         assert_eq!(editor.chip_count(), 0);
+    }
+
+    #[test]
+    fn deleting_any_text_attachment_tag_removes_its_chip_and_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "core-editor-text-tag-delete-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test workspace");
+        std::fs::write(root.join("a.txt"), "alpha").expect("fixture");
+
+        let mut file = Editor::new();
+        file.attach_file_path(&root, Path::new("a.txt")).unwrap();
+        assert_eq!(file.text(), "[File #1]");
+        file.backspace();
+        assert!(file.text().is_empty());
+        assert!(file.files().is_empty());
+        assert_eq!(file.chip_count(), 0);
+
+        for kind in [ContextKind::Diff, ContextKind::Ide, ContextKind::Lsp] {
+            let mut editor = Editor::new();
+            editor
+                .attach_context(kind, kind.label(), format!("{kind:?} context"))
+                .unwrap();
+            assert_eq!(editor.text(), "[File #1]");
+            editor.backspace();
+            assert!(editor.text().is_empty(), "{kind:?}");
+            assert!(editor.files().is_empty(), "{kind:?}");
+            assert_eq!(editor.chip_count(), 0, "{kind:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

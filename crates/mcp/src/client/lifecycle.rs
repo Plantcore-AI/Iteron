@@ -4,7 +4,7 @@ use std::{io, process::ExitStatus, time::Duration};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-const TERMINATION_GRACE: Duration = Duration::from_millis(250);
+const TERMINATION_GRACE: Duration = Duration::from_millis(50);
 const SYNCHRONOUS_REAP_CEILING: Duration = Duration::from_secs(2);
 const REAP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 

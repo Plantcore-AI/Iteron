@@ -10,14 +10,28 @@ use async_trait::async_trait;
 use core_protocol::{Effort, Message};
 use core_provider::{Provider, StreamItem, TurnRequest};
 use core_workflow::events::{
-    PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, TOOL_SUMMARY_MAX,
-    WorkflowState, fmt_count, fmt_duration, truncate_preview,
+    PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, WorkflowState, fmt_count,
+    fmt_duration, truncate_preview,
 };
 use core_workflow::{
     AgentCall, AgentOutcome, AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde::{Deserialize, Serialize};
+
+mod live;
+mod projection;
+
+#[cfg(test)]
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+#[cfg(test)]
+use live::{
+    LiveAction, LiveOutcome, live_key_action, live_lines, live_loop, new_run_card, plain_lines,
+};
+pub use live::{run_live, watch_live};
+use projection::UI_LABEL_MAX;
+pub use projection::{
+    KernelActivityKind, WorkflowRunTerminal, WorkflowRunUiEvent, ui_safe_label, ui_safe_progress,
+};
 
 /// The system prompt every workflow sub-agent runs under. Kept terse: a workflow `agent()` call is a
 /// bounded, single-shot query, not a full coding session.
@@ -370,27 +384,6 @@ impl ProgressSink for PartialWorkSink {
     }
 }
 
-/// A [`ProgressSink`] that folds every engine event into a shared live [`crate::block::WorkflowRunCard`]
-/// — the TTY counterpart of [`StdoutProgressSink`]. Reading the card each frame + this upsert IS the
-/// design §3.2 store step; the live loop below drives the render.
-pub struct CardProgressSink {
-    card: Arc<std::sync::Mutex<crate::block::WorkflowRunCard>>,
-}
-
-impl CardProgressSink {
-    pub fn new(card: Arc<std::sync::Mutex<crate::block::WorkflowRunCard>>) -> Self {
-        CardProgressSink { card }
-    }
-}
-
-impl ProgressSink for CardProgressSink {
-    fn emit(&self, event: ProgressEvent) {
-        if let Ok(mut card) = self.card.lock() {
-            card.ingest(ui_safe_progress(event));
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // The interactive-TUI progress seam (ADR-0001 step 1,
 // docs/project/decisions/0001-workflow-renderer-convergence.md).
@@ -437,161 +430,8 @@ impl ProgressSink for CardProgressSink {
 //     `SkippedBudget`/`NotStarted` would each be an invented cause).
 // ---------------------------------------------------------------------------------------------
 
-/// The bound applied to a one-line display string (a `phase()` title, an `agent()` label, a model
-/// id) on its way into retained transcript state. Long enough that no realistic label is cut,
-/// short enough that a script cannot push a row off the screen.
-const UI_LABEL_MAX: usize = 120;
-
-/// One lifecycle message for a QuickJS workflow run, addressed to a frontend that can render the
-/// live phase→agent tree ([`crate::block::WorkflowRunCard`]).
-///
-/// This is an in-process seam, not a published contract: it deliberately carries the engine's own
-/// unfrozen [`ProgressEvent`] rather than a mirrored wire vocabulary, for the reasons above.
-#[derive(Debug, Clone)]
-pub enum WorkflowRunUiEvent {
-    /// Bounded progress from an internal kernel model turn. This shares the TUI-only channel with
-    /// workflow engine progress so the published `UiEvent`/machine-stream schema stays frozen.
-    KernelActivity {
-        kind: KernelActivityKind,
-        output_chars: usize,
-        thinking_chars: usize,
-    },
-    /// A run is about to start. `phases` are the script's DECLARED `meta.phases`, so the frontend
-    /// lays every phase box out on the first frame instead of growing the tree as execution
-    /// reaches them — the same seeding [`new_run_card`] does for the one-shot surface.
-    Started {
-        run_id: String,
-        name: String,
-        phases: Vec<String>,
-    },
-    /// One engine milestone, already presentation-safe.
-    Progress {
-        run_id: String,
-        event: ProgressEvent,
-    },
-    /// The engine future for this run resolved. `ingest` alone never marks a card finished, so
-    /// without this the tree would spin forever.
-    Finished { run_id: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KernelActivityKind {
-    #[allow(dead_code)]
-    Planning,
-    Compaction,
-}
-
-impl KernelActivityKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Planning => "planning",
-            Self::Compaction => "compacting",
-        }
-    }
-}
-
-/// Apply the frontend's display gate to one untrusted line: secret-shaped substrings redacted and
-/// terminal control characters escaped ([`crate::tui::ui_safe_text`]), then whitespace collapsed
-/// and the result re-bounded — escaping can only GROW a string (`\u{1b}` becomes six characters),
-/// so the bound has to be re-applied after it, exactly as `block::safe_result_preview` does.
-fn safe_line(text: &str, max: usize) -> String {
-    truncate_preview(&crate::tui::ui_safe_text(text), max)
-}
-
-/// The same gate for an optional field. A line that sanitizes away to nothing becomes `None`, so
-/// the card renders no row rather than an empty stub.
-fn safe_line_opt(text: Option<String>, max: usize) -> Option<String> {
-    let safe = safe_line(text?.as_str(), max);
-    (!safe.is_empty()).then_some(safe)
-}
-
-/// The display gate for a one-line label that reaches the frontend OUTSIDE a [`ProgressEvent`] —
-/// the workflow name and the declared phase titles on [`WorkflowRunUiEvent::Started`]. Both are
-/// read straight out of the script's `export const meta`, so they are as untrusted as anything
-/// `ui_safe_progress` handles and get the identical treatment.
-pub fn ui_safe_label(text: &str) -> String {
-    safe_line(text, UI_LABEL_MAX)
-}
-
-/// Project one engine [`ProgressEvent`] onto the form the interactive TUI may retain.
-///
-/// Every string here is authored by an untrusted party — the workflow script (`phase()` titles,
-/// `log()` messages, `agent()` labels) or a child model (`result_preview`, `last_tool_summary`,
-/// refusal `error`s) — and the interactive transcript is retained state, so all of them pass the
-/// display gate. The one-shot `core workflow run` surface draws into an alternate screen that is
-/// discarded, which is why it never needed this.
-///
-/// Pure, and the match is exhaustive with no wildcard arm: **a new `ProgressEvent` variant does not
-/// compile until it is given a projection here.** That is the property that stops a variant from
-/// being silently swallowed by the seam.
-pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
-    match event {
-        ProgressEvent::Phase { index, title } => ProgressEvent::Phase {
-            index,
-            title: safe_line(&title, UI_LABEL_MAX),
-        },
-        ProgressEvent::Log { message } => ProgressEvent::Log {
-            message: safe_line(&message, PREVIEW_MAX),
-        },
-        ProgressEvent::AgentQueued {
-            index,
-            label,
-            phase,
-            model,
-        } => ProgressEvent::AgentQueued {
-            index,
-            label: safe_line(&label, UI_LABEL_MAX),
-            phase: safe_line_opt(phase, UI_LABEL_MAX),
-            model: safe_line_opt(model, UI_LABEL_MAX),
-        },
-        ProgressEvent::AgentStarted {
-            index,
-            label,
-            phase,
-            model,
-        } => ProgressEvent::AgentStarted {
-            index,
-            label: safe_line(&label, UI_LABEL_MAX),
-            phase: safe_line_opt(phase, UI_LABEL_MAX),
-            model: safe_line_opt(model, UI_LABEL_MAX),
-        },
-        ProgressEvent::AgentActivity {
-            index,
-            tokens,
-            tool_calls,
-            last_tool_summary,
-        } => ProgressEvent::AgentActivity {
-            index,
-            tokens,
-            tool_calls,
-            last_tool_summary: safe_line_opt(last_tool_summary, TOOL_SUMMARY_MAX),
-        },
-        ProgressEvent::AgentFinished {
-            index,
-            label,
-            state,
-            tokens,
-            tool_calls,
-            duration_ms,
-            result_preview,
-            last_tool_summary,
-            error,
-        } => ProgressEvent::AgentFinished {
-            index,
-            label: safe_line(&label, UI_LABEL_MAX),
-            state,
-            tokens,
-            tool_calls,
-            duration_ms,
-            result_preview: safe_line_opt(result_preview, PREVIEW_MAX),
-            last_tool_summary: safe_line_opt(last_tool_summary, TOOL_SUMMARY_MAX),
-            error: safe_line_opt(error, PREVIEW_MAX),
-        },
-    }
-}
-
 /// A [`ProgressSink`] that forwards every engine event to a frontend channel as a
-/// [`WorkflowRunUiEvent`] — the interactive-TUI counterpart of [`CardProgressSink`], which owns its
+/// [`WorkflowRunUiEvent`] — the interactive-TUI counterpart of [`live::CardProgressSink`], which owns its
 /// card directly because it also owns the terminal.
 ///
 /// The channel is unbounded on purpose: `emit` is called from the engine's single JS-driver thread
@@ -974,6 +814,7 @@ pub fn unreported_run(run_id: &str, message: &str) -> RunReport {
 /// makes a run settling while the operator is idle still reach the screen.
 pub struct RunSettled {
     pub run_id: String,
+    pub terminal: WorkflowRunTerminal,
     /// The operator-facing line. Names the run, its terminal state, and how to read the result.
     pub notice: String,
     /// Bounded model-facing task notification. The session owner either steers this into a live
@@ -1347,7 +1188,7 @@ impl WorkflowSupervisor {
         };
 
         // Render first, WITHOUT the lock: both summaries are pure and the report can be large.
-        let (report, state, notice, status, model_summary) = match outcome {
+        let (report, state, notice, status, model_summary, terminal) = match outcome {
             Ok(report) => {
                 // `stopped` is set for exactly the cancellation token this owner trips, so it is
                 // the kill signal. A run that returned on its own a moment before the cancel landed
@@ -1363,7 +1204,7 @@ impl WorkflowSupervisor {
                 } else {
                     run_result_summary(name, run_id, &report, &degraded.reasons())
                 };
-                let terminal = if report.stopped {
+                let terminal_text = if report.stopped {
                     "was killed and kept the results it had already produced"
                 } else {
                     "finished in the background"
@@ -1373,17 +1214,23 @@ impl WorkflowSupervisor {
                 } else {
                     "completed"
                 };
+                let terminal = if report.stopped {
+                    WorkflowRunTerminal::Cancelled
+                } else {
+                    WorkflowRunTerminal::Completed
+                };
                 (
                     report,
                     SupervisedState::Settled {
                         summary: Some(summary.clone()),
                     },
                     format!(
-                        "Dynamic workflow `{name}` (run {run_id}) {terminal}; `/workflows` shows its \
+                        "Dynamic workflow `{name}` (run {run_id}) {terminal_text}; `/workflows` shows its \
                          result and controls"
                     ),
                     status,
                     summary,
+                    terminal,
                 )
             }
             Err(error) => {
@@ -1396,6 +1243,7 @@ impl WorkflowSupervisor {
                     format!("Workflow `{name}` (run {run_id}) failed in the background: {message}"),
                     "failed",
                     message,
+                    WorkflowRunTerminal::Failed,
                 )
             }
         };
@@ -1447,6 +1295,7 @@ impl WorkflowSupervisor {
 
         let _ = self.settled.send(RunSettled {
             run_id: run_id.to_string(),
+            terminal,
             notice,
             notification,
         });
@@ -1676,335 +1525,6 @@ impl WorkflowLauncher for WorkflowSupervisor {
             },
         }
     }
-}
-
-/// Restores the terminal (leaves raw mode + the alternate screen, shows the cursor) on drop, so an
-/// early `?` or a Ctrl-C never leaves the terminal wedged — the #1 TUI failure mode.
-struct LiveTermGuard;
-
-impl LiveTermGuard {
-    fn enter() -> anyhow::Result<Self> {
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::cursor::Hide
-        )?;
-        Ok(LiveTermGuard)
-    }
-}
-
-impl Drop for LiveTermGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::Show,
-            crossterm::terminal::LeaveAlternateScreen
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
-/// Flatten rendered lines to plain text (styling dropped) so the settled tree can be echoed into the
-/// normal terminal scrollback after the alternate screen is left.
-fn plain_lines(lines: &[ratatui::text::Line<'static>]) -> String {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Spinner cadence, and therefore also the worst-case latency between a Ctrl-C press and the run
-/// being told to stop: the loop drains buffered key events once per frame.
-const LIVE_TICK: std::time::Duration = std::time::Duration::from_millis(80);
-
-/// What one key press means to the live workflow surface.
-///
-/// [`LiveTermGuard::enter`] turns raw mode ON, which clears `ISIG`: the terminal stops translating
-/// Ctrl-C into `SIGINT`, so no signal handler — and in particular not `tokio::signal::ctrl_c` — can
-/// ever fire while this tree is on screen. Ctrl-C arrives as an ordinary key event, and this is the
-/// only place that decides what it means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LiveAction {
-    /// Not a control key for this surface — keep rendering.
-    Ignore,
-    /// First Ctrl-C: cancel the run, then keep rendering until it actually settles.
-    Cancel,
-    /// Ctrl-C again while the run is still settling: stop waiting on it.
-    ForceExit,
-}
-
-/// The key → action decision, kept pure so the interrupt contract is testable with no terminal.
-fn live_key_action(key: KeyEvent, cancel_requested: bool) -> LiveAction {
-    // Windows (and any terminal with keyboard enhancement pushed) also reports releases; only a
-    // press or an auto-repeat is an operator intent.
-    if matches!(key.kind, KeyEventKind::Release) {
-        return LiveAction::Ignore;
-    }
-    let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
-    if !ctrl_c {
-        return LiveAction::Ignore;
-    }
-    if cancel_requested {
-        LiveAction::ForceExit
-    } else {
-        LiveAction::Cancel
-    }
-}
-
-/// How the live loop ended.
-enum LiveOutcome {
-    /// The run settled — on its own, or as `stopped` after a cancel. `cancelled` records whether
-    /// Ctrl-C was taken, because the operator deserves to be told why the tree stopped moving;
-    /// `spin` is the spinner phase the last live frame used, so the settled frame continues it.
-    Settled {
-        report: RunReport,
-        cancelled: bool,
-        spin: usize,
-    },
-    /// A second Ctrl-C arrived while the run was still settling: stop waiting on it.
-    Forced,
-}
-
-/// The live loop's control flow, with the terminal factored out behind `draw`/`next_key`/`cancel` so
-/// the interrupt path can be driven headlessly in tests. Draws a frame, drains whatever keys are
-/// already buffered, then waits for either the run to settle or the next spinner tick.
-async fn live_loop<F, D, K, C>(
-    future: F,
-    mut draw: D,
-    mut next_key: K,
-    cancel: C,
-    tick: std::time::Duration,
-) -> anyhow::Result<LiveOutcome>
-where
-    F: std::future::Future<Output = anyhow::Result<RunReport>>,
-    D: FnMut(bool, usize) -> anyhow::Result<()>,
-    K: FnMut() -> Option<KeyEvent>,
-    C: Fn(),
-{
-    let mut spin: usize = 0;
-    let mut cancelled = false;
-
-    tokio::pin!(future);
-    let mut ticker = tokio::time::interval(tick);
-
-    loop {
-        // Keys are drained BEFORE the frame is drawn, so the frame the operator is looking at
-        // already reflects the Ctrl-C they just pressed instead of acknowledging it a tick later —
-        // or never, if the run settles immediately after being cancelled.
-        while let Some(key) = next_key() {
-            match live_key_action(key, cancelled) {
-                LiveAction::Ignore => {}
-                LiveAction::Cancel => {
-                    cancelled = true;
-                    // Idempotent and immediate: it trips the run's token, it does not block.
-                    cancel();
-                }
-                LiveAction::ForceExit => return Ok(LiveOutcome::Forced),
-            }
-        }
-        draw(cancelled, spin)?;
-        tokio::select! {
-            result = &mut future => {
-                return Ok(LiveOutcome::Settled { report: result?, cancelled, spin });
-            }
-            _ = ticker.tick() => spin = spin.wrapping_add(1),
-        }
-    }
-}
-
-/// The banner the cancel path adds to the frame. A cancelled run whose tree simply stopped moving is
-/// indistinguishable from a hung one, so the frame has to SAY it.
-fn cancel_banner(settled: bool) -> &'static str {
-    if settled {
-        "run cancelled (Ctrl-C)"
-    } else {
-        "cancelling (Ctrl-C) \u{b7} press Ctrl-C again to stop waiting"
-    }
-}
-
-/// One frame body: the run tree, plus the cancellation banner once Ctrl-C has been taken.
-fn live_lines(
-    card: &crate::block::WorkflowRunCard,
-    width: u16,
-    theme: &crate::theme::Theme,
-    spin: usize,
-    cancelled: bool,
-) -> Vec<ratatui::text::Line<'static>> {
-    let mut lines = crate::block::render_workflow_run(card, width, theme, spin);
-    if cancelled {
-        lines.push(ratatui::text::Line::default());
-        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-            cancel_banner(card.finished).to_string(),
-            ratatui::style::Style::default().fg(theme.error),
-        )));
-    }
-    lines
-}
-
-/// The real key source: drain what crossterm has already buffered, never blocking the frame loop.
-/// An unreadable stdin yields `None` rather than an error — losing input must not abandon a run that
-/// is still executing on its own thread.
-fn next_terminal_key() -> Option<KeyEvent> {
-    while crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-        match crossterm::event::read() {
-            Ok(crossterm::event::Event::Key(key)) => return Some(key),
-            // Resize/mouse/paste: consumed, not actionable here. Keep draining.
-            Ok(_) => continue,
-            Err(_) => return None,
-        }
-    }
-    None
-}
-
-/// Render the QuickJS-workflow phase→agent tree LIVE (design §3.3) while the run behind `handle`
-/// drives `card` through [`CardProgressSink`], advancing the braille spinner every 80ms, then leave
-/// the alternate screen and echo the settled tree into scrollback.
-///
-/// The handle — not a bare future — is what makes the surface interruptible: Ctrl-C calls
-/// [`RunHandle::cancel`], which aborts in-flight children and interrupts a sync JS loop, and the loop
-/// keeps rendering until the run actually settles as `stopped`.
-async fn render_live(
-    card: Arc<std::sync::Mutex<crate::block::WorkflowRunCard>>,
-    handle: RunHandle,
-    theme: &crate::theme::Theme,
-) -> anyhow::Result<RunReport> {
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
-    use ratatui::widgets::Paragraph;
-
-    // `join` takes `&self`, so the joining future and the Ctrl-C handler share one handle.
-    let handle = Arc::new(handle);
-    let joiner = handle.clone();
-    let future = async move { joiner.join().await };
-
-    let mut guard = Some(LiveTermGuard::enter()?);
-    let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-
-    let outcome = {
-        let card = card.clone();
-        let draw = |cancelled: bool, spin: usize| -> anyhow::Result<()> {
-            term.draw(|frame| {
-                let area = frame.area();
-                let snapshot = card.lock().unwrap();
-                let lines = live_lines(&snapshot, area.width, theme, spin, cancelled);
-                drop(snapshot);
-                frame.render_widget(Paragraph::new(lines), area);
-            })?;
-            Ok(())
-        };
-        live_loop(
-            future,
-            draw,
-            next_terminal_key,
-            || handle.cancel(),
-            LIVE_TICK,
-        )
-        .await?
-    };
-
-    let (report, cancelled, spin) = match outcome {
-        LiveOutcome::Settled {
-            report,
-            cancelled,
-            spin,
-        } => (report, cancelled, spin),
-        LiveOutcome::Forced => {
-            // `process::exit` runs no destructors, so the guard would never restore the terminal.
-            // Restore it explicitly FIRST, then leave; the run was already told to cancel.
-            drop(guard.take());
-            eprintln!("workflow run interrupted; cancellation requested and not awaited");
-            std::process::exit(i32::from(crate::output::EXIT_INTERRUPTED));
-        }
-    };
-
-    // The engine reports `stopped` for exactly the token this loop trips, so either signal is proof.
-    let cancelled = cancelled || report.stopped;
-    if let Ok(mut card) = card.lock() {
-        card.finished = true;
-    }
-    let mut final_plain = String::new();
-    term.draw(|frame| {
-        let area = frame.area();
-        let snapshot = card.lock().unwrap();
-        let lines = live_lines(&snapshot, area.width, theme, spin, cancelled);
-        final_plain = plain_lines(&lines);
-        frame.render_widget(Paragraph::new(lines), area);
-    })?;
-    drop(guard.take());
-
-    // Terminal restored — echo the settled tree into normal scrollback so it survives the run.
-    if !final_plain.trim().is_empty() {
-        println!("{final_plain}");
-    }
-    Ok(report)
-}
-
-/// Launch a run in the BACKGROUND (via [`WorkflowEngine::launch`] → [`RunHandle`], review B3) and
-/// attach the live tree to it: the run drives its own OS thread + runtime while this foreground loop
-/// renders the shared card, reads keys, and `join`s the handle.
-async fn launch_live(
-    spec: RunSpec,
-    spawner: Arc<dyn AgentSpawner>,
-    name: &str,
-    phases: &[String],
-    theme: &crate::theme::Theme,
-) -> anyhow::Result<RunReport> {
-    let card = Arc::new(std::sync::Mutex::new(new_run_card(
-        spec.run_id.as_str(),
-        name,
-        phases,
-    )));
-    let sink: Arc<dyn ProgressSink> = Arc::new(CardProgressSink::new(card.clone()));
-    let handle = WorkflowEngine::launch(spec, spawner, sink);
-    render_live(card, handle, theme).await
-}
-
-/// Run one fully-specified [`RunSpec`], rendering the live tree (design §3.3). `core workflow run`
-/// (TTY) and `core workflow resume` (TTY) both call it. Non-TTY uses [`StdoutProgressSink`].
-///
-/// This used to await `WorkflowEngine::execute` directly — a bare future with no cancellation
-/// handle — which is why Ctrl-C could not stop a run: raw mode had already suppressed `SIGINT`, and
-/// nothing on this path could act on the key event that replaced it. It now goes through
-/// [`WorkflowEngine::launch`] for the same reason [`watch_live`] always did: a [`RunHandle`] can be
-/// cancelled.
-pub async fn run_live(
-    spec: RunSpec,
-    spawner: Arc<dyn AgentSpawner>,
-    name: &str,
-    phases: &[String],
-    theme: &crate::theme::Theme,
-) -> anyhow::Result<RunReport> {
-    launch_live(spec, spawner, name, phases, theme).await
-}
-
-/// One live card seeded with the script's DECLARED `meta.phases`, so every phase box is laid out on
-/// the first frame instead of appearing only once execution reaches it.
-fn new_run_card(run_id: &str, name: &str, phases: &[String]) -> crate::block::WorkflowRunCard {
-    let mut card = crate::block::WorkflowRunCard::new(run_id, name);
-    card.declare_phases(phases.iter().cloned());
-    card
-}
-
-/// The `RunHandle` counterpart of [`run_live`] for `core workflow watch <runId>`, which re-launches a
-/// prior run. Same loop, same interrupt contract. Non-TTY uses [`StdoutProgressSink`].
-pub async fn watch_live(
-    spec: RunSpec,
-    spawner: Arc<dyn AgentSpawner>,
-    name: &str,
-    phases: &[String],
-    theme: &crate::theme::Theme,
-) -> anyhow::Result<RunReport> {
-    launch_live(spec, spawner, name, phases, theme).await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2879,7 +2399,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     /// One of every variant, each carrying a hostile string in every string-shaped field: a screen-
     /// clearing control sequence and a credential-shaped token.
     ///
-    /// The credential is delimited from what precedes it because `crate::tui::ui_safe_text` defers
+    /// The credential is delimited from what precedes it because `crate::semantic_text::ui_safe_text` defers
     /// to `core_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
     /// that the seam ROUTES untrusted strings through the frontend's one gate — not a second,
     /// private redaction implementation, which is exactly the drift that would let the two

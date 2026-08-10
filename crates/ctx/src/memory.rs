@@ -1082,6 +1082,21 @@ pub struct MemoryRecallProposal {
     pub eligible: CapabilitySet,
 }
 
+/// Ephemeral, bounded explanation of one lexical recall decision. Candidate text exists only long
+/// enough for the caller to hash it into content-free evidence; it is never an exporter payload.
+#[derive(Debug, Clone)]
+pub struct MemoryRecallAudit {
+    pub observation: MemorySlotObservation,
+    pub selected: Vec<String>,
+    /// Baseline BM25 score in deterministic parts-per-million, aligned with `candidates`.
+    pub scores_ppm: Vec<i64>,
+    /// One-based relevance rank; zero means the candidate was below the lexical threshold or the
+    /// trust floor, aligned with `candidates`.
+    pub ranks: Vec<u32>,
+    /// Same-slug candidates removed while higher-precedence stores override lower tiers.
+    pub deduplicated_candidates: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryWriteProposal {
     pub text: String,
@@ -1412,6 +1427,99 @@ impl FileMemory {
         }
         by_slug.sort_by(|a, b| a.0.cmp(&b.0));
         by_slug.into_iter().map(|(_, m)| m).collect()
+    }
+
+    /// Re-run only the bounded pure recall projection for observability. Materialization remains
+    /// authoritative in `recall_with_slot`; this method cannot widen or alter its decision.
+    pub fn audit_recall_with_slot(
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+    ) -> MemoryRecallAudit {
+        let discovered_candidates = stores
+            .iter()
+            .filter(|store| !store.is_stripped())
+            .fold(0usize, |count, store| {
+                count.saturating_add(store.index_entries().len())
+            });
+        let merged = FileMemory::merge(stores);
+        let deduplicated_candidates =
+            u32::try_from(discovered_candidates.saturating_sub(merged.len())).unwrap_or(u32::MAX);
+        let candidates: Vec<MemoryCandidate> = merged
+            .iter()
+            .filter_map(|merged| {
+                let body = merged.body.clone()?;
+                let fact = Fact {
+                    slug: merged.fact_ref.slug.clone(),
+                    title: merged.fact_ref.title.clone(),
+                    bytes: body.len(),
+                    body,
+                    trust: merged.trust,
+                };
+                Some(MemoryCandidate {
+                    slug: fact.slug.clone(),
+                    text: format!(
+                        "{} {} {}",
+                        merged.fact_ref.title, merged.fact_ref.summary, fact.body
+                    ),
+                    framed_bytes: fact.framed().len(),
+                    trust: fact.trust,
+                })
+            })
+            .collect();
+        let observation = MemorySlotObservation::baseline(task, candidates, budget);
+        let selected = MemoryRecallStrategy::select_with(
+            slot,
+            &observation,
+            CapabilitySet::only(Capability::ReadOnly),
+        )
+        .map(|proposal| proposal.plan.recalled)
+        .unwrap_or_default();
+        let query = tokenize(&observation.task);
+        let docs: Vec<Vec<String>> = observation
+            .candidates
+            .iter()
+            .map(|candidate| tokenize(&candidate.text))
+            .collect();
+        let doc_refs: Vec<&[String]> = docs.iter().map(Vec::as_slice).collect();
+        let raw_scores = bm25(&query, &doc_refs);
+        let scores_ppm = raw_scores
+            .iter()
+            .zip(&observation.candidates)
+            .map(|(score, candidate)| {
+                if candidate.trust < observation.trust_floor || !score.is_finite() {
+                    0
+                } else {
+                    let scaled = (*score * 1_000_000.0).round();
+                    scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut ranked = scores_ppm
+            .iter()
+            .enumerate()
+            .filter(|(_, score)| **score > 0)
+            .map(|(index, score)| (index, *score))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right.1.cmp(&left.1).then_with(|| {
+                observation.candidates[left.0]
+                    .slug
+                    .cmp(&observation.candidates[right.0].slug)
+            })
+        });
+        let mut ranks = vec![0; observation.candidates.len()];
+        for (rank, (index, _)) in ranked.into_iter().enumerate() {
+            ranks[index] = u32::try_from(rank.saturating_add(1)).unwrap_or(u32::MAX);
+        }
+        MemoryRecallAudit {
+            observation,
+            selected,
+            scores_ppm,
+            ranks,
+            deduplicated_candidates,
+        }
     }
 }
 

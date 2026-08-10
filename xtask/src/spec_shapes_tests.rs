@@ -1,5 +1,9 @@
 use super::*;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
 struct Fixture(std::path::PathBuf);
 
 impl Drop for Fixture {
@@ -14,12 +18,13 @@ impl Drop for Fixture {
 /// wants to prove a *shape* failure is not accidentally proving the floor instead.
 fn fixture(spec: &str, protocol: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!(
-        "core-spec-shapes-{}-{}",
+        "core-spec-shapes-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed),
     ));
     std::fs::create_dir_all(root.join(SPEC_DIR)).unwrap();
     std::fs::create_dir_all(root.join(PROTOCOL_DIR)).unwrap();
