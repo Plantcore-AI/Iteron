@@ -1061,7 +1061,7 @@ struct App {
     /// Fullscreen workflow inspection/control state. The run tree itself stays in transcript
     /// cards; this owns only selection, action feedback and the latest supervisor inventory.
     workflows_panel: workflows_panel::View,
-    /// `<runtime_state_dir>/subagents/workflows` — the directory `core workflow list` enumerates,
+    /// `<runtime_state_dir>/subagents/workflows` — the directory `iteron workflow list` enumerates,
     /// derived the same way the kernel derives it (the rollout file's parent). It is what lets the
     /// monitor rebuild prior runs after a restart; `None` for a session with no rollout parent,
     /// which simply restores nothing.

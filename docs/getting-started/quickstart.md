@@ -11,7 +11,7 @@ From the Iteron source tree:
 cargo build --release --locked -p iteron-cli
 ```
 
-The examples below use `/path/to/core/target/release/core`. Replace it with `core`
+The examples below use `/path/to/core/target/release/core`. Replace it with `iteron`
 if you installed the binary on `PATH`.
 
 ## 2. Provide a credential to the process

@@ -302,7 +302,7 @@ fn validate_member(
     };
     if let Some((domain, canonical)) = scalar_member {
         let schema = ValueSchema {
-            schema_id: "core://tunables/internal/constraint-member-v1",
+            schema_id: "iteron://tunables/internal/constraint-member-v1",
             kind: ValueKind::String,
             domain: StructuredValueDomain::Scalar { domain },
             rules: &[],

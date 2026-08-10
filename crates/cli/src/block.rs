@@ -3548,7 +3548,7 @@ mod tests {
     // destructure it as `result_preview: _`, so a finished run reported tokens, tools and a
     // duration but never one word of what any agent came back with.
 
-    /// One phase holding one finished agent — the shape `core workflow run` actually renders, where
+    /// One phase holding one finished agent — the shape `iteron workflow run` actually renders, where
     /// `phase_box` fits every row to the box's inner width.
     fn preview_card(preview: Option<&str>) -> WorkflowRunCard {
         let mut c = WorkflowRunCard::new("wf_preview", "audit");
@@ -3585,7 +3585,7 @@ mod tests {
         ));
         assert!(
             !c.verbose,
-            "this is the DEFAULT view — the one `core workflow run` echoes into scrollback"
+            "this is the DEFAULT view — the one `iteron workflow run` echoes into scrollback"
         );
         assert_eq!(
             c.agents[0].result_preview.as_deref(),

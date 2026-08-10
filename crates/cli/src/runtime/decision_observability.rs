@@ -645,7 +645,7 @@ impl Agent {
         let mut ledger = ContextLedger::new(
             turn,
             TokenizerIdentity {
-                catalog_id: "core.byte-heuristic".into(),
+                catalog_id: "iteron.byte-heuristic".into(),
                 version: 1,
                 exact: false,
             },
@@ -793,7 +793,7 @@ impl Agent {
         }
         ledger.record_transform(ContextTransformEvidence {
             kind: ContextTransformKind::Serialize,
-            policy_id: "iteron/context@1".into(),
+            policy_id: "core/context@1".into(),
             input_segments: u32::try_from(ledger.segments.len()).unwrap_or(u32::MAX),
             output_segments: u32::try_from(ledger.segments.len()).unwrap_or(u32::MAX),
             input_bytes: ledger.totals.bytes,

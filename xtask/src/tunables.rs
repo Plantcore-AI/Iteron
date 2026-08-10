@@ -468,15 +468,15 @@ fn optimization_name(value: OptimizationClass) -> &'static str {
 
 fn slot_name(value: CoreStrategySlot) -> &'static str {
     match value {
-        CoreStrategySlot::Router => "iteron/router",
-        CoreStrategySlot::Planner => "iteron/planner",
-        CoreStrategySlot::Context => "iteron/context",
-        CoreStrategySlot::Memory => "iteron/memory",
-        CoreStrategySlot::Scheduler => "iteron/scheduler",
-        CoreStrategySlot::ToolPolicy => "iteron/tool_policy",
-        CoreStrategySlot::Verifier => "iteron/verifier",
-        CoreStrategySlot::ModelRouter => "iteron/model_router",
-        CoreStrategySlot::Collaboration => "iteron/collaboration",
+        CoreStrategySlot::Router => "core/router",
+        CoreStrategySlot::Planner => "core/planner",
+        CoreStrategySlot::Context => "core/context",
+        CoreStrategySlot::Memory => "core/memory",
+        CoreStrategySlot::Scheduler => "core/scheduler",
+        CoreStrategySlot::ToolPolicy => "core/tool_policy",
+        CoreStrategySlot::Verifier => "core/verifier",
+        CoreStrategySlot::ModelRouter => "core/model_router",
+        CoreStrategySlot::Collaboration => "core/collaboration",
     }
 }
 

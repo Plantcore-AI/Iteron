@@ -1,7 +1,7 @@
 //! The public onboarding surfaces, exercised through the real binary.
 //!
 //! Every behaviour here is process-global (the config root, the environment, a file lock), so it
-//! is pinned by spawning `core` rather than by mutating this test process. That also makes the
+//! is pinned by spawning `iteron` rather than by mutating this test process. That also makes the
 //! assertions exactly what an operator sees.
 
 use std::io::Read;
@@ -54,7 +54,7 @@ impl Drop for Scratch {
     }
 }
 
-/// Run `core` with NO ambient HOME, so only `ITERON_CONFIG_HOME` can select a config root.
+/// Run `iteron` with NO ambient HOME, so only `ITERON_CONFIG_HOME` can select a config root.
 fn run(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
     run_with(home, repo, arguments, &[])
 }
@@ -110,7 +110,7 @@ fn run_with(
 }
 
 /// I-25 — both non-test readers of the user config path were reads and the only writes lived in
-/// test code, so there was no supported way to persist a choice at all. `core config set` is the
+/// test code, so there was no supported way to persist a choice at all. `iteron config set` is the
 /// one writer, and the value it writes is visible to the next launch.
 #[test]
 fn i25_config_set_persists_and_the_next_launch_sees_it() {

@@ -26,6 +26,17 @@ pub enum TunablesCompatibility {
     LegacyUnpinned,
 }
 
+/// The registry identity written before the product was renamed to Iteron.
+///
+/// Records are immutable, so a run recorded by an older build legitimately carries the old
+/// identity. Decoding accepts it; nothing writes it. Producing a snapshot always uses
+/// [`iteron_tunables::REGISTRY_ID`].
+const LEGACY_REGISTRY_ID: &str = "core-tunables";
+
+fn is_known_registry_id(registry_id: &str) -> bool {
+    registry_id == iteron_tunables::REGISTRY_ID || registry_id == LEGACY_REGISTRY_ID
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TunablesSnapshotError {
     #[error("invalid tunables genesis snapshot: {reason}")]
@@ -115,7 +126,7 @@ pub fn validate_tunables_snapshot(
         || snapshot.registry_schema_version == 0
         || snapshot.family_schema_version == 0
         || snapshot.registry_revision == 0
-        || snapshot.registry_id != iteron_tunables::REGISTRY_ID
+        || !is_known_registry_id(&snapshot.registry_id)
     {
         return Err(TunablesSnapshotError::Invalid {
             reason: "registry identity or schema version is invalid",
@@ -383,7 +394,7 @@ pub(crate) fn fixture_snapshot() -> RunGenesisTunablesSnapshot {
         .map(|ordinal| RunGenesisTunableEntry {
             ordinal: u16::try_from(ordinal).unwrap(),
             family_id: format!("family_{ordinal}"),
-            semantic_key: format!("core.tunables.family_{ordinal}"),
+            semantic_key: format!("iteron.tunables.family_{ordinal}"),
             state: RunGenesisTunableState::Effective,
         })
         .collect();

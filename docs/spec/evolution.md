@@ -37,11 +37,11 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 ```json
 {
   "schema_version": 3,
-  "policy": { "slot": "iteron/planner", "policy_id": "planner-grpo",
+  "policy": { "slot": "core/planner", "policy_id": "planner-grpo",
               "version": "1.4.0", "digest": "3f9a…(64 hex)" },
   "artifact_kind": "model_adapter",
   "artifact_locator": "registry://planner-grpo@1.4.0",
-  "parent": { "slot": "iteron/planner", "policy_id": "planner-sft", "version": "1.3.0", "digest": "…" },
+  "parent": { "slot": "core/planner", "policy_id": "planner-sft", "version": "1.3.0", "digest": "…" },
   "method": "grpo",
   "protocol": { "min": 1, "max": 1 },
   "required_capabilities": ["read_only"],

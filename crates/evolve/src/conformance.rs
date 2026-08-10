@@ -101,7 +101,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "capability-monotone intersection-only admission",
         authority_boundaries: &["evolution-control", "kernel-runtime"],
-        strategy_slots: &["iteron/tool_policy", "iteron/context"],
+        strategy_slots: &["core/tool_policy", "core/context"],
         world_modules: &["crates/evolve/src/admission.rs"],
         proven_module: None,
         evidence: &[
@@ -190,7 +190,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "checkpoint algebra: diff / merge / restrict / retire / transfer",
         authority_boundaries: &["evolution-control"],
-        strategy_slots: &["iteron/context", "iteron/tool_policy"],
+        strategy_slots: &["core/context", "core/tool_policy"],
         world_modules: &[
             "crates/evolve/src/checkpoint_algebra.rs",
             "crates/evolve/src/checkpoint_transfer.rs",
@@ -226,7 +226,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "cross-model transfer + reported portable fraction",
         authority_boundaries: &["evolution-control"],
-        strategy_slots: &["iteron/tool_policy"],
+        strategy_slots: &["core/tool_policy"],
         world_modules: &["crates/evolve/src/checkpoint_transfer.rs"],
         proven_module: Some("cross-model-transfer"),
         evidence: &[
@@ -247,7 +247,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "second producer of a different method and ArtifactKind",
         authority_boundaries: &["evolution-control"],
-        strategy_slots: &["iteron/context"],
+        strategy_slots: &["core/context"],
         world_modules: &[
             "crates/evolve/src/prompt_producer.rs",
             "crates/evolve/src/producer.rs",
@@ -271,7 +271,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "offline candidate producer bound to governed inputs",
         authority_boundaries: &["evolution-control"],
-        strategy_slots: &["iteron/tool_policy"],
+        strategy_slots: &["core/tool_policy"],
         world_modules: &["crates/evolve/src/producer.rs"],
         proven_module: Some("producer"),
         evidence: &[
@@ -312,7 +312,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
     EvolutionRow {
         class: "read-only boot-time PolicyBundle resolution",
         authority_boundaries: &["cli-host"],
-        strategy_slots: &["iteron/tool_policy"],
+        strategy_slots: &["core/tool_policy"],
         world_modules: &[
             "crates/agents/src/policy.rs",
             "crates/cli/src/bundle_adapter.rs",

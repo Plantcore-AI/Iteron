@@ -348,7 +348,7 @@ ABI 的价值全在于它**稳定且可演化**：两者不矛盾，靠的是把
 **步骤 1 ， context slot 提议 ContextRequest。** context module（不做任何 I/O）提交：
 
 ```json
-{ "request_id": 11, "slot": "iteron/context",
+{ "request_id": 11, "slot": "core/context",
  "selectors": [
  { "kind": "repo_outline", "root": "crates/parser", "depth": 2 },
  { "kind": "instructions", "scope": "project" },
@@ -380,7 +380,7 @@ capability gate 裁决：`{ReversibleLocal}` 是 `ceiling` 的子集（子集判
 
 ```json
 { "hash": "3b1f8e2c4a6d0b9f1e3c5a7d9b1f3e5c7a9d1b3f5e7c9a1d3b5f7e9c1a3d5b7f",
- "schema": "file_diff", "producer": { "kind": "slot", "slot": "iteron/tool_policy" },
+ "schema": "file_diff", "producer": { "kind": "slot", "slot": "core/tool_policy" },
  "provenance": { "run_id": "run-9", "parent_hashes": [], "effect_id": "eff-7" },
  "permissions": ["reversible_local"], "locator": "diff://run-9/eff-7" }
 ```

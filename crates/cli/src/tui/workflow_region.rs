@@ -183,7 +183,7 @@ impl WorkflowMonitor {
     ///
     /// A run's tree lives in a [`crate::block::WorkflowRunCard`], which is memory-only: restarting
     /// leaves the frontend with no idea that this workspace was in the middle of anything. The runs
-    /// themselves are durable — `core workflow list` reads them from an entirely different process
+    /// themselves are durable — `iteron workflow list` reads them from an entirely different process
     /// — so after a restart this store is the one thing that is emptier than the truth.
     ///
     /// An inventory row per run, exactly what the command-side readers state. No card is minted:

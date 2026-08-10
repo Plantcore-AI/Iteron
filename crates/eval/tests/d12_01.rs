@@ -233,7 +233,7 @@ async fn evaluates_a_real_pinned_repository_not_a_synthetic_micro_repo() {
             .as_deref()
             .expect("a failed cell records its phase");
         assert!(
-            phase.starts_with("core"),
+            phase.starts_with("iteron"),
             "a real pinned commit must materialize and reach the core phase, got `{phase}`"
         );
         assert_ne!(

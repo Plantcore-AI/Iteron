@@ -28,7 +28,7 @@ reserve, Iteron falls back to the single writer.
 
 The same engine also runs standalone workflow scripts — JavaScript files that
 call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`. See
-`core workflow` in the [CLI reference](../reference/cli.md) and the example
+`iteron workflow` in the [CLI reference](../reference/cli.md) and the example
 script at `crates/workflow/examples/repo-audit.js`.
 
 ## Authority remains fixed

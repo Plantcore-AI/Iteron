@@ -63,7 +63,7 @@ pub struct CollaborationStrategy {
 impl Default for CollaborationStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/collaboration".into()),
+            slot: SlotId("core/collaboration".into()),
         }
     }
 }
@@ -74,7 +74,7 @@ impl CollaborationStrategy {
         input: &CollaborationObservation,
         ceiling: CapabilitySet,
     ) -> Result<CollaborationProposal, CollaborationError> {
-        if slot.slot().as_persisted_str() != "iteron/collaboration" {
+        if slot.slot().as_persisted_str() != "core/collaboration" {
             return Err(CollaborationError::WrongSlot);
         }
         validate_observation(input)?;
@@ -188,7 +188,7 @@ mod tests {
         }
         assert_eq!(
             CollaborationStrategy::select_with(
-                &Fixed(SlotId("iteron/collaboration".into())),
+                &Fixed(SlotId("core/collaboration".into())),
                 &CollaborationObservation {
                     version: COLLABORATION_SLOT_VERSION,
                     active_workers: 8,

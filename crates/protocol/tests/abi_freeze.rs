@@ -294,7 +294,7 @@ fn task_envelope() -> TaskEnvelope {
 fn context_request() -> ContextRequest {
     ContextRequest {
         request_id: RequestId(11),
-        slot: SlotId("iteron/context".into()),
+        slot: SlotId("core/context".into()),
         selectors: vec![
             ContextSelector::RepoOutline {
                 root: "crates/parser".into(),
@@ -358,7 +358,7 @@ fn provider_state() -> ProviderState {
 
 fn tool_intent() -> ToolIntent {
     ToolIntent {
-        proposed_by: SlotId("iteron/tool_policy".into()),
+        proposed_by: SlotId("core/tool_policy".into()),
         call: tool_use(),
         purity: Purity::Pure,
         admitted: CapabilitySet::only(Capability::ReadOnly),
@@ -400,7 +400,7 @@ fn artifact_ref() -> ArtifactRef {
 
 fn slot_observation() -> SlotObservation {
     SlotObservation {
-        slot: SlotId("iteron/tool_policy".into()),
+        slot: SlotId("core/tool_policy".into()),
         ceiling: ceiling(),
         payload: json!({ "candidate": "edit_file" }),
     }
@@ -570,7 +570,7 @@ fn frozen() -> Vec<Shape> {
         }),
         shape!(
             "Producer::Slot", Producer, "crates/protocol/src/artifact.rs",
-            Producer::Slot { slot: SlotId("iteron/tool_policy".into()) },
+            Producer::Slot { slot: SlotId("core/tool_policy".into()) },
             { "kind": String, "slot": String }
         ),
         shape!(
@@ -716,8 +716,8 @@ fn the_shapes_that_are_not_objects_keep_their_exact_wire_form() {
     let pinned: [(&str, Value, Value); 6] = [
         (
             "SlotId",
-            serde_json::to_value(SlotId("iteron/context".into())).expect("SlotId serialises"),
-            json!("iteron/context"),
+            serde_json::to_value(SlotId("core/context".into())).expect("SlotId serialises"),
+            json!("core/context"),
         ),
         (
             "RequestId",

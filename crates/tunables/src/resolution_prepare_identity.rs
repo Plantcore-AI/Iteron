@@ -84,7 +84,7 @@ fn scalar_catalog_values_validate(catalog: &CatalogSnapshot) -> bool {
         return false;
     };
     let schema = crate::ValueSchema {
-        schema_id: "core://tunables/internal/catalog-snapshot-value-v1",
+        schema_id: "iteron://tunables/internal/catalog-snapshot-value-v1",
         kind: crate::ValueKind::String,
         domain: StructuredValueDomain::Scalar {
             domain: definition.value_domain,

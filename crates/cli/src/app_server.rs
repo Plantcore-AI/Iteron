@@ -927,7 +927,7 @@ pub(crate) struct Attached {
 /// **The composition root.** The one place an `Agent` is handed to an App Server, and the one place
 /// the wire's version, capacities and ownership are decided.
 ///
-/// The interactive TUI attaches here today; the one-shot path and the headless `core serve` (#44)
+/// The interactive TUI attaches here today; the one-shot path and the headless `iteron serve` (#44)
 /// attach to this same function rather than building a second wire of their own. That is the point
 /// of it being a function: a client that constructs its own transport is a client that can drift
 /// from the protocol the server speaks, which is the failure this lane exists to remove.
@@ -2498,7 +2498,7 @@ impl AppServer {
         // grace for the engine's own safe point, and write the terminal record either way, so no
         // run is left listing as `running` forever. The operator is told twice — the receipt the
         // model got stated this exact rule up front, and the report below names every run that was
-        // stopped together with the `core workflow resume` that continues it.
+        // stopped together with the `iteron workflow resume` that continues it.
         //
         // This runs on EVERY exit from the loop above, which is what makes "the session cannot end
         // with a run it does not account for" a property of the type rather than of a call site.

@@ -1,7 +1,7 @@
 //! Bounded selection of restart-sidecar candidates plus its isolated tests.
 //!
 //! Sidecar interpretation remains in `crate::workflow`, next to the readers used by
-//! `core workflow list|resume|watch`. This module chooses which recent directories are affordable
+//! `iteron workflow list|resume|watch`. This module chooses which recent directories are affordable
 //! on the first-frame path and delegates each winner to that one command-owned reader.
 
 use std::cmp::Reverse;

@@ -92,7 +92,7 @@ pub fn ui_safe_label(text: &str) -> String {
 /// Every string here is authored by an untrusted party — the workflow script (`phase()` titles,
 /// `log()` messages, `agent()` labels) or a child model (`result_preview`, `last_tool_summary`,
 /// refusal `error`s) — and the interactive transcript is retained state, so all of them pass the
-/// display gate. The one-shot `core workflow run` surface draws into an alternate screen that is
+/// display gate. The one-shot `iteron workflow run` surface draws into an alternate screen that is
 /// discarded, which is why it never needed this.
 ///
 /// Pure, and the match is exhaustive with no wildcard arm: **a new `ProgressEvent` variant does not

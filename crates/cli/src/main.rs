@@ -1,4 +1,4 @@
-//! `core` — the coding agent CLI. Point it at a repo, give it a task, watch it work.
+//! `iteron` — the coding agent CLI. Point it at a repo, give it a task, watch it work.
 //!
 //! This is the first thin frontend adapter on the core (ADR-010): it constructs an `Op`,
 //! wires the five collaborators, and streams events. A server frontend can follow without
@@ -243,7 +243,7 @@ enum WorkflowAction {
     List,
     /// Resume a prior run by id, replaying its journaled agent outcomes and continuing (blocking).
     Resume {
-        /// The prior run id (see `core workflow list`).
+        /// The prior run id (see `iteron workflow list`).
         run_id: String,
         /// Override the script source; defaults to the run's persisted `script.js`.
         #[arg(long)]
@@ -254,7 +254,7 @@ enum WorkflowAction {
     },
     /// Re-launch a prior run in the BACKGROUND (RunHandle) and attach the live tree to it.
     Watch {
-        /// The prior run id (see `core workflow list`).
+        /// The prior run id (see `iteron workflow list`).
         run_id: String,
         /// Override the ambient `args`; defaults to the run's persisted args.
         #[arg(long)]
@@ -360,7 +360,7 @@ const BUILD_DATE: &str = match option_env!("ITERON_BUILD_DATE") {
 /// 400 is then classified as permanent. Purely local arithmetic — no network, no update check.
 const BUILD_STALE_AFTER_DAYS: i64 = 90;
 
-/// `--version` text. `-V` keeps the bare `core <semver>` that release smoke tests match exactly.
+/// `--version` text. `-V` keeps the bare `iteron <semver>` that release smoke tests match exactly.
 fn long_version() -> &'static str {
     static LONG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     LONG.get_or_init(|| {
@@ -888,7 +888,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         return run_prune_command(&runs_dir, *older_than_days, *keep_last, *dry_run);
     }
 
-    // `core workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
+    // `iteron workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
     // provider but none of the rollout/agent/genesis machinery, so it branches out before that setup.
     if let Some(LocalCommand::Workflow { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
@@ -1087,7 +1087,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // SECURITY (trust-by-origin, same rule as hooks): MCP servers spawn a subprocess at startup, so
     // they are loaded ONLY from the USER config `~/.iteron/config.json` — NEVER from the repo's
     // `.iteron/config.json`. Otherwise cloning a hostile repo that ships an `mcp_servers` block would be
-    // RCE the moment `core` runs there. A project config that declares servers is ignored (with a warning).
+    // RCE the moment `iteron` runs there. A project config that declares servers is ignored (with a warning).
     if file.mcp_servers.as_ref().is_some_and(|s| !s.is_empty()) {
         eprintln!(
             "warning: ignoring `mcp_servers` in the project config (untrusted origin); declare MCP servers in ~/.iteron/config.json"
@@ -2142,7 +2142,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             // record type in the frozen `stream-json` contract this loop writes, and minting one
             // would change a published schema as a side effect of a renderer change — the thing
             // ADR-0001 keeps as its own release-contract PR. The run is still announced by the
-            // launch notice above it, and `core workflow list` still tracks it.
+            // launch notice above it, and `iteron workflow list` still tracks it.
             app_server::ServerEvent::WorkflowRun(_) => continue,
         };
         if output_error.is_none()
@@ -2500,7 +2500,7 @@ Only the variable NAME is written; the key bytes stay in your environment."
     }
 }
 
-/// `core workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`
+/// `iteron workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`
 /// resolve a provider (trusted precedence, no rollout/pricing machinery) and drive
 /// `iteron_workflow::WorkflowEngine` with the real [`runtime::KernelSpawner`]; `list` is pure
 /// enumeration. Journals + re-launch sidecars (`script.js`, `run.json`, `result.json`) persist under

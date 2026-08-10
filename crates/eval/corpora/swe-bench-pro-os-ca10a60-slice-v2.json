@@ -17,7 +17,7 @@
       ],
       "pass_to_pass": [],
       "test_cmd": {
-        "python": "python3 -c 'import json,os,pytest,sys; tests=json.loads(os.environ[\"ITERON_EVAL_TEST_IDS_JSON\"]); sys.exit(pytest.main([\"-q\",\"--tb=short\",*tests]))'"
+        "python": "python3 -c 'import json,os,pytest,sys; tests=json.loads(os.environ[\"CORE_EVAL_TEST_IDS_JSON\"]); sys.exit(pytest.main([\"-q\",\"--tb=short\",*tests]))'"
       },
       "partition": "train",
       "provenance": {
@@ -71,7 +71,7 @@
         "test/units/modules/test_iptables.py::TestIptables::test_log_level"
       ],
       "test_cmd": {
-        "python": "python3 -c 'import json,os,pytest,sys; tests=json.loads(os.environ[\"ITERON_EVAL_TEST_IDS_JSON\"]); sys.exit(pytest.main([\"-q\",\"--tb=short\",*tests]))'"
+        "python": "python3 -c 'import json,os,pytest,sys; tests=json.loads(os.environ[\"CORE_EVAL_TEST_IDS_JSON\"]); sys.exit(pytest.main([\"-q\",\"--tb=short\",*tests]))'"
       },
       "partition": "held_out",
       "provenance": {
@@ -102,7 +102,7 @@
       ],
       "pass_to_pass": [],
       "test_cmd": {
-        "go": "python3 -c 'import json,os,re,subprocess,sys; tests=json.loads(os.environ[\"ITERON_EVAL_TEST_IDS_JSON\"]); pattern=\"^(\"+\"|\".join(re.escape(test) for test in tests)+\")$\"; sys.exit(subprocess.run([\"go\",\"test\",\"-timeout=5m\",\"-v\",\"-run\",pattern,\"./lib/srv/db\"]).returncode)'"
+        "go": "python3 -c 'import json,os,re,subprocess,sys; tests=json.loads(os.environ[\"CORE_EVAL_TEST_IDS_JSON\"]); pattern=\"^(\"+\"|\".join(re.escape(test) for test in tests)+\")$\"; sys.exit(subprocess.run([\"go\",\"test\",\"-timeout=5m\",\"-v\",\"-run\",pattern,\"./lib/srv/db\"]).returncode)'"
       },
       "partition": "held_out",
       "provenance": {

@@ -2,13 +2,13 @@ use crate::ValueSchema;
 
 macro_rules! schema_id {
     ($id:literal) => {
-        concat!("core://tunables/families/", $id, "/value-v1")
+        concat!("iteron://tunables/families/", $id, "/value-v1")
     };
 }
 
 macro_rules! catalog_id {
     ($id:literal) => {
-        concat!("core://tunables/catalogs/", $id, "-v1")
+        concat!("iteron://tunables/catalogs/", $id, "-v1")
     };
 }
 
@@ -232,7 +232,7 @@ macro_rules! external_violation {
     };
     (ProviderCapability) => {
         crate::ConstraintViolation::DegradeAttested {
-            policy_id: "core://tunables/degrade/provider-attested-preferred-v1",
+            policy_id: "iteron://tunables/degrade/provider-attested-preferred-v1",
         }
     };
     (OperatorAuthority) => {

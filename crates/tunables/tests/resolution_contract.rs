@@ -404,19 +404,19 @@ fn owned_value(value: TunableValue) -> ResolutionValue {
 
 fn resolver_id(resolver: DefaultResolver) -> String {
     match resolver {
-        DefaultResolver::Literal => "core://tunables/resolvers/literal-v1".to_owned(),
+        DefaultResolver::Literal => "iteron://tunables/resolvers/literal-v1".to_owned(),
         DefaultResolver::Builtin { resolver_id } => resolver_id.to_owned(),
         DefaultResolver::ModelMetadata { field } => {
-            format!("core://tunables/resolvers/model-metadata/{field}-v1")
+            format!("iteron://tunables/resolvers/model-metadata/{field}-v1")
         }
         DefaultResolver::ProviderCapability { capability } => {
-            format!("core://tunables/resolvers/provider-capability/{capability}-v1")
+            format!("iteron://tunables/resolvers/provider-capability/{capability}-v1")
         }
         DefaultResolver::Transport { field } => {
-            format!("core://tunables/resolvers/transport/{field}-v1")
+            format!("iteron://tunables/resolvers/transport/{field}-v1")
         }
         DefaultResolver::RuntimeObservation { field } => {
-            format!("core://tunables/resolvers/runtime-observation/{field}-v1")
+            format!("iteron://tunables/resolvers/runtime-observation/{field}-v1")
         }
         DefaultResolver::GovernedCatalog { catalog_id } => catalog_id.to_owned(),
         DefaultResolver::Operator { input_id } => input_id.to_owned(),
@@ -1900,7 +1900,7 @@ fn direct_value_beats_same_binding_profile_and_registry_order_beats_vector_order
     assert_eq!(entry.adjustments.len(), 1);
     assert_eq!(
         entry.adjustments[0].policy_id,
-        "core://tunables/adjustments/clamp-numeric-v1"
+        "iteron://tunables/adjustments/clamp-numeric-v1"
     );
 }
 
@@ -2160,7 +2160,7 @@ fn genuine_missing_selected_route_report_explains_exact_sorted_capabilities() {
     input.runtime.admitted_routes.clear();
     input.runtime.selected_route = None;
     input.runtime.catalogs = vec![catalog_snapshot(
-        "core://tunables/catalogs/model-routes-v1",
+        "iteron://tunables/catalogs/model-routes-v1",
         "fixture:route",
     )];
     input.declared_values = vec![DeclaredValue {

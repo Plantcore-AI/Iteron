@@ -65,7 +65,7 @@ const PROBE_CACHE_VERSION: u32 = 1;
 const PROBE_CACHE_TTL_SECS: u64 = 15 * 60;
 /// A failing probe backs off exponentially instead of costing a round trip on every launch: one
 /// minute, then two, four… up to a day. A key rejected weeks ago is retried once a day, not once
-/// per `core` invocation.
+/// per `iteron` invocation.
 const PROBE_BACKOFF_BASE_SECS: u64 = 60;
 const PROBE_BACKOFF_CAP_SECS: u64 = 24 * 60 * 60;
 const MAX_PROBE_FAILURE_EXPONENT: u32 = 32;
@@ -551,7 +551,7 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> 
 ///
 /// The catalog cache short-circuits only the `/models` request; the account probe used to run on
 /// every launch even on a cache hit, and a failed probe was never written back at all. A key that
-/// has been rejected for weeks therefore still cost a round trip each time `core` started.
+/// has been rejected for weeks therefore still cost a round trip each time `iteron` started.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProbeCache {

@@ -94,7 +94,7 @@ pub struct FileConfig {
     /// startup. Keep the raw command lists here; only the trusted user-config loader executes them.
     pub hooks: Option<BTreeMap<String, Vec<String>>>,
     /// Top-level keys this binary does not know. Retained so the parser can WARN about each one
-    /// (a typo must still be visible) and so `core config set` round-trips a newer binary's field
+    /// (a typo must still be visible) and so `iteron config set` round-trips a newer binary's field
     /// instead of deleting it. Never consumed as configuration.
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -404,7 +404,7 @@ impl FileConfig {
     /// (fail loud on a config the operator wrote), but an absent file is fine.
     pub fn load(repo: &Path) -> anyhow::Result<FileConfig> {
         let path = iteron_protocol::home::path(repo, "config.json");
-        // Running `core` from the operator's home makes the PROJECT config path resolve to the very
+        // Running `iteron` from the operator's home makes the PROJECT config path resolve to the very
         // file the USER config lives in. Reading it a second time under untrusted-origin rules made
         // the operator's own `providers`/`provider` look like a cloned repository's suggestion, and
         // the session warned that it was ignoring them — from the one file that is allowed to
@@ -764,7 +764,7 @@ pub(crate) fn credential_file_path(provider_id: &str) -> Option<std::path::PathB
     credentials_dir().map(|directory| directory.join(provider_id))
 }
 
-/// Every key `core config set` accepts, with the parser that turns operator text into the typed
+/// Every key `iteron config set` accepts, with the parser that turns operator text into the typed
 /// field. A closed list is the point: a settable key is a supported key, and a typo is refused
 /// rather than persisted into a document the next launch silently ignores.
 const SETTABLE_KEYS: &[&str] = &[
@@ -864,7 +864,7 @@ pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> 
     Ok(())
 }
 
-/// Render one key's effective value from a decoded document, for `core config get`.
+/// Render one key's effective value from a decoded document, for `iteron config get`.
 pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
     match key {
         "provider" => config.provider.clone(),
@@ -906,7 +906,7 @@ pub(crate) fn settable_keys() -> &'static [&'static str] {
 /// An advisory exclusive lock on the user config, held for one read-modify-write.
 ///
 /// `rename` alone makes each individual write atomic but does NOT make a read-modify-write
-/// serializable: two concurrent `core config set` calls would both read the old document and the
+/// serializable: two concurrent `iteron config set` calls would both read the old document and the
 /// loser's field would vanish. The lock closes that window; a stale lock older than its timeout is
 /// broken so a killed process cannot wedge configuration forever.
 struct ConfigLock {
@@ -1031,7 +1031,7 @@ pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<
 }
 
 /// THE single writer for operator configuration. Every product path that persists an operator
-/// choice — `core config set`, `core setup`, `/model`, `core auth logout` — mutates the document
+/// choice — `iteron config set`, `core setup`, `/model`, `core auth logout` — mutates the document
 /// through this function, so there is exactly one place that locks, validates, and installs.
 pub(crate) fn update_user_config(
     mutate: impl FnOnce(&mut FileConfig) -> Result<(), String>,
@@ -1052,7 +1052,7 @@ pub(crate) fn update_user_config(
     Ok(path)
 }
 
-/// `core config set <key> <value>`.
+/// `iteron config set <key> <value>`.
 pub(crate) fn set_user_setting(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
     update_user_config(|config| apply_setting(config, key, value))
 }

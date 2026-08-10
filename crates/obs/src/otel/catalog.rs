@@ -154,7 +154,7 @@ pub fn metric_instruments() -> Vec<MetricInstrumentSpec> {
     let mut instruments = Vec::with_capacity(METRIC_INSTRUMENT_COUNT);
     for (domain, families) in FAMILY_GROUPS {
         for family in families {
-            let prefix = format!("core.{domain}.{family}");
+            let prefix = format!("iteron.{domain}.{family}");
             instruments.extend([
                 MetricInstrumentSpec {
                     name: format!("{prefix}.calls"),

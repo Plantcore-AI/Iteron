@@ -3,7 +3,7 @@
 //! co-composing the runtime and pushing bare submissions onto its queue.
 //!
 //! `iteron-cli` is a managed binary-only package (the boundary authority forbids it a library
-//! target), so this is a process-level oracle: it launches the real `core` binary in TUI mode
+//! target), so this is a process-level oracle: it launches the real `iteron` binary in TUI mode
 //! inside a pseudo-terminal and observes the versioned-client handshake the fix introduces.
 //!
 //! When the interactive frontend is entered, it now attaches to the runtime as a versioned

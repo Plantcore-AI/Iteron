@@ -71,7 +71,7 @@ pub struct PlannerStrategy {
 impl Default for PlannerStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/planner".into()),
+            slot: SlotId("core/planner".into()),
         }
     }
 }
@@ -82,7 +82,7 @@ impl PlannerStrategy {
         input: &PlannerObservation,
         ceiling: CapabilitySet,
     ) -> Result<PlannerProposal, PlannerError> {
-        if slot.slot().as_persisted_str() != "iteron/planner" {
+        if slot.slot().as_persisted_str() != "core/planner" {
             return Err(PlannerError::WrongSlot);
         }
         validate_observation(input)?;
@@ -247,7 +247,7 @@ mod tests {
         for selected in [vec![1], vec![0, 0]] {
             assert!(
                 PlannerStrategy::plan_with(
-                    &Fixed(selected, SlotId("iteron/planner".into())),
+                    &Fixed(selected, SlotId("core/planner".into())),
                     &input,
                     CapabilitySet::only(Capability::ReadOnly),
                 )

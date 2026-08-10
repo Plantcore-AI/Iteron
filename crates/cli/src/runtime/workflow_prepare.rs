@@ -9,7 +9,7 @@ impl Agent {
     /// byte-for-byte, the single `extract_meta` parse, a freshly minted run id, the
     /// [`KernelSpawner`] built from this agent's live route + paths, the aggregate budget, the
     /// degraded sink fanned out with any attached frontend sink, and the re-launchable manifest
-    /// `core workflow list|resume|watch` reads. Every failure that must abort the tool call before
+    /// `iteron workflow list|resume|watch` reads. Every failure that must abort the tool call before
     /// anything starts happens here, so a returned [`crate::workflow::PreparedWorkflow`] is an
     /// admitted run with its sidecar already on disk.
     ///
@@ -27,7 +27,7 @@ impl Agent {
     ///
     /// The current session's resolved provider, budgets and authority still construct the child
     /// spawner; only the script, ambient args, display name and resume cache come from the durable
-    /// sidecars. This is the in-process equivalent of `core workflow resume <run-id>` used by the
+    /// sidecars. This is the in-process equivalent of `iteron workflow resume <run-id>` used by the
     /// interactive workflow panel.
     pub(crate) fn prepare_workflow_resume(
         &self,
@@ -178,7 +178,7 @@ impl Agent {
         let workflow_name = meta
             .and_then(|meta| meta.name)
             .unwrap_or_else(|| "workflow".into());
-        // Mint a fresh, time-ordered run id the way the standalone `core workflow run` path does.
+        // Mint a fresh, time-ordered run id the way the standalone `iteron workflow run` path does.
         // Deriving it from the turn counter made every `Workflow` tool call in ONE assistant
         // response share an id — hence one journal, one child-rollout namespace, and a second call
         // that silently replayed the first's cached outcomes instead of running.
@@ -289,7 +289,7 @@ impl Agent {
         );
 
         // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
-        // the kernel writes its journal into the very directory `core workflow list` enumerates, so
+        // the kernel writes its journal into the very directory `iteron workflow list` enumerates, so
         // without the manifest every model-launched run listed forever as unnamed, model-less and
         // `running`.
         if resume_run_id.is_none()
@@ -383,7 +383,7 @@ impl Agent {
         let declared_phases = prepared.declared_phases.clone();
         let degraded = prepared.degraded.clone();
 
-        // The launch banner. It names `core workflow list` — the surface that can show this run
+        // The launch banner. It names `iteron workflow list` — the surface that can show this run
         // AFTER the turn, and from another process. A frontend with the progress seam installed
         // also gets the live tree below; one that does not still gets this line, so the run is never
         // invisible.
@@ -391,7 +391,7 @@ impl Agent {
             turn_id,
             EventKind::Notice {
                 text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); `core workflow list` tracks it"
+                    "Workflow `{workflow_name}` launched (run {run_id}); `iteron workflow list` tracks it"
                 ),
             },
         );
@@ -445,7 +445,7 @@ impl Agent {
             }
         };
 
-        // A run that never produced a report is still a directory `core workflow list` enumerates:
+        // A run that never produced a report is still a directory `iteron workflow list` enumerates:
         // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
         // on the error path — and the journal's new exclusive lock makes that path reachable (a
         // colliding run id is refused here, not silently interleaved). Without this the failure

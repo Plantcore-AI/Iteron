@@ -185,7 +185,7 @@ class IteronAgent(BaseInstalledAgent):
 
     SUPPORTS_ATIF = False
     SUPPORTS_RESUME = False
-    _OUTPUT_FILENAME = "core.stream.jsonl"
+    _OUTPUT_FILENAME = "iteron.stream.jsonl"
 
     def __init__(
         self,

@@ -14,14 +14,14 @@ struct FixedVerifier {
 impl FixedVerifier {
     fn new(decision: VerifierSlotDecision) -> Self {
         Self {
-            slot: SlotId("iteron/verifier".into()),
+            slot: SlotId("core/verifier".into()),
             decision,
         }
     }
 
     fn misnamed(decision: VerifierSlotDecision) -> Self {
         Self {
-            slot: SlotId("iteron/tool_policy".into()),
+            slot: SlotId("core/tool_policy".into()),
             decision,
         }
     }
@@ -278,7 +278,7 @@ fn a_slot_cannot_return_authority_it_was_not_shown() {
         }
     }
 
-    let greedy = Greedy(SlotId("iteron/verifier".into()));
+    let greedy = Greedy(SlotId("core/verifier".into()));
     let proposal =
         VerifierStrategy::plan_with(&greedy, &VerifierSlotObservation::gating(false), ceiling())
             .expect("the plan itself is valid");

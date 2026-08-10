@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_slot_cannot_widen_authority_however_greedy_its_implementation() {
-        let id = SlotId("iteron/tool_policy".into());
+        let id = SlotId("core/tool_policy".into());
         let slot = Greedy(id.clone());
         let payload = json!({});
         let observation = SlotObservation {
@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn the_slot_vocabulary_is_open_but_the_grammar_is_not() {
         for good in [
-            "iteron/tool_policy",
-            "iteron/context",
+            "core/tool_policy",
+            "core/context",
             "acme-verticals/triage_router",
         ] {
             assert!(
@@ -263,17 +263,17 @@ mod tests {
 
     #[test]
     fn the_identity_is_a_transparent_string_so_it_matches_the_evolve_side_persisted_form() {
-        let id = SlotId("iteron/context".into());
+        let id = SlotId("core/context".into());
         assert_eq!(
             serde_json::to_string(&id).expect("SlotId serialises"),
-            "\"iteron/context\"",
+            "\"core/context\"",
             "the wire form must stay a bare string so the two 'strategy slot' types share identity"
         );
     }
 
     #[test]
     fn the_trait_is_object_safe() {
-        let id = SlotId("iteron/tool_policy".into());
+        let id = SlotId("core/tool_policy".into());
         let boxed: Box<dyn StrategySlot> = Box::new(Greedy(id.clone()));
         assert_eq!(boxed.slot(), &id);
     }

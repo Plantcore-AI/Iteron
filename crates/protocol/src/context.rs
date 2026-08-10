@@ -347,7 +347,7 @@ mod tests {
     fn request() -> ContextRequest {
         ContextRequest {
             request_id: RequestId(11),
-            slot: SlotId("iteron/context".into()),
+            slot: SlotId("core/context".into()),
             selectors: vec![
                 ContextSelector::RepoOutline {
                     root: "crates/parser".into(),
@@ -369,7 +369,7 @@ mod tests {
         // edited, the ABI moved and the spec is now wrong about what a module sends.
         let spec = json!({
             "request_id": 11,
-            "slot": "iteron/context",
+            "slot": "core/context",
             "selectors": [
                 { "kind": "repo_outline", "root": "crates/parser", "depth": 2 },
                 { "kind": "instructions", "scope": "project" },
@@ -393,7 +393,7 @@ mod tests {
         let marker = "opaque-payload-must-not-survive-selector-decoding";
         let decoded: ContextRequest = serde_json::from_value(json!({
             "request_id": 11,
-            "slot": "iteron/context",
+            "slot": "core/context",
             "selectors": [
                 { "kind": "embedding_search", "query": marker, "nested": { "key": marker } }
             ],
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn a_request_is_deny_by_default_and_bounded() {
-        let fresh = ContextRequest::new(RequestId(1), SlotId("iteron/context".into()), 1_024);
+        let fresh = ContextRequest::new(RequestId(1), SlotId("core/context".into()), 1_024);
         assert_eq!(fresh.trust_ceiling, Trust::Untrusted);
         assert!(fresh.selectors.is_empty());
         assert!(fresh.validate().is_ok());

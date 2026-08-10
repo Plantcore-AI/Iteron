@@ -11,7 +11,7 @@ fn promoted(policy_id: &str) -> PolicyBundle {
         bundle_id: "promoted-1".into(),
         digest: digest('a'),
         policies: vec![PolicyRef {
-            slot: StrategySlot::new("iteron/tool_policy").expect("a valid slot"),
+            slot: StrategySlot::new("core/tool_policy").expect("a valid slot"),
             policy_id: policy_id.into(),
             version: "1".into(),
             digest: digest('b'),

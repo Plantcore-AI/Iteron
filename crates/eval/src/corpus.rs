@@ -53,7 +53,7 @@ pub struct CorpusTask {
     /// Tests that must be green both before and after the candidate patch.
     pub pass_to_pass: Vec<String>,
     /// Per-language command used to execute the named test sets. Commands receive
-    /// `ITERON_EVAL_TEST_SET` and `ITERON_EVAL_TEST_IDS_JSON` in their confined shell environment.
+    /// `CORE_EVAL_TEST_SET` and `CORE_EVAL_TEST_IDS_JSON` in their confined shell environment.
     pub test_cmd: BTreeMap<String, String>,
     pub partition: Partition,
     pub provenance: Provenance,

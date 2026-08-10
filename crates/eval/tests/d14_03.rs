@@ -263,7 +263,7 @@ fn versioned_stdout_result_overrides_a_contradictory_human_stderr_chrome() {
             cell.resolved, None,
             "a censored run resolves nothing; stderr's `resolved` token must not leak in"
         );
-        assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
     }
 
     // A censored terminal outcome is NOT a harness failure, so the run finalizes as a clean success

@@ -1192,13 +1192,13 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
     }
     pty.wait_until("tunable detail scrolls inside the application", |pty| {
         let screen = pty.screen_text();
-        screen.contains("core.control.provider.route_selection")
+        screen.contains("iteron.control.provider.route_selection")
             && screen.contains("runtime_bound=false")
             && screen.contains("not supplied (no frozen request loaded)")
     });
     let history = pty.screen_text();
     assert!(
-        history.contains("core.control.provider.route_selection"),
+        history.contains("iteron.control.provider.route_selection"),
         "{history}"
     );
     assert!(history.contains("runtime_bound=false"), "{history}");

@@ -92,7 +92,7 @@ pub struct ContextStrategy {
 impl Default for ContextStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/context".into()),
+            slot: SlotId("core/context".into()),
         }
     }
 }
@@ -263,7 +263,7 @@ mod tests {
             )
             .unwrap();
         plan.request.validate().unwrap();
-        assert_eq!(plan.request.slot, SlotId("iteron/context".into()));
+        assert_eq!(plan.request.slot, SlotId("core/context".into()));
         assert!(plan.include_skills);
     }
 
@@ -319,7 +319,7 @@ mod tests {
         let mut input = ContextSlotObservation::baseline(RequestId(10), "task");
         input.max_bytes = 1_024;
         let result = ContextStrategy::select_with(
-            &Widening(SlotId("iteron/context".into())),
+            &Widening(SlotId("core/context".into())),
             &input,
             CapabilitySet::only(Capability::ReadOnly),
         );

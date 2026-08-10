@@ -226,19 +226,19 @@ fn valid_provenance(
 
 fn resolver_id_matches(resolver: DefaultResolver, actual: &str) -> bool {
     match resolver {
-        DefaultResolver::Literal => actual == "core://tunables/resolvers/literal-v1",
+        DefaultResolver::Literal => actual == "iteron://tunables/resolvers/literal-v1",
         DefaultResolver::Builtin { resolver_id } => actual == resolver_id,
         DefaultResolver::ModelMetadata { field } => {
-            actual == format!("core://tunables/resolvers/model-metadata/{field}-v1")
+            actual == format!("iteron://tunables/resolvers/model-metadata/{field}-v1")
         }
         DefaultResolver::ProviderCapability { capability } => {
-            actual == format!("core://tunables/resolvers/provider-capability/{capability}-v1")
+            actual == format!("iteron://tunables/resolvers/provider-capability/{capability}-v1")
         }
         DefaultResolver::Transport { field } => {
-            actual == format!("core://tunables/resolvers/transport/{field}-v1")
+            actual == format!("iteron://tunables/resolvers/transport/{field}-v1")
         }
         DefaultResolver::RuntimeObservation { field } => {
-            actual == format!("core://tunables/resolvers/runtime-observation/{field}-v1")
+            actual == format!("iteron://tunables/resolvers/runtime-observation/{field}-v1")
         }
         DefaultResolver::GovernedCatalog { catalog_id } => actual == catalog_id,
         DefaultResolver::Operator { input_id } => actual == input_id,
@@ -380,7 +380,7 @@ fn valid_adjustment(adjustment: &Adjustment, family: &Family) -> bool {
     };
     let policy_matches = match (adjustment.kind, violation) {
         (AdjustmentKind::ClampMaximum, ConstraintViolation::ClampNumeric) => {
-            adjustment.policy_id == "core://tunables/adjustments/clamp-numeric-v1"
+            adjustment.policy_id == "iteron://tunables/adjustments/clamp-numeric-v1"
         }
         (AdjustmentKind::ProviderDegrade, ConstraintViolation::DegradeAttested { policy_id }) => {
             adjustment.policy_id == policy_id

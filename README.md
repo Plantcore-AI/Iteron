@@ -41,7 +41,7 @@
 > an untrusted repository with both, or with `--mode plan`, or not at all.
 
 Iteron combines a focused coding-agent experience with a reusable agent
-runtime substrate. The `core` command provides a full-screen TUI and bounded
+runtime substrate. The `iteron` command provides a full-screen TUI and bounded
 one-shot automation. Underneath it, small Rust crates separate protocol,
 authority, provider routing, context, tools, sandboxing, durable records,
 observability, evaluation, and future evolution strategies.

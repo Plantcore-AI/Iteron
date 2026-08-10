@@ -115,7 +115,7 @@ fn oracle_task(url: String, commit: String) -> CorpusTask {
         pass_to_pass: vec!["stable stays stable".into()],
         test_cmd: BTreeMap::from([(
             "sh".into(),
-            "case \"$ITERON_EVAL_TEST_SET\" in fail_to_pass) test \"$(cat status.txt)\" = good ;; pass_to_pass) test \"$(cat stable.txt)\" = stable ;; *) exit 2 ;; esac".into(),
+            "case \"$CORE_EVAL_TEST_SET\" in fail_to_pass) test \"$(cat status.txt)\" = good ;; pass_to_pass) test \"$(cat stable.txt)\" = stable ;; *) exit 2 ;; esac".into(),
         )]),
         partition: Partition::HeldOut,
         provenance: Provenance {

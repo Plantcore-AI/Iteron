@@ -16,7 +16,7 @@ esac
 fixture=$temporary/fixture
 mkdir -p "$fixture" "$temporary/fakebin"
 
-# `-V` is the bare `core <semver>` the installer's smoke tests match exactly; `--version` adds the
+# `-V` is the bare `iteron <semver>` the installer's smoke tests match exactly; `--version` adds the
 # commit and build date, so a real binary's long form is deliberately not an exact-match target.
 cat > "$temporary/fake-core" <<'EOF'
 #!/bin/sh

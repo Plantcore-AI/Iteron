@@ -102,7 +102,7 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
     MatrixRow {
         group: "component",
         id: "K6 bounded-cancellation",
-        path: "crates/cli/src/runtime.rs",
+        path: "crates/cli/src/runtime/tests.rs",
         test: "max_tokens_is_a_hard_recorded_terminal_at_the_safe_turn_boundary",
     },
     MatrixRow {
@@ -499,7 +499,7 @@ const W1_PLACEMENT_ROWS: &[PlacementRow] = &[
     PlacementRow {
         capability: "read/list/glob",
         authority_boundaries: &["kernel-runtime", "kernel-effects"],
-        strategy_slots: &["iteron/context", "iteron/tool_policy"],
+        strategy_slots: &["core/context", "core/tool_policy"],
         world_modules: &[
             "crates/ctx/src/context_port.rs",
             "crates/tools/src/fs_tools.rs",
@@ -508,7 +508,7 @@ const W1_PLACEMENT_ROWS: &[PlacementRow] = &[
     PlacementRow {
         capability: "skills",
         authority_boundaries: &["kernel-runtime"],
-        strategy_slots: &["iteron/context"],
+        strategy_slots: &["core/context"],
         world_modules: &["crates/ctx/src/skills.rs"],
     },
 ];
@@ -1020,7 +1020,7 @@ mod tests {
     fn w1_tool_policy_capability_mismatch_fails_conformance() {
         let proposal = iteron_tools::ToolPolicyProposal {
             intent: iteron_protocol::intent::ToolIntent::denied(
-                iteron_protocol::slot::SlotId("iteron/tool_policy".into()),
+                iteron_protocol::slot::SlotId("core/tool_policy".into()),
                 ToolUse {
                     id: "mismatch".into(),
                     name: "sample".into(),

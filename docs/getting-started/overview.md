@@ -1,7 +1,7 @@
 # Overview
 
 Iteron is the first coding vertical of a broader agent-runtime design. The
-current product is a terminal application: the `core` executable composes a model
+current product is a terminal application: the `iteron` executable composes a model
 provider, repository tools, a durable run record, permissions, sandbox policy,
 verification, and the TUI or one-shot frontend.
 

@@ -32,7 +32,7 @@ interfaces may change between releases.
   read-only definition stays read-only. See `SECURITY.md` for what this surrenders.
 
 - **BREAKING (security posture): the default is now unconfined.** By owner
-  decision on 2026-08-05, `core` ships with the operator's own authority instead
+  decision on 2026-08-05, `iteron` ships with the operator's own authority instead
   of the sandbox. `bash` reaches the network and the whole filesystem; `read_file`
   and `write_file` resolve any absolute path, `..` climb, or symlink the invoking
   account can reach, including `~/.ssh`; code execution is enabled by default

@@ -52,7 +52,7 @@ confinement tests.
 
 The native `windows-2022` job runs format plus all-target check, clippy, and tests
 for `iteron-cli`, including the real ConPTY Unicode/resize oracle, one-shot
-completion, and the loopback `core serve` version-skew/reconnect/result-v5
+completion, and the loopback `iteron serve` version-skew/reconnect/result-v5
 oracle. It also performs the explicit
 `cargo build --target x86_64-pc-windows-msvc -p iteron-cli` acceptance build.
 Unavailable Windows confinement operations remain fall-closed.

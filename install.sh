@@ -19,7 +19,7 @@ Usage:
 Options:
   --version VERSION  Install an exact release tag. The release asset embeds its
                      own version, so this is optional for normal curl installs.
-  --bin-dir PATH     Install the `core` command into PATH. Defaults to
+  --bin-dir PATH     Install the `iteron` command into PATH. Defaults to
                      $ITERON_CODE_INSTALL_DIR, $XDG_BIN_HOME, or ~/.local/bin.
   -h, --help         Show this help.
 
@@ -41,7 +41,7 @@ iteron_warn() {
 # a new user would look. The package may simply be absent, and Ubuntu 24.04 restricts unprivileged
 # user namespaces unless the invoking binary has an AppArmor profile — the project's own CI has to
 # install one. Run the same probe the backend runs and print the exact remedy. A WARNING, never a
-# hard failure: `core` is perfectly usable for reading and editing without a sandbox.
+# hard failure: `iteron` is perfectly usable for reading and editing without a sandbox.
 iteron_linux_preflight() {
     [ "$1" = Linux ] || return 0
 
@@ -56,7 +56,7 @@ iteron_linux_preflight() {
     if [ -z "$iteron_bwrap" ]; then
         iteron_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
         cat <<'EOF' >&2
-Install it, then re-run `core`:
+Install it, then re-run `iteron`:
   Debian/Ubuntu:  sudo apt-get install -y bubblewrap
   Fedora/RHEL:    sudo dnf install -y bubblewrap
   Alpine:         sudo apk add bubblewrap
@@ -76,8 +76,8 @@ EOF
 This is the Ubuntu 24.04 unprivileged-user-namespace restriction. Grant it to this
 one binary rather than disabling the system-wide control:
   sudo apt-get install -y apparmor apparmor-utils
-  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile core-bwrap $iteron_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/core-bwrap >/dev/null
-  sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
+  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile iteron-bwrap $iteron_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/iteron-bwrap >/dev/null
+  sudo apparmor_parser --replace /etc/apparmor.d/iteron-bwrap
 See https://plantcore-ai.github.io/Iteron/reference/platforms/ for the full contract.
 EOF
 }
@@ -345,11 +345,11 @@ iteron_main() {
     fi
     chmod 0755 "$iteron_binary"
 
-    # `-V` is the bare `core <semver>`; `--version` additionally carries the commit and build date,
+    # `-V` is the bare `iteron <semver>`; `--version` additionally carries the commit and build date,
     # so the exact-match smoke tests below deliberately use the short form.
     iteron_reported_version=$("$iteron_binary" -V 2>&1) \
         || iteron_die 'downloaded binary failed its version smoke test'
-    [ "$iteron_reported_version" = "core $iteron_version_number" ] \
+    [ "$iteron_reported_version" = "iteron $iteron_version_number" ] \
         || iteron_die "downloaded binary reported an unexpected version: $iteron_reported_version"
 
     mkdir -p -- "$iteron_bin_dir" \
@@ -367,7 +367,7 @@ iteron_main() {
     fi
     iteron_staged_version=$("$iteron_install_tmp" -V 2>&1) \
         || iteron_die 'staged binary failed its version smoke test'
-    [ "$iteron_staged_version" = "core $iteron_version_number" ] \
+    [ "$iteron_staged_version" = "iteron $iteron_version_number" ] \
         || iteron_die 'staged binary reported an unexpected version'
     mv -f -- "$iteron_install_tmp" "$iteron_bin_dir/core" \
         || iteron_die 'could not atomically install core'
@@ -376,7 +376,7 @@ iteron_main() {
     fi
     iteron_installed_version=$("$iteron_bin_dir/core" -V 2>&1) \
         || iteron_die 'installed binary failed its final version smoke test'
-    [ "$iteron_installed_version" = "core $iteron_version_number" ] \
+    [ "$iteron_installed_version" = "iteron $iteron_version_number" ] \
         || iteron_die 'installed binary reported an unexpected final version'
     iteron_install_tmp=
 

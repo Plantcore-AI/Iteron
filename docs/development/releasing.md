@@ -24,7 +24,7 @@ be green before the Owner creates the tag.
 
 ## Required artifacts
 
-Every platform archive contains the `core` or `iteron.exe` binary, `LICENSE`, `README.md`, audited
+Every platform archive contains the `iteron` or `iteron.exe` binary, `LICENSE`, `README.md`, audited
 third-party licenses and notices, an SPDX SBOM, and build metadata. The release
 also publishes `SHA256SUMS`, a versioned machine-readable manifest, a receipt containing the
 SHA-256 and size of the final canonical manifest bytes, the POSIX installer, and GitHub artifact

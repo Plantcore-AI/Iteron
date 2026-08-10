@@ -6288,7 +6288,7 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
     let mut bytes = Vec::new();
     assert!(set_terminal_title_to(&mut bytes, capabilities, "Iteron · repo", &active).unwrap());
     assert!(bytes.starts_with(iteron_statusline::title_stack_push().as_bytes()));
-    assert!(bytes.windows(4).any(|window| window == b"]2;C"));
+    assert!(bytes.windows(4).any(|window| window == b"]2;I"));
     assert!(
         replace_terminal_title_to(
             &mut bytes,

@@ -1,4 +1,4 @@
-//! `core workflow run` must be interruptible from the keyboard.
+//! `iteron workflow run` must be interruptible from the keyboard.
 //!
 //! The live tree enables crossterm raw mode, which clears `ISIG`: the terminal stops turning Ctrl-C
 //! into `SIGINT`, so the operator's only interrupt is an ordinary key event that the render loop has

@@ -329,10 +329,10 @@ impl Provisioner {
         }
         args.extend([
             "--env".into(),
-            format!("ITERON_EVAL_TEST_SET={}", test_set.label()).into(),
+            format!("CORE_EVAL_TEST_SET={}", test_set.label()).into(),
             "--env".into(),
             format!(
-                "ITERON_EVAL_TEST_IDS_JSON={}",
+                "CORE_EVAL_TEST_IDS_JSON={}",
                 serde_json::to_string(tests).unwrap_or_else(|_| "[]".into())
             )
             .into(),
@@ -373,7 +373,7 @@ impl Provisioner {
     ) -> TestCommandReceipt {
         let ids = serde_json::to_string(tests).unwrap_or_else(|_| "[]".into());
         let wrapped = format!(
-            "export ITERON_EVAL_TEST_SET={}; export ITERON_EVAL_TEST_IDS_JSON={}; {}",
+            "export CORE_EVAL_TEST_SET={}; export CORE_EVAL_TEST_IDS_JSON={}; {}",
             shell_quote(test_set.label()),
             shell_quote(&ids),
             command
@@ -661,8 +661,8 @@ mod tests {
         let mut task = task("unused");
         task.test_cmd = BTreeMap::from([(
             "go".into(),
-            "test \"$ITERON_EVAL_TEST_SET\" = fail_to_pass; \
-             test \"$ITERON_EVAL_TEST_IDS_JSON\" = '[\"fixture::f2p\"]'; \
+            "test \"$CORE_EVAL_TEST_SET\" = fail_to_pass; \
+             test \"$CORE_EVAL_TEST_IDS_JSON\" = '[\"fixture::f2p\"]'; \
              printf go-command-ran > go-command.txt"
                 .into(),
         )]);

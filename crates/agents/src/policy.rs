@@ -31,7 +31,7 @@ use iteron_protocol::slot::SlotId;
 
 /// The slot whose promoted policy this module reads.
 pub fn tool_policy_slot() -> SlotId {
-    SlotId("iteron/tool_policy".into())
+    SlotId("core/tool_policy".into())
 }
 
 /// A recognised tool-preference behavior, chosen by promoted policy identity.

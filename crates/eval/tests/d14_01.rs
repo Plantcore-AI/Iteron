@@ -299,7 +299,7 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
             "an exact historical commit must materialize, not fail at checkout"
         );
         assert!(
-            phase.starts_with("core"),
+            phase.starts_with("iteron"),
             "materialization at the pinned commit must reach the core phase, got `{phase}`"
         );
     }
@@ -315,7 +315,7 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
             .expect("a failed cell records its phase");
         assert_ne!(phase, "checkout");
         assert!(
-            phase.starts_with("core"),
+            phase.starts_with("iteron"),
             "the second real repository must also materialize and reach the core phase, got `{phase}`"
         );
     }

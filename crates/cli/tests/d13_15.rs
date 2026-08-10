@@ -2,7 +2,7 @@
 //!
 //! The `output.rs` unit tests freeze the pure producer functions, and `one_shot_output.rs`
 //! freezes the provider-backed *success* path. What was missing is a PROCESS-level golden that
-//! spawns the real `core` binary and pins the machine-output contract end to end for a fully
+//! spawns the real `iteron` binary and pins the machine-output contract end to end for a fully
 //! deterministic, provider-free run. This closes that gap using the `--max-usd 0` budget path,
 //! which terminates at turn admission before any provider call, so the emitted terminal is
 //! hermetic and byte-stable.
@@ -31,7 +31,7 @@ const TEST_KEY: &str = "integration-test-placeholder";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Isolated HOME + repo + rollout tree for one hermetic `core` invocation.
+/// Isolated HOME + repo + rollout tree for one hermetic `iteron` invocation.
 struct Scratch {
     root: PathBuf,
 }
@@ -95,7 +95,7 @@ impl Drop for Scratch {
     }
 }
 
-/// Spawn the real `core` binary on the deterministic budget path and collect its bounded output.
+/// Spawn the real `iteron` binary on the deterministic budget path and collect its bounded output.
 fn run_budget(scratch: &Scratch, format: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, or user config. The only credential visible to

@@ -29,7 +29,7 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if strategy.slot().as_persisted_str() != "iteron/context" {
+        if strategy.slot().as_persisted_str() != "core/context" {
             return Err(KernelError::ContextResolution(
                 "context strategy has the wrong slot identity".into(),
             ));
@@ -51,7 +51,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if policy.slot().as_persisted_str() != "iteron/tool_policy" {
+        if policy.slot().as_persisted_str() != "core/tool_policy" {
             return Err(KernelError::ContextResolution(
                 "tool policy has the wrong slot identity".into(),
             ));
@@ -69,7 +69,7 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if strategy.slot().as_persisted_str() != "iteron/memory" {
+        if strategy.slot().as_persisted_str() != "core/memory" {
             return Err(KernelError::ContextResolution(
                 "memory strategy has the wrong slot identity".into(),
             ));
@@ -109,7 +109,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if router.slot().as_persisted_str() != "iteron/router" {
+        if router.slot().as_persisted_str() != "core/router" {
             return Err(KernelError::ContextResolution(
                 "router has the wrong slot identity".into(),
             ));
@@ -127,7 +127,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if planner.slot().as_persisted_str() != "iteron/planner" {
+        if planner.slot().as_persisted_str() != "core/planner" {
             return Err(KernelError::ContextResolution(
                 "planner has the wrong slot identity".into(),
             ));
@@ -145,7 +145,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if collaboration.slot().as_persisted_str() != "iteron/collaboration" {
+        if collaboration.slot().as_persisted_str() != "core/collaboration" {
             return Err(KernelError::ContextResolution(
                 "collaboration strategy has the wrong slot identity".into(),
             ));
@@ -163,7 +163,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if scheduler.slot().as_persisted_str() != "iteron/scheduler" {
+        if scheduler.slot().as_persisted_str() != "core/scheduler" {
             return Err(KernelError::ContextResolution(
                 "scheduler has the wrong slot identity".into(),
             ));
@@ -181,7 +181,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if verifier.slot().as_persisted_str() != "iteron/verifier" {
+        if verifier.slot().as_persisted_str() != "core/verifier" {
             return Err(KernelError::ContextResolution(
                 "verifier has the wrong slot identity".into(),
             ));
@@ -199,7 +199,7 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if router.slot().as_persisted_str() != "iteron/model_router" {
+        if router.slot().as_persisted_str() != "core/model_router" {
             return Err(KernelError::ContextResolution(
                 "model router has the wrong slot identity".into(),
             ));

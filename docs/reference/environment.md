@@ -1,6 +1,6 @@
 # Environment variables
 
-Iteron reads environment variables from the process that starts `core`. Keep
+Iteron reads environment variables from the process that starts `iteron`. Keep
 credential values in a shell session or secret manager; never put them in the
 repository or documentation.
 

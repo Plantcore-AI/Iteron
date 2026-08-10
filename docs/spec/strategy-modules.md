@@ -35,7 +35,7 @@ pub trait StrategySlot: Send + Sync {
 pub struct SlotId(pub String);
 ```
 
-文法由 `SlotId::validate` 强制（`crates/protocol/src/slot.rs:68-87`），且**只**有这三条：长度 1..=128 字节（`MAX_SLOT_ID_BYTES`，`crates/protocol/src/slot.rs:48`）；**恰好一个** `/`，且两侧均非空；除该 `/` 外只允许 `[a-z0-9_-]`。大写被**拒绝**而非规范化（`crates/protocol/src/slot.rs:64-67`）：规范化会让两个此处不相等的 `SlotId` 在持久化后相撞，把身份变成近似身份。**词表是开放的，文法不是**：`core/tool_policy` 与 `acme-verticals/triage_router` 同样合法，kernel 不枚举它们，所以**加一个槽不是一次 kernel 变更**。一个**无前缀**的名字（如 `router`）不是可构造的槽身份。线格式是一个裸字符串 `"iteron/context"`（`#[serde(transparent)]`；快照见 `crates/protocol/tests/abi_freeze.rs:661-662`）。
+文法由 `SlotId::validate` 强制（`crates/protocol/src/slot.rs:68-87`），且**只**有这三条：长度 1..=128 字节（`MAX_SLOT_ID_BYTES`，`crates/protocol/src/slot.rs:48`）；**恰好一个** `/`，且两侧均非空；除该 `/` 外只允许 `[a-z0-9_-]`。大写被**拒绝**而非规范化（`crates/protocol/src/slot.rs:64-67`）：规范化会让两个此处不相等的 `SlotId` 在持久化后相撞，把身份变成近似身份。**词表是开放的，文法不是**：`core/tool_policy` 与 `acme-verticals/triage_router` 同样合法，kernel 不枚举它们，所以**加一个槽不是一次 kernel 变更**。一个**无前缀**的名字（如 `router`）不是可构造的槽身份。线格式是一个裸字符串 `"core/context"`（`#[serde(transparent)]`；快照见 `crates/protocol/tests/abi_freeze.rs:661-662`）。
 
 **两个都叫 StrategySlot 的类型，必须分清。**（`crates/protocol/src/slot.rs:3-11`）
 

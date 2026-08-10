@@ -76,7 +76,7 @@ same key in a project `.iteron/config.json`, or with `--mode plan`.
 ## Sandbox contract
 
 **The default posture is unconfined (owner decision, 2026-08-05).** A `bash`
-command runs with the authority of the account that started `core`: it reaches the
+command runs with the authority of the account that started `iteron`: it reaches the
 network, reads any file that account can read — `~/.ssh`, `~/.aws`, the keychain
 paths — and writes anywhere on the host. The file tools resolve paths the same
 way, so `read_file` and `write_file` address the whole filesystem, not the

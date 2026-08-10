@@ -353,7 +353,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
 
     for cell in cells_for(&manifest, "budget") {
         assert_eq!(cell.run_status, RunStatus::Censored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
         assert_eq!(cell.terminal_outcome.as_deref(), Some("budget_exhausted"));
         assert_eq!(cell.exit_code, Some(3));
         assert_eq!(cell.resolved, None);
@@ -363,7 +363,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
 
     for cell in cells_for(&manifest, "harness-error") {
         assert_eq!(cell.run_status, RunStatus::Errored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
         assert_eq!(cell.terminal_outcome.as_deref(), Some("harness_error"));
         assert_eq!(cell.exit_code, Some(2));
         assert_eq!(cell.resolved, None);
@@ -372,7 +372,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
     for (task, outcome, exit_code) in [("interrupted", "interrupted", 130), ("stuck", "stuck", 4)] {
         for cell in cells_for(&manifest, task) {
             assert_eq!(cell.run_status, RunStatus::Censored);
-            assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+            assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
             assert_eq!(cell.terminal_outcome.as_deref(), Some(outcome));
             assert_eq!(cell.exit_code, Some(exit_code));
             assert_eq!(cell.resolved, None);

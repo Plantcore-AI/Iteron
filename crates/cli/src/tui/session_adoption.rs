@@ -203,7 +203,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
 /// # Why the client opens the rollout
 ///
 /// Opening it is what takes the target run's exclusive writer lock, and that is the refusal an
-/// operator actually meets — another `core` process is on that session. Taking it here means such an
+/// operator actually meets — another `iteron` process is on that session. Taking it here means such an
 /// adoption is refused before the resident runtime is asked to do anything, so a session that cannot
 /// be adopted cannot disturb the one that is running.
 ///

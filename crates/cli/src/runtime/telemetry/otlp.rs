@@ -14,7 +14,7 @@ pub(super) fn encode(endpoint: &str, export: &Export) -> Result<Vec<Batch>, ()> 
         "attributes": [
             attribute("service.name", "iteron"),
             attribute("service.namespace", "plantcore"),
-            attribute("core.run.id", &export.run_id),
+            attribute("iteron.run.id", &export.run_id),
         ]
     });
     let trace_body = traces(export, &resource);
@@ -54,9 +54,9 @@ fn traces(export: &Export, resource: &Value) -> Value {
             .iter()
             .map(|(key, value)| attribute(key, value))
             .collect::<Vec<_>>();
-        attributes.push(attribute("core.record.sequence", span.seq.to_string()));
+        attributes.push(attribute("iteron.record.sequence", span.seq.to_string()));
         attributes.push(attribute(
-            "core.duration.us",
+            "iteron.duration.us",
             span.duration_ms.saturating_mul(1_000).to_string(),
         ));
         spans.push(json!({
@@ -86,10 +86,10 @@ fn traces(export: &Export, resource: &Value) -> Value {
                 "startTimeUnixNano": "0",
                 "endTimeUnixNano": "0",
                 "attributes": [
-                    attribute("core.start.monotonic_ns", span.start_mono_ns.to_string()),
-                    attribute("core.end.monotonic_ns", span.end_mono_ns.to_string()),
-                    attribute("core.duration.us", span.duration_us.to_string()),
-                    attribute_opt("core.outcome", span.outcome_code.as_deref()),
+                    attribute("iteron.start.monotonic_ns", span.start_mono_ns.to_string()),
+                    attribute("iteron.end.monotonic_ns", span.end_mono_ns.to_string()),
+                    attribute("iteron.duration.us", span.duration_us.to_string()),
+                    attribute_opt("iteron.outcome", span.outcome_code.as_deref()),
                 ],
                 "status": {"code": if span.outcome_code.as_deref() == Some("failed") { 2 } else { 1 }},
             }));
@@ -99,7 +99,7 @@ fn traces(export: &Export, resource: &Value) -> Value {
         "resourceSpans": [{
             "resource": resource,
             "scopeSpans": [{
-                "scope": {"name": "core.lifecycle", "version": "1"},
+                "scope": {"name": "iteron.lifecycle", "version": "1"},
                 "spans": spans,
             }],
         }],
@@ -127,9 +127,9 @@ fn metrics(export: &Export, resource: &Value) -> Value {
                 "timeUnixNano": "0",
                 "asInt": metric.value.to_string(),
                 "attributes": [
-                    attribute("core.observations", metric.observations.to_string()),
-                    attribute_opt("core.min", metric.min.map(|value| value.to_string()).as_deref()),
-                    attribute_opt("core.max", metric.max.map(|value| value.to_string()).as_deref()),
+                    attribute("iteron.observations", metric.observations.to_string()),
+                    attribute_opt("iteron.min", metric.min.map(|value| value.to_string()).as_deref()),
+                    attribute_opt("iteron.max", metric.max.map(|value| value.to_string()).as_deref()),
                 ],
             });
             let data = if metric.kind == "counter" {
@@ -161,7 +161,7 @@ fn metrics(export: &Export, resource: &Value) -> Value {
         "resourceMetrics": [{
             "resource": resource,
             "scopeMetrics": [{
-                "scope": {"name": "core.lifecycle", "version": "1"},
+                "scope": {"name": "iteron.lifecycle", "version": "1"},
                 "metrics": metrics,
             }],
         }],
@@ -187,14 +187,14 @@ fn logs(export: &Export, resource: &Value) -> Value {
                         "traceId": trace_id,
                         "spanId": span_id,
                         "attributes": [
-                            attribute("core.schema.version", record.schema_version.to_string()),
-                            attribute("core.ordinal", record.ordinal.to_string()),
-                            attribute("core.occurred.monotonic_ns", record.occurred_at_mono_ns.to_string()),
-                            attribute_opt("core.outcome", record.outcome_code.as_deref()),
-                            attribute_opt("core.reason", record.reason_code.as_deref()),
-                            attribute_opt("core.count", record.count.map(|value| value.to_string()).as_deref()),
-                            attribute_opt("core.duration.us", record.duration_us.map(|value| value.to_string()).as_deref()),
-                            attribute_opt("core.magnitude", record.magnitude.map(|value| value.to_string()).as_deref()),
+                            attribute("iteron.schema.version", record.schema_version.to_string()),
+                            attribute("iteron.ordinal", record.ordinal.to_string()),
+                            attribute("iteron.occurred.monotonic_ns", record.occurred_at_mono_ns.to_string()),
+                            attribute_opt("iteron.outcome", record.outcome_code.as_deref()),
+                            attribute_opt("iteron.reason", record.reason_code.as_deref()),
+                            attribute_opt("iteron.count", record.count.map(|value| value.to_string()).as_deref()),
+                            attribute_opt("iteron.duration.us", record.duration_us.map(|value| value.to_string()).as_deref()),
+                            attribute_opt("iteron.magnitude", record.magnitude.map(|value| value.to_string()).as_deref()),
                         ],
                     }))
                 })
@@ -205,7 +205,7 @@ fn logs(export: &Export, resource: &Value) -> Value {
         "resourceLogs": [{
             "resource": resource,
             "scopeLogs": [{
-                "scope": {"name": "core.lifecycle", "version": "1"},
+                "scope": {"name": "iteron.lifecycle", "version": "1"},
                 "logRecords": records,
             }],
         }],

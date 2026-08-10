@@ -126,7 +126,7 @@ pub(crate) fn apply(
                 Some(Ordering::Greater) => Some((
                     value.clone(),
                     AdjustmentKind::ClampMaximum,
-                    "core://tunables/adjustments/clamp-numeric-v1",
+                    "iteron://tunables/adjustments/clamp-numeric-v1",
                 )),
                 Some(Ordering::Less | Ordering::Equal) => None,
                 None => {

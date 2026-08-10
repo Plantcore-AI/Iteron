@@ -182,7 +182,7 @@ pub struct SchedulerStrategy {
 impl Default for SchedulerStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/scheduler".into()),
+            slot: SlotId("core/scheduler".into()),
         }
     }
 }
@@ -202,7 +202,7 @@ impl SchedulerStrategy {
         input: &SchedulerSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<SchedulerProposal, SchedulerSlotError> {
-        if slot.slot().as_persisted_str() != "iteron/scheduler" {
+        if slot.slot().as_persisted_str() != "core/scheduler" {
             return Err(SchedulerSlotError::WrongSlot);
         }
         input.validate()?;
@@ -353,7 +353,7 @@ mod tests {
         }
 
         let result = SchedulerStrategy::plan_with(
-            &Widening(SlotId("iteron/scheduler".into())),
+            &Widening(SlotId("core/scheduler".into())),
             &observation(),
             CapabilitySet::only(Capability::ReadOnly),
         );
@@ -393,7 +393,7 @@ mod tests {
         }
 
         let proposal = SchedulerStrategy::plan_with(
-            &Greedy(SlotId("iteron/scheduler".into())),
+            &Greedy(SlotId("core/scheduler".into())),
             &observation(),
             CapabilitySet::only(Capability::ReadOnly),
         )
@@ -428,7 +428,7 @@ mod tests {
             }
         }
 
-        let slot = Narrowing(SlotId("iteron/scheduler".into()));
+        let slot = Narrowing(SlotId("core/scheduler".into()));
         let input = observation();
         let first =
             SchedulerStrategy::plan_with(&slot, &input, CapabilitySet::only(Capability::ReadOnly))
@@ -456,7 +456,7 @@ mod tests {
 
         assert_eq!(
             SchedulerStrategy::plan_with(
-                &Other(SlotId("iteron/context".into())),
+                &Other(SlotId("core/context".into())),
                 &observation(),
                 CapabilitySet::none(),
             ),

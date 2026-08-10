@@ -24,7 +24,7 @@ not invalidate a child, while a changed or truncated pinned prefix does.
 
 The cache never becomes session truth. Missing, stale, oversized, or malformed
 cache files are ignored and rebuilt from the bounded, hash-verified record. Run
-`core reindex` to repair all local projections explicitly. Exact `Zero` and
+`iteron reindex` to repair all local projections explicitly. Exact `Zero` and
 `Known` cost states are also replayed instead of being trusted from mutable cache
 bytes; only an honest unknown-cost projection may take the no-replay read path.
 

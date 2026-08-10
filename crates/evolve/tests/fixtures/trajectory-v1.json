@@ -10,7 +10,7 @@
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "policies": [
       {
-        "slot": "iteron/router",
+        "slot": "core/router",
         "policy_id": "legacy-router",
         "version": "1.0.0",
         "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

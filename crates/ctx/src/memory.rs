@@ -1202,7 +1202,7 @@ pub struct MemoryRecallStrategy {
 impl Default for MemoryRecallStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/memory".into()),
+            slot: SlotId("core/memory".into()),
         }
     }
 }
@@ -1223,7 +1223,7 @@ impl MemoryRecallStrategy {
         input: &MemorySlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<MemoryRecallProposal, MemorySlotError> {
-        if slot.slot().as_persisted_str() != "iteron/memory" {
+        if slot.slot().as_persisted_str() != "core/memory" {
             return Err(MemorySlotError::WrongSlot);
         }
         input.validate()?;
@@ -1258,7 +1258,7 @@ impl MemoryRecallStrategy {
         text: &str,
         ceiling: CapabilitySet,
     ) -> Result<MemoryWriteProposal, MemorySlotError> {
-        if slot.slot().as_persisted_str() != "iteron/memory" {
+        if slot.slot().as_persisted_str() != "core/memory" {
             return Err(MemorySlotError::WrongSlot);
         }
         let input = MemorySlotObservation::project_write(text);
@@ -3054,7 +3054,7 @@ mod memory_slot_tests {
 
     fn fixed(plan: MemoryRecallPlan) -> Fixed {
         Fixed {
-            slot: SlotId("iteron/memory".into()),
+            slot: SlotId("core/memory".into()),
             plan,
             admitted: read_only(),
         }
@@ -3063,10 +3063,10 @@ mod memory_slot_tests {
     #[test]
     fn the_slot_identity_parses_under_the_frozen_grammar() {
         let strategy = MemoryRecallStrategy::default();
-        assert_eq!(strategy.slot().as_persisted_str(), "iteron/memory");
+        assert_eq!(strategy.slot().as_persisted_str(), "core/memory");
         assert!(
             strategy.slot().validate().is_ok(),
-            "iteron/memory must be nameable by a policy bundle, or the seat is ungovernable"
+            "core/memory must be nameable by a policy bundle, or the seat is ungovernable"
         );
     }
 
@@ -3272,7 +3272,7 @@ mod memory_slot_tests {
     fn replacement_capabilities_are_intersected_with_the_caller_ceiling() {
         let input = observation();
         let greedy = Fixed {
-            slot: SlotId("iteron/memory".into()),
+            slot: SlotId("core/memory".into()),
             plan: plan_of(&["signing-key"], &input),
             admitted: CapabilitySet::from_iter_capabilities([
                 Capability::ReadOnly,
@@ -3326,7 +3326,7 @@ mod memory_slot_tests {
 
         assert_eq!(
             MemoryRecallStrategy::select_with(
-                &Other(SlotId("iteron/context".into())),
+                &Other(SlotId("core/context".into())),
                 &observation(),
                 read_only(),
             ),
@@ -3338,7 +3338,7 @@ mod memory_slot_tests {
     fn the_baseline_refuses_a_payload_addressed_to_another_slot() {
         let strategy = MemoryRecallStrategy::default();
         let outcome = strategy.decide(&SlotObservation {
-            slot: SlotId("iteron/context".into()),
+            slot: SlotId("core/context".into()),
             ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
             payload: serde_json::to_value(observation()).unwrap(),
         });
@@ -3383,7 +3383,7 @@ mod memory_slot_tests {
 
         assert!(matches!(
             MemoryRecallStrategy::authorize_project_write_with(
-                &Mutating(SlotId("iteron/memory".into())),
+                &Mutating(SlotId("core/memory".into())),
                 "prefer deterministic fixtures",
                 CapabilitySet::only(Capability::TrustMutating),
             ),

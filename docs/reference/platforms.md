@@ -40,7 +40,7 @@ At source level, the interactive client shares the crossterm composition root
 with Unix and is designed to run in a ConPTY terminal; there is no Windows copy
 of the SQ/EQ protocol or result-v5 wire. The native Windows oracle creates and
 resizes a ConPTY around the production TUI through `portable-pty`; Core itself
-uses the console supplied by its terminal host. One-shot mode and `core serve`
+uses the console supplied by its terminal host. One-shot mode and `iteron serve`
 share the same App Server client. Headless clients use bounded JSONL over
 loopback TCP rather than a Unix-domain socket and perform the same admission
 handshake. These source paths exist and that oracle exercises them; the released
@@ -82,15 +82,15 @@ rather than disabling a system-wide security control:
 
 ```console
 $ sudo apt-get install -y apparmor apparmor-utils
-$ sudo tee /etc/apparmor.d/core-bwrap >/dev/null <<'PROFILE'
+$ sudo tee /etc/apparmor.d/iteron-bwrap >/dev/null <<'PROFILE'
 abi <abi/4.0>,
 include <tunables/global>
 
-profile core-bwrap /usr/bin/bwrap flags=(unconfined) {
+profile iteron-bwrap /usr/bin/bwrap flags=(unconfined) {
   userns,
 }
 PROFILE
-$ sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
+$ sudo apparmor_parser --replace /etc/apparmor.d/iteron-bwrap
 ```
 
 `install.sh` runs this exact probe after installing and prints the remedy above as

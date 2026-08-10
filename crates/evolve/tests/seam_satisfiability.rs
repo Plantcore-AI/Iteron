@@ -62,7 +62,7 @@ fn a_real_trajectory() -> TrajectoryEnvelope {
             bundle_id: "acme-2026-07".into(),
             digest: digest('d'),
             policies: vec![PolicyRef {
-                slot: StrategySlot::new("iteron/router").expect("a valid slot"),
+                slot: StrategySlot::new("core/router").expect("a valid slot"),
                 policy_id: "acme.router".into(),
                 version: "1.4.0".into(),
                 digest: digest('e'),
@@ -169,7 +169,7 @@ struct RealEvidence;
 impl RealEvidence {
     fn sign(base_model: &BaseModelId) -> SignedHeldOutEvaluation {
         let candidate = PolicyRef {
-            slot: StrategySlot::new("iteron/router").expect("a valid slot"),
+            slot: StrategySlot::new("core/router").expect("a valid slot"),
             policy_id: "acme.router".into(),
             version: "2.0.0".into(),
             digest: digest('e'),

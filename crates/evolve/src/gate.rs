@@ -575,8 +575,8 @@ fn verify_separation_of_duties(scratch: &Path) -> Result<SeparationProof, GateEr
 /// `PolicyCheckpoint` needs; the point is that the operators run and their outputs validate, not
 /// that they reproduce the dedicated unit tests, which the gate job also runs.
 fn exercise_algebra() -> Result<Vec<OperatorProof>, GateError> {
-    let slot = StrategySlot("iteron/tool_policy".to_owned());
-    let other = StrategySlot("iteron/context".to_owned());
+    let slot = StrategySlot("core/tool_policy".to_owned());
+    let other = StrategySlot("core/context".to_owned());
     let baseline = checkpoint(
         "baseline",
         None,

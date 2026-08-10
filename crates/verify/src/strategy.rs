@@ -196,7 +196,7 @@ pub struct VerifierStrategy {
 impl Default for VerifierStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/verifier".into()),
+            slot: SlotId("core/verifier".into()),
         }
     }
 }
@@ -219,7 +219,7 @@ impl VerifierStrategy {
         input: &VerifierSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<VerifierProposal, VerifierSlotError> {
-        if slot.slot().as_persisted_str() != "iteron/verifier" {
+        if slot.slot().as_persisted_str() != "core/verifier" {
             return Err(VerifierSlotError::WrongSlot);
         }
         input.validate()?;
@@ -300,7 +300,7 @@ pub struct WorkspaceGateVerifier {
 impl Default for WorkspaceGateVerifier {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/verifier".into()),
+            slot: SlotId("core/verifier".into()),
         }
     }
 }

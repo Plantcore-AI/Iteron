@@ -223,7 +223,7 @@ pub(crate) async fn run_setup(
                 Some(reason) => eprintln!("still blocked: {reason}"),
                 None => match directory.default_selection(&answers.provider_id) {
                     Some(selection) => eprintln!(
-                        "ready: {}:{} — run `core` to start",
+                        "ready: {}:{} — run `iteron` to start",
                         selection.provider_id, selection.model_id
                     ),
                     None => eprintln!("{}", directory.resolution_error(&answers.provider_id)),
@@ -338,7 +338,7 @@ pub(crate) async fn run_auth_logout(provider_id: Option<String>) -> anyhow::Resu
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core config get [key]` — the persisted operator value, never the layered runtime value.
+/// `iteron config get [key]` — the persisted operator value, never the layered runtime value.
 pub(crate) fn run_config_get(key: Option<String>) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     match key {
@@ -366,7 +366,7 @@ pub(crate) fn run_config_get(key: Option<String>) -> anyhow::Result<u8> {
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core config set <key> <value>` — THE writer. Every other persist path calls into it.
+/// `iteron config set <key> <value>` — THE writer. Every other persist path calls into it.
 pub(crate) fn run_config_set(key: &str, value: &str) -> anyhow::Result<u8> {
     let path = config::set_user_setting(key, value)?;
     println!("{key} = {value}  ({})", path.display());
@@ -384,7 +384,7 @@ impl TerminalAsk {
         use std::io::IsTerminal as _;
         if !std::io::stdin().is_terminal() {
             anyhow::bail!(
-                "core setup asks questions and needs a terminal; run it directly, or set the credential with `core config set` and an environment variable"
+                "core setup asks questions and needs a terminal; run it directly, or set the credential with `iteron config set` and an environment variable"
             );
         }
         Ok(Self {

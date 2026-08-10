@@ -47,7 +47,7 @@ mod capability_tests {
         assert!(is_trust_mutating_path("docs/AGENTS.md"));
         // The Core home `.iteron/**` is elevated case-insensitively.
         assert!(is_trust_mutating_path(".iteron/config.json"));
-        assert!(is_trust_mutating_path(".CORE/config.json"));
+        assert!(is_trust_mutating_path(".ITERON/config.json"));
         assert!(is_trust_mutating_path(".iteron/memory/m-1.md"));
         assert!(!is_trust_mutating_path("src/main.rs"));
         assert!(!is_trust_mutating_path("README.md"));
@@ -1978,7 +1978,7 @@ mod gate_integration_tests {
 
         assert_eq!(prepared.name, "seam");
         assert_eq!(prepared.declared_phases, vec!["one".to_string()]);
-        // Preparation is where the run becomes visible to `core workflow list|resume|watch`: the
+        // Preparation is where the run becomes visible to `iteron workflow list|resume|watch`: the
         // manifest exists before a launcher — any launcher — has seen the run.
         let manifest = crate::workflow::load_manifest(&prepared.workflows_dir, &prepared.run_id)
             .expect("preparation persists the re-launchable manifest");
@@ -2357,7 +2357,7 @@ mod gate_integration_tests {
             "an unreadable scriptPath fails the tool call, not the run"
         );
         // Every refusal above happened before anything was recorded, so the only run
-        // `core workflow list` can see is the one that was actually admitted.
+        // `iteron workflow list` can see is the one that was actually admitted.
         let prepared = agent
             .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
             .expect("prepared run");
@@ -12458,7 +12458,7 @@ ant-api03-SuperSecretModelToken12345"
         assert!(
             notices
                 .iter()
-                .any(|text| text.contains("iteron/router declined to route")),
+                .any(|text| text.contains("core/router declined to route")),
             "a refused route is said out loud, not swallowed: {notices:?}"
         );
     }
@@ -12493,7 +12493,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.workspace = ws.clone();
 
         let impostor = std::sync::Arc::new(PinnedRouter {
-            slot: iteron_protocol::slot::SlotId("iteron/planner".into()),
+            slot: iteron_protocol::slot::SlotId("core/planner".into()),
             route: iteron_agents::RouterRoute::direct(iteron_agents::TaskClass::Localized),
         });
         assert!(matches!(

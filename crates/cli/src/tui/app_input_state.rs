@@ -67,7 +67,7 @@ impl App {
     }
 
     /// The fallback after an adoption this process could not perform — most often because another
-    /// `core` process holds that run's exclusive writer lock, which no amount of retrying here will
+    /// `iteron` process holds that run's exclusive writer lock, which no amount of retrying here will
     /// change. The command is display/copy state only; nothing executes it.
     pub(super) fn prepare_resume_handoff(&mut self, run_id: &str) {
         let command = format_resume_command(run_id);

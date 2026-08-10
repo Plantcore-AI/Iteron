@@ -1,6 +1,6 @@
 // A complete, runnable Iteron workflow script.
 //
-//   core workflow run crates/workflow/examples/repo-audit.js --args '{"topic":"the rollout writer"}'
+//   iteron workflow run crates/workflow/examples/repo-audit.js --args '{"topic":"the rollout writer"}'
 //
 // `meta.phases` is declarative: the live tree lays every phase box out on the first frame, before
 // execution reaches it. `phase()` binds back to a declared box by title.

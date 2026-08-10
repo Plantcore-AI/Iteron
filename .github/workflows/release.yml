@@ -657,7 +657,7 @@ jobs:
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           target=${{ matrix.target }}
           test -x "$binary"
-          test "$("$binary" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$binary" -V)" = "iteron ${{ needs.validate.outputs.version }}"
           long_version=$("$binary" --version)
           grep -q "${{ needs.validate.outputs.commit }}" <<<"$long_version"
           grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$long_version"
@@ -691,7 +691,7 @@ jobs:
           if ($header.Length -lt 2 -or $header[0] -ne 0x4d -or $header[1] -ne 0x5a) {
             throw "iteron.exe is not a PE image"
           }
-          if ((& $binary --version) -ne "core ${{ needs.validate.outputs.version }}") {
+          if ((& $binary --version) -ne "iteron ${{ needs.validate.outputs.version }}") {
             throw "iteron.exe reported the wrong version"
           }
           & $binary --help | Out-Null
@@ -1128,7 +1128,7 @@ jobs:
             --capability-report "$canary/download/$report" \
             --target "${{ matrix.target }}" \
             --extract-dir "$canary/extract")
-          test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$binary" --version)" = "iteron ${{ needs.validate.outputs.version }}"
           "$binary" --machine-contract > "$canary/live-machine-contract.json"
           "${{ matrix.python }}" release-tools/verify_release.py contract \
             --manifest "$canary/download/release-manifest.json" \
@@ -1185,7 +1185,7 @@ jobs:
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" \
             | sh -s -- --version "$GITHUB_REF_NAME" --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "iteron ${{ needs.validate.outputs.version }}"
       - name: Verify the latest installer redirect
         shell: bash
         run: |
@@ -1195,4 +1195,4 @@ jobs:
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" \
             | sh -s -- --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "iteron ${{ needs.validate.outputs.version }}"

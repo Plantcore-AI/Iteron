@@ -174,7 +174,7 @@ pub(crate) fn hardened_args(
         "-c",
         "core.untrackedCache=false",
         "-c",
-        &format!("core.attributesFile={NULL_DEVICE}"),
+        &format!("iteron.attributesFile={NULL_DEVICE}"),
         "-c",
         "diff.external=",
         "-c",

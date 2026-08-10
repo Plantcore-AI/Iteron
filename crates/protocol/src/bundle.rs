@@ -244,18 +244,18 @@ mod tests {
 
     #[test]
     fn governs_answers_from_the_snapshot_and_cannot_disagree_with_it() {
-        let resolved = bundle(vec![policy("iteron/router")]);
-        assert!(resolved.governs(&SlotId("iteron/router".into())));
-        assert!(!resolved.governs(&SlotId("iteron/verifier".into())));
+        let resolved = bundle(vec![policy("core/router")]);
+        assert!(resolved.governs(&SlotId("core/router".into())));
+        assert!(!resolved.governs(&SlotId("core/verifier".into())));
         assert_eq!(
             resolved
-                .policy_for(&SlotId("iteron/router".into()))
+                .policy_for(&SlotId("core/router".into()))
                 .map(|p| p.policy_id.as_str()),
             Some("acme.router")
         );
         assert!(
             resolved
-                .policy_for(&SlotId("iteron/verifier".into()))
+                .policy_for(&SlotId("core/verifier".into()))
                 .is_none()
         );
     }
@@ -265,7 +265,7 @@ mod tests {
         // Distinct from "no bundle at all", which the resolver signals with `Ok(None)`.
         let resolved = bundle(Vec::new());
         assert!(resolved.validate().is_ok());
-        assert!(!resolved.governs(&SlotId("iteron/router".into())));
+        assert!(!resolved.governs(&SlotId("core/router".into())));
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn the_same_slot_twice_is_ambiguous_and_refused() {
-        let resolved = bundle(vec![policy("iteron/router"), policy("iteron/router")]);
+        let resolved = bundle(vec![policy("core/router"), policy("core/router")]);
         assert_eq!(
             resolved.validate(),
             Err(BundleResolutionError::DuplicateSlot)
@@ -291,14 +291,14 @@ mod tests {
 
     #[test]
     fn a_digest_that_is_not_64_lowercase_hex_is_refused() {
-        let mut resolved = bundle(vec![policy("iteron/router")]);
+        let mut resolved = bundle(vec![policy("core/router")]);
         resolved.digest = "z".repeat(64);
         assert!(matches!(
             resolved.validate(),
             Err(BundleResolutionError::Malformed(_))
         ));
 
-        let mut short = bundle(vec![policy("iteron/router")]);
+        let mut short = bundle(vec![policy("core/router")]);
         short.policies[0].digest = "abc".into();
         assert!(matches!(
             short.validate(),
@@ -308,14 +308,14 @@ mod tests {
 
     #[test]
     fn identity_fields_are_bounded_and_non_empty() {
-        let mut empty = bundle(vec![policy("iteron/router")]);
+        let mut empty = bundle(vec![policy("core/router")]);
         empty.bundle_id = "   ".into();
         assert!(matches!(
             empty.validate(),
             Err(BundleResolutionError::Malformed(_))
         ));
 
-        let mut over = bundle(vec![policy("iteron/router")]);
+        let mut over = bundle(vec![policy("core/router")]);
         over.policies[0].version = "9".repeat(MAX_RESOLVED_BUNDLE_FIELD_BYTES + 1);
         assert!(matches!(
             over.validate(),
@@ -340,7 +340,7 @@ mod tests {
         struct Governed;
         impl PolicyBundleResolver for Governed {
             fn active_bundle(&self) -> Result<Option<ResolvedBundle>, BundleResolutionError> {
-                Ok(Some(bundle(vec![policy("iteron/router")])))
+                Ok(Some(bundle(vec![policy("core/router")])))
             }
         }
 
@@ -352,13 +352,13 @@ mod tests {
             .active_bundle()
             .expect("resolver ok")
             .expect("a bundle");
-        assert!(governed.governs(&SlotId("iteron/router".into())));
+        assert!(governed.governs(&SlotId("core/router".into())));
         assert!(governed.validate().is_ok());
     }
 
     #[test]
     fn the_view_round_trips_through_json_without_moving() {
-        let resolved = bundle(vec![policy("iteron/router")]);
+        let resolved = bundle(vec![policy("core/router")]);
         let encoded = serde_json::to_string(&resolved).expect("serialize");
         let decoded: ResolvedBundle = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(resolved, decoded);

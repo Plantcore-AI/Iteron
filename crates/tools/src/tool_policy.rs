@@ -89,7 +89,7 @@ pub struct ToolPolicy {
 impl Default for ToolPolicy {
     fn default() -> Self {
         Self {
-            slot: SlotId("iteron/tool_policy".into()),
+            slot: SlotId("core/tool_policy".into()),
         }
     }
 }
@@ -371,7 +371,7 @@ mod tests {
             argument_trust: Trust::Workspace,
         };
         let result = ToolPolicy::propose_with(
-            &Liar(SlotId("iteron/tool_policy".into())),
+            &Liar(SlotId("core/tool_policy".into())),
             &input,
             CapabilitySet::only(Capability::TrustMutating),
         );

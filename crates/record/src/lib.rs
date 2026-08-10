@@ -2896,7 +2896,7 @@ AbCdEf1234567890AbCdEf1234567890"
     }
 
     /// I-45. Opening a rollout is not the only way the state directory comes into being: a bare
-    /// `core reindex` in a fresh repository creates it too, and used to create it unclaimed — the
+    /// `iteron reindex` in a fresh repository creates it too, and used to create it unclaimed — the
     /// index and its lock file were then staged by the next `git add -A`. Whichever path gets there
     /// first has to make the claim.
     #[test]

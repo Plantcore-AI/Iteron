@@ -296,7 +296,7 @@ pub(super) async fn apply_model_selection(
     app.model_context_window = capabilities.context_window_tokens;
     // A model chosen in the TUI is an operator decision, and until now it evaporated at exit:
     // nothing in the product ever wrote the user config (I-25). Persist it through the same single
-    // atomic writer `core config set` uses, so the next launch starts on the route the operator
+    // atomic writer `iteron config set` uses, so the next launch starts on the route the operator
     // picked (I-26). Provider and model go in ONE transaction: persisting the model alone would
     // leave the next launch pairing a new model with the previous provider.
     let persisted_provider = applied.provider_id.clone();

@@ -55,7 +55,7 @@ input, approval responses, steering, interrupt, and drain operations are explici
 submissions. Phases and tool or workflow activity are emitted as events for the
 frontend and record path.
 
-The TUI and one-shot client use the in-process versioned wire. `core serve`
+The TUI and one-shot client use the in-process versioned wire. `iteron serve`
 projects the same events onto an authenticated, bounded loopback JSONL
 transport. A managing parent supplies a fresh bearer capability through stdin
 before bind; each client's first `hello` proves that capability before any

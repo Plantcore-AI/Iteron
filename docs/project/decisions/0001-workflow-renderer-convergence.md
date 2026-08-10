@@ -38,7 +38,7 @@ code says so out loud:
 - `BlockKind::WorkflowRun`, `App::workflow_run_event`, and
   `App::workflow_run_finished` all carry `#[allow(dead_code)]` with the note
   "live at M9" — the phase-tree renderer has **no non-test caller** from the
-  interactive TUI. It is reachable only from the one-shot `core workflow run`
+  interactive TUI. It is reachable only from the one-shot `iteron workflow run`
   live loop.
 - `runtime.rs::launch_workflow` — the in-turn `Workflow` tool — passes
   `iteron_workflow::NullSink` and then blocks on `join`. Every phase, log, and

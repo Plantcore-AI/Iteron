@@ -124,7 +124,7 @@ fn unknown_or_invalid_bundle_is_fail_safe_baseline() {
         bundle_id: "bundle-2".into(),
         digest: digest('c'),
         policies: vec![ResolvedPolicy {
-            slot: iteron_protocol::slot::SlotId("iteron/context".into()),
+            slot: iteron_protocol::slot::SlotId("core/context".into()),
             policy_id: "prefer-structural-search".into(),
             version: "1".into(),
             digest: digest('d'),

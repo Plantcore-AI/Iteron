@@ -150,7 +150,7 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 
 | 步骤 | 发生什么 | 归属 | ABI 契约 |
 |---|---|---|---|
-| 1 | `core/tool_policy` 模块(可训练)决定「用 bash 跑 `cargo test`」 | **模块 / ABI 之外** | 产出 `ToolIntent { proposed_by: SlotId("iteron/tool_policy"), call: ToolUse { id, name: "bash", input: {"cmd": "cargo test"} }, purity: Effecting, admitted: CapabilitySet::none(), argument_trust }`(`crates/protocol/src/intent.rs:48-63`);工具名与参数都在 `call` 里,该类型上没有 `tool` / `args` 字段 |
+| 1 | `core/tool_policy` 模块(可训练)决定「用 bash 跑 `cargo test`」 | **模块 / ABI 之外** | 产出 `ToolIntent { proposed_by: SlotId("core/tool_policy"), call: ToolUse { id, name: "bash", input: {"cmd": "cargo test"} }, purity: Effecting, admitted: CapabilitySet::none(), argument_trust }`(`crates/protocol/src/intent.rs:48-63`);工具名与参数都在 `call` 里,该类型上没有 `tool` / `args` 字段 |
 | 2 | bash 工具实现把该意图具化为具体命令、脱敏 `arguments` 投影与 `workspace` | **模块 / ABI 之外** | 此步尚未铸出任何 ABI 契约值:`EffectProposal.admitted` 按定义是 gate 的放行结果,模块 MUST NOT 自行铸造(§4.2.3) |
 | 3 | 能力准入 (K2) 求值:`CodeExecuting` 非无人值守类,须隔离无 egress 单元 + 按 mode 决策;放行后由内核侧铸出提案 | **内核** | 准入判决 + `EffectProposal { id, tool_use_id, tool, admitted: CapabilitySet, arguments, workspace }`(`crates/protocol/src/effect.rs:58-79`);`admitted` 是**集合**,不是能力序上的一个点 |
 | 4 | 若准入,effect broker (K3) 先 fsync `EffectIntent`,再在沙箱中执行 | **内核** | 执行 + 回 `ArtifactRef` |

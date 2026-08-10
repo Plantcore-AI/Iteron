@@ -502,7 +502,7 @@ Tasks:
 5. Resolve effective config once at run start and store a canonical digest plus redacted values in
    `TunablesSnapshot`.
 6. Persist per-turn overrides as versioned durable events.
-7. Expose `core config explain --effective` with value, source, ceiling and inactive reason.
+7. Expose `iteron config explain --effective` with value, source, ceiling and inactive reason.
 8. Remove or reclassify the current false `memory_enable`, `max_turns` and `max_wall_secs`
    metadata.
 9. Keep repository config tighten-only and incapable of granting authority, hooks, provider or MCP

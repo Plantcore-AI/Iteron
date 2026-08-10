@@ -841,7 +841,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
 
     fn admitted() -> AdmittedRegistryTool {
         let mut intent = ToolIntent::denied(
-            iteron_protocol::slot::SlotId("iteron/tool_policy".into()),
+            iteron_protocol::slot::SlotId("core/tool_policy".into()),
             ToolUse {
                 id: "provider-call".into(),
                 name: "edit".into(),

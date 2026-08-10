@@ -1,1 +1,1 @@
-{"proposed_by":"iteron/tool_policy","call":{"id":"toolu_1","name":"read_file","input":{"path":"README.md"}},"purity":"pure","admitted":["read_only"],"argument_trust":"workspace"}
+{"proposed_by":"core/tool_policy","call":{"id":"toolu_1","name":"read_file","input":{"path":"README.md"}},"purity":"pure","admitted":["read_only"],"argument_trust":"workspace"}

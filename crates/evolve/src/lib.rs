@@ -201,31 +201,31 @@ impl StrategySlot {
     }
 
     pub fn router() -> Self {
-        Self("iteron/router".into())
+        Self("core/router".into())
     }
     pub fn planner() -> Self {
-        Self("iteron/planner".into())
+        Self("core/planner".into())
     }
     pub fn context() -> Self {
-        Self("iteron/context".into())
+        Self("core/context".into())
     }
     pub fn memory() -> Self {
-        Self("iteron/memory".into())
+        Self("core/memory".into())
     }
     pub fn scheduler() -> Self {
-        Self("iteron/scheduler".into())
+        Self("core/scheduler".into())
     }
     pub fn tool_policy() -> Self {
-        Self("iteron/tool_policy".into())
+        Self("core/tool_policy".into())
     }
     pub fn verifier() -> Self {
-        Self("iteron/verifier".into())
+        Self("core/verifier".into())
     }
     pub fn model_router() -> Self {
-        Self("iteron/model_router".into())
+        Self("core/model_router".into())
     }
     pub fn collaboration() -> Self {
-        Self("iteron/collaboration".into())
+        Self("core/collaboration".into())
     }
 }
 

@@ -733,7 +733,7 @@ impl std::error::Error for RouterSlotError {}
 
 /// The slot identity this module implements.
 pub fn router_slot() -> SlotId {
-    SlotId("iteron/router".into())
+    SlotId("core/router".into())
 }
 
 /// Hand-written baseline implementation of `core/router`: [`Decomposer::route`] behind the seam.
@@ -770,7 +770,7 @@ impl RouterStrategy {
         input: &RouterSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<RouterProposal, RouterSlotError> {
-        if slot.slot().as_persisted_str() != "iteron/router" {
+        if slot.slot().as_persisted_str() != "core/router" {
             return Err(RouterSlotError::WrongSlot);
         }
         input.validate()?;
@@ -1143,7 +1143,7 @@ mod router_slot_tests {
 
         assert_eq!(
             RouterStrategy::route_with(
-                &Impostor(SlotId("iteron/planner".into())),
+                &Impostor(SlotId("core/planner".into())),
                 &broad(),
                 read_only(),
             ),
@@ -1155,10 +1155,10 @@ mod router_slot_tests {
     fn the_slot_identity_is_nameable_by_a_policy_bundle() {
         let slot = router_slot();
         assert!(slot.validate().is_ok());
-        assert_eq!(slot.as_persisted_str(), "iteron/router");
+        assert_eq!(slot.as_persisted_str(), "core/router");
         assert_eq!(
             serde_json::to_value(&slot).unwrap(),
-            serde_json::json!("iteron/router")
+            serde_json::json!("core/router")
         );
     }
 

@@ -45,7 +45,7 @@ fn governed_bundle() -> ResolvedBundle {
         bundle_id: "acme-2026-07".into(),
         digest: digest('b'),
         policies: vec![ResolvedPolicy {
-            slot: SlotId("iteron/tool_policy".into()),
+            slot: SlotId("core/tool_policy".into()),
             policy_id: "acme.tool_policy".into(),
             version: "2.1.0".into(),
             digest: digest('a'),
@@ -97,7 +97,7 @@ fn agents_can_consume_the_port_without_naming_the_evolution_crate() {
     let boot = Boot { bundles: &resolver };
     assert_eq!(
         boot.governed_slots().expect("resolver ok"),
-        vec![SlotId("iteron/tool_policy".into())]
+        vec![SlotId("core/tool_policy".into())]
     );
 }
 
@@ -131,11 +131,11 @@ fn the_resolved_view_answers_which_slots_are_governed_without_a_second_call() {
     // it was asked about. An earlier shape put a second fallible `governs` on the port itself, and
     // nothing tied the two answers together.
     let bundle = governed_bundle();
-    assert!(bundle.governs(&SlotId("iteron/tool_policy".into())));
-    assert!(!bundle.governs(&SlotId("iteron/router".into())));
+    assert!(bundle.governs(&SlotId("core/tool_policy".into())));
+    assert!(!bundle.governs(&SlotId("core/router".into())));
     assert_eq!(
         bundle
-            .policy_for(&SlotId("iteron/tool_policy".into()))
+            .policy_for(&SlotId("core/tool_policy".into()))
             .map(|p| p.version.as_str()),
         Some("2.1.0")
     );

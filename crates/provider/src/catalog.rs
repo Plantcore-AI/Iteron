@@ -4812,7 +4812,7 @@ pub struct ModelRouterStrategy {
 impl Default for ModelRouterStrategy {
     fn default() -> Self {
         Self {
-            slot: iteron_protocol::slot::SlotId("iteron/model_router".into()),
+            slot: iteron_protocol::slot::SlotId("core/model_router".into()),
         }
     }
 }
@@ -4836,7 +4836,7 @@ impl ModelRouterStrategy {
         input: &ModelRouterObservation,
         ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ModelRouteProposal, ModelRouterError> {
-        if slot.slot().as_persisted_str() != "iteron/model_router" {
+        if slot.slot().as_persisted_str() != "core/model_router" {
             return Err(ModelRouterError::WrongSlot);
         }
         input.validate()?;
@@ -4946,7 +4946,7 @@ pub struct BoundRouteOnlyModelRouter {
 impl Default for BoundRouteOnlyModelRouter {
     fn default() -> Self {
         Self {
-            slot: iteron_protocol::slot::SlotId("iteron/model_router".into()),
+            slot: iteron_protocol::slot::SlotId("core/model_router".into()),
         }
     }
 }
@@ -5099,7 +5099,7 @@ mod model_router_slot_tests {
 
     #[test]
     fn a_slot_cannot_conjure_a_route_the_caller_never_resolved_however_it_is_implemented() {
-        let slot = Conjuring(SlotId("iteron/model_router".into()));
+        let slot = Conjuring(SlotId("core/model_router".into()));
         assert_eq!(
             ModelRouterStrategy::route_with(&slot, &single(None, None), ceiling()),
             Err(ModelRouterError::RouteWithoutEvidence),
@@ -5128,7 +5128,7 @@ mod model_router_slot_tests {
                 }
             }
         }
-        let slot = GreedyButHonest(SlotId("iteron/model_router".into()));
+        let slot = GreedyButHonest(SlotId("core/model_router".into()));
         let proposal = ModelRouterStrategy::route_with(&slot, &single(None, None), ceiling())
             .expect("route-a is resolved");
         assert!(proposal.eligible.contains(Capability::ReadOnly));
@@ -5148,7 +5148,7 @@ mod model_router_slot_tests {
                 panic!("a slot in the wrong seat must never be consulted");
             }
         }
-        let slot = Impostor(SlotId("iteron/tool_policy".into()));
+        let slot = Impostor(SlotId("core/tool_policy".into()));
         assert_eq!(
             ModelRouterStrategy::route_with(&slot, &single(None, None), ceiling()),
             Err(ModelRouterError::WrongSlot)
@@ -5204,7 +5204,7 @@ mod model_router_slot_tests {
                 }
             }
         }
-        let slot = Babbling(SlotId("iteron/model_router".into()));
+        let slot = Babbling(SlotId("core/model_router".into()));
         assert!(matches!(
             ModelRouterStrategy::route_with(&slot, &single(None, None), ceiling()),
             Err(ModelRouterError::InvalidDecision(_))

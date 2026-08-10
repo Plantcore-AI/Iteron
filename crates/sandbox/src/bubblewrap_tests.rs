@@ -30,7 +30,7 @@ impl LiveFixture {
             .unwrap()
             .join("target")
             .join(format!(
-                "core-bwrap-{label}-{}-{nonce:x}",
+                "iteron-bwrap-{label}-{}-{nonce:x}",
                 std::process::id()
             ));
         let workspace = root.join("workspace");
@@ -193,7 +193,7 @@ fn capability_probe_requires_native_descriptor_binding() {
     let args = bwrap_probe_args(11);
     assert!(
         args.windows(3)
-            .any(|window| window == ["--bind-fd", "11", "/tmp/core-bwrap-fd-probe"]),
+            .any(|window| window == ["--bind-fd", "11", "/tmp/iteron-bwrap-fd-probe"]),
         "an older bwrap without --bind-fd must fail the executable capability probe"
     );
 }
@@ -328,7 +328,10 @@ fn toolchain_mounts_are_narrow_read_only_and_exclude_credentials() {
     let root = std::env::current_dir()
         .unwrap()
         .join("target")
-        .join(format!("core-bwrap-args-{}-{nonce:x}", std::process::id()));
+        .join(format!(
+            "iteron-bwrap-args-{}-{nonce:x}",
+            std::process::id()
+        ));
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".cargo/registry")).unwrap();
     std::fs::create_dir_all(home.join(".npm/_cacache")).unwrap();
@@ -409,7 +412,7 @@ fn toolchain_mount_ignores_an_allowlisted_symlink_that_escapes_home() {
         .unwrap()
         .join("target")
         .join(format!(
-            "core-bwrap-symlink-{}-{nonce:x}",
+            "iteron-bwrap-symlink-{}-{nonce:x}",
             std::process::id()
         ));
     let home = root.join("home");

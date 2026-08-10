@@ -21,12 +21,12 @@ use iteron_protocol::slot::SlotId;
 
 /// Identities a vertical pack could plausibly mint, plus the built-ins.
 const CANDIDATES: &[&str] = &[
-    "iteron/tool_policy",
-    "iteron/context",
-    "iteron/router",
-    "iteron/planner",
-    "iteron/memory",
-    "iteron/scheduler",
+    "core/tool_policy",
+    "core/context",
+    "core/router",
+    "core/planner",
+    "core/memory",
+    "core/scheduler",
     "acme-verticals/triage_router",
     "acme/x",
     "a1/b2",
@@ -69,11 +69,7 @@ fn the_subset_direction_holds_for_the_shapes_that_used_to_break_it() {
 fn the_reverse_direction_is_deliberately_not_guaranteed() {
     // The evolve grammar is wider: it allows `.` and any number of `/`. That asymmetry is
     // intentional and safe, and is asserted here so nobody "fixes" it into a claim of equality.
-    for evolve_only in [
-        "db/query.planner",
-        "acme/billing/router",
-        "iteron/planner.v2",
-    ] {
+    for evolve_only in ["db/query.planner", "acme/billing/router", "core/planner.v2"] {
         assert!(
             StrategySlot::new(evolve_only).is_ok(),
             "{evolve_only} should still be persistable by a bundle"

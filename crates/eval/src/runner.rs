@@ -801,7 +801,7 @@ async fn run_cell(
     };
 
     if cell.run_status != RunStatus::Completed {
-        cell.failure_phase = Some("core".into());
+        cell.failure_phase = Some("iteron".into());
         return cell;
     }
 
@@ -864,7 +864,7 @@ async fn attach_two_sided_verdict(
     let Some(candidate_diff) = cell.candidate_diff.as_deref() else {
         if matches!(
             cell.failure_phase.as_deref(),
-            Some("core" | "iteron_spawn" | "iteron_contract" | "iteron_timeout")
+            Some("iteron" | "iteron_spawn" | "iteron_contract" | "iteron_timeout")
         ) {
             return cell;
         }

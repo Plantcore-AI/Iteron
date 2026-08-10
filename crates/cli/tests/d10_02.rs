@@ -2,7 +2,7 @@
 //! D10-02 — the operator `!cmd` inline shell must pass the SAME capability/effect broker as the
 //! agent's own `bash` tool, instead of spawning a process directly.
 //!
-//! This is a process-level PTY test: it launches the real `core` TUI in **Plan mode** — a HARD
+//! This is a process-level PTY test: it launches the real `iteron` TUI in **Plan mode** — a HARD
 //! read-only overlay that `iteron_protocol::gate` denies for every capability above `ReadOnly`,
 //! including `CodeExecuting` — and then types `!echo BROKER-$((21+21))` at the composer.
 //!
@@ -33,7 +33,7 @@ const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_REPLY: &[u8] = b"\x1b[?1;2c";
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
-/// An isolated HOME + repo + rollout tree for one hermetic `core` launch.
+/// An isolated HOME + repo + rollout tree for one hermetic `iteron` launch.
 struct Scratch {
     root: PathBuf,
 }

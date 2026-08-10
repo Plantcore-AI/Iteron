@@ -893,7 +893,7 @@ pub(super) async fn handle_registered_command(
                 rows.push(kv(key, &value));
             }
             rows.push(block::PanelRow::Note(
-                "persist a choice with `core config set <key> <value>`".into(),
+                "persist a choice with `iteron config set <key> <value>`".into(),
             ));
             app.panel("⚙", "config", rows);
         }

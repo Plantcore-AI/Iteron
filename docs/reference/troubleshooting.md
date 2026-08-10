@@ -11,7 +11,7 @@ core -p "Describe the failure"
 ## Provider or model is grey
 
 Check `/model` and `/status`, then verify that the provider's credential variable
-is present in the `core` process. Catalog presence does not prove account
+is present in the `iteron` process. Catalog presence does not prove account
 entitlement. Use `/model retry MODEL_ID` only when you deliberately want to retry
 one unavailable route.
 
