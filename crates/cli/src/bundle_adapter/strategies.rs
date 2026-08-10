@@ -331,3 +331,79 @@ impl BoundModelRouter {
 fn json<T: serde::Serialize>(value: T, fallback: SlotOutcome) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(fallback.decision)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_protocol::slot::decide_narrowed;
+
+    fn bound(slots: &CompiledSlots) -> Vec<(CoreSlot, &Arc<dyn StrategySlot>)> {
+        vec![
+            (CoreSlot::Context, &slots.context),
+            (CoreSlot::ToolPolicy, &slots.tool_policy),
+            (CoreSlot::Memory, &slots.memory),
+            (CoreSlot::Router, &slots.router),
+            (CoreSlot::Planner, &slots.planner),
+            (CoreSlot::Collaboration, &slots.collaboration),
+            (CoreSlot::Scheduler, &slots.scheduler),
+            (CoreSlot::Verifier, &slots.verifier),
+            (CoreSlot::ModelRouter, &slots.model_router),
+        ]
+    }
+
+    /// Every core slot is bound, at the composition root, to an implementation that claims that
+    /// same identity.
+    ///
+    /// This is the claim the replaceable-strategy design rests on, and nothing else asserted it.
+    /// A slot quietly reverting to an unbound or mis-identified implementation would hollow out
+    /// the seam while every other test kept passing, which is exactly how the specification came
+    /// to describe this seam as empty long after it had been filled.
+    #[test]
+    fn every_core_slot_is_bound_to_an_implementation_claiming_that_slot() {
+        let slots = CompiledSlots::baseline();
+        let bound = bound(&slots);
+
+        // Exhaustive over the registry, not over whichever fields someone remembered to list.
+        let listed: Vec<_> = bound.iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(listed, CoreSlot::ALL.to_vec());
+
+        for (slot, implementation) in bound {
+            assert_eq!(
+                implementation.slot(),
+                &SlotId(slot.as_str().to_owned()),
+                "`{}` is bound to an implementation that reports a different identity",
+                slot.as_str()
+            );
+        }
+    }
+
+    /// The narrowing contract, exercised against the production implementations.
+    ///
+    /// Until now this was proven only against a test double written to over-reach on purpose. A
+    /// slot is a policy and never a source of authority, so no production implementation may
+    /// return more than the ceiling it was handed, including when that ceiling is empty.
+    #[test]
+    fn no_production_slot_widens_the_ceiling_it_was_given() {
+        let slots = CompiledSlots::baseline();
+        for (slot, implementation) in bound(&slots) {
+            for ceiling in [
+                CapabilitySet::none(),
+                CapabilitySet::only(Capability::ReadOnly),
+            ] {
+                let outcome = decide_narrowed(
+                    implementation.as_ref(),
+                    &SlotObservation {
+                        slot: SlotId(slot.as_str().to_owned()),
+                        ceiling,
+                        payload: serde_json::Value::Null,
+                    },
+                );
+                assert!(
+                    outcome.admitted.is_subset_of(ceiling),
+                    "`{}` admitted capabilities outside its ceiling",
+                    slot.as_str()
+                );
+            }
+        }
+    }
+}

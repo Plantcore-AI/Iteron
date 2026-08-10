@@ -542,7 +542,17 @@ mod tests {
             .expect("dynamic workflow planner is pinned beside the investigator");
         assert!(planner.tools.narrow().is_empty());
         assert_eq!(planner.budget.max_turns, 1);
-        assert_eq!(cat.defs().len(), 2);
+        // Name the built-ins rather than counting them: a bare count says nothing about which
+        // agent arrived, and the isolated writer is the one the workspace-boundary registry admits.
+        let names: Vec<_> = cat.defs().iter().map(|def| def.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "generic",
+                crate::ULTRACODE_PLANNER_NAME,
+                crate::ISOLATED_WRITER_NAME
+            ]
+        );
     }
 
     #[test]

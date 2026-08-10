@@ -137,7 +137,23 @@ pub struct ResolvedBundle { pub bundle_id: String, pub digest: String, pub polic
 
 ### 5.7 诚实的现状 (R2)
 
-**今天仓库里没有一条生产用的 slot。** 对 `StrategySlot` trait 的**唯一**实现是 `crates/protocol/src/slot.rs:171-188` 的测试替身 `Greedy`，它的存在只为证明 §5.4 的收窄契约对一个故意越权的实现同样成立。没有任何生产代码构造 `Arc<dyn StrategySlot>`；`crates/evolve/src/lib.rs:156-182` 的九个构造器铸造的是**身份**，不是实现。因此本节读作**目标契约**，不是已交付一致性的声明。
+**九条核心槽都已有生产实现，并在合成根被真实装配。** 本段此前称「今天仓库里没有一条生产用的 slot、唯一实现是测试替身 `Greedy`、没有任何生产代码构造 `Arc<dyn StrategySlot>`」——**这三句都已不再成立**，是实现推进后未同步更新的陈述。现状是：
+
+| Slot | 生产实现 |
+|---|---|
+| `core/router` | `crates/agents/src/decompose.rs` `RouterStrategy` |
+| `core/planner` | `crates/agents/src/planner.rs` `PlannerStrategy` |
+| `core/context` | `crates/ctx/src/context_strategy.rs` `ContextStrategy` |
+| `core/memory` | `crates/ctx/src/memory.rs` `MemoryRecallStrategy` |
+| `core/scheduler` | `crates/sched/src/strategy.rs` `SchedulerStrategy` |
+| `core/tool_policy` | `crates/tools/src/tool_policy.rs` `ToolPolicy` |
+| `core/verifier` | `crates/verify/src/strategy.rs` `VerifierStrategy` |
+| `core/model_router` | `crates/provider/src/catalog.rs` `ModelRouterStrategy` |
+| `core/collaboration` | `crates/workflow/src/collaboration.rs` `CollaborationStrategy` |
+
+九者由 `crates/cli/src/bundle_adapter/strategies.rs` 的 `CompiledSlots` 持成 `Arc<dyn StrategySlot>`，经 `crates/cli/src/runtime/agent_config.rs` 进入 Agent 并由子代理继承；每个域都经 `decide_narrowed` 调用。绑定与身份由 `crates/cli/src/bundle_adapter/strategies.rs` 的两条 conformance 测试钉死，其中一条把 §5.4 的收窄契约**在这九条生产实现上**而非仅在测试替身上验证。
+
+**仍然只是目标契约的部分：** `crates/evolve/src/lib.rs` 的九个构造器铸造的仍是**身份**而非实现；一条槽被外部 policy bundle **替换**掉的完整链路（晋升、签名、回滚）属 §6，尚未打通。因此本节的端口语义是已交付的，晋升语义不是。
 
 **被冻结的东西要说清楚。** 冻结的是端口本身、两个载荷信封的字段集（`crates/protocol/tests/abi_freeze.rs:536-543`），以及 `SlotId` 的文法与它相对 evolve 侧的子集方向。**没有**被冻结的是：任何一条槽的 `payload` / `decision` 具体形状（它们是 `serde_json::Value`，本地定义、本地版本化，跨槽不通用），以及任何一条 policy 的内容。
 
