@@ -156,6 +156,10 @@ impl ManagedCatalog {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn spec(&self, identity: &McpToolIdentity) -> Option<&ToolSpec> {
         self.entry(identity).map(|entry| &entry.spec)
     }

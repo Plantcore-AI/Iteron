@@ -340,21 +340,19 @@ impl ErasureReceipt {
         let terminal_shape = match self.state {
             ErasureState::Verified => {
                 self.failure.is_none()
-                    && match (self.request.target.kind(), self.verification.as_ref()) {
+                    && matches!(
+                        (self.request.target.kind(), self.verification.as_ref()),
                         (
                             ErasureOperationKind::ExactSession,
-                            Some(ErasureVerification::ExactSessionAbsent),
-                        ) => true,
-                        (
+                            Some(ErasureVerification::ExactSessionAbsent)
+                        ) | (
                             ErasureOperationKind::RetentionPrune,
-                            Some(ErasureVerification::RetentionApplied { .. }),
-                        ) => true,
-                        (
+                            Some(ErasureVerification::RetentionApplied { .. })
+                        ) | (
                             ErasureOperationKind::ContentRevocation,
-                            Some(ErasureVerification::ContentRevoked { .. }),
-                        ) => true,
-                        _ => false,
-                    }
+                            Some(ErasureVerification::ContentRevoked { .. })
+                        )
+                    )
             }
             ErasureState::Failed => self.verification.is_none() && self.failure.is_some(),
             _ => self.verification.is_none() && self.failure.is_none(),

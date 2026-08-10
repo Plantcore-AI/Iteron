@@ -65,7 +65,7 @@ impl AsyncWrite for PtyInput {
         let this = self.get_mut();
         loop {
             let mut ready = ready!(this.writer.poll_write_ready(context))?;
-            match ready.try_io(|inner| (&*inner.get_ref()).write(buffer)) {
+            match ready.try_io(|inner| inner.get_ref().write(buffer)) {
                 Ok(result) => return Poll::Ready(result),
                 Err(_) => continue,
             }
@@ -96,7 +96,7 @@ impl AsyncRead for PtyOutput {
             let mut ready = ready!(this.reader.poll_read_ready(context))?;
             let result = ready.try_io(|inner| {
                 let target = buffer.initialize_unfilled();
-                (&*inner.get_ref()).read(target)
+                inner.get_ref().read(target)
             });
             match result {
                 Ok(Ok(read)) => {

@@ -679,9 +679,7 @@ fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
         return None;
     }
     let mut payload = chain.payload;
-    let Some(runs_dir) = path.parent() else {
-        return None;
-    };
+    let runs_dir = path.parent()?;
     if crate::content_store::hydrate_event_payload(
         runs_dir,
         &TenantId(chain.tenant.clone()),

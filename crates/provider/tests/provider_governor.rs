@@ -13,8 +13,10 @@ fn governor(policy: GovernorPolicy) -> ProviderGovernor {
 
 #[test]
 fn unknown_quota_conservatively_reduces_concurrency() {
-    let mut policy = GovernorPolicy::default();
-    policy.max_in_flight_per_route = 8;
+    let policy = GovernorPolicy {
+        max_in_flight_per_route: 8,
+        ..Default::default()
+    };
     let governor = governor(policy);
     let now = Instant::now();
     let first = match governor.admit("provider:model", now) {
@@ -34,12 +36,14 @@ fn unknown_quota_conservatively_reduces_concurrency() {
 
 #[test]
 fn exhausted_quota_defers_only_to_the_resolved_wait_bound() {
-    let mut policy = GovernorPolicy::default();
-    policy.rate_admission = RateAdmissionPolicy {
-        minimum_remaining_requests: 1,
-        minimum_remaining_tokens: 10,
-        reset_wait_max: Duration::from_secs(30),
-        unknown_quota: UnknownQuotaPolicy::Reject,
+    let policy = GovernorPolicy {
+        rate_admission: RateAdmissionPolicy {
+            minimum_remaining_requests: 1,
+            minimum_remaining_tokens: 10,
+            reset_wait_max: Duration::from_secs(30),
+            unknown_quota: UnknownQuotaPolicy::Reject,
+        },
+        ..Default::default()
     };
     let governor = governor(policy);
     let now = Instant::now();
@@ -68,12 +72,14 @@ fn exhausted_quota_defers_only_to_the_resolved_wait_bound() {
 
 #[test]
 fn circuit_opens_half_opens_and_closes_without_raising_the_ceiling() {
-    let mut policy = GovernorPolicy::default();
-    policy.circuit = CircuitPolicy {
-        failure_threshold: 2,
-        open_for: Duration::from_secs(5),
-        half_open_probes: 1,
-        success_threshold: 1,
+    let policy = GovernorPolicy {
+        circuit: CircuitPolicy {
+            failure_threshold: 2,
+            open_for: Duration::from_secs(5),
+            half_open_probes: 1,
+            success_threshold: 1,
+        },
+        ..Default::default()
     };
     let governor = governor(policy);
     let now = Instant::now();
@@ -102,11 +108,13 @@ fn circuit_opens_half_opens_and_closes_without_raising_the_ceiling() {
 
 #[test]
 fn failover_requires_both_typed_class_and_dispatch_state() {
-    let mut policy = GovernorPolicy::default();
-    policy.failover = BTreeSet::from([FailoverRule {
-        class: FailoverClass::RateLimited,
-        point: FailurePoint::ProvenTerminal,
-    }]);
+    let policy = GovernorPolicy {
+        failover: BTreeSet::from([FailoverRule {
+            class: FailoverClass::RateLimited,
+            point: FailurePoint::ProvenTerminal,
+        }]),
+        ..Default::default()
+    };
     let governor = governor(policy);
     let error = ProviderError::Api {
         status: 429,
@@ -125,8 +133,10 @@ fn failover_requires_both_typed_class_and_dispatch_state() {
 #[test]
 fn route_controls_fail_closed_when_adapter_does_not_attest_them() {
     let capabilities = ProviderControlCapabilities::default();
-    let mut controls = ProviderRequestControls::default();
-    controls.verbosity = ResponseVerbosity::Detailed;
+    let mut controls = ProviderRequestControls {
+        verbosity: ResponseVerbosity::Detailed,
+        ..Default::default()
+    };
     assert!(capabilities.validate(&controls).is_err());
     controls.verbosity = ResponseVerbosity::ModelDefault;
     controls.prompt_cache.breakpoint = CacheBreakpoint::Rolling;

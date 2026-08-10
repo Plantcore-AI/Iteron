@@ -15,6 +15,18 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub use core_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+/// One in-flight pure tool call: its index among the turn's blocks, the call, the task running it,
+/// and when that task started. Named because the inline tuple is unreadable at the use site.
+type PureToolInFlight = (
+    usize,
+    ToolUse,
+    tokio::task::JoinHandle<(
+        tool_output_spill::ManagedToolResult,
+        Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
+    )>,
+    Instant,
+);
+
 mod agent_config;
 mod agent_loop;
 mod budget_control;
@@ -2755,15 +2767,7 @@ impl Agent {
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
-            let mut pure: Vec<(
-                usize,
-                ToolUse,
-                tokio::task::JoinHandle<(
-                    tool_output_spill::ManagedToolResult,
-                    Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
-                )>,
-                Instant,
-            )> = Vec::new();
+            let mut pure: Vec<PureToolInFlight> = Vec::new();
             // How many pure calls could not take a permit the instant they were admitted. They are
             // still dispatched concurrently — they wait in the governor's queue — but the count is
             // the honest report that the cap, not the workload, shaped this turn's tool phase.
@@ -3819,11 +3823,11 @@ impl Agent {
                         self.commit_admitted_tool_result(
                             ticket,
                             &tu.name,
-                            &r,
+                            r,
                             overlap_ms.min(r.latency_ms),
                         )?;
                         any_error |= r.is_error;
-                        self.ui(tool_end_ui(&tu, &r));
+                        self.ui(tool_end_ui(&tu, r));
                         if managed.spilled {
                             // Pure-tool memoization happens inside the registry, before this owner
                             // sees the result. Invalidate it so the raw oversized value is not kept
@@ -4805,11 +4809,11 @@ impl Agent {
                 turn_id,
                 effect_id.clone(),
                 &call.name,
-                &result,
+                result,
                 definite,
             );
             if !definite {
-                if is_interrupted_tool_result(&result) {
+                if is_interrupted_tool_result(result) {
                     self.tool_lifecycle_event(
                         "tool.call_cancelled",
                         turn_id,
@@ -4828,7 +4832,7 @@ impl Agent {
                 );
                 unknown = unknown.saturating_add(1);
                 self.ledger.tool(result.latency_ms, 0, true);
-                self.ui(tool_end_ui(&call, &result));
+                self.ui(tool_end_ui(&call, result));
                 tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
                 continue;
             }
@@ -4854,7 +4858,7 @@ impl Agent {
                 self.failed_actions
                     .insert(action_signature, result.content.clone());
             }
-            self.ui(tool_end_ui(&call, &result));
+            self.ui(tool_end_ui(&call, result));
             tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
             results[index] = Some(managed.result);
         }

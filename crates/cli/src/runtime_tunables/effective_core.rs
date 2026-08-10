@@ -398,8 +398,7 @@ fn decode_context_policies(
 
     let memory = view.object("memory_budgets")?;
     let materialization = core_ctx::ContextMaterializationPolicy {
-        max_bytes: u32::try_from(core_protocol::context::MAX_CONTEXT_GRANT_BYTES)
-            .unwrap_or(u32::MAX),
+        max_bytes: core_protocol::context::MAX_CONTEXT_GRANT_BYTES,
         memory: core_ctx::MemBudget {
             recall_bytes: usizev(
                 integer_field(memory, "memory_budgets", "recall_bytes")?,

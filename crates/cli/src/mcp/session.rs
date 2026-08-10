@@ -126,6 +126,10 @@ impl McpRuntimeControl {
     }
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one supervised server is held per session, not in a hot collection, so boxing would add an indirection to every access to save nothing measurable"
+)]
 enum ManagedServer {
     Stdio(ManagedStdioServer),
     Http(ManagedHttpServer),

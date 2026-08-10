@@ -209,9 +209,10 @@ impl ProviderGovernor {
                 return Admission::Rejected(AdmissionReason::CircuitHalfOpen);
             }
         }
-        match quota_decision(route, &self.inner.policy.rate_admission, now, &mut ceiling) {
-            Some(admission) => return admission,
-            None => {}
+        if let Some(admission) =
+            quota_decision(route, &self.inner.policy.rate_admission, now, &mut ceiling)
+        {
+            return admission;
         }
         if route.in_flight >= ceiling {
             return Admission::Rejected(AdmissionReason::Ceiling);

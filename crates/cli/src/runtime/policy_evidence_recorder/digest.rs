@@ -3,14 +3,8 @@ use sha2::{Digest, Sha256};
 
 const OPPORTUNITY_ID_DOMAIN: &[u8] = b"core-policy-opportunity-id-v1\0";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct OrderedOpportunityDigest(PolicyOpportunityJoinDigest);
-
-impl Default for OrderedOpportunityDigest {
-    fn default() -> Self {
-        Self(PolicyOpportunityJoinDigest::default())
-    }
-}
 
 impl OrderedOpportunityDigest {
     pub(super) fn append(&mut self, opportunity: &PolicyOpportunityId) {

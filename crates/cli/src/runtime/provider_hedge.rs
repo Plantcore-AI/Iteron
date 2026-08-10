@@ -36,6 +36,10 @@ struct PreparedAttempt {
     permit: Option<AttemptPermit>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one terminal outcome exists per attempt and is consumed immediately; boxing it would move the ticket and permit behind a pointer for no lifetime benefit"
+)]
 enum AttemptTerminal {
     Suppressed {
         index: u8,

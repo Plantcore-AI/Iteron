@@ -77,55 +77,41 @@ pub(crate) fn instantiate(slot: CoreSlot, flavor: ImplementationFlavor) -> Arc<d
         (CoreSlot::Context, ImplementationFlavor::Baseline) => {
             Arc::new(core_ctx::ContextStrategy::default())
         }
-        (CoreSlot::Context, ImplementationFlavor::Alternative) => {
-            Arc::new(MinimalContext::default())
-        }
+        (CoreSlot::Context, ImplementationFlavor::Alternative) => Arc::new(MinimalContext),
         (CoreSlot::ToolPolicy, ImplementationFlavor::Baseline) => {
             Arc::new(core_tools::ToolPolicy::default())
         }
-        (CoreSlot::ToolPolicy, ImplementationFlavor::Alternative) => {
-            Arc::new(ReadOnlyToolPolicy::default())
-        }
+        (CoreSlot::ToolPolicy, ImplementationFlavor::Alternative) => Arc::new(ReadOnlyToolPolicy),
         (CoreSlot::Memory, ImplementationFlavor::Baseline) => {
             Arc::new(core_ctx::MemoryRecallStrategy::default())
         }
-        (CoreSlot::Memory, ImplementationFlavor::Alternative) => {
-            Arc::new(SingleRecallMemory::default())
-        }
+        (CoreSlot::Memory, ImplementationFlavor::Alternative) => Arc::new(SingleRecallMemory),
         (CoreSlot::Router, ImplementationFlavor::Baseline) => {
             Arc::new(core_agents::RouterStrategy::default())
         }
-        (CoreSlot::Router, ImplementationFlavor::Alternative) => Arc::new(DirectRouter::default()),
+        (CoreSlot::Router, ImplementationFlavor::Alternative) => Arc::new(DirectRouter),
         (CoreSlot::Planner, ImplementationFlavor::Baseline) => {
             Arc::new(core_agents::PlannerStrategy::default())
         }
-        (CoreSlot::Planner, ImplementationFlavor::Alternative) => {
-            Arc::new(SingleLeafPlanner::default())
-        }
+        (CoreSlot::Planner, ImplementationFlavor::Alternative) => Arc::new(SingleLeafPlanner),
         (CoreSlot::Collaboration, ImplementationFlavor::Baseline) => {
             Arc::new(core_workflow::CollaborationStrategy::default())
         }
         (CoreSlot::Collaboration, ImplementationFlavor::Alternative) => {
-            Arc::new(SerialCollaboration::default())
+            Arc::new(SerialCollaboration)
         }
         (CoreSlot::Scheduler, ImplementationFlavor::Baseline) => {
             Arc::new(core_sched::SchedulerStrategy::default())
         }
-        (CoreSlot::Scheduler, ImplementationFlavor::Alternative) => {
-            Arc::new(SerialScheduler::default())
-        }
+        (CoreSlot::Scheduler, ImplementationFlavor::Alternative) => Arc::new(SerialScheduler),
         (CoreSlot::Verifier, ImplementationFlavor::Baseline) => {
             Arc::new(core_verify::VerifierStrategy::default())
         }
-        (CoreSlot::Verifier, ImplementationFlavor::Alternative) => {
-            Arc::new(StrictVerifier::default())
-        }
+        (CoreSlot::Verifier, ImplementationFlavor::Alternative) => Arc::new(StrictVerifier),
         (CoreSlot::ModelRouter, ImplementationFlavor::Baseline) => {
             Arc::new(core_provider::catalog::ModelRouterStrategy::default())
         }
-        (CoreSlot::ModelRouter, ImplementationFlavor::Alternative) => {
-            Arc::new(BoundModelRouter::default())
-        }
+        (CoreSlot::ModelRouter, ImplementationFlavor::Alternative) => Arc::new(BoundModelRouter),
     }
 }
 

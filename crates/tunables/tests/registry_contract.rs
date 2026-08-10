@@ -1054,7 +1054,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     // (`crates/provider/src/anthropic.rs` attests the 300s and 3600s tiers), so the claim is
     // grounded. What must hold instead is the shape that makes it safe: the operator may ask,
     // and a provider-attested binding bounds what the operator may receive.
-    let prompt_cache_bindings = &family("prompt_cache_ttl_breakpoint_strategy").source.bindings;
+    let prompt_cache_bindings = &family("prompt_cache_ttl_breakpoint_strategy")
+        .source
+        .bindings;
     assert!(
         prompt_cache_bindings
             .iter()

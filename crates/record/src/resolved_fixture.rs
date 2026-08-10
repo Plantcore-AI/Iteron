@@ -211,9 +211,7 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
                     (Some(_), Some(_)) => true,
                     _ => false,
                 };
-                if violated
-                    && let Some(replacement) = value_at(&value, left).cloned()
-                {
+                if violated && let Some(replacement) = value_at(&value, left).cloned() {
                     replace_at(&mut value, right, replacement);
                 }
             }

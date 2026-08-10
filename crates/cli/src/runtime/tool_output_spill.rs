@@ -15,6 +15,10 @@ pub(crate) const DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES: usize = 16 * 1024 * 1024;
 const SCHEMA_MAX_SPILL_BYTES: u64 = 17_179_869_184;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the shared suffix is the point: each variant names the boundary the spill is cleaned at"
+)]
 pub(crate) enum ToolOutputSpillCleanup {
     ToolEnd,
     TurnEnd,

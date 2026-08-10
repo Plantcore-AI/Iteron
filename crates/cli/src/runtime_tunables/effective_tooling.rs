@@ -175,7 +175,7 @@ fn decode_routes(value: &ResolutionValue) -> Result<Vec<LspLanguageRoute>, Effec
 fn decode_recovery(
     fields: &BTreeMap<String, ResolutionValue>,
 ) -> Result<LspRecoveryPolicy, EffectiveToolingError> {
-    Ok(LspRecoveryPolicy {
+    LspRecoveryPolicy {
         request_timeout_milliseconds: object_u64(
             fields,
             "lsp_timeout_restart_policy",
@@ -199,7 +199,7 @@ fn decode_recovery(
         )?,
     }
     .validate()
-    .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))?)
+    .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))
 }
 
 fn object_u64(

@@ -191,9 +191,11 @@ impl Agent {
             before_tokens: u64::try_from(before_estimate.total_tokens).unwrap_or(u64::MAX),
             after_tokens: u64::try_from(after_estimate.total_tokens).unwrap_or(u64::MAX),
             obligations_preserved: plan.obligations_preserved().saturating_add(
-                coverage_verified
-                    .then_some(plan.obligations_lost())
-                    .unwrap_or(0),
+                if coverage_verified {
+                    plan.obligations_lost()
+                } else {
+                    0
+                },
             ),
             obligations_lost: if coverage_verified {
                 0

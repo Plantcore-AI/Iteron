@@ -3263,7 +3263,7 @@ async fn run_workflow_command(
     let requested_model = requested_model_with_origin
         .as_ref()
         .map(|(model, _)| model.as_str());
-    let selection = match requested_model.as_deref() {
+    let selection = match requested_model {
         Some(model_id) => provider_directory
             .resolve_model(model_id, Some(&provider_name))
             .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,

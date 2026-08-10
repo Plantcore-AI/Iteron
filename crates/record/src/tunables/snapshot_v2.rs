@@ -93,6 +93,20 @@ impl JsonBudget {
         value: &serde_json::Value,
         depth: usize,
     ) -> Result<(), TunablesSnapshotError> {
+        self.observe_field(None, value, depth, false)
+    }
+
+    /// Both bounds are charged here rather than in [`Self::observe`], because the recursion below
+    /// re-enters this function directly. Charged in the caller, `nodes` was incremented once per
+    /// top-level projection instead of once per node, and the depth bound was never re-checked
+    /// after the first level: a deep or wide nested projection passed validation unbounded.
+    fn observe_field(
+        &mut self,
+        field: Option<&str>,
+        value: &serde_json::Value,
+        depth: usize,
+        inherited_sha256_field: bool,
+    ) -> Result<(), TunablesSnapshotError> {
         if depth > MAX_RUN_GENESIS_TUNABLES_V2_DEPTH {
             return invalid("a V2 projection exceeds its depth bound");
         }
@@ -105,16 +119,6 @@ impl JsonBudget {
         if self.nodes > MAX_RUN_GENESIS_TUNABLES_V2_NODES {
             return invalid("V2 projections exceed their node bound");
         }
-        self.observe_field(None, value, depth, false)
-    }
-
-    fn observe_field(
-        &mut self,
-        field: Option<&str>,
-        value: &serde_json::Value,
-        depth: usize,
-        inherited_sha256_field: bool,
-    ) -> Result<(), TunablesSnapshotError> {
         let sha256_field = inherited_sha256_field
             || field.is_some_and(|field| field == "sha256" || field.ends_with("_sha256"));
         match value {

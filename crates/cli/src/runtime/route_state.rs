@@ -156,6 +156,10 @@ impl Agent {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one route selection is exactly this many independent facts; grouping them would hide which ones the record actually binds"
+    )]
     pub(super) fn record_fallback_model_selection(
         &mut self,
         turn: TurnId,
@@ -177,6 +181,10 @@ impl Agent {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one route selection is exactly this many independent facts; grouping them would hide which ones the record actually binds"
+    )]
     fn record_governed_provider_model_selection(
         &mut self,
         provider: std::sync::Arc<dyn Provider>,

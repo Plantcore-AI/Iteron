@@ -248,9 +248,7 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
                     (Some(_), Some(_)) => true,
                     _ => false,
                 };
-                if violated
-                    && let Some(replacement) = value_at(&value, left).cloned()
-                {
+                if violated && let Some(replacement) = value_at(&value, left).cloned() {
                     replace_at(&mut value, right, replacement);
                 }
             }
@@ -2394,7 +2392,9 @@ fn resolve_failure_is_atomic_deterministic_and_still_reports_all_160_families() 
         .collect();
     let missing: Vec<_> = families()
         .iter()
-        .filter(|family| family.implementation_status == core_tunables::ImplementationStatus::Missing)
+        .filter(|family| {
+            family.implementation_status == core_tunables::ImplementationStatus::Missing
+        })
         .map(|family| family.id)
         .collect();
     assert_eq!(unavailable, missing);

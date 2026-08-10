@@ -396,6 +396,10 @@ async fn apply_workflow_control(
 ///
 /// Every arm answers. A control request that got no reply would hang the frontend's render loop,
 /// which is the one failure a control plane must not have.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the control plane answers every request against the whole live surface; bundling these into a struct would only move the same eight bindings behind one name"
+)]
 pub(super) async fn apply_control(
     agent: &mut Agent,
     workflows: &crate::workflow::WorkflowSupervisor,

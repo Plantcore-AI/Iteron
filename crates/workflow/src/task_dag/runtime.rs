@@ -74,10 +74,12 @@ impl ExecutionLedger {
         run_limits: RunLimits,
     ) -> Result<Self, DagError> {
         let max_calls = run_limits.max_agent_calls();
-        let mut limits = Limits::default();
-        limits.max_tasks = max_calls;
-        limits.max_edges = max_calls.saturating_mul(2).max(1);
-        limits.max_events = max_calls.saturating_mul(24).max(256);
+        let limits = Limits {
+            max_tasks: max_calls,
+            max_edges: max_calls.saturating_mul(2).max(1),
+            max_events: max_calls.saturating_mul(24).max(256),
+            ..Default::default()
+        };
         limits.validate().map_err(DagError::InvalidConfig)?;
 
         // These are accounting ceilings, not new authority: the kernel spawner still owns the
