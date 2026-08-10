@@ -119,7 +119,7 @@ class ReleaseToolsTest(unittest.TestCase):
                 [member.name for member in members],
                 [
                     root,
-                    f"{root}/core",
+                    f"{root}/iteron",
                     f"{root}/LICENSE",
                     f"{root}/README.md",
                     f"{root}/THIRD_PARTY_LICENSES.html",

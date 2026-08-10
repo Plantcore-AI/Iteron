@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/core-install-test.XXXXXXXX")
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/iteron-install-test.XXXXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 
 case "$(uname -s):$(uname -m)" in
@@ -106,20 +106,20 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE
   printf 'environment unexpectedly overrode the embedded installer version\n' >&2
   exit 1
 fi
-test ! -e "$install_dir/core"
+test ! -e "$install_dir/iteron"
 PATH="$temporary/fakebin:$PATH" TMPDIR="$temporary/tmp with spaces" ITERON_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$install_dir" >/dev/null
-test -x "$install_dir/core"
-test "$("$install_dir/core" -V)" = 'iteron 0.0.1'
-grep -q '0123456789abcdef' <<<"$("$install_dir/core" --version)"
+test -x "$install_dir/iteron"
+test "$("$install_dir/iteron" -V)" = 'iteron 0.0.1'
+grep -q '0123456789abcdef' <<<"$("$install_dir/iteron" --version)"
 
-printf 'existing\n' > "$install_dir/core"
+printf 'existing\n' > "$install_dir/iteron"
 if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE_TEST_TAMPER=1 \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$install_dir" >/dev/null 2>&1; then
   printf 'tampered archive unexpectedly installed\n' >&2
   exit 1
 fi
-test "$(cat "$install_dir/core")" = existing
+test "$(cat "$install_dir/iteron")" = existing
 
 malicious=$temporary/malicious
 mkdir "$malicious"
@@ -135,7 +135,7 @@ with tarfile.open(archive, "w:gz") as output:
     directory = tarfile.TarInfo(root + "/")
     directory.type = tarfile.DIRTYPE
     output.addfile(directory)
-    link = tarfile.TarInfo(root + "/core")
+    link = tarfile.TarInfo(root + "/iteron")
     link.type = tarfile.SYMTYPE
     link.linkname = "/bin/sh"
     output.addfile(link)
@@ -162,7 +162,7 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$malicious \
   printf 'symlink archive unexpectedly installed\n' >&2
   exit 1
 fi
-test "$(cat "$install_dir/core")" = existing
+test "$(cat "$install_dir/iteron")" = existing
 
 traversal=$temporary/traversal
 mkdir "$traversal"
@@ -205,7 +205,7 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$traversal \
   printf 'path traversal archive unexpectedly installed\n' >&2
   exit 1
 fi
-test "$(cat "$install_dir/core")" = existing
+test "$(cat "$install_dir/iteron")" = existing
 
 oversized=$temporary/oversized
 mkdir "$oversized"
@@ -234,7 +234,7 @@ with tarfile.open(archive, "w:gz", compresslevel=9) as output:
     directory = tarfile.TarInfo(root + "/")
     directory.type = tarfile.DIRTYPE
     output.addfile(directory)
-    iteron = tarfile.TarInfo(root + "/core")
+    iteron = tarfile.TarInfo(root + "/iteron")
     iteron.size = 134_217_729
     output.addfile(iteron, ZeroReader(iteron.size))
     for name in (
@@ -260,26 +260,26 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$oversized \
   printf 'oversized unpacked archive unexpectedly installed\n' >&2
   exit 1
 fi
-test "$(cat "$install_dir/core")" = existing
+test "$(cat "$install_dir/iteron")" = existing
 
 directory_install=$temporary/directory-install
-mkdir -p "$directory_install/core"
+mkdir -p "$directory_install/iteron"
 if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$directory_install" >/dev/null 2>&1; then
   printf 'directory destination unexpectedly accepted\n' >&2
   exit 1
 fi
-test -d "$directory_install/core"
+test -d "$directory_install/iteron"
 
 symlink_install=$temporary/symlink-install
 mkdir -p "$symlink_install" "$temporary/directory-target"
-ln -s "$temporary/directory-target" "$symlink_install/core"
+ln -s "$temporary/directory-target" "$symlink_install/iteron"
 if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$symlink_install" >/dev/null 2>&1; then
   printf 'directory symlink destination unexpectedly accepted\n' >&2
   exit 1
 fi
-test -L "$symlink_install/core"
+test -L "$symlink_install/iteron"
 
 race_install=$temporary/race-install
 mkdir "$race_install"
@@ -288,6 +288,6 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE
   printf 'destination directory race unexpectedly reported success\n' >&2
   exit 1
 fi
-test -d "$race_install/core"
+test -d "$race_install/iteron"
 
 printf 'installer integration tests passed\n'

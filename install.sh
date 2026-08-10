@@ -339,7 +339,7 @@ iteron_main() {
     mkdir "$iteron_work_dir/extract"
     tar -xf "$iteron_unpacked" -C "$iteron_work_dir/extract" \
         || iteron_die 'release archive extraction failed'
-    iteron_binary="$iteron_work_dir/extract/$iteron_archive_root/core"
+    iteron_binary="$iteron_work_dir/extract/$iteron_archive_root/iteron"
     if [ ! -f "$iteron_binary" ] || [ -L "$iteron_binary" ]; then
         iteron_die 'archive iteron entry is not a regular file'
     fi
@@ -356,7 +356,7 @@ iteron_main() {
         || iteron_die "could not create installation directory: $iteron_bin_dir"
     [ -d "$iteron_bin_dir" ] \
         || iteron_die "installation path is not a directory: $iteron_bin_dir"
-    [ ! -d "$iteron_bin_dir/core" ] \
+    [ ! -d "$iteron_bin_dir/iteron" ] \
         || iteron_die 'installation destination is a directory'
     iteron_install_tmp=$(mktemp "$iteron_bin_dir/.core.new.XXXXXXXX") \
         || iteron_die 'could not create an atomic installation staging file'
@@ -369,18 +369,18 @@ iteron_main() {
         || iteron_die 'staged binary failed its version smoke test'
     [ "$iteron_staged_version" = "iteron $iteron_version_number" ] \
         || iteron_die 'staged binary reported an unexpected version'
-    mv -f -- "$iteron_install_tmp" "$iteron_bin_dir/core" \
+    mv -f -- "$iteron_install_tmp" "$iteron_bin_dir/iteron" \
         || iteron_die 'could not atomically install iteron'
-    if [ ! -f "$iteron_bin_dir/core" ] || [ -L "$iteron_bin_dir/core" ]; then
+    if [ ! -f "$iteron_bin_dir/iteron" ] || [ -L "$iteron_bin_dir/iteron" ]; then
         iteron_die 'atomic install did not produce a regular destination file'
     fi
-    iteron_installed_version=$("$iteron_bin_dir/core" -V 2>&1) \
+    iteron_installed_version=$("$iteron_bin_dir/iteron" -V 2>&1) \
         || iteron_die 'installed binary failed its final version smoke test'
     [ "$iteron_installed_version" = "iteron $iteron_version_number" ] \
         || iteron_die 'installed binary reported an unexpected final version'
     iteron_install_tmp=
 
-    printf 'Iteron %s installed at %s/core\n' "$iteron_version_number" "$iteron_bin_dir"
+    printf 'Iteron %s installed at %s/iteron\n' "$iteron_version_number" "$iteron_bin_dir"
     case ":${PATH:-}:" in
         *:"$iteron_bin_dir":*) ;;
         *) printf 'Add %s to PATH to run the iteron command.\n' "$iteron_bin_dir" ;;
