@@ -1,9 +1,9 @@
 //! Bounded content-free lifecycle flight recorder and fan-out bus.
 //!
-//! Durable state remains in `core-record`. This plane is deliberately lossy under contention or a
+//! Durable state remains in `iteron-record`. This plane is deliberately lossy under contention or a
 //! slow observer, but every loss is counted; no Hook/exporter can backpressure an agent turn.
 
-use core_protocol::{
+use iteron_protocol::{
     EffectId, JobId, LifecycleEventEnvelope, LifecycleEventRef, LifecyclePayload, RunId, Seq,
     SessionId, SubagentId, SubmissionId, TurnId, WorkflowId,
 };
@@ -201,7 +201,7 @@ impl LifecycleEmitter {
         correlation: LifecycleCorrelation,
         payload: LifecyclePayload,
     ) -> Result<LifecycleEventEnvelope, LifecycleRecordError> {
-        let event_id = core_protocol::lifecycle::registered_event_id(event_id).ok_or(
+        let event_id = iteron_protocol::lifecycle::registered_event_id(event_id).ok_or(
             LifecycleRecordError::InvalidEnvelope("unregistered lifecycle event id"),
         )?;
         let ordinal = self
@@ -211,7 +211,7 @@ impl LifecycleEmitter {
                 "lifecycle ordinal exhausted",
             ))?;
         let event = LifecycleEventEnvelope {
-            catalog_version: core_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION,
+            catalog_version: iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION,
             event_id,
             event_version: 1,
             ordinal,
@@ -243,7 +243,9 @@ impl Default for LifecycleBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::lifecycle::{LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload};
+    use iteron_protocol::lifecycle::{
+        LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload,
+    };
 
     fn event(ordinal: u64) -> LifecycleEventEnvelope {
         LifecycleEventEnvelope {

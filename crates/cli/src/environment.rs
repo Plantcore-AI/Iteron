@@ -1,13 +1,13 @@
 //! Fresh-run environment facts assembled outside the kernel's authority boundary.
 //!
 //! The caller supplies the one wall-clock sample shared with `RunStart`. Git observation is routed
-//! through `core-tools`' confined, bounded harness. Every rendered value is data, never authority:
+//! through `iteron-tools`' confined, bounded harness. Every rendered value is data, never authority:
 //! repository-controlled branch names and unusual workspace paths cannot add prompt lines or
 //! invisible text, and observation failures collapse to a closed `unavailable` value.
 
 use std::path::Path;
 
-const SNAPSHOT_BYTES: usize = core_protocol::MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES;
+const SNAPSHOT_BYTES: usize = iteron_protocol::MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES;
 const CWD_FIELD_BYTES: usize = 2 * 1024;
 const GIT_FIELD_BYTES: usize = 1024;
 const UNAVAILABLE: &str = "unavailable";
@@ -23,7 +23,7 @@ const FOOTER: &str = "--- end environment snapshot ---";
 /// already-canonicalized CLI workspace also written to `RunStart`; retaining those caller-admitted
 /// bytes keeps cwd identity stable if the directory changes while the Git observation is running.
 pub(crate) async fn capture_at(workspace: &Path, created_at_unix_secs: u64) -> String {
-    let git = core_tools::git_environment_observation(workspace)
+    let git = iteron_tools::git_environment_observation(workspace)
         .await
         .ok();
     let cwd = workspace.to_string_lossy();

@@ -369,351 +369,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-agents"
-version = "0.0.2"
-dependencies = [
- "core-ctx",
- "core-protocol",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "core-changeset"
-version = "0.0.2"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-cli"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "clap",
- "core-agents",
- "core-changeset",
- "core-ctx",
- "core-eval",
- "core-evolve",
- "core-kernel",
- "core-marketplace",
- "core-mcp",
- "core-obs",
- "core-protocol",
- "core-provider",
- "core-record",
- "core-sandbox",
- "core-sched",
- "core-statusline",
- "core-support",
- "core-tools",
- "core-tunables",
- "core-verify",
- "core-workflow",
- "crossterm 0.29.0",
- "futures-util",
- "getrandom 0.4.3",
- "gif",
- "hex",
- "image-webp",
- "libc",
- "png",
- "portable-pty",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "unicode-normalization",
- "unicode-segmentation",
- "unicode-width 0.2.0",
- "url",
- "vt100",
- "windows-sys 0.61.2",
- "zeroize",
- "zune-jpeg",
-]
-
-[[package]]
-name = "core-ctx"
-version = "0.0.2"
-dependencies = [
- "core-protocol",
- "libc",
- "serde",
- "serde_json",
- "toml",
- "walkdir",
-]
-
-[[package]]
-name = "core-eval"
-version = "0.0.2"
-dependencies = [
- "clap",
- "core-evolve",
- "core-sandbox",
- "core-tunables",
- "core-verify",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "core-evolve"
-version = "0.0.2"
-dependencies = [
- "core-protocol",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-kernel"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "core-obs",
- "core-protocol",
- "core-record",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "core-lsp"
-version = "0.0.2"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "core-marketplace"
-version = "0.0.2"
-dependencies = [
- "base64",
- "core-protocol",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-mcp"
-version = "0.0.2"
-dependencies = [
- "core-protocol",
- "core-sandbox",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "core-obs"
-version = "0.0.2"
-dependencies = [
- "core-protocol",
- "hmac",
- "serde",
- "serde_json",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "core-protocol"
-version = "0.0.2"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "core-provider"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "core-protocol",
- "futures-util",
- "hmac",
- "httpdate",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "core-record"
-version = "0.0.2"
-dependencies = [
- "core-obs",
- "core-protocol",
- "core-tunables",
- "hex",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-sandbox"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "libc",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "core-sched"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "core-protocol",
- "core-provider",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "core-statusline"
-version = "0.0.2"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-support"
-version = "0.0.2"
-dependencies = [
- "core-record",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-tools"
-version = "0.0.2"
-dependencies = [
- "core-ctx",
- "core-lsp",
- "core-protocol",
- "core-sandbox",
- "futures-util",
- "getrandom 0.4.3",
- "ignore",
- "libc",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "url",
- "walkdir",
-]
-
-[[package]]
-name = "core-tunables"
-version = "0.0.2"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "core-verify"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "core-protocol",
- "core-sandbox",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
-name = "core-workflow"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "core-protocol",
- "core-sched",
- "hex",
- "jsonschema",
- "libc",
- "rquickjs",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "core-xtask"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "core-agents",
- "core-ctx",
- "core-protocol",
- "core-tools",
- "core-tunables",
- "quote",
- "serde",
- "serde_json",
- "sha2",
- "syn 2.0.118",
- "toml",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1580,6 +1235,351 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "iteron-agents"
+version = "0.0.2"
+dependencies = [
+ "iteron-ctx",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "iteron-changeset"
+version = "0.0.2"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-cli"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "clap",
+ "crossterm 0.29.0",
+ "futures-util",
+ "getrandom 0.4.3",
+ "gif",
+ "hex",
+ "image-webp",
+ "iteron-agents",
+ "iteron-changeset",
+ "iteron-ctx",
+ "iteron-eval",
+ "iteron-evolve",
+ "iteron-kernel",
+ "iteron-marketplace",
+ "iteron-mcp",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-provider",
+ "iteron-record",
+ "iteron-sandbox",
+ "iteron-sched",
+ "iteron-statusline",
+ "iteron-support",
+ "iteron-tools",
+ "iteron-tunables",
+ "iteron-verify",
+ "iteron-workflow",
+ "libc",
+ "png",
+ "portable-pty",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+ "url",
+ "vt100",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "iteron-ctx"
+version = "0.0.2"
+dependencies = [
+ "iteron-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
+name = "iteron-eval"
+version = "0.0.2"
+dependencies = [
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "iteron-evolve",
+ "iteron-sandbox",
+ "iteron-tunables",
+ "iteron-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "iteron-evolve"
+version = "0.0.2"
+dependencies = [
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-kernel"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-record",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-lsp"
+version = "0.0.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "iteron-marketplace"
+version = "0.0.2"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-mcp"
+version = "0.0.2"
+dependencies = [
+ "futures-util",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "iteron-obs"
+version = "0.0.2"
+dependencies = [
+ "hmac",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "iteron-protocol"
+version = "0.0.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "iteron-provider"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hmac",
+ "httpdate",
+ "iteron-protocol",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "iteron-record"
+version = "0.0.2"
+dependencies = [
+ "hex",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-tunables",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-sandbox"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "libc",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-sched"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "iteron-protocol",
+ "iteron-provider",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-statusline"
+version = "0.0.2"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-support"
+version = "0.0.2"
+dependencies = [
+ "iteron-record",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-tools"
+version = "0.0.2"
+dependencies = [
+ "futures-util",
+ "getrandom 0.4.3",
+ "ignore",
+ "iteron-ctx",
+ "iteron-lsp",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "libc",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "walkdir",
+]
+
+[[package]]
+name = "iteron-tunables"
+version = "0.0.2"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-verify"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "hex",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-workflow"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iteron-protocol",
+ "iteron-sched",
+ "jsonschema",
+ "libc",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "iteron-xtask"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "iteron-agents",
+ "iteron-ctx",
+ "iteron-protocol",
+ "iteron-tools",
+ "iteron-tunables",
+ "quote",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.118",
+ "toml",
+]
 
 [[package]]
 name = "itertools"

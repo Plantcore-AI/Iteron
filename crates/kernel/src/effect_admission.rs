@@ -18,7 +18,7 @@
 
 use crate::effect_class::EffectClass;
 use crate::effect_journal::EffectJournal;
-use core_protocol::{EffectId, TurnId};
+use iteron_protocol::{EffectId, TurnId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hard ceiling on distinct effects admitted inside one turn.

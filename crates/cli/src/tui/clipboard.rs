@@ -278,7 +278,7 @@ fn safe_text(text: &str) -> Result<String, ClipboardError> {
     if text.len() > MAX_CLIPBOARD_BYTES {
         return Err(ClipboardError::TooLarge);
     }
-    let scrubbed = core_record::redact::scrub(text);
+    let scrubbed = iteron_record::redact::scrub(text);
     let mut safe = String::with_capacity(scrubbed.len());
     for character in scrubbed.chars() {
         match character {

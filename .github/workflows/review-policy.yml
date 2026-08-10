@@ -165,11 +165,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
         working-directory: ${{ runner.temp }}/core-policy-base
-        run: cargo build --locked -p core-xtask
+        run: cargo build --locked -p iteron-xtask
       - name: validate candidate ownership contract
         env:
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: collect current GitHub reviews
         env:
@@ -184,18 +184,18 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           REVIEWS_FILE: ${{ runner.temp }}/reviews.json
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check-reviews --base "$BASE_SHA"'
       - name: build one-time compatibility validator
         if: steps.compatibility.outputs.active == 'true'
         working-directory: ${{ runner.temp }}/core-policy-compatibility
-        run: cargo build --locked -p core-xtask
+        run: cargo build --locked -p iteron-xtask
       - name: validate real candidate with one-time compatibility policy
         if: steps.compatibility.outputs.active == 'true'
         env:
-          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/core-xtask
+          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/iteron-xtask
         run: >-
           "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
           boundaries check

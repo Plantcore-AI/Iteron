@@ -6,7 +6,7 @@
 //! This protects registry-mediated writes; it is not a claim that ambient filesystem changes are
 //! observable or that tool execution is hermetic.
 
-use core_protocol::ToolResult;
+use iteron_protocol::ToolResult;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -119,7 +119,7 @@ impl Memo {
         }
 
         let mut digest = Sha256::new();
-        digest.update(b"core-tools-memo-v1\0");
+        digest.update(b"iteron-tools-memo-v1\0");
         digest.update((tool_name.len() as u64).to_be_bytes());
         digest.update(tool_name.as_bytes());
         let mut writer = BoundedDigestWriter {

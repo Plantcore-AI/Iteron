@@ -1,12 +1,12 @@
 # Releases and changelog
 
-Core Code publishes immutable pre-alpha releases. A published artifact has passed
+Iteron publishes immutable pre-alpha releases. A published artifact has passed
 the release workflow; it does not imply stable CLI, configuration, record, or
 runtime compatibility.
 
 ## Release artifacts
 
-The [GitHub Releases](https://github.com/Plantcore-AI/core/releases) page is the
+The [GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases) page is the
 canonical binary distribution channel. Each accepted release contains:
 
 - native macOS/Linux archives and the bounded Windows x86-64 one-shot ZIP;
@@ -27,7 +27,7 @@ version pinning, supported targets, verification, and uninstall instructions.
 ## Changelog
 
 The source repository's
-[CHANGELOG.md](https://github.com/Plantcore-AI/core/blob/main/CHANGELOG.md) is the
+[CHANGELOG.md](https://github.com/Plantcore-AI/Iteron/blob/main/CHANGELOG.md) is the
 canonical human-readable change history. GitHub release notes identify the exact
 artifact set for a tag.
 

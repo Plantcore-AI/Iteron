@@ -8,7 +8,7 @@
 use crate::turn_protocol::{
     BudgetCeiling, ControlSignal, ProviderFailure, ProviderTermination, VerifyOutcome,
 };
-use core_protocol::context::ContextGrant;
+use iteron_protocol::context::ContextGrant;
 use serde::{Deserialize, Serialize};
 
 /// One thing that happened, addressed to the reducer.
@@ -84,8 +84,8 @@ mod tests {
         let commands = [
             Command::Admitted,
             Command::ContextResolved {
-                grant: Box::new(core_protocol::context::ContextGrant {
-                    request_id: core_protocol::context::RequestId(1),
+                grant: Box::new(iteron_protocol::context::ContextGrant {
+                    request_id: iteron_protocol::context::RequestId(1),
                     segments: Vec::new(),
                     bytes: 0,
                 }),

@@ -1,6 +1,6 @@
 use super::*;
 use crate::git_harness::{NULL_DEVICE, resolve_git_executable, shell_script_command};
-use core_protocol::ToolUse;
+use iteron_protocol::ToolUse;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -222,7 +222,7 @@ async fn d3_09_g2_malicious_core_worktree_cannot_disclose_an_outside_name() {
     commit_all(&workspace, "safe history");
 
     std::fs::write(outside.join("tracked"), "different\n").unwrap();
-    let outside_name = "CORE_OUTSIDE_SECRET_FILENAME";
+    let outside_name = "ITERON_OUTSIDE_SECRET_FILENAME";
     std::fs::write(outside.join(outside_name), "secret\n").unwrap();
     git_ok(
         &workspace,

@@ -8,7 +8,7 @@
 //! `null` live is replayed as `null`, never re-run (which could non-deterministically succeed and
 //! cascade a cache miss through every downstream prompt).
 //!
-//! This is a deliberately lightweight writer, NOT the hash-chained `core-record` rollout — resume is
+//! This is a deliberately lightweight writer, NOT the hash-chained `iteron-record` rollout — resume is
 //! keyed by content hash, not `Seq`, so the heavier format buys nothing here (design §6). It does
 //! reuse the rollout's exclusive-append discipline: the OS-level exclusive lock `Rollout::open`
 //! takes, held for the journal's whole lifetime, PLUS the `Mutex<File>` that serializes this
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn roundtrips_outcomes_through_a_file_and_replays_null() {
         let dir = std::env::temp_dir().join(format!(
-            "core-workflow-journal-{}-{}",
+            "iteron-workflow-journal-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn a_failed_durable_append_never_enters_the_replay_cache() {
         let dir = std::env::temp_dir().join(format!(
-            "core-workflow-journal-failure-{}-{}",
+            "iteron-workflow-journal-failure-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn a_second_writer_for_the_same_run_is_refused_not_interleaved() {
         let dir = std::env::temp_dir().join(format!(
-            "core-workflow-journal-lock-{}-{}",
+            "iteron-workflow-journal-lock-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn a_future_outcome_is_a_cache_hit_and_never_becomes_a_reexecution() {
         let dir = std::env::temp_dir().join(format!(
-            "core-workflow-journal-future-{}-{}",
+            "iteron-workflow-journal-future-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

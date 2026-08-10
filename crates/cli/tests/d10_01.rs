@@ -2,8 +2,8 @@
 //! D10-01 — the TUI must talk to the runtime as a *versioned App Server client*, not by
 //! co-composing the runtime and pushing bare submissions onto its queue.
 //!
-//! `core-cli` is a managed binary-only package (the boundary authority forbids it a library
-//! target), so this is a process-level oracle: it launches the real `core` binary in TUI mode
+//! `iteron-cli` is a managed binary-only package (the boundary authority forbids it a library
+//! target), so this is a process-level oracle: it launches the real `iteron` binary in TUI mode
 //! inside a pseudo-terminal and observes the versioned-client handshake the fix introduces.
 //!
 //! When the interactive frontend is entered, it now attaches to the runtime as a versioned
@@ -16,7 +16,7 @@
 //! and emits no such line. On the pre-fix base this test file's target does not exist, so the
 //! oracle is RED; the fix adds the versioned client and its announcement, turning it GREEN.
 
-use core_protocol::PROTOCOL_VERSION;
+use iteron_protocol::PROTOCOL_VERSION;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::Read;
 use std::path::PathBuf;
@@ -84,17 +84,17 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
     // A direct, credential-free binary launch (env_clear); the built-in `glm` provider resolves
     // without a key because startup never reaches a turn. A real PTY makes the frontend enter the
     // TUI (rather than refuse for lack of a terminal), so `tui::run` — and its handshake — runs.
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
     command.env_clear();
     if let Some(version) = server_version {
-        command.env("CORE_APP_SERVER_PROTOCOL_VERSION", version.to_string());
+        command.env("ITERON_APP_SERVER_PROTOCOL_VERSION", version.to_string());
     }
     command.env("HOME", scratch.home().as_os_str());
     command.env("PATH", "/usr/bin:/bin");
     command.env("TERM", "xterm");
     command.env("LANG", "C.UTF-8");
-    command.env("CORE_PROVIDER", "glm");
-    command.env("CORE_MODEL", "glm-5.2");
+    command.env("ITERON_PROVIDER", "glm");
+    command.env("ITERON_MODEL", "glm-5.2");
     command.cwd(scratch.repo());
     command.arg("--tui");
     command.arg("--repo");

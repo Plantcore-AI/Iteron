@@ -28,8 +28,8 @@ pub(super) async fn connect(
     // A stdio server is trusted user configuration, but it is not entitled to every provider
     // credential injected into Core. Give it only a toolchain/locale environment; explicit
     // per-server secret grants require a future credential broker.
-    core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
-    core_sandbox::configure_process_group(&mut command);
+    iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
+    iteron_sandbox::configure_process_group(&mut command);
     #[cfg(unix)]
     command.current_dir("/");
     command

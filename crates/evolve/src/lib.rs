@@ -12,9 +12,9 @@
 //! may eventually produce the same versioned [`PolicyManifest`]. For now, these types support
 //! recording, offline validation, and assessment only.
 
-use core_protocol::Capability;
-use core_protocol::bundle::{ResolvedBundle, ResolvedPolicy};
-use core_protocol::slot::SlotId;
+use iteron_protocol::Capability;
+use iteron_protocol::bundle::{ResolvedBundle, ResolvedPolicy};
+use iteron_protocol::slot::SlotId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,10 +65,6 @@ pub use checkpoint_algebra::{
     SlotDelta, diff, merge, restrict, retire,
 };
 pub use checkpoint_transfer::{TransferMetric, TransferResult, TransferSlotMetric, transfer};
-/// Re-exported so an outside implementor of [`TrajectoryProjection`] can construct the
-/// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
-/// `core-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
-pub use core_protocol::{RunId, TenantId};
 pub use dataset::{
     GovernedDatasetError, GovernedTrainingDataset, MAX_GOVERNED_DATASET_BYTES,
     MAX_GOVERNED_DATASET_TRAJECTORIES,
@@ -85,6 +81,10 @@ pub use held_out::{
     HeldOutTaskPair, HeldOutTrainingCorpus, MAX_HELD_OUT_EVIDENCE_RECORDS,
     MAX_HELD_OUT_REPORT_JSON_BYTES, MAX_HELD_OUT_REPORT_TASKS,
 };
+/// Re-exported so an outside implementor of [`TrajectoryProjection`] can construct the
+/// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
+/// `iteron-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
+pub use iteron_protocol::{RunId, TenantId};
 pub use producer::{
     MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,
     OfflineRuleCandidate, OfflineRuleSearchProducer, OfflineRuleSearchSpec,
@@ -621,14 +621,14 @@ impl PolicyBundle {
     /// Project this bundle into the read-only view the runtime consumes.
     ///
     /// This is the producing half of the bundle-resolution seam. The port itself lives in
-    /// `core-protocol` ([`core_protocol::bundle::PolicyBundleResolver`]) rather than here, because
-    /// declaring it over this crate's types would force `crates/agents` to depend on `core-evolve`
+    /// `iteron-protocol` ([`iteron_protocol::bundle::PolicyBundleResolver`]) rather than here, because
+    /// declaring it over this crate's types would force `crates/agents` to depend on `iteron-evolve`
     /// to name it — the exact edge the runtime must never grow. Both sides already depend on
-    /// `core-protocol`, so projecting into its view costs neither side a dependency.
+    /// `iteron-protocol`, so projecting into its view costs neither side a dependency.
     ///
     /// # Fail-closed on the lossy direction
     ///
-    /// [`StrategySlot`] and [`core_protocol::slot::SlotId`] are related by a strict-subset rule with
+    /// [`StrategySlot`] and [`iteron_protocol::slot::SlotId`] are related by a strict-subset rule with
     /// a direction: every valid `SlotId` is a valid `StrategySlot`, but not the reverse — this side
     /// additionally accepts `.` and repeated `/`. So projecting can encounter a slot the kernel
     /// cannot name, and this refuses the whole bundle rather than dropping the entry. A dropped

@@ -63,7 +63,7 @@ pub(crate) fn catalog_content_digest(catalog: &CatalogSnapshot) -> Result<String
         values: &'a BTreeSet<String>,
     }
     super::sha256_json(&Payload {
-        canonicalization: "core-tunables-catalog-snapshot-json-v1",
+        canonicalization: "iteron-tunables-catalog-snapshot-json-v1",
         catalog_id: &catalog.catalog_id,
         value_count: catalog.values.len(),
         values: &catalog.values,
@@ -84,7 +84,7 @@ fn scalar_catalog_values_validate(catalog: &CatalogSnapshot) -> bool {
         return false;
     };
     let schema = crate::ValueSchema {
-        schema_id: "core://tunables/internal/catalog-snapshot-value-v1",
+        schema_id: "iteron://tunables/internal/catalog-snapshot-value-v1",
         kind: crate::ValueKind::String,
         domain: StructuredValueDomain::Scalar {
             domain: definition.value_domain,

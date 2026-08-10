@@ -1,6 +1,6 @@
 # Configure a provider
 
-Core Code resolves provider routing only from operator-controlled sources. A
+Iteron resolves provider routing only from operator-controlled sources. A
 cloned repository cannot redirect your model traffic or credential to a new host.
 
 ## Built-in providers
@@ -14,7 +14,7 @@ cloned repository cannot redirect your model traffic or credential to a new host
 | `minimax` | OpenAI-compatible Chat | `MINIMAX_API_KEY` |
 | `fireworks` | OpenAI-compatible Chat | `FIREWORKS_API_KEY` |
 
-The built-in default is `glm`. For its exact standard Chat endpoint, Core Code
+The built-in default is `glm`. For its exact standard Chat endpoint, Iteron
 ships a versioned static manifest whose documented default is `glm-5.2`. That
 manifest proves endpoint schema compatibility, **not** that a particular account
 is funded or entitled to every listed model. Without a credential, its leaves are
@@ -34,7 +34,7 @@ For one run:
 core --provider anthropic --model PROVIDER_MODEL_ID
 ```
 
-Or set trusted user defaults in `~/.core/config.json`:
+Or set trusted user defaults in `~/.iteron/config.json`:
 
 ```json
 {
@@ -48,7 +48,7 @@ Credential values stay in environment variables. Do not add them to JSON.
 
 ## Define a compatible provider instance
 
-Operator-defined providers also live only in `~/.core/config.json`:
+Operator-defined providers also live only in `~/.iteron/config.json`:
 
 ```json
 {
@@ -95,7 +95,7 @@ discovery evidence.
 
 ## Project configuration cannot reroute traffic
 
-A repository may place a bare `model` id in `.core/config.json`, but it remains
+A repository may place a bare `model` id in `.iteron/config.json`, but it remains
 constrained to the independently selected provider. Repository values for
 `provider`, `base_url`, `providers`, MCP processes, hooks, effort, or a grant of
 code execution are ignored or rejected as appropriate.

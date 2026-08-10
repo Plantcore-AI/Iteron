@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use core_workflow::events::{NullSink, ProgressEvent, ProgressSink};
-use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunLimits, RunSpec, WorkflowEngine};
+use iteron_workflow::events::{NullSink, ProgressEvent, ProgressSink};
+use iteron_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunLimits, RunSpec, WorkflowEngine};
 
 struct MockSpawner {
     delay_ms: u64,

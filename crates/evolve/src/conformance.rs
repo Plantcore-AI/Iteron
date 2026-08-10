@@ -346,7 +346,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
             },
             Evidence {
                 path: "crates/evolve/src/conformance_tests.rs",
-                test: "kernel_and_agents_do_not_depend_on_core_evolve",
+                test: "kernel_and_agents_do_not_depend_on_iteron_evolve",
             },
         ],
     },
@@ -364,7 +364,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
 ];
 
 /// Crates that must never be able to name the control plane. A dependency edge from either into
-/// `core-evolve` would put a policy loader inside the runtime trusted computing base, which is
+/// `iteron-evolve` would put a policy loader inside the runtime trusted computing base, which is
 /// the exact thing §6.9 forbids.
 const TCB_CRATES_WITHOUT_EVOLVE: [&str; 2] = ["crates/kernel", "crates/agents"];
 
@@ -491,7 +491,7 @@ impl std::fmt::Display for ConformanceError {
             ),
             Self::TcbDependsOnEvolve(path) => write!(
                 f,
-                "{} names core-evolve; the control plane must stay outside the runtime TCB",
+                "{} names iteron-evolve; the control plane must stay outside the runtime TCB",
                 path.display()
             ),
             Self::DisclosureClauseMissing(clause) => write!(
@@ -557,7 +557,7 @@ fn validate_rows(root: &Path) -> Result<(), ConformanceError> {
             });
         }
         for slot in row.strategy_slots {
-            let id = core_protocol::slot::SlotId((*slot).to_owned());
+            let id = iteron_protocol::slot::SlotId((*slot).to_owned());
             if let Err(reason) = id.validate() {
                 return Err(ConformanceError::InvalidSlot {
                     class: row.class.to_owned(),
@@ -634,13 +634,13 @@ fn validate_module_coverage() -> Result<(), ConformanceError> {
     Ok(())
 }
 
-/// The evolution half of the frozen-TCB claim: neither TCB crate may name `core-evolve`, and
+/// The evolution half of the frozen-TCB claim: neither TCB crate may name `iteron-evolve`, and
 /// neither may carry an activation identifier.
 pub fn validate_no_runtime_activation(root: &Path) -> Result<(), ConformanceError> {
     for crate_dir in TCB_CRATES_WITHOUT_EVOLVE {
         let manifest = root.join(crate_dir).join("Cargo.toml");
         let source = read_bounded_path(&manifest)?;
-        if source.contains("core-evolve") || source.contains("core_evolve") {
+        if source.contains("iteron-evolve") || source.contains("iteron_evolve") {
             return Err(ConformanceError::TcbDependsOnEvolve(manifest));
         }
         for entry in source_files(&root.join(crate_dir).join("src"))? {

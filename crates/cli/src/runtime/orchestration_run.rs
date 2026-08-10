@@ -7,9 +7,9 @@ impl Agent {
         &mut self,
         task: &str,
         mut messages: Vec<Message>,
-        input_images: &[core_protocol::ImageContent],
+        input_images: &[iteron_protocol::ImageContent],
         run_id: &str,
-        route: core_agents::RouterRoute,
+        route: iteron_agents::RouterRoute,
         state: &mut WorkflowRunState,
     ) -> Result<Outcome, KernelError> {
         let class = route.class;
@@ -42,7 +42,7 @@ impl Agent {
             .unwrap_or(self.budget.max_wall_secs);
         // The breadth the route reserved is the breadth that gets fanned. Without `plan_within` a
         // router that narrowed the fan would have been recorded and then ignored.
-        let Some(plan) = core_agents::Decomposer::plan_within_with(
+        let Some(plan) = iteron_agents::Decomposer::plan_within_with(
             self.planner.as_ref(),
             class,
             leaves,
@@ -116,7 +116,7 @@ impl Agent {
         let dropped = truncated.unwrap_or(0);
         let task_evidence = tasks
             .iter()
-            .map(|task| core_protocol::WorkflowTaskEvidence {
+            .map(|task| iteron_protocol::WorkflowTaskEvidence {
                 task_id: task.id as u32,
                 // Decomposer already bounds/normalizes this to 512 Unicode scalars. Keep the full
                 // objective in the durable plan; only the frontend projection is shortened.
@@ -127,10 +127,10 @@ impl Agent {
         self.emit_durable(
             TurnId(self.seq_turn),
             EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 workflow_id: run_id.to_string(),
-                event: core_protocol::WorkflowEvent::Planned {
-                    mode: core_protocol::WorkflowExecutionMode::ConcurrentFan,
+                event: iteron_protocol::WorkflowEvent::Planned {
+                    mode: iteron_protocol::WorkflowExecutionMode::ConcurrentFan,
                     tasks: task_evidence,
                     dropped: dropped as u32,
                     duplicates_removed: duplicates_removed as u32,
@@ -160,7 +160,7 @@ impl Agent {
             fan_wall_secs: allocation.fan_wall_secs,
             writer_wall_reserve_secs: allocation.writer_wall_reserved_secs,
         }));
-        self.workflow_phase(run_id, core_protocol::WorkflowPhase::Exploring)?;
+        self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Exploring)?;
         let n = tasks.len();
         self.emit(
             TurnId(self.seq_turn),
@@ -181,12 +181,12 @@ impl Agent {
             FanRun::Stopped(outcome) => return Ok(outcome),
         };
         let reducing_started = Instant::now();
-        self.workflow_phase(run_id, core_protocol::WorkflowPhase::Reducing)?;
-        let bundle = core_agents::reduce(summaries);
-        self.workflow_phase(run_id, core_protocol::WorkflowPhase::Writing)?;
+        self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Reducing)?;
+        let bundle = iteron_agents::reduce(summaries);
+        self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Writing)?;
         self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Progress {
             run_id: run_id.to_string(),
-            event: core_workflow::ProgressEvent::Phase {
+            event: iteron_workflow::ProgressEvent::Phase {
                 index: 3,
                 title: "writing".into(),
             },
@@ -201,9 +201,9 @@ impl Agent {
             self.emit_durable(
                 TurnId(self.seq_turn),
                 EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     workflow_id: run_id.to_string(),
-                    event: core_protocol::WorkflowEvent::Reduced {
+                    event: iteron_protocol::WorkflowEvent::Reduced {
                         evidence_message_seq: None,
                         done: 0,
                         failed: bundle.failed as u32,
@@ -238,9 +238,9 @@ impl Agent {
         self.emit_durable(
             TurnId(self.seq_turn),
             EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 workflow_id: run_id.to_string(),
-                event: core_protocol::WorkflowEvent::Reduced {
+                event: iteron_protocol::WorkflowEvent::Reduced {
                     evidence_message_seq: Some(evidence_message_seq),
                     done: bundle.done as u32,
                     failed: bundle.failed as u32,

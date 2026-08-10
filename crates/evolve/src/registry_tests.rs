@@ -3,13 +3,13 @@ use crate::{
     DataClass, DataGovernance, EVOLUTION_SCHEMA_VERSION, PolicyBundle, RewardVector,
     StrategyDecision, StrategySlot, TrainingConsent,
 };
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
 
 fn scratch(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-evolve-registry-{tag}-{}-{}",
+        "iteron-evolve-registry-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

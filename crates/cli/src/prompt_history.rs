@@ -54,7 +54,7 @@ impl Store {
         let Some(config_home) = config_home else {
             return Ok(None);
         };
-        let directory = core_protocol::home::path(&config_home, "history");
+        let directory = iteron_protocol::home::path(&config_home, "history");
         let filename = match mode {
             PromptHistoryMode::Project => {
                 let identity = workspace.canonicalize().map_err(|error| {
@@ -215,7 +215,7 @@ fn bound_and_scrub(state: State) -> State {
     let mut retained = Vec::new();
     let mut total = 0_usize;
     for entry in state.history.into_iter().rev() {
-        let entry = sanitize(&core_record::redact::scrub(&entry));
+        let entry = sanitize(&iteron_record::redact::scrub(&entry));
         if entry.trim().is_empty() || entry.len() > MAX_ENTRY_BYTES {
             continue;
         }
@@ -231,7 +231,7 @@ fn bound_and_scrub(state: State) -> State {
     retained.reverse();
     let draft = state
         .draft
-        .map(|draft| sanitize(&core_record::redact::scrub(&draft)))
+        .map(|draft| sanitize(&iteron_record::redact::scrub(&draft)))
         .filter(|draft| !draft.is_empty() && draft.len() <= MAX_ENTRY_BYTES);
     State::new(retained, draft)
 }

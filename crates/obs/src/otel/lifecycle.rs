@@ -5,7 +5,7 @@
 //! labels.
 
 use super::catalog::{self, InstrumentKind};
-use core_protocol::{LifecycleEventEnvelope, LifecyclePhase};
+use iteron_protocol::{LifecycleEventEnvelope, LifecyclePhase};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -258,7 +258,7 @@ impl Projection {
             return;
         };
         let key = span_key(template, event);
-        let phase = core_protocol::lifecycle::event_spec(event.event_id.as_str())
+        let phase = iteron_protocol::lifecycle::event_spec(event.event_id.as_str())
             .map(|spec| spec.phase)
             .unwrap_or(LifecyclePhase::Progress);
         if matches!(phase, LifecyclePhase::Requested | LifecyclePhase::Started) {
@@ -394,10 +394,10 @@ fn metric_families(
 ) -> [Option<&'static str>; 2] {
     let primary = if id == "context.cache_region.classified" {
         match reason_code {
-            Some("cache_write") => "core.context.cache_write",
-            Some("cache_miss") => "core.context.cache_miss",
-            Some("cache_read") => "core.context.cache_read",
-            _ => "core.context.stable_prefix",
+            Some("cache_write") => "iteron.context.cache_write",
+            Some("cache_miss") => "iteron.context.cache_miss",
+            Some("cache_read") => "iteron.context.cache_read",
+            _ => "iteron.context.stable_prefix",
         }
     } else {
         metric_family(id)
@@ -405,9 +405,9 @@ fn metric_families(
     let secondary = if id == "context.source.classified"
         && matches!(reason_code, Some("file_attachment" | "image_attachment"))
     {
-        Some("core.context.attachment")
-    } else if has_effect && id.starts_with("tool.") && primary != "core.tool.effect" {
-        Some("core.tool.effect")
+        Some("iteron.context.attachment")
+    } else if has_effect && id.starts_with("tool.") && primary != "iteron.tool.effect" {
+        Some("iteron.tool.effect")
     } else {
         None
     };
@@ -474,87 +474,87 @@ fn catalog_family(domain: &str, family: &str) -> &'static str {
     // All returned strings are catalog members; spelling them as complete static prefixes keeps
     // the metric map incapable of accepting a high-cardinality runtime value.
     match (domain, family) {
-        ("context", "assembly") => "core.context.assembly",
-        ("context", "source_discovery") => "core.context.source_discovery",
-        ("context", "source_selection") => "core.context.source_selection",
-        ("context", "source_rejection") => "core.context.source_rejection",
-        ("context", "deduplication") => "core.context.deduplication",
-        ("context", "truncation") => "core.context.truncation",
-        ("context", "segment") => "core.context.segment",
-        ("context", "budget") => "core.context.budget",
-        ("context", "token_estimate") => "core.context.token_estimate",
-        ("context", "tokenizer_error") => "core.context.tokenizer_error",
-        ("context", "window_usage") => "core.context.window_usage",
-        ("context", "window_headroom") => "core.context.window_headroom",
-        ("context", "output_reserve") => "core.context.output_reserve",
-        ("context", "overflow_prediction") => "core.context.overflow_prediction",
-        ("context", "stable_prefix") => "core.context.stable_prefix",
-        ("context", "cache_read") => "core.context.cache_read",
-        ("context", "cache_write") => "core.context.cache_write",
-        ("context", "cache_miss") => "core.context.cache_miss",
-        ("context", "tool_catalog") => "core.context.tool_catalog",
-        ("context", "tool_schema") => "core.context.tool_schema",
-        ("context", "request_serialization") => "core.context.request_serialization",
-        ("context", "compaction") => "core.context.compaction",
-        ("context", "obligation_preservation") => "core.context.obligation_preservation",
-        ("context", "attachment") => "core.context.attachment",
-        ("memory", "query") => "core.memory.query",
-        ("memory", "query_rewrite") => "core.memory.query_rewrite",
-        ("memory", "scope") => "core.memory.scope",
-        ("memory", "store_scan") => "core.memory.store_scan",
-        ("memory", "store_failure") => "core.memory.store_failure",
-        ("memory", "candidate") => "core.memory.candidate",
-        ("memory", "scoring") => "core.memory.scoring",
-        ("memory", "ranking") => "core.memory.ranking",
-        ("memory", "filtering") => "core.memory.filtering",
-        ("memory", "deduplication") => "core.memory.deduplication",
-        ("memory", "contradiction") => "core.memory.contradiction",
-        ("memory", "supersession") => "core.memory.supersession",
-        ("memory", "expiry") => "core.memory.expiry",
-        ("memory", "budget") => "core.memory.budget",
-        ("memory", "recall_selection") => "core.memory.recall_selection",
-        ("memory", "recall_injection") => "core.memory.recall_injection",
-        ("memory", "recall_use") => "core.memory.recall_use",
-        ("memory", "fact_add") => "core.memory.fact_add",
-        ("memory", "fact_update") => "core.memory.fact_update",
-        ("memory", "fact_delete") => "core.memory.fact_delete",
-        ("memory", "visibility") => "core.memory.visibility",
-        ("memory", "contamination") => "core.memory.contamination",
-        ("memory", "benchmark_scope") => "core.memory.benchmark_scope",
-        ("memory", "policy") => "core.memory.policy",
-        ("model", "route") => "core.model.route",
-        ("model", "request") => "core.model.request",
-        ("model", "stream") => "core.model.stream",
-        ("model", "retry") => "core.model.retry",
-        ("model", "usage") => "core.model.usage",
-        ("model", "quota") => "core.model.quota",
-        ("model", "rate_limit") => "core.model.rate_limit",
-        ("workflow", "planning") => "core.workflow.planning",
-        ("workflow", "phase") => "core.workflow.phase",
-        ("workflow", "child") => "core.workflow.child",
-        ("workflow", "reduction") => "core.workflow.reduction",
-        ("workflow", "cancellation") => "core.workflow.cancellation",
-        ("tool", "policy") => "core.tool.policy",
-        ("tool", "tool_call") => "core.tool.tool_call",
-        ("tool", "tool_output") => "core.tool.tool_output",
-        ("tool", "process_spawn") => "core.tool.process_spawn",
-        ("tool", "process_termination") => "core.tool.process_termination",
-        ("tool", "process_reap") => "core.tool.process_reap",
-        ("tool", "background_job") => "core.tool.background_job",
-        ("verification", "checks") => "core.verification.checks",
-        ("verification", "checkpoint_replay") => "core.verification.checkpoint_replay",
-        ("runtime", "hooks") => "core.runtime.hooks",
-        ("runtime", "exporter") => "core.runtime.exporter",
-        ("control", "queue") => "core.control.queue",
-        ("control", "steer") => "core.control.steer",
-        ("control", "cancel") => "core.control.cancel",
-        ("control", "drain") => "core.control.drain",
-        ("control", "acknowledgement") => "core.control.acknowledgement",
-        ("control", "submission") => "core.control.submission",
-        _ if domain == "model" => "core.model.cache",
-        _ if domain == "workflow" => "core.workflow.run",
-        _ if domain == "tool" => "core.tool.effect",
-        _ => "core.control.submission",
+        ("context", "assembly") => "iteron.context.assembly",
+        ("context", "source_discovery") => "iteron.context.source_discovery",
+        ("context", "source_selection") => "iteron.context.source_selection",
+        ("context", "source_rejection") => "iteron.context.source_rejection",
+        ("context", "deduplication") => "iteron.context.deduplication",
+        ("context", "truncation") => "iteron.context.truncation",
+        ("context", "segment") => "iteron.context.segment",
+        ("context", "budget") => "iteron.context.budget",
+        ("context", "token_estimate") => "iteron.context.token_estimate",
+        ("context", "tokenizer_error") => "iteron.context.tokenizer_error",
+        ("context", "window_usage") => "iteron.context.window_usage",
+        ("context", "window_headroom") => "iteron.context.window_headroom",
+        ("context", "output_reserve") => "iteron.context.output_reserve",
+        ("context", "overflow_prediction") => "iteron.context.overflow_prediction",
+        ("context", "stable_prefix") => "iteron.context.stable_prefix",
+        ("context", "cache_read") => "iteron.context.cache_read",
+        ("context", "cache_write") => "iteron.context.cache_write",
+        ("context", "cache_miss") => "iteron.context.cache_miss",
+        ("context", "tool_catalog") => "iteron.context.tool_catalog",
+        ("context", "tool_schema") => "iteron.context.tool_schema",
+        ("context", "request_serialization") => "iteron.context.request_serialization",
+        ("context", "compaction") => "iteron.context.compaction",
+        ("context", "obligation_preservation") => "iteron.context.obligation_preservation",
+        ("context", "attachment") => "iteron.context.attachment",
+        ("memory", "query") => "iteron.memory.query",
+        ("memory", "query_rewrite") => "iteron.memory.query_rewrite",
+        ("memory", "scope") => "iteron.memory.scope",
+        ("memory", "store_scan") => "iteron.memory.store_scan",
+        ("memory", "store_failure") => "iteron.memory.store_failure",
+        ("memory", "candidate") => "iteron.memory.candidate",
+        ("memory", "scoring") => "iteron.memory.scoring",
+        ("memory", "ranking") => "iteron.memory.ranking",
+        ("memory", "filtering") => "iteron.memory.filtering",
+        ("memory", "deduplication") => "iteron.memory.deduplication",
+        ("memory", "contradiction") => "iteron.memory.contradiction",
+        ("memory", "supersession") => "iteron.memory.supersession",
+        ("memory", "expiry") => "iteron.memory.expiry",
+        ("memory", "budget") => "iteron.memory.budget",
+        ("memory", "recall_selection") => "iteron.memory.recall_selection",
+        ("memory", "recall_injection") => "iteron.memory.recall_injection",
+        ("memory", "recall_use") => "iteron.memory.recall_use",
+        ("memory", "fact_add") => "iteron.memory.fact_add",
+        ("memory", "fact_update") => "iteron.memory.fact_update",
+        ("memory", "fact_delete") => "iteron.memory.fact_delete",
+        ("memory", "visibility") => "iteron.memory.visibility",
+        ("memory", "contamination") => "iteron.memory.contamination",
+        ("memory", "benchmark_scope") => "iteron.memory.benchmark_scope",
+        ("memory", "policy") => "iteron.memory.policy",
+        ("model", "route") => "iteron.model.route",
+        ("model", "request") => "iteron.model.request",
+        ("model", "stream") => "iteron.model.stream",
+        ("model", "retry") => "iteron.model.retry",
+        ("model", "usage") => "iteron.model.usage",
+        ("model", "quota") => "iteron.model.quota",
+        ("model", "rate_limit") => "iteron.model.rate_limit",
+        ("workflow", "planning") => "iteron.workflow.planning",
+        ("workflow", "phase") => "iteron.workflow.phase",
+        ("workflow", "child") => "iteron.workflow.child",
+        ("workflow", "reduction") => "iteron.workflow.reduction",
+        ("workflow", "cancellation") => "iteron.workflow.cancellation",
+        ("tool", "policy") => "iteron.tool.policy",
+        ("tool", "tool_call") => "iteron.tool.tool_call",
+        ("tool", "tool_output") => "iteron.tool.tool_output",
+        ("tool", "process_spawn") => "iteron.tool.process_spawn",
+        ("tool", "process_termination") => "iteron.tool.process_termination",
+        ("tool", "process_reap") => "iteron.tool.process_reap",
+        ("tool", "background_job") => "iteron.tool.background_job",
+        ("verification", "checks") => "iteron.verification.checks",
+        ("verification", "checkpoint_replay") => "iteron.verification.checkpoint_replay",
+        ("runtime", "hooks") => "iteron.runtime.hooks",
+        ("runtime", "exporter") => "iteron.runtime.exporter",
+        ("control", "queue") => "iteron.control.queue",
+        ("control", "steer") => "iteron.control.steer",
+        ("control", "cancel") => "iteron.control.cancel",
+        ("control", "drain") => "iteron.control.drain",
+        ("control", "acknowledgement") => "iteron.control.acknowledgement",
+        ("control", "submission") => "iteron.control.submission",
+        _ if domain == "model" => "iteron.model.cache",
+        _ if domain == "workflow" => "iteron.workflow.run",
+        _ if domain == "tool" => "iteron.tool.effect",
+        _ => "iteron.control.submission",
     }
 }
 
@@ -852,8 +852,10 @@ fn lower_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::EffectId;
-    use core_protocol::lifecycle::{LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload};
+    use iteron_protocol::EffectId;
+    use iteron_protocol::lifecycle::{
+        LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload,
+    };
     use std::collections::BTreeSet;
 
     fn event(
@@ -921,7 +923,7 @@ mod tests {
                     .to_owned()
             })
             .collect::<BTreeSet<_>>();
-        let mut routed = core_protocol::lifecycle::events()
+        let mut routed = iteron_protocol::lifecycle::events()
             .flat_map(|event| metric_families(event.id, None, false))
             .flatten()
             .map(str::to_owned)
@@ -941,7 +943,7 @@ mod tests {
     fn every_registered_log_and_metric_instrument_is_exercised_by_a_runtime_route() {
         let mut projection = Projection::default();
         let mut ordinal = 0;
-        for spec in core_protocol::lifecycle::events() {
+        for spec in iteron_protocol::lifecycle::events() {
             projection.record(event(spec.id, None, false, ordinal));
             ordinal = ordinal.saturating_add(1);
         }
@@ -979,7 +981,7 @@ mod tests {
             .iter()
             .map(|template| template.name)
             .collect::<BTreeSet<_>>();
-        let routed = core_protocol::lifecycle::events()
+        let routed = iteron_protocol::lifecycle::events()
             .filter_map(|event| span_template(event.id, None))
             .collect::<BTreeSet<_>>();
         let routed = routed
@@ -996,7 +998,7 @@ mod tests {
     fn every_registered_span_template_can_produce_a_runtime_span() {
         let mut projection = Projection::default();
         let mut ordinal = 0;
-        for spec in core_protocol::lifecycle::events() {
+        for spec in iteron_protocol::lifecycle::events() {
             projection.record(event(spec.id, None, false, ordinal));
             ordinal = ordinal.saturating_add(1);
         }

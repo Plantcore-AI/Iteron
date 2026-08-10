@@ -1,7 +1,7 @@
 use super::*;
 
 impl Agent {
-    /// Execute the built-in read-only fan through the same [`core_workflow::WorkflowEngine`] and
+    /// Execute the built-in read-only fan through the same [`iteron_workflow::WorkflowEngine`] and
     /// [`KernelSpawner`] used by user-authored workflows. The parent remains outside the engine,
     /// pumps operator control while it joins, records the frozen compatibility stream, merges child
     /// ledgers, and then performs the deterministic reduce + sole-writer continuation itself.
@@ -11,8 +11,8 @@ impl Agent {
         &mut self,
         workflow_run_id: &str,
         root_task: &str,
-        class: core_agents::TaskClass,
-        tasks: &[core_agents::AgentTask],
+        class: iteron_agents::TaskClass,
+        tasks: &[iteron_agents::AgentTask],
         aggregate: &Budget,
         workflow_state: &mut WorkflowRunState,
     ) -> Result<FanRun, KernelError> {
@@ -21,10 +21,10 @@ impl Agent {
             return Ok(FanRun::Completed(
                 tasks
                     .iter()
-                    .map(|task| core_agents::Summary {
+                    .map(|task| iteron_agents::Summary {
                         idx: task.id,
                         assigned_question: task.objective.clone(),
-                        outcome: core_agents::SummaryOutcome::Skipped,
+                        outcome: iteron_agents::SummaryOutcome::Skipped,
                         text: "[fan worker skipped: aggregate turn budget reserved elsewhere]"
                             .into(),
                     })
@@ -61,21 +61,21 @@ impl Agent {
                 }))
                 .collect::<Vec<_>>(),
         });
-        let collaboration = core_workflow::CollaborationStrategy::select_with(
+        let collaboration = iteron_workflow::CollaborationStrategy::select_with(
             self.collaboration.as_ref(),
-            &core_workflow::CollaborationObservation {
-                version: core_workflow::COLLABORATION_SLOT_VERSION,
+            &iteron_workflow::CollaborationObservation {
+                version: iteron_workflow::COLLABORATION_SLOT_VERSION,
                 active_workers,
                 max_concurrency: fan_concurrency_permits(active_workers),
             },
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
         )
         .map_err(|error| KernelError::WorkflowEngine(format!("collaboration refused: {error}")))?;
-        let limits = core_workflow::RunLimits::new(collaboration.concurrency, active_workers)
+        let limits = iteron_workflow::RunLimits::new(collaboration.concurrency, active_workers)
             .map_err(|reason| KernelError::WorkflowEngine(reason.into()))?;
-        let spec = core_workflow::RunSpec::new(ULTRACODE_FAN_SCRIPT)
+        let spec = iteron_workflow::RunSpec::new(ULTRACODE_FAN_SCRIPT)
             .with_args(args.clone())
-            .with_run_id(core_workflow::RunId::new(workflow_run_id))
+            .with_run_id(iteron_workflow::RunId::new(workflow_run_id))
             .with_workflows_dir(workflows_dir.clone())
             .with_limits(limits);
         crate::workflow::persist_inputs(
@@ -108,7 +108,7 @@ impl Agent {
         for task in tasks {
             self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Progress {
                 run_id: workflow_run_id.to_string(),
-                event: core_workflow::ProgressEvent::AgentQueued {
+                event: iteron_workflow::ProgressEvent::AgentQueued {
                     index: task.id + 1,
                     label: ui_workflow_label(&task.objective),
                     phase: Some("exploring".into()),
@@ -131,9 +131,9 @@ impl Agent {
             self.emit_durable(
                 TurnId(self.seq_turn),
                 EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     workflow_id: workflow_run_id.to_string(),
-                    event: core_protocol::WorkflowEvent::ChildStarted {
+                    event: iteron_protocol::WorkflowEvent::ChildStarted {
                         task_id: task.id as u32,
                         sub_run: sub_run.clone(),
                         spawn_seq,
@@ -155,12 +155,12 @@ impl Agent {
             self.emit_durable(
                 TurnId(self.seq_turn),
                 EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     workflow_id: workflow_run_id.to_string(),
-                    event: core_protocol::WorkflowEvent::ChildFinished {
+                    event: iteron_protocol::WorkflowEvent::ChildFinished {
                         task_id: task.id as u32,
                         sub_run: None,
-                        outcome: core_protocol::WorkflowChildOutcome::SkippedBudget,
+                        outcome: iteron_protocol::WorkflowChildOutcome::SkippedBudget,
                         metrics: Ledger::default().workflow_metrics(),
                         error_code: Some("not_admitted_budget".into()),
                         error_detail: Some(detail.into()),
@@ -182,10 +182,10 @@ impl Agent {
             }));
             self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Progress {
                 run_id: workflow_run_id.to_string(),
-                event: core_workflow::ProgressEvent::AgentFinished {
+                event: iteron_workflow::ProgressEvent::AgentFinished {
                     index: task.id + 1,
                     label: ui_workflow_label(&task.objective),
-                    state: core_workflow::WorkflowState::Skipped,
+                    state: iteron_workflow::WorkflowState::Skipped,
                     tokens: 0,
                     tool_calls: 0,
                     duration_ms: 0,
@@ -195,18 +195,18 @@ impl Agent {
                 },
             });
             workflow_state.observe(WorkflowAgentOutcomeUi::SkippedBudget);
-            summaries.push(core_agents::Summary {
+            summaries.push(iteron_agents::Summary {
                 idx: task.id,
                 assigned_question: task.objective.clone(),
-                outcome: core_agents::SummaryOutcome::Skipped,
+                outcome: iteron_agents::SummaryOutcome::Skipped,
                 text: "[fan worker skipped: aggregate turn budget reserved elsewhere]".into(),
             });
         }
 
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let channel_sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
+        let channel_sink: std::sync::Arc<dyn iteron_workflow::ProgressSink> =
             std::sync::Arc::new(WorkflowProgressChannel { tx: progress_tx });
-        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
+        let sink: std::sync::Arc<dyn iteron_workflow::ProgressSink> =
             match self.workflow_progress_tx.clone() {
                 Some(tx) => std::sync::Arc::new(crate::workflow::FanoutProgressSink::new(vec![
                     channel_sink,
@@ -214,7 +214,7 @@ impl Agent {
                 ])),
                 None => channel_sink,
             };
-        let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
+        let handle = iteron_workflow::WorkflowEngine::launch(spec, spawner, sink);
         let mut terminals = vec![None; active_workers];
         const WORKFLOW_FAN_POLL: Duration = Duration::from_millis(25);
         let report = {
@@ -309,7 +309,7 @@ impl Agent {
             let terminal = terminals[index]
                 .clone()
                 .unwrap_or_else(|| EngineAgentTerminal {
-                    state: core_workflow::WorkflowState::Error,
+                    state: iteron_workflow::WorkflowState::Error,
                     error: Some(if report.stopped {
                         "investigator stopped before returning a report".into()
                     } else {
@@ -328,31 +328,31 @@ impl Agent {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| strict_utf8_head(text, 16 * 1024));
-            let done = terminal.state == core_workflow::WorkflowState::Done && text.is_some();
+            let done = terminal.state == iteron_workflow::WorkflowState::Done && text.is_some();
             let child_terminal = outcomes_by_ordinal[index].take();
             let drained = matches!(child_terminal.as_ref(), Some(Ok(Outcome::Drained)));
             let interrupted =
                 report.stopped || matches!(child_terminal.as_ref(), Some(Ok(Outcome::Interrupted)));
             let (summary_outcome, child_outcome, error_code, error_detail, summary_text) = if done {
                 (
-                    core_agents::SummaryOutcome::Done,
-                    core_protocol::WorkflowChildOutcome::Done,
+                    iteron_agents::SummaryOutcome::Done,
+                    iteron_protocol::WorkflowChildOutcome::Done,
                     None,
                     None,
                     text.unwrap(),
                 )
             } else if drained {
                 (
-                    core_agents::SummaryOutcome::Failed,
-                    core_protocol::WorkflowChildOutcome::Drained,
+                    iteron_agents::SummaryOutcome::Failed,
+                    iteron_protocol::WorkflowChildOutcome::Drained,
                     Some("operator_drain".into()),
                     Some("investigator drained after a durable checkpoint".into()),
                     "[fan worker drained]".into(),
                 )
             } else if interrupted {
                 (
-                    core_agents::SummaryOutcome::Failed,
-                    core_protocol::WorkflowChildOutcome::Interrupted,
+                    iteron_agents::SummaryOutcome::Failed,
+                    iteron_protocol::WorkflowChildOutcome::Interrupted,
                     Some("operator_stop".into()),
                     Some("investigator interrupted at a safe point".into()),
                     "[fan worker interrupted]".into(),
@@ -378,8 +378,8 @@ impl Agent {
                     .or_else(|| terminal.error.clone())
                     .unwrap_or_else(|| "investigator completed without a report".into());
                 (
-                    core_agents::SummaryOutcome::Failed,
-                    core_protocol::WorkflowChildOutcome::Failed,
+                    iteron_agents::SummaryOutcome::Failed,
+                    iteron_protocol::WorkflowChildOutcome::Failed,
                     Some(code.into()),
                     Some(detail.clone()),
                     format!("[subagent error: {detail}]"),
@@ -391,9 +391,9 @@ impl Agent {
             self.emit_durable(
                 TurnId(self.seq_turn),
                 EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     workflow_id: workflow_run_id.to_string(),
-                    event: core_protocol::WorkflowEvent::ChildFinished {
+                    event: iteron_protocol::WorkflowEvent::ChildFinished {
                         task_id: task.id as u32,
                         sub_run: Some(child_run_ids[index].clone()),
                         outcome: child_outcome,
@@ -406,7 +406,7 @@ impl Agent {
                 },
             )?;
             self.merge_child_ledger(&ledger);
-            summaries.push(core_agents::Summary {
+            summaries.push(iteron_agents::Summary {
                 idx: task.id,
                 assigned_question: task.objective.clone(),
                 outcome: summary_outcome,

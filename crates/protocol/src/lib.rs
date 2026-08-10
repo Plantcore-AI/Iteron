@@ -1,4 +1,4 @@
-//! core-protocol — the core vocabulary.
+//! iteron-protocol — the core vocabulary.
 //!
 //! The design decisions this file encodes as *types* (not conventions):
 //!   - Trust tier (ADR-007 R11): every context segment and tool result carries one.

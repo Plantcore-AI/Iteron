@@ -1,4 +1,4 @@
-use core_evolve::{
+use iteron_evolve::{
     BaseModelId, OfflineTranscriptConfig, TranscriptProducerKind, conformance, gate,
     run_offline_transcript_with_config, verify_offline_transcript,
 };
@@ -167,7 +167,7 @@ fn run_gate(program: &str, arguments: &[String]) -> i32 {
         },
         GateMode::Prove => {
             let scratch = request.scratch.unwrap_or_else(|| {
-                std::env::temp_dir().join(format!("core-evolve-gate-{}", std::process::id()))
+                std::env::temp_dir().join(format!("iteron-evolve-gate-{}", std::process::id()))
             });
             if let Err(error) = std::fs::create_dir_all(&scratch) {
                 eprintln!(

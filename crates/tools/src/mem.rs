@@ -9,8 +9,8 @@
 //! taints the turn's egress via its `ToolResult.trust`).
 
 use crate::{Registry, ToolError, boxfut, err_result};
-use core_ctx::{FileMemory, MemStore, MemTier, MemoryStrategy};
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_ctx::{FileMemory, MemStore, MemTier, MemoryStrategy};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
@@ -36,16 +36,16 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 }
                 // The same stores REC-INJECT recalls from, so any fact whose slug appears in the
                 // injected index is readable (security review: a User-tier fact was unreadable
-                // because only the Project store was built here). User (~/.core/memory) is
+                // because only the Project store was built here). User (~/.iteron/memory) is
                 // Trusted; Project (this repo) is Workspace.
                 let mut stores = Vec::new();
-                if let Some(home) = core_protocol::home::operator()
-                    && core_protocol::home::path(&home, "memory").exists()
+                if let Some(home) = iteron_protocol::home::operator()
+                    && iteron_protocol::home::path(&home, "memory").exists()
                 {
                     stores.push(MemStore::user(&home));
                 }
                 stores.push(MemStore::new(
-                    core_protocol::home::path(&root, "memory"),
+                    iteron_protocol::home::path(&root, "memory"),
                     MemTier::Project,
                     true,
                 ));

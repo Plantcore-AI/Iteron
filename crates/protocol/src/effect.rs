@@ -45,7 +45,7 @@ use serde_json::Value;
 pub const MAX_EFFECT_WORKSPACE_BYTES: usize = 4_096;
 
 /// Upper bound on the serialised argument projection. Deliberately the same value as
-/// `core_kernel::effects::MAX_TOOL_ARGUMENT_BYTES` (crates/kernel/src/effects.rs), which already
+/// `iteron_kernel::effects::MAX_TOOL_ARGUMENT_BYTES` (crates/kernel/src/effects.rs), which already
 /// bounds these bytes at admission; the two MUST NOT diverge.
 pub const MAX_EFFECT_ARGUMENTS_BYTES: usize = 1_048_576;
 

@@ -3,10 +3,10 @@ use super::{
     QueryKind, input_schema, normalize, success,
 };
 use crate::Registry;
-use core_lsp::intel::Position;
+use iteron_lsp::intel::Position;
 #[cfg(target_os = "linux")]
-use core_protocol::ToolUse;
-use core_protocol::{Capability, Purity, Trust};
+use iteron_protocol::ToolUse;
+use iteron_protocol::{Capability, Purity, Trust};
 use serde_json::json;
 
 #[tokio::test(start_paused = true)]

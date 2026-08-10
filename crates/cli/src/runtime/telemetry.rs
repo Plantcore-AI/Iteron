@@ -2,8 +2,8 @@
 //!
 //! # Trust-by-origin, same rule as hooks
 //!
-//! The endpoint is honoured ONLY from the operator's USER config (`~/.core/config.json`), never
-//! from a project `.core/config.json` that could arrive with a cloned repo. An endpoint is an
+//! The endpoint is honoured ONLY from the operator's USER config (`~/.iteron/config.json`), never
+//! from a project `.iteron/config.json` that could arrive with a cloned repo. An endpoint is an
 //! exfiltration target: a repository that could set one could ship every tool name, error string
 //! and span in the run to a host of its choosing. Same discipline as skills, memory, agents and
 //! hooks (ADR-007 §6), and for a strictly worse threat.
@@ -140,7 +140,7 @@ impl TelemetrySink {
     /// Load from the USER config only. A missing or malformed file yields no sink: telemetry is
     /// opt-in, and a broken config must not brick the agent for a feature nobody asked for.
     pub fn load_user(home: &Path) -> Option<TelemetrySink> {
-        let path = core_protocol::home::path(home, "config.json");
+        let path = iteron_protocol::home::path(home, "config.json");
         let block = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str::<TelemetryFile>(&text).ok())
@@ -175,18 +175,18 @@ impl TelemetrySink {
     /// no terminal could be observed — which the caller journals as `EffectUnknown` rather than
     /// retrying, because a retried export duplicates spans and a duplicated span is a wrong
     /// dashboard.
-    pub async fn send(&self, payload: &core_obs::otel::Export) -> TelemetrySendOutcome {
+    pub async fn send(&self, payload: &iteron_obs::otel::Export) -> TelemetrySendOutcome {
         let outcome = self.send_inner(payload).await;
         self.health.record(&outcome);
         outcome
     }
 
-    async fn send_inner(&self, payload: &core_obs::otel::Export) -> TelemetrySendOutcome {
+    async fn send_inner(&self, payload: &iteron_obs::otel::Export) -> TelemetrySendOutcome {
         // The mandated secure client construction, shared with the provider adapters: connect
         // timeout applied and redirects refused, because an endpoint-chosen redirect must not be
         // able to replay the payload at a host the operator never authorised.
-        let Ok(client) = core_provider::catalog::HttpTransport::client(
-            &core_provider::catalog::DefaultHttpTransport,
+        let Ok(client) = iteron_provider::catalog::HttpTransport::client(
+            &iteron_provider::catalog::DefaultHttpTransport,
         ) else {
             return TelemetrySendOutcome::Rejected("client_initialization_failed".into());
         };
@@ -226,8 +226,8 @@ mod tests {
 
     fn home_with(config: &str, tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("core-otel-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join(".core")).unwrap();
-        std::fs::write(dir.join(".core").join("config.json"), config).unwrap();
+        std::fs::create_dir_all(dir.join(".iteron")).unwrap();
+        std::fs::write(dir.join(".iteron").join("config.json"), config).unwrap();
         dir
     }
 
@@ -272,16 +272,16 @@ mod tests {
     }
 
     /// The trust boundary, stated as a test rather than a comment: this loader is given the HOME
-    /// path and reads `<home>/.core/config.json`. A project-local `.core/config.json` is a
+    /// path and reads `<home>/.iteron/config.json`. A project-local `.iteron/config.json` is a
     /// different file that this function never opens, so a cloned repo cannot introduce an
     /// endpoint however it is written.
     #[test]
     fn a_project_local_config_is_never_read() {
         let home = home_with("{}", "origin");
         let project = home.join("workspace");
-        std::fs::create_dir_all(project.join(".core")).unwrap();
+        std::fs::create_dir_all(project.join(".iteron")).unwrap();
         std::fs::write(
-            project.join(".core").join("config.json"),
+            project.join(".iteron").join("config.json"),
             r#"{"otel":{"enabled":true,"endpoint":"http://attacker.example/v1/traces"}}"#,
         )
         .unwrap();

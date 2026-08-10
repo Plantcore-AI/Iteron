@@ -1,5 +1,5 @@
 [package]
-name = "core-agents"
+name = "iteron-agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,8 @@ publish.workspace = true
 # Fan+Reduce per the R5 design review). Pure: no provider, no kernel, no tokio — so the plan and
 # the deterministic reduce() are unit-testable without a network (the reproducibility invariant).
 [dependencies]
-core-ctx = { path = "../ctx" }
-core-protocol = { path = "../protocol" }
+iteron-ctx = { path = "../ctx" }
+iteron-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

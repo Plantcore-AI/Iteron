@@ -128,16 +128,16 @@ impl App {
             })
     }
 
-    /// Upsert one QuickJS `core-workflow` progress event into its one live phase→agent tree card
+    /// Upsert one QuickJS `iteron-workflow` progress event into its one live phase→agent tree card
     /// (design §3.2), creating the card on first sight of a run id. This is the interactive-TUI seam
-    /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
+    /// for a workflow launched from the REPL; the one-shot `iteron workflow run` command drives an
     /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
     /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
     pub(super) fn workflow_run_event(
         &mut self,
         run_id: &str,
         name: &str,
-        event: core_workflow::events::ProgressEvent,
+        event: iteron_workflow::events::ProgressEvent,
     ) {
         if self.workflow_run_card_mut(run_id).is_none() {
             self.flush_text();

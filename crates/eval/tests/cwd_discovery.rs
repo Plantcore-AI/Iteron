@@ -1,6 +1,6 @@
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::process::{ProcessSpec, run_process};
-use core_eval::{CorpusManifest, CorpusTask, EvaluationManifest, Partition, RunStatus};
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::process::{ProcessSpec, run_process};
+use iteron_eval::{CorpusManifest, CorpusTask, EvaluationManifest, Partition, RunStatus};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
@@ -15,7 +15,7 @@ impl TempRoot {
             .expect("system clock is after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-non-workspace-cwd-{}-{nonce:x}",
+            "iteron-eval-non-workspace-cwd-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated cwd-discovery root");
@@ -179,7 +179,7 @@ done
 test "$workspace" = .
 test "$max_wall" = 1
 case "$runs" in /*) ;; *) exit 81 ;; esac
-for path in "$runs" "$HOME" "$CORE_CONFIG_HOME" "$TMPDIR"; do
+for path in "$runs" "$HOME" "$ITERON_CONFIG_HOME" "$TMPDIR"; do
   case "$path" in /*) ;; *) exit 82 ;; esac
   test -d "$path"
   test "$(cd "$path" && pwd -P)" = "$path"
@@ -196,7 +196,7 @@ printf '%s\n' '{"schema_version":4,"type":"result","outcome":"done","reason":nul
 }
 
 #[tokio::test]
-async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionably() {
+async fn real_iteron_eval_from_non_workspace_cwd_discovers_core_or_errors_actionably() {
     let parent_cwd = std::env::current_dir().expect("read test-process cwd");
     let root = TempRoot::new();
     let outside_cwd = root.join("outside-workspace");
@@ -217,7 +217,7 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
     let artifact = root.join("result.json");
     let work_root = root.join("work");
     let output = run_process(&ProcessSpec {
-        program: PathBuf::from(env!("CARGO_BIN_EXE_core-eval")),
+        program: PathBuf::from(env!("CARGO_BIN_EXE_iteron-eval")),
         args: vec![
             "--corpus".into(),
             corpus.into_os_string(),
@@ -253,7 +253,7 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
         max_output_bytes: 128 * 1024,
     })
     .await
-    .expect("launch the real Cargo-built core-eval binary");
+    .expect("launch the real Cargo-built iteron-eval binary");
 
     assert_eq!(
         std::env::current_dir().expect("re-read test-process cwd"),
@@ -282,13 +282,13 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
     } else {
         assert_eq!(
             output.exit_code,
-            i32::from(core_eval::types::EVAL_EXIT_HARNESS),
+            i32::from(iteron_eval::types::EVAL_EXIT_HARNESS),
             "discovery failures use the harness exit"
         );
         let stderr = output.stderr_lossy();
         assert!(stderr.contains("cannot locate the Core CLI independent of cwd"));
         assert!(stderr.contains("--core-bin /absolute/path/to/core"));
-        assert!(stderr.contains("cargo build -p core-cli"));
+        assert!(stderr.contains("cargo build -p iteron-cli"));
     }
 }
 
@@ -302,7 +302,7 @@ async fn relative_work_root_is_resolved_once_and_core_receives_canonical_paths()
     let core = write_boundary_checking_core(&root);
     let artifact = root.join("relative-result.json");
     let output = run_process(&ProcessSpec {
-        program: PathBuf::from(env!("CARGO_BIN_EXE_core-eval")),
+        program: PathBuf::from(env!("CARGO_BIN_EXE_iteron-eval")),
         args: vec![
             "--corpus".into(),
             corpus.into_os_string(),
@@ -338,7 +338,7 @@ async fn relative_work_root_is_resolved_once_and_core_receives_canonical_paths()
         max_output_bytes: 128 * 1024,
     })
     .await
-    .expect("launch core-eval with a relative work root");
+    .expect("launch iteron-eval with a relative work root");
 
     assert!(!output.timed_out);
     assert_eq!(output.exit_code, 0, "stderr: {}", output.stderr_lossy());

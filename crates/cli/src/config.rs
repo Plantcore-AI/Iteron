@@ -1,6 +1,6 @@
 //! Config layering (production necessity).
 //!
-//! A cloned repository is input, not an authorization principal. Repository `.core/config.json`
+//! A cloned repository is input, not an authorization principal. Repository `.iteron/config.json`
 //! may select a bare model within an independently trusted provider and may *tighten* resource
 //! ceilings. It cannot grant code execution, raise effort/spend/time ceilings, configure egress,
 //! providers, hooks, or MCP processes. Those authorities come only from operator-owned sources.
@@ -85,7 +85,7 @@ pub struct FileConfig {
     /// Exact active policy-bundle identity selected by the operator's offline promotion process.
     /// Consumed only from trusted user configuration; it carries identities/digests, never policy
     /// bodies or credentials.
-    pub active_policy_bundle: Option<core_evolve::PolicyBundle>,
+    pub active_policy_bundle: Option<iteron_evolve::PolicyBundle>,
     /// MCP servers to connect and expose as tools (each an operator-configured stdio server).
     pub mcp_servers: Option<Vec<McpServerConfig>>,
     /// Lifecycle hooks are consumed by `crate::runtime::hooks::Hooks`, but they must also be part
@@ -94,7 +94,7 @@ pub struct FileConfig {
     /// startup. Keep the raw command lists here; only the trusted user-config loader executes them.
     pub hooks: Option<BTreeMap<String, Vec<String>>>,
     /// Top-level keys this binary does not know. Retained so the parser can WARN about each one
-    /// (a typo must still be visible) and so `core config set` round-trips a newer binary's field
+    /// (a typo must still be visible) and so `iteron config set` round-trips a newer binary's field
     /// instead of deleting it. Never consumed as configuration.
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -192,8 +192,8 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthConfig>,
     /// Exact bare-name filter. Empty `allow` means all safe names; `deny` is applied last.
-    #[serde(default, skip_serializing_if = "core_mcp::McpToolFilter::is_empty")]
-    pub tools: core_mcp::McpToolFilter,
+    #[serde(default, skip_serializing_if = "iteron_mcp::McpToolFilter::is_empty")]
+    pub tools: iteron_mcp::McpToolFilter,
     /// Authority ceiling for this server's tools, narrowing only.
     ///
     /// Distinct from `tools`, and not a second spelling of it. `tools` names the tools that exist
@@ -202,8 +202,8 @@ pub struct McpServerConfig {
     /// authority of every tool of the server, including the ones it has not published yet, so
     /// `{"capabilities": []}` is a statement about the server rather than about a list of names.
     /// Absent means inherit: it never widens what the host already allows.
-    #[serde(default, skip_serializing_if = "core_mcp::McpServerPolicy::is_empty")]
-    pub policy: core_mcp::McpServerPolicy,
+    #[serde(default, skip_serializing_if = "iteron_mcp::McpServerPolicy::is_empty")]
+    pub policy: iteron_mcp::McpServerPolicy,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,7 +301,7 @@ impl ProviderCredential {
 
 /// One operator-defined provider instance. Credentials remain indirect: configuration names an
 /// environment variable or a credential file, never a plaintext key, and the named source is
-/// resolved on every turn (see `core_provider::CredentialSource`) so a token can rotate under a
+/// resolved on every turn (see `iteron_provider::CredentialSource`) so a token can rotate under a
 /// running process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -400,11 +400,11 @@ impl FileConfig {
         schema::parse(text)
     }
 
-    /// Load `.core/config.json` under `repo`, if present. A malformed file IS an error
+    /// Load `.iteron/config.json` under `repo`, if present. A malformed file IS an error
     /// (fail loud on a config the operator wrote), but an absent file is fine.
     pub fn load(repo: &Path) -> anyhow::Result<FileConfig> {
-        let path = core_protocol::home::path(repo, "config.json");
-        // Running `core` from the operator's home makes the PROJECT config path resolve to the very
+        let path = iteron_protocol::home::path(repo, "config.json");
+        // Running `iteron` from the operator's home makes the PROJECT config path resolve to the very
         // file the USER config lives in. Reading it a second time under untrusted-origin rules made
         // the operator's own `providers`/`provider` look like a cloned repository's suggestion, and
         // the session warned that it was ignoring them — from the one file that is allowed to
@@ -453,7 +453,7 @@ impl FileConfig {
             crate::external_editor::validate_command(command)?;
         }
         if let Some(effort) = self.effort.as_deref()
-            && core_protocol::Effort::parse(effort).is_none()
+            && iteron_protocol::Effort::parse(effort).is_none()
         {
             return Err(format!(
                 "effort must be one of low|medium|high|xhigh|max|ultracode, got `{effort}`"
@@ -591,7 +591,7 @@ impl FileConfig {
             }
             let mut names = std::collections::BTreeSet::new();
             for (index, server) in servers.iter().enumerate() {
-                core_mcp::validate_server_name(&server.name)
+                iteron_mcp::validate_server_name(&server.name)
                     .map_err(|error| format!("mcp_servers[{index}]: {error}"))?;
                 if !names.insert(server.name.as_str()) {
                     return Err(format!(
@@ -636,9 +636,9 @@ impl FileConfig {
                         let url = server.url.as_deref().ok_or_else(|| {
                             format!("mcp_servers[{index}].url is required for http")
                         })?;
-                        core_mcp::http::McpHttpEndpoint::parse(url)
+                        iteron_mcp::http::McpHttpEndpoint::parse(url)
                             .map_err(|error| format!("mcp_servers[{index}].url: {error}"))?;
-                        core_mcp::http::McpHttpHeaderPolicy::new(
+                        iteron_mcp::http::McpHttpHeaderPolicy::new(
                             server.header_env.keys().cloned().collect(),
                         )
                         .map_err(|error| format!("mcp_servers[{index}].header_env: {error}"))?;
@@ -673,7 +673,7 @@ impl FileConfig {
                                     .into_iter()
                                     .flatten()
                             {
-                                core_mcp::http::McpHttpEndpoint::parse(endpoint).map_err(
+                                iteron_mcp::http::McpHttpEndpoint::parse(endpoint).map_err(
                                     |error| format!("mcp_servers[{index}].oauth endpoint: {error}"),
                                 )?;
                             }
@@ -693,7 +693,7 @@ impl FileConfig {
         Ok(())
     }
 
-    /// Load the USER config `~/.core/config.json` (trust-by-origin). ONLY the user's own config may
+    /// Load the USER config `~/.iteron/config.json` (trust-by-origin). ONLY the user's own config may
     /// declare command-spawning entries — `mcp_servers` spawns a subprocess at startup, so a project/
     /// cloned-repo config must never supply them (else cloning a hostile repo = RCE). Mirrors
     /// `Hooks::load_user`. Absent operator home/file → default; malformed → error (fail loud on
@@ -713,7 +713,7 @@ impl FileConfig {
 
 /// Whether two paths name the same file on disk.
 ///
-/// Canonicalized, so `~/.core/config.json` and `<repo>/.core/config.json` are recognised as one file
+/// Canonicalized, so `~/.iteron/config.json` and `<repo>/.iteron/config.json` are recognised as one file
 /// when the repo IS the home directory — including through a symlinked home, which is why this is
 /// not a string comparison.
 fn same_file(left: &Path, right: &Path) -> bool {
@@ -725,26 +725,26 @@ fn same_file(left: &Path, right: &Path) -> bool {
 
 /// The root that holds the operator's `.core` directory.
 ///
-/// `CORE_CONFIG_HOME` takes precedence so a container image, a CI runner, or a `sudo -E`
+/// `ITERON_CONFIG_HOME` takes precedence so a container image, a CI runner, or a `sudo -E`
 /// invocation with no `HOME` is still configurable; without it there is no supported way to point
 /// Core at a config at all in those environments. Otherwise the one operator-home resolution in
-/// `core_protocol::home::operator` decides, so a native Windows process with only `USERPROFILE`
+/// `iteron_protocol::home::operator` decides, so a native Windows process with only `USERPROFILE`
 /// (or `HOMEDRIVE` + `HOMEPATH`) resolves the same `.core` root the rest of the binary uses.
 pub(crate) fn config_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("CORE_CONFIG_HOME")
+    std::env::var_os("ITERON_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(core_protocol::home::operator)
+        .or_else(iteron_protocol::home::operator)
 }
 
 /// Absolute path of the operator-owned user config, if a config root is resolvable.
 pub(crate) fn user_config_path() -> Option<std::path::PathBuf> {
-    config_home().map(|home| core_protocol::home::path(&home, "config.json"))
+    config_home().map(|home| iteron_protocol::home::path(&home, "config.json"))
 }
 
-/// The directory credential files written by `core setup` live in: `<config root>/.core/credentials`.
+/// The directory credential files written by `core setup` live in: `<config root>/.iteron/credentials`.
 pub(crate) fn credentials_dir() -> Option<std::path::PathBuf> {
-    config_home().map(|home| core_protocol::home::path(&home, "credentials"))
+    config_home().map(|home| iteron_protocol::home::path(&home, "credentials"))
 }
 
 /// The credential file `core setup` writes for one provider id.
@@ -764,7 +764,7 @@ pub(crate) fn credential_file_path(provider_id: &str) -> Option<std::path::PathB
     credentials_dir().map(|directory| directory.join(provider_id))
 }
 
-/// Every key `core config set` accepts, with the parser that turns operator text into the typed
+/// Every key `iteron config set` accepts, with the parser that turns operator text into the typed
 /// field. A closed list is the point: a settable key is a supported key, and a typo is refused
 /// rather than persisted into a document the next launch silently ignores.
 const SETTABLE_KEYS: &[&str] = &[
@@ -864,7 +864,7 @@ pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> 
     Ok(())
 }
 
-/// Render one key's effective value from a decoded document, for `core config get`.
+/// Render one key's effective value from a decoded document, for `iteron config get`.
 pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
     match key {
         "provider" => config.provider.clone(),
@@ -906,7 +906,7 @@ pub(crate) fn settable_keys() -> &'static [&'static str] {
 /// An advisory exclusive lock on the user config, held for one read-modify-write.
 ///
 /// `rename` alone makes each individual write atomic but does NOT make a read-modify-write
-/// serializable: two concurrent `core config set` calls would both read the old document and the
+/// serializable: two concurrent `iteron config set` calls would both read the old document and the
 /// loser's field would vanish. The lock closes that window; a stale lock older than its timeout is
 /// broken so a killed process cannot wedge configuration forever.
 struct ConfigLock {
@@ -1031,13 +1031,15 @@ pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<
 }
 
 /// THE single writer for operator configuration. Every product path that persists an operator
-/// choice — `core config set`, `core setup`, `/model`, `core auth logout` — mutates the document
+/// choice — `iteron config set`, `core setup`, `/model`, `core auth logout` — mutates the document
 /// through this function, so there is exactly one place that locks, validates, and installs.
 pub(crate) fn update_user_config(
     mutate: impl FnOnce(&mut FileConfig) -> Result<(), String>,
 ) -> anyhow::Result<std::path::PathBuf> {
     let path = user_config_path().ok_or_else(|| {
-        anyhow::anyhow!("no config root: set HOME or CORE_CONFIG_HOME before writing configuration")
+        anyhow::anyhow!(
+            "no config root: set HOME or ITERON_CONFIG_HOME before writing configuration"
+        )
     })?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1050,7 +1052,7 @@ pub(crate) fn update_user_config(
     Ok(path)
 }
 
-/// `core config set <key> <value>`.
+/// `iteron config set <key> <value>`.
 pub(crate) fn set_user_setting(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
     update_user_config(|config| apply_setting(config, key, value))
 }
@@ -1686,7 +1688,7 @@ mod tests {
             assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
         }
 
-        let entries: Vec<_> = (0..=core_mcp::MAX_MCP_TOOL_FILTER_ENTRIES)
+        let entries: Vec<_> = (0..=iteron_mcp::MAX_MCP_TOOL_FILTER_ENTRIES)
             .map(|index| format!("tool-{index}"))
             .collect();
         let oversized = serde_json::json!({
@@ -1758,7 +1760,7 @@ mod tests {
                     "id": "plan",
                     "adapter": "openai_chat",
                     "api_root": "https://plan.example/v1",
-                    "credential": { "type": "file", "path": "/home/op/.core/credentials/plan" }
+                    "credential": { "type": "file", "path": "/home/op/.iteron/credentials/plan" }
                 },
                 {
                     "id": "tagged-env",
@@ -1782,7 +1784,7 @@ mod tests {
         assert_eq!(
             providers[1].resolved_credential().unwrap(),
             ProviderCredential::File {
-                path: "/home/op/.core/credentials/plan".into()
+                path: "/home/op/.iteron/credentials/plan".into()
             }
         );
         assert_eq!(
@@ -1793,7 +1795,7 @@ mod tests {
         );
         assert_eq!(
             providers[1].resolved_credential().unwrap().display(),
-            "file /home/op/.core/credentials/plan"
+            "file /home/op/.iteron/credentials/plan"
         );
 
         // Round-tripping keeps each entry's own spelling: rewriting the document to persist an
@@ -2090,7 +2092,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let config_dir = dir.join(core_protocol::home::HOME_DIR);
+        let config_dir = dir.join(iteron_protocol::home::HOME_DIR);
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(
             config_dir.join("config.json"),
@@ -2115,7 +2117,7 @@ mod tests {
             "core-cfg-outside-{}-{nonce}.json",
             std::process::id()
         ));
-        let config_dir = dir.join(core_protocol::home::HOME_DIR);
+        let config_dir = dir.join(iteron_protocol::home::HOME_DIR);
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(&outside, r#"{"allow_code":true}"#).unwrap();
         std::os::unix::fs::symlink(&outside, config_dir.join("config.json")).unwrap();

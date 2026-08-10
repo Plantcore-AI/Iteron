@@ -18,9 +18,9 @@ use crate::turn_protocol::{
     BudgetCeiling, ControlSignal, ProviderFailure, ProviderTermination, VerifyOutcome,
 };
 use crate::turn_state::{TurnLimits, TurnState};
-use core_protocol::Outcome;
-use core_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
-use core_protocol::trust::Trust;
+use iteron_protocol::Outcome;
+use iteron_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
+use iteron_protocol::trust::Trust;
 use std::time::Duration;
 
 /// The grant the stub context port answers with.

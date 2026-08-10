@@ -1,17 +1,17 @@
 <p align="center">
-  <img src="assets/brand/core-code-logo.svg" width="720" alt="Core Code">
+  <img src="assets/brand/iteron-logo.svg" width="720" alt="Iteron">
 </p>
 
-# Core Code
+# Iteron
 
-Core Code is an open-source, terminal-native coding agent and a modular Rust
+Iteron is an open-source, terminal-native coding agent and a modular Rust
 substrate for bounded, recoverable, and observable agent runtimes.
 
 Created and led by [Jamal Cao
 (@fr0m-scratch)](https://github.com/fr0m-scratch), Creator and Project Lead.
 
 !!! warning "Pre-alpha software"
-    Core Code is useful for development and evaluation, but it is not
+    Iteron is useful for development and evaluation, but it is not
     production-ready. Do not run it unattended against sensitive repositories,
     and do not treat its sandbox as a confidentiality boundary.
 
@@ -47,13 +47,13 @@ Created and led by [Jamal Cao
 
 </div>
 
-Core Code can read, search, and edit a workspace; run explicitly authorized
+Iteron can read, search, and edit a workspace; run explicitly authorized
 commands; work with Git, memory, skills, hooks, and initial MCP tooling; and run a
 verification command before accepting completion.
 
 ## Start here
 
-1. [Install or build Core Code](getting-started/installation.md).
+1. [Install or build Iteron](getting-started/installation.md).
 2. [Configure a provider](getting-started/providers.md) without storing a key in
    the repository.
 3. Follow the [quickstart](getting-started/quickstart.md) in a disposable test
@@ -77,7 +77,7 @@ target contract into a shipped feature.
 
 ## Project links
 
-- [GitHub repository](https://github.com/Plantcore-AI/core)
+- [GitHub repository](https://github.com/Plantcore-AI/Iteron)
 - [Project status](project/status.md)
 - [Roadmap](roadmap.md)
 - [Contributing](project/contributing.md)

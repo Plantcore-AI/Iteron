@@ -6,8 +6,8 @@ impl Agent {
     /// binary payload would make the model answer placeholders as if it saw the image.
     pub(super) fn admit_input_images<'a>(
         &self,
-        input_images: &'a [core_protocol::ImageContent],
-    ) -> Result<&'a [core_protocol::ImageContent], KernelError> {
+        input_images: &'a [iteron_protocol::ImageContent],
+    ) -> Result<&'a [iteron_protocol::ImageContent], KernelError> {
         if input_images.is_empty() || self.provider.supports_image_input() {
             return Ok(input_images);
         }
@@ -30,7 +30,7 @@ impl Agent {
     /// resume) — it does NOT touch the disk, so the stable prefix is byte-stable across a run and a
     /// replay reproduces instructions, memory, and skills exactly.
     pub(super) fn effective_system(&self) -> String {
-        core_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+        iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
     }
 
     /// The tool set advertised to the model for this turn.
@@ -40,9 +40,9 @@ impl Agent {
     /// NEVER admit is pure waste — every call the model makes to it is refused by the gate.
     ///
     /// Only the two UNCONDITIONAL denials are filtered, so nothing that could be admitted is
-    /// hidden: `core_protocol::gate` makes Plan a hard read-only overlay that no session rule may
+    /// hidden: `iteron_protocol::gate` makes Plan a hard read-only overlay that no session rule may
     /// punch through (and `bypass_permissions` explicitly excludes Plan), and
-    /// `core_kernel::admission::constrain` denies any capability outside the intersection of the
+    /// `iteron_kernel::admission::constrain` denies any capability outside the intersection of the
     /// admitted task ceiling and the selected policy manifest. An `Ask` is not filtered: the
     /// operator can still answer it.
     ///
@@ -56,7 +56,7 @@ impl Agent {
     /// Plan rewrites the stable prefix and breaks the prompt cache for that one turn. That is a
     /// rare operator action; carrying an unusable schema block on every turn of a read-only session
     /// is not.
-    pub(super) fn advertised_tool_specs(&self) -> Vec<core_protocol::ToolSpec> {
+    pub(super) fn advertised_tool_specs(&self) -> Vec<iteron_protocol::ToolSpec> {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let all = self.registry.specs();
         let total = all.len();
@@ -150,8 +150,11 @@ impl Agent {
         let recorded = self.recorded_context_history()?;
         if let Some((context_text, context_trust, durable_instructions)) = recorded.injection {
             if let Some(instructions) = durable_instructions {
-                let (text, trust) =
-                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    &instructions,
+                    context_text,
+                    context_trust,
+                );
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -169,8 +172,11 @@ impl Agent {
                         instructions: Some(instructions.clone()),
                     },
                 )?;
-                let (text, trust) =
-                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    &instructions,
+                    context_text,
+                    context_trust,
+                );
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -239,8 +245,11 @@ impl Agent {
         }
         let (text, trust) = match &durable_instructions {
             Some(instructions) => {
-                let (text, trust) =
-                    core_ctx::assemble_recorded_context(instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    instructions,
+                    context_text,
+                    context_trust,
+                );
                 (text, Some(trust))
             }
             None => (context_text, should_record.then_some(context_trust)),

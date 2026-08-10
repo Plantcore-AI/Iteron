@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::{EffectId, Event, EventKind, Seq, ToolResult, Trust, TurnId, Usage};
+use iteron_protocol::{EffectId, Event, EventKind, Seq, ToolResult, Trust, TurnId, Usage};
 
 fn event(seq: u64, kind: EventKind) -> Event {
     Event {

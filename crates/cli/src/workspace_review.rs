@@ -1,9 +1,9 @@
-//! Product binding for `core-changeset`: complete status, staged/unstaged diff materialisation,
+//! Product binding for `iteron-changeset`: complete status, staged/unstaged diff materialisation,
 //! and checkpoint restore previews.
 
-use core_changeset::{ChangeSet, Inventory, Presence, Preview, Scope, Status, Unrecorded};
-use core_protocol::{Event, EventKind, RunId, Seq};
-use core_record::Snapshot;
+use iteron_changeset::{ChangeSet, Inventory, Presence, Preview, Scope, Status, Unrecorded};
+use iteron_protocol::{Event, EventKind, RunId, Seq};
+use iteron_record::Snapshot;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +136,7 @@ impl Review {
             if document.trim().is_empty() || document.trim() == "(no uncommitted changes)" {
                 continue;
             }
-            core_changeset::parse_unified_default(document)
+            iteron_changeset::parse_unified_default(document)
                 .map_err(|error| format!("bounded unified diff refused: {error}"))?;
             documents.push(document.as_str());
         }
@@ -148,11 +148,11 @@ pub(crate) async fn observe(workspace: &Path) -> Result<Review, String> {
     // Start all independent reads together. Each child is independently deadline/output bounded;
     // the aggregate therefore remains three fixed observations, not an unbounded fan.
     let (status, staged, unstaged) = tokio::join!(
-        core_tools::git_status_porcelain_observation(workspace),
-        core_tools::git_index_diff_observation(workspace, false, None),
-        core_tools::git_diff_observation(workspace, false, None),
+        iteron_tools::git_status_porcelain_observation(workspace),
+        iteron_tools::git_index_diff_observation(workspace, false, None),
+        iteron_tools::git_diff_observation(workspace, false, None),
     );
-    let changes = core_changeset::parse_default(&status?)
+    let changes = iteron_changeset::parse_default(&status?)
         .map_err(|error| format!("Git status protocol refused: {error}"))?;
     Ok(Review {
         changes,
@@ -184,14 +184,15 @@ pub(crate) fn preview_restore(
     scope: Scope,
     unrecorded: Unrecorded,
 ) -> Result<Preview, String> {
-    let paths = core_record::snapshot_inventory(snapshot, workspace, core_changeset::MAX_ENTRIES)
-        .map_err(|error| format!("checkpoint inventory failed: {error}"))?;
+    let paths =
+        iteron_record::snapshot_inventory(snapshot, workspace, iteron_changeset::MAX_ENTRIES)
+            .map_err(|error| format!("checkpoint inventory failed: {error}"))?;
     let inventory = if paths.complete {
         Inventory::complete(paths.paths)
     } else {
         Inventory::truncated(paths.paths)
     };
-    Ok(core_changeset::preview_against(
+    Ok(iteron_changeset::preview_against(
         &review.changes,
         &inventory,
         scope,
@@ -208,7 +209,7 @@ mod tests {
         let run = RunId("r".into());
         let event = |seq, tree: &str| Event {
             seq: Seq(seq),
-            turn: core_protocol::TurnId(1),
+            turn: iteron_protocol::TurnId(1),
             kind: EventKind::Checkpoint {
                 at: Seq(seq),
                 tree_ref: tree.into(),

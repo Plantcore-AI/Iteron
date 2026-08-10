@@ -1,11 +1,11 @@
-//! D12-05 oracle: the `core-eval` statistical *measurement machinery* is pinned by tests.
+//! D12-05 oracle: the `iteron-eval` statistical *measurement machinery* is pinned by tests.
 //!
 //! The gap under closure is "Zero tests on the eval measurement machinery". The trustworthy part of
 //! a fixed-model evaluation is not that it runs a subprocess — it is the arithmetic that turns raw
 //! cell outcomes into a defensible claim: a resolved-rate over the correct denominator, a real
 //! confidence interval around it, a difference-of-proportions interval between two configs, and a
 //! significance / statistical-power verdict derived *from that interval* rather than asserted. That
-//! layer — [`core_eval::aggregate`] + [`core_eval::compare`], backed by the Wilson score interval
+//! layer — [`iteron_eval::aggregate`] + [`iteron_eval::compare`], backed by the Wilson score interval
 //! and Newcombe's difference interval — had no test exercising it through the public surface the
 //! binary (`main.rs`) consumes when it prints its summary and finalizes the run.
 //!
@@ -27,7 +27,7 @@
 //! once this oracle runs against the real measurement machinery. Every assertion below encodes a
 //! concrete numeric / categorical claim about that machinery, so none is a trivially-true check.
 
-use core_eval::{
+use iteron_eval::{
     CellResult, CostStatus, InsufficientPowerReason, OracleStatus, Partition, RunStatus,
     SamplingControl, StatisticalConclusion, aggregate, compare,
 };
@@ -74,7 +74,7 @@ fn push_arm(cells: &mut Vec<CellResult>, config: &str, resolved_flags: &[bool]) 
 }
 
 /// A single-config aggregate over `resolved_flags` completed cells (used for CI-shape assertions).
-fn single_config(config: &str, resolved_flags: &[bool]) -> core_eval::Aggregate {
+fn single_config(config: &str, resolved_flags: &[bool]) -> iteron_eval::Aggregate {
     let mut cells = Vec::new();
     push_arm(&mut cells, config, resolved_flags);
     aggregate(&cells, 1)
@@ -120,7 +120,7 @@ fn more_completed_samples_tighten_the_wilson_interval() {
     let small = single_config("c", &[vec![true; 8], vec![false; 2]].concat());
     let large = single_config("c", &[vec![true; 32], vec![false; 8]].concat());
 
-    let width = |a: &core_eval::Aggregate| {
+    let width = |a: &iteron_eval::Aggregate| {
         let [lo, hi] = a.configs[0].resolved_rate_ci95;
         hi - lo
     };

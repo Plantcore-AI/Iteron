@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const ATTESTATION_DOMAIN: &[u8] = b"core-eval/run-attestation/v1\0";
+const ATTESTATION_DOMAIN: &[u8] = b"iteron-eval/run-attestation/v1\0";
 const MAX_ATTESTATION_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_CORE_BINARY_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ITERON_BINARY_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_RESULT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CORPUS_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ATTEMPT_LEDGER_BYTES: u64 = 64 * 1024 * 1024;
@@ -107,9 +107,9 @@ impl RunAttestation {
             run_id: input.run_id.into(),
             corpus_version: input.corpus.corpus_version.clone(),
             dataset_digest: input.corpus.dataset_digest.clone(),
-            tunables_registry_digest: core_tunables::registry_digest()
+            tunables_registry_digest: iteron_tunables::registry_digest()
                 .map_err(|error| AttestationError::Artifact {
-                    path: "core-tunables".into(),
+                    path: "iteron-tunables".into(),
                     reason: error.to_string(),
                 })?
                 .value,
@@ -122,7 +122,7 @@ impl RunAttestation {
             attempt_record_count: input.attempt_record_count,
             adapters: adapter_evidence(input.corpus)?,
             artifacts: vec![
-                artifact_digest("core_binary", input.core_path, MAX_CORE_BINARY_BYTES)?,
+                artifact_digest("core_binary", input.core_path, MAX_ITERON_BINARY_BYTES)?,
                 artifact_digest("corpus", input.corpus_path, MAX_CORPUS_BYTES)?,
                 artifact_digest("evaluation_result", input.result_path, MAX_RESULT_BYTES)?,
                 artifact_digest(
@@ -152,7 +152,7 @@ impl RunAttestation {
         attempt_ledger_path: &Path,
     ) -> Result<(), AttestationError> {
         let actual = vec![
-            artifact_digest("core_binary", core_path, MAX_CORE_BINARY_BYTES)?,
+            artifact_digest("core_binary", core_path, MAX_ITERON_BINARY_BYTES)?,
             artifact_digest("corpus", corpus_path, MAX_CORPUS_BYTES)?,
             artifact_digest("evaluation_result", result_path, MAX_RESULT_BYTES)?,
             artifact_digest(
@@ -183,7 +183,7 @@ pub fn sidecar_path(output: &Path) -> PathBuf {
     let name = output
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("core-eval-result.json");
+        .unwrap_or("iteron-eval-result.json");
     output.with_file_name(format!("{name}.attestation.json"))
 }
 
@@ -197,7 +197,10 @@ pub fn write_atomic(attestation: &RunAttestation, path: &Path) -> Result<(), Att
             reason: "refusing to replace an existing attestation".into(),
         });
     }
-    let temporary = parent.join(format!(".core-eval-attestation-{}.tmp", attestation.run_id));
+    let temporary = parent.join(format!(
+        ".iteron-eval-attestation-{}.tmp",
+        attestation.run_id
+    ));
     let bytes = serde_json::to_vec_pretty(attestation)
         .map_err(|error| AttestationError::Json(error.to_string()))?;
     if bytes.len() as u64 > MAX_ATTESTATION_BYTES {

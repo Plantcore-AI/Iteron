@@ -208,7 +208,7 @@ impl App {
         ok: bool,
         exit_code: Option<i32>,
         output: String,
-        diff: Option<core_protocol::FileDiff>,
+        diff: Option<iteron_protocol::FileDiff>,
     ) {
         self.tool_end_at(id, ok, exit_code, output, diff, Instant::now());
     }
@@ -219,7 +219,7 @@ impl App {
         ok: bool,
         exit_code: Option<i32>,
         output: String,
-        diff: Option<core_protocol::FileDiff>,
+        diff: Option<iteron_protocol::FileDiff>,
         now: Instant,
     ) {
         let output = ui_safe_text(&output);

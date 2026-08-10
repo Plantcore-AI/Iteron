@@ -370,7 +370,7 @@ pub enum EventKind {
     /// reads that used to commit their terminal locally, so a proven-successful completion always
     /// names its admission. `None` survives for a refused or failed call — which never reached an
     /// executor, so there was nothing to admit — and for records written before the boundary went
-    /// universal. `core_record` enforces exactly that split at the durable append boundary; it is
+    /// universal. `iteron_record` enforces exactly that split at the durable append boundary; it is
     /// deliberately not a parse-time rule, because records already on disk must stay readable.
     ///
     /// Both fields are additive `Option`s (abi.md §4.3(b)3), so a `None` serializes to the exact
@@ -412,7 +412,7 @@ pub enum EventKind {
     /// # Why these do not reuse `ToolDone`
     ///
     /// `ToolDone` is not merely a terminal marker; it is a transcript and accounting record.
-    /// `core_obs::pricing::replay` folds every `ToolDone` into `ledger.replay_tool`, and the
+    /// `iteron_obs::pricing::replay` folds every `ToolDone` into `ledger.replay_tool`, and the
     /// kernel reconstructs pending tool results from it. Minting a synthetic `ToolResult` for a
     /// provider request or a checkpoint would inflate the tool counters and put rows that were
     /// never tool calls into the transcript projection. A distinct tag keeps one WAL ordering for
@@ -1282,7 +1282,7 @@ mod tests {
                 version: crate::RunGenesisTunablesVersion::V1,
                 canonicalization: crate::RUN_GENESIS_TUNABLES_CANONICALIZATION.into(),
                 resolution_schema_version: 1,
-                registry_id: "core-tunables".into(),
+                registry_id: "iteron-tunables".into(),
                 registry_schema_version: 3,
                 family_schema_version: 2,
                 registry_revision: 3,

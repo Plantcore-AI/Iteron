@@ -22,8 +22,8 @@ distinction between prompts, model output, tools, permissions, and status.
 Run:
 
 ```sh
-cargo test -p core-cli --locked
-cargo test -p core-cli --test tui_pty --locked -- --nocapture
+cargo test -p iteron-cli --locked
+cargo test -p iteron-cli --test tui_pty --locked -- --nocapture
 ```
 
 ## Visual changes

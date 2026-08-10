@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn d13_06_g1_prior_format_fixture_loads_through_the_v0_migrator() {
         let repo = fixture_repo("v0");
-        let config_dir = repo.join(core_protocol::home::HOME_DIR);
+        let config_dir = repo.join(iteron_protocol::home::HOME_DIR);
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("config.json"), V0_FIXTURE).unwrap();
 
@@ -181,7 +181,7 @@ mod tests {
         assert!(message.contains("upgrade Core"));
 
         let repo = fixture_repo("future");
-        let config_dir = repo.join(core_protocol::home::HOME_DIR);
+        let config_dir = repo.join(iteron_protocol::home::HOME_DIR);
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(
             config_dir.join("config.json"),

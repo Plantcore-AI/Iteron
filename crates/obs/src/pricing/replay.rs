@@ -1,6 +1,6 @@
 use super::{PricingError, PricingPort, validate_projection_digest, validate_rate_card_digest};
 use crate::Ledger;
-use core_protocol::{
+use iteron_protocol::{
     CostAttribution, CostProjectionIdentity, Event, EventKind, MAX_WORKFLOW_COST_PROJECTIONS,
     PricingRoute, RunId, SignedRateCard, TenantId, Usage, WorkflowEvent, WorkflowMetrics,
 };

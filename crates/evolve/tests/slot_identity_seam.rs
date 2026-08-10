@@ -1,12 +1,12 @@
 //! The seam between the two things called "strategy slot".
 //!
-//! `core_protocol::slot::SlotId` is what the kernel calls a slot; `core_evolve::StrategySlot` is
+//! `iteron_protocol::slot::SlotId` is what the kernel calls a slot; `iteron_evolve::StrategySlot` is
 //! how a policy bundle persists which slot an artefact is for. They are separate types with
 //! separate jobs, and an adversarial review of the W1 ABI freeze found that an early doc comment
 //! claimed they accept the same strings when in fact each accepted identities the other rejected.
 //!
-//! This test lives here rather than in `core-protocol` because only this crate can call both
-//! validators: `core-protocol` cannot depend on `core-evolve`, the dependency runs the other way.
+//! This test lives here rather than in `iteron-protocol` because only this crate can call both
+//! validators: `iteron-protocol` cannot depend on `iteron-evolve`, the dependency runs the other way.
 //!
 //! What is pinned is a **direction**, not equality:
 //!
@@ -16,8 +16,8 @@
 //! an ungovernable hole - it would silently fall back to the built-in strategy with nothing
 //! reporting it - so that is the direction the freeze has to guarantee.
 
-use core_evolve::StrategySlot;
-use core_protocol::slot::SlotId;
+use iteron_evolve::StrategySlot;
+use iteron_protocol::slot::SlotId;
 
 /// Identities a vertical pack could plausibly mint, plus the built-ins.
 const CANDIDATES: &[&str] = &[
@@ -53,7 +53,7 @@ fn every_valid_slot_id_is_a_valid_persisted_strategy_slot() {
 fn the_subset_direction_holds_for_the_shapes_that_used_to_break_it() {
     // Before the fix these passed SlotId::validate and were rejected by StrategySlot::new, which
     // is precisely the ungovernable-slot case. They must now fail on both sides.
-    for previously_accepted_here in ["Acme/Router", "core/toolPolicy", "CORE/CONTEXT"] {
+    for previously_accepted_here in ["Acme/Router", "iteron/toolPolicy", "CORE/CONTEXT"] {
         assert!(
             SlotId(previously_accepted_here.into()).validate().is_err(),
             "{previously_accepted_here} must no longer be a valid SlotId"

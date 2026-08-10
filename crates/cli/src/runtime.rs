@@ -1,4 +1,4 @@
-//! core-kernel — the thin, bounded orchestrator.
+//! iteron-kernel — the thin, bounded orchestrator.
 //!
 //! mini-swe-agent's loop is ~188 lines and competitive; it is the baseline every line of this
 //! must beat (ADR-005). So the kernel is deliberately small: it is a controller, not
@@ -14,7 +14,7 @@
 //! ReversibleLocal, run-if-allowed for CodeExecuting, refused otherwise — the capability
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
-pub use core_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
 mod agent_config;
 mod agent_loop;
 mod budget_control;
@@ -52,15 +52,18 @@ mod workflow_fan_progress;
 mod workflow_fan_run;
 mod workflow_prepare;
 mod workflow_spawner;
-use core_ctx::{CompactionPolicy, ContextEstimate};
+use iteron_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+use deferred_tools::{AutoApprovedCall, declared_write_paths};
+use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
+use hooks::{HookDecision, HookEvent, Hooks};
 #[cfg(test)]
-use core_ctx::estimate_request_context;
-use core_obs::{
+use iteron_ctx::estimate_request_context;
+use iteron_obs::{
     CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
 };
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{
     AgentLoopState, Block, Budget, Capability, CostAttribution, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Effort, Event, EventKind,
     LifecyclePayload, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode,
@@ -69,13 +72,10 @@ use core_protocol::{
     SubmissionId, SubmissionRejectionReason, ToolResult, ToolUse, Trust, TurnId, Verdict,
 };
 #[cfg(test)]
-use core_provider::ProviderNotice;
-use core_provider::{Provider, ProviderAttemptSemantics, StreamItem, TurnRequest, UsageReport};
-use core_record::Rollout;
-use core_tools::Registry;
-use deferred_tools::{AutoApprovedCall, declared_write_paths};
-use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
-use hooks::{HookDecision, HookEvent, Hooks};
+use iteron_provider::ProviderNotice;
+use iteron_provider::{Provider, ProviderAttemptSemantics, StreamItem, TurnRequest, UsageReport};
+use iteron_record::Rollout;
+use iteron_tools::Registry;
 pub use kernel_error::KernelError;
 #[cfg(test)]
 use permission_policy::is_trust_mutating_path;
@@ -171,7 +171,7 @@ pub enum UiEvent {
         ok: bool,
         exit_code: Option<i32>,
         output: String,
-        diff: Option<core_protocol::FileDiff>,
+        diff: Option<iteron_protocol::FileDiff>,
     },
     /// Phase transition.
     Phase(Phase),
@@ -181,13 +181,13 @@ pub enum UiEvent {
     /// the compaction trigger is a policy threshold and must never be rendered as that window.
     TurnEnd {
         cost: CostState,
-        usage: core_protocol::Usage,
+        usage: iteron_protocol::Usage,
         context: ContextEstimate,
         model_context_window: Option<u64>,
         /// Exact output allowance reserved by the admission check for this request.
         reserved_output_tokens: u32,
         compaction_trigger_tokens: usize,
-        effort: core_provider::EffortApplication,
+        effort: iteron_provider::EffortApplication,
     },
     /// A structured workflow lifecycle update. Frontends project these id-correlated events into
     /// one live card/tree instead of printing a line per worker (the Claude Code/Codex interaction
@@ -418,12 +418,12 @@ return reports;
 #[cfg(test)]
 #[allow(dead_code)]
 struct WorkflowProgressChannel {
-    tx: tokio::sync::mpsc::UnboundedSender<core_workflow::ProgressEvent>,
+    tx: tokio::sync::mpsc::UnboundedSender<iteron_workflow::ProgressEvent>,
 }
 
 #[cfg(test)]
-impl core_workflow::ProgressSink for WorkflowProgressChannel {
-    fn emit(&self, event: core_workflow::ProgressEvent) {
+impl iteron_workflow::ProgressSink for WorkflowProgressChannel {
+    fn emit(&self, event: iteron_workflow::ProgressEvent) {
         let _ = self.tx.send(event);
     }
 }
@@ -432,14 +432,14 @@ impl core_workflow::ProgressSink for WorkflowProgressChannel {
 #[cfg(test)]
 #[allow(dead_code)]
 struct EngineAgentTerminal {
-    state: core_workflow::WorkflowState,
+    state: iteron_workflow::WorkflowState,
     error: Option<String>,
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
 enum FanRun {
-    Completed(Vec<core_agents::Summary>),
+    Completed(Vec<iteron_agents::Summary>),
     Stopped(Outcome),
 }
 
@@ -485,7 +485,7 @@ struct OrchestrationAllocation {
 /// Keep the tail of a long string (test failures print last) within a bound. UTF-8-safe
 /// (delegates to protocol::text::tail; a raw byte slice would panic on a multibyte cut).
 fn truncate_tail(s: &str, max: usize) -> String {
-    core_protocol::text::tail(s, max)
+    iteron_protocol::text::tail(s, max)
 }
 
 /// Build the `ToolEnd` UI event from a completed `ToolResult`: correlate by the tool_use id and
@@ -503,7 +503,7 @@ fn tool_end_ui(tu: &ToolUse, r: &ToolResult) -> UiEvent {
 /// Build a one-hunk `FileDiff` from an edit/write tool's args (path/old/new) — KERNEL-side, so the
 /// tool's result string stays terse and the durable record is not polluted (ADR-015 C8). The old/new
 /// text is secret-scrubbed BEFORE it becomes a diff (C10; `from_replacement` also caps at 200 lines).
-fn edit_diff_from(tu: &ToolUse, r: &ToolResult) -> Option<core_protocol::FileDiff> {
+fn edit_diff_from(tu: &ToolUse, r: &ToolResult) -> Option<iteron_protocol::FileDiff> {
     if r.is_error {
         return None; // a refused/failed edit landed no change
     }
@@ -524,9 +524,11 @@ fn edit_diff_from(tu: &ToolUse, r: &ToolResult) -> Option<core_protocol::FileDif
         ),
         _ => return None,
     };
-    let old = core_record::redact::scrub(old);
-    let new = core_record::redact::scrub(new);
-    Some(core_protocol::FileDiff::from_replacement(path, &old, &new))
+    let old = iteron_record::redact::scrub(old);
+    let new = iteron_record::redact::scrub(new);
+    Some(iteron_protocol::FileDiff::from_replacement(
+        path, &old, &new,
+    ))
 }
 
 /// The bash tool embeds `[exit N]` as the FIRST line of its (non-error) result (shell.rs) without
@@ -564,9 +566,9 @@ fn strip_exit_line(tu: &ToolUse, content: &str) -> String {
 /// ingest — a collapsed card is a few rows but must not retain multi-MB raw output (bounded
 /// invariant #1). Keep the first 60 + last 20 lines, then a hard char cap.
 fn ui_tool_output(content: &str) -> String {
-    let scrubbed = core_record::redact::scrub(content);
+    let scrubbed = iteron_record::redact::scrub(content);
     let bounded = bound_middle(&scrubbed, 60, 20);
-    core_protocol::text::head(&bounded, 12_000)
+    iteron_protocol::text::head(&bounded, 12_000)
 }
 
 /// Prepare a workflow task label for a frontend: collapse control whitespace, redact credentials,
@@ -574,7 +576,7 @@ fn ui_tool_output(content: &str) -> String {
 /// the UI gets only a safe, one-line identity for the live task tree.
 fn ui_workflow_label(content: &str) -> String {
     let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let scrubbed = core_record::redact::scrub(&one_line);
+    let scrubbed = iteron_record::redact::scrub(&one_line);
     strict_utf8_head(&scrubbed, 240)
 }
 
@@ -616,7 +618,7 @@ fn workflow_child_activity(event: &UiEvent) -> Option<String> {
 fn provider_settlement(
     turn: TurnId,
     ordinal: usize,
-    result: &Result<core_provider::TurnResult, KernelError>,
+    result: &Result<iteron_provider::TurnResult, KernelError>,
 ) -> effects::Settlement {
     let class = effect_class::EffectClass::Provider;
     match result {
@@ -643,33 +645,33 @@ fn provider_settlement(
 /// the turn, while a dropped stream or an unreadable response leaves a possibly-billed turn whose
 /// result nobody can name. Only the second may ever be journalled as unknown, because unknown is
 /// the state that blocks a run until a human reconciles it.
-fn provider_outcome_is_unobservable(error: &core_provider::ProviderError) -> bool {
+fn provider_outcome_is_unobservable(error: &iteron_provider::ProviderError) -> bool {
     matches!(
         error,
-        core_provider::ProviderError::Interrupted
-            | core_provider::ProviderError::DeadlineExceeded
-            | core_provider::ProviderError::Stream(_)
-            | core_provider::ProviderError::Decode(_)
+        iteron_provider::ProviderError::Interrupted
+            | iteron_provider::ProviderError::DeadlineExceeded
+            | iteron_provider::ProviderError::Stream(_)
+            | iteron_provider::ProviderError::Decode(_)
     )
 }
 
 /// What the verifier dispatch proved, which is a different question from what it decided.
 ///
-/// The caller only ever wants the [`core_verify::Verdict`]; the boundary needs to know whether that
+/// The caller only ever wants the [`iteron_verify::Verdict`]; the boundary needs to know whether that
 /// verdict was *observed* from the oracle, *synthesised* after dropping a running oracle, or
 /// synthesised without ever having started one. Collapsing the three made a cancellation before
 /// dispatch indistinguishable from a kill mid-dispatch, and only the second is an unknown effect.
 enum VerifyDispatch {
     /// The oracle produced this verdict itself. Proven terminal.
-    Observed(core_verify::Verdict),
+    Observed(iteron_verify::Verdict),
     /// The oracle future was polled at least once and then dropped. No terminal is observable.
-    Dropped(core_verify::Verdict),
+    Dropped(iteron_verify::Verdict),
     /// The oracle future was never polled, so no process was started. Proven non-event.
-    NotDispatched(core_verify::Verdict),
+    NotDispatched(iteron_verify::Verdict),
 }
 
 impl VerifyDispatch {
-    fn from_drop(dispatched: bool, verdict: core_verify::Verdict) -> Self {
+    fn from_drop(dispatched: bool, verdict: iteron_verify::Verdict) -> Self {
         if dispatched {
             VerifyDispatch::Dropped(verdict)
         } else {
@@ -678,7 +680,7 @@ impl VerifyDispatch {
     }
 
     #[cfg(test)]
-    fn verdict(&self) -> &core_verify::Verdict {
+    fn verdict(&self) -> &iteron_verify::Verdict {
         match self {
             VerifyDispatch::Observed(verdict)
             | VerifyDispatch::Dropped(verdict)
@@ -892,7 +894,7 @@ fn effect_failed_terminal(
 /// `display()` would have made those effects unrecordable at exactly the moment they matter.
 fn effect_workspace(workspace: &std::path::Path) -> String {
     let rendered = strict_utf8_head(
-        &core_record::redact::scrub(&workspace.display().to_string()),
+        &iteron_record::redact::scrub(&workspace.display().to_string()),
         2_048,
     );
     if rendered.is_empty() {
@@ -923,31 +925,31 @@ struct RecordedContextHistory {
     genesis_environment: Option<DurableEnvironmentContext>,
 }
 
-fn workflow_class_label(class: core_agents::TaskClass) -> &'static str {
+fn workflow_class_label(class: iteron_agents::TaskClass) -> &'static str {
     match class {
-        core_agents::TaskClass::Localized => "localized",
-        core_agents::TaskClass::UnderSpecified => "under-specified",
-        core_agents::TaskClass::MultiFile => "multi-file",
-        core_agents::TaskClass::RunToUnderstand => "run-to-understand",
+        iteron_agents::TaskClass::Localized => "localized",
+        iteron_agents::TaskClass::UnderSpecified => "under-specified",
+        iteron_agents::TaskClass::MultiFile => "multi-file",
+        iteron_agents::TaskClass::RunToUnderstand => "run-to-understand",
     }
 }
 
-fn ultracode_coverage(class: core_agents::TaskClass) -> &'static str {
+fn ultracode_coverage(class: iteron_agents::TaskClass) -> &'static str {
     match class {
-        core_agents::TaskClass::RunToUnderstand => {
+        iteron_agents::TaskClass::RunToUnderstand => {
             "Cover static failure-path localization, existing tests/reproduction definitions, \
              state/data flow, and verification options that do not require a read-only worker to \
              execute commands."
         }
-        core_agents::TaskClass::MultiFile => {
+        iteron_agents::TaskClass::MultiFile => {
             "Cover ownership boundaries, callers/consumers, shared data or protocol flow, \
              migration compatibility, and affected tests/verification."
         }
-        core_agents::TaskClass::UnderSpecified => {
+        iteron_agents::TaskClass::UnderSpecified => {
             "Cover entry-point localization, ownership/data flow, nearby analogous code, \
              invariants/risks, and existing tests/verification."
         }
-        core_agents::TaskClass::Localized => {
+        iteron_agents::TaskClass::Localized => {
             "Confirm the named location, its callers/data flow, and affected tests."
         }
     }
@@ -960,14 +962,14 @@ fn workflow_terminal(
     state: &WorkflowRunState,
 ) -> (
     WorkflowRunOutcomeUi,
-    core_protocol::WorkflowOutcome,
+    iteron_protocol::WorkflowOutcome,
     Option<String>,
     Option<String>,
 ) {
     match outcome {
         Ok(Outcome::Done) if state.degraded() => (
             WorkflowRunOutcomeUi::Degraded,
-            core_protocol::WorkflowOutcome::Degraded,
+            iteron_protocol::WorkflowOutcome::Degraded,
             Some(format!(
                 "writer completed with {} failed and {} budget-skipped investigation(s)",
                 state.failed, state.skipped
@@ -976,43 +978,43 @@ fn workflow_terminal(
         ),
         Ok(Outcome::Done) => (
             WorkflowRunOutcomeUi::Done,
-            core_protocol::WorkflowOutcome::Done,
+            iteron_protocol::WorkflowOutcome::Done,
             None,
             None,
         ),
         Ok(Outcome::Interrupted) => (
             WorkflowRunOutcomeUi::Stopped,
-            core_protocol::WorkflowOutcome::Interrupted,
+            iteron_protocol::WorkflowOutcome::Interrupted,
             Some("stopped by operator".into()),
             Some("operator_stop".into()),
         ),
         Ok(Outcome::Drained) => (
             WorkflowRunOutcomeUi::Stopped,
-            core_protocol::WorkflowOutcome::Drained,
+            iteron_protocol::WorkflowOutcome::Drained,
             Some("drained by operator after a durable checkpoint".into()),
             Some("operator_drain".into()),
         ),
         Ok(Outcome::BudgetExhausted(kind)) => (
             WorkflowRunOutcomeUi::BudgetExhausted,
-            core_protocol::WorkflowOutcome::BudgetExhausted,
+            iteron_protocol::WorkflowOutcome::BudgetExhausted,
             Some(format!("{kind} budget exhausted")),
             Some("budget_exhausted".into()),
         ),
         Ok(Outcome::Stuck) => (
             WorkflowRunOutcomeUi::Stuck,
-            core_protocol::WorkflowOutcome::Stuck,
+            iteron_protocol::WorkflowOutcome::Stuck,
             Some("consecutive tool-error limit reached".into()),
             Some("tool_error_limit".into()),
         ),
         Ok(Outcome::HarnessError) => (
             WorkflowRunOutcomeUi::Failed,
-            core_protocol::WorkflowOutcome::HarnessError,
+            iteron_protocol::WorkflowOutcome::HarnessError,
             Some("harness stopped the workflow".into()),
             Some("harness_error".into()),
         ),
         Err(error) => (
             WorkflowRunOutcomeUi::Failed,
-            core_protocol::WorkflowOutcome::Failed,
+            iteron_protocol::WorkflowOutcome::Failed,
             Some(error.public_summary()),
             Some(
                 match error {
@@ -1048,14 +1050,14 @@ fn allocate_orchestration(
     // Admit as many distinct investigators as the fan turn budget can each fund with >=2 turns,
     // capped by FAN_CAP. Wall-clock is bounded separately by the concurrency permit count.
     let active_workers = task_count
-        .min(core_agents::FAN_CAP)
+        .min(iteron_agents::FAN_CAP)
         .min((fan_available / 2) as usize);
     if active_workers == 0 {
         return None;
     }
     // Each admitted worker may reach the per-worker ceiling, but the aggregate never exceeds the
     // fan half — so the writer reserve is preserved even though workers run concurrently.
-    let ceiling = core_agents::subagent_budget_ceiling().max_turns;
+    let ceiling = iteron_agents::subagent_budget_ceiling().max_turns;
     let fan_turns = fan_available.min((active_workers as u32).saturating_mul(ceiling));
     let fan_wall_secs = (remaining_wall_secs / 3).max(1);
     Some(OrchestrationAllocation {
@@ -1079,7 +1081,7 @@ fn fan_budget_slices(
         return Vec::new();
     }
     let divisor = active_workers as u32;
-    let ceiling = core_agents::subagent_budget_ceiling().max_turns;
+    let ceiling = iteron_agents::subagent_budget_ceiling().max_turns;
     let base_turns = aggregate.max_turns / divisor;
     let extra_turns = aggregate.max_turns % divisor;
     let base_tokens = aggregate
@@ -1106,8 +1108,8 @@ fn fan_budget_slices(
 #[allow(dead_code)]
 fn ultracode_investigator_prompt(
     root_task: &str,
-    class: core_agents::TaskClass,
-    task: &core_agents::AgentTask,
+    class: iteron_agents::TaskClass,
+    task: &iteron_agents::AgentTask,
 ) -> String {
     format!(
         "Original operator goal (context only; do not broaden it):\n{root_task}\n\n\
@@ -1131,7 +1133,7 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
     let usable_cores = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(2))
         .unwrap_or(1);
-    core_agents::FAN_CAP
+    iteron_agents::FAN_CAP
         .min(usable_cores)
         .min(active_workers)
         .max(1)
@@ -1150,9 +1152,9 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
 /// concurrency, `LIFETIME_CAP` lifetime), so the in-turn path adopts them instead of inventing a
 /// narrower pair. Cost stays bounded where it belongs: the per-child turn/token ceilings above and
 /// the aggregate USD budget shared with the parent.
-fn in_turn_workflow_budget() -> Result<core_kernel::ports::WorkflowRunBudget, &'static str> {
-    let defaults = core_workflow::RunLimits::default();
-    core_kernel::ports::WorkflowRunBudget::new(
+fn in_turn_workflow_budget() -> Result<iteron_kernel::ports::WorkflowRunBudget, &'static str> {
+    let defaults = iteron_workflow::RunLimits::default();
+    iteron_kernel::ports::WorkflowRunBudget::new(
         defaults.max_concurrency(),
         defaults.max_agent_calls(),
     )
@@ -1203,7 +1205,7 @@ fn approx_workspace_file_count(root: &std::path::Path) -> usize {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
-                        matches!(name, ".git" | "target" | "node_modules" | ".core")
+                        matches!(name, ".git" | "target" | "node_modules" | ".iteron")
                     });
                 if !skip {
                     pending.push(path);
@@ -1271,7 +1273,7 @@ mod orchestration_allocation_tests {
         );
         assert!(slices.iter().all(|slice| {
             slice.max_turns >= 2
-                && slice.max_turns <= core_agents::subagent_budget_ceiling().max_turns
+                && slice.max_turns <= iteron_agents::subagent_budget_ceiling().max_turns
                 && slice.max_usd == Some(4.0)
                 && slice.max_wall_secs == aggregate.max_wall_secs
         }));
@@ -1284,7 +1286,7 @@ mod orchestration_allocation_tests {
         // and `per_child_turns` is `min(child_ceiling, remaining_turns)` — so the quotient was 1
         // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
         // `parallel()` then admitted one agent and silently dropped four.
-        let child_ceiling = core_agents::subagent_budget_ceiling().max_turns;
+        let child_ceiling = iteron_agents::subagent_budget_ceiling().max_turns;
         for remaining_turns in [
             1u32,
             2,
@@ -1301,7 +1303,7 @@ mod orchestration_allocation_tests {
             );
         }
         assert!(
-            budget.max_agent_calls() >= core_agents::FAN_CAP,
+            budget.max_agent_calls() >= iteron_agents::FAN_CAP,
             "a full fan-width parallel must be admitted in one in-turn run"
         );
         assert!(
@@ -1315,8 +1317,8 @@ mod orchestration_allocation_tests {
         // Run ids used to be `wf_<parent>_t<turn>`: both `Workflow` tool calls in ONE assistant
         // response landed on the same id, hence the same journal directory, and the second call
         // replayed the first's cached outcomes instead of running.
-        let first = core_workflow::RunId::generate().to_string();
-        let second = core_workflow::RunId::generate().to_string();
+        let first = iteron_workflow::RunId::generate().to_string();
+        let second = iteron_workflow::RunId::generate().to_string();
         assert_ne!(
             first, second,
             "two runs minted inside one turn must not share a journal"
@@ -1342,11 +1344,11 @@ fn ledger_tokens(ledger: &Ledger) -> u64 {
 
 #[cfg(test)]
 #[allow(dead_code)]
-fn workflow_metric_tokens(metrics: &core_protocol::WorkflowMetrics) -> u64 {
+fn workflow_metric_tokens(metrics: &iteron_protocol::WorkflowMetrics) -> u64 {
     usage_tokens(&metrics.usage)
 }
 
-fn usage_tokens(usage: &core_protocol::Usage) -> u64 {
+fn usage_tokens(usage: &iteron_protocol::Usage) -> u64 {
     usage
         .input
         .saturating_add(usage.output)
@@ -1374,7 +1376,7 @@ fn bound_middle(s: &str, head: usize, tail: usize) -> String {
 fn scrub_value(v: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match v {
-        Value::String(s) => Value::String(core_record::redact::scrub(s)),
+        Value::String(s) => Value::String(iteron_record::redact::scrub(s)),
         Value::Array(a) => Value::Array(a.iter().map(scrub_value).collect()),
         Value::Object(o) => {
             Value::Object(o.iter().map(|(k, v)| (k.clone(), scrub_value(v))).collect())
@@ -1493,7 +1495,7 @@ ant-api03-AnotherLeakedSecret99887766";
 
     #[test]
     fn edit_diff_is_built_from_args_and_scrubbed() {
-        use core_protocol::{ToolResult, ToolUse, Trust};
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
         let tu = ToolUse {
             id: "e1".into(),
             name: "edit".into(),
@@ -1550,7 +1552,7 @@ ant-api03-LeakedSecretInDiff0001\";"}),
 
     #[test]
     fn bash_exit_code_parsed_without_flipping_is_error() {
-        use core_protocol::{ToolResult, ToolUse, Trust};
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
         let tu = ToolUse {
             id: "b1".into(),
             name: "bash".into(),
@@ -1685,7 +1687,7 @@ pub struct Agent {
     /// The most recent quota the provider published on its response headers. Read before the
     /// first token of the answer, so a shrinking budget is visible while there is still time to
     /// act on it rather than only after the 429 that already cost a request (I-53).
-    last_rate_limit: Option<core_provider::RateLimitSnapshot>,
+    last_rate_limit: Option<iteron_provider::RateLimitSnapshot>,
     /// Injected, pure pricing strategy port. Its concrete implementation owns trust material; the
     /// kernel stores neither HMAC bytes nor a price table.
     pricing_port: Option<std::sync::Arc<dyn PricingPort>>,
@@ -1731,21 +1733,21 @@ pub struct Agent {
     /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
     /// transcript once per consumer. Every path that rewrites an already-counted message instead of
     /// appending must invalidate it; the two that do are compaction and steering.
-    context_estimator: core_ctx::RequestEstimator,
-    context_source_evidence: Vec<core_ctx::ContextSegmentEvidence>,
+    context_estimator: iteron_ctx::RequestEstimator,
+    context_source_evidence: Vec<iteron_ctx::ContextSegmentEvidence>,
     /// Invocation-local file provenance. `None` for text/image-only submissions and cleared when
     /// emergency compaction replaces the source message with a summary.
     input_file_evidence: Option<file_submission::InputFileEvidence>,
     /// Bounded request-level context decision evidence shared with diagnostic clients.
-    pub context_ledgers: core_ctx::ContextLedgerStore,
+    pub context_ledgers: iteron_ctx::ContextLedgerStore,
     /// Bounded memory retrieval/mutation decision evidence shared with diagnostic clients.
-    pub memory_traces: core_ctx::MemoryTraceStore,
+    pub memory_traces: iteron_ctx::MemoryTraceStore,
     /// Operator-added facts scheduled for direct visibility in a later turn of this resident
     /// session. The durable project store remains authority; this bounded queue only proves when
     /// the live transcript made a new fact visible without restarting.
-    session_memory_visibility: std::collections::VecDeque<core_ctx::MemoryVisibilityEvidence>,
-    lifecycle_emitter: Option<core_obs::lifecycle::LifecycleEmitter>,
-    lifecycle_telemetry: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    session_memory_visibility: std::collections::VecDeque<iteron_ctx::MemoryVisibilityEvidence>,
+    lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
+    lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     /// Bounded Observe/Augment Hook projection for lifecycle events owned by the agent loop.
     /// Admission Gates stay at their synchronous owner and never travel through this dispatcher.
     lifecycle_hooks: Option<lifecycle_hooks::LifecycleHookDispatcher>,
@@ -1800,7 +1802,7 @@ pub struct Agent {
     /// Fault-injection seam for verification-gate tests. Production always constructs the real
     /// sandbox-backed oracle in `run_verify`; the TCB exposes no runtime fault switch.
     #[cfg(test)]
-    verify_oracle: Option<std::sync::Arc<dyn core_verify::Oracle>>,
+    verify_oracle: Option<std::sync::Arc<dyn iteron_verify::Oracle>>,
     /// Exact durable-boundary fault injection. Production has no switch; tests use it to prove
     /// provider effects and monetary-policy changes never cross a failed append.
     #[cfg(test)]
@@ -1858,43 +1860,43 @@ pub struct Agent {
     /// own.
     workflow_launcher: Option<std::sync::Arc<dyn crate::workflow::WorkflowLauncher>>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
-    effort: core_protocol::Effort,
+    effort: iteron_protocol::Effort,
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
     /// into the stable system prefix (REC-INJECT). (Modular memory — R5, ADR-011 seam.)
     pub memory_workspace: Option<std::path::PathBuf>,
     /// Pure context selection plus the injected world adapter. The default port is filesystem
-    /// backed; tests and the pre-#15 reducer seam may replace it with `core_ctx::PortStub`.
-    context_strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
-    tool_policy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    /// backed; tests and the pre-#15 reducer seam may replace it with `iteron_ctx::PortStub`.
+    context_strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
+    tool_policy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Pure `core/memory` selection inherited by every child and passed into the production
     /// context port for each recall.
-    memory_strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    memory_strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Which handling path a submission takes (`core/router`). The built-in baseline is the
     /// deterministic task-class heuristic; a pinned replacement is the ADR-011 classifier seam.
-    router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Selects and orders already-normalized fan leaves (`core/planner`).
-    planner: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    planner: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Narrows bounded fan execution width (`core/collaboration`).
-    collaboration: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Narrows retry/concurrency decisions (`core/scheduler`).
-    scheduler: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Strengthens completion-gate plans (`core/verifier`).
-    verifier: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Which already-resolved model route a delegated child may use (`core/model_router`). The
     /// slot chooses only among route identities supplied by the caller; it cannot resolve or
     /// conjure provider authority of its own.
-    model_router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
-    context_port: std::sync::Arc<dyn core_ctx::ContextPort>,
+    model_router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
+    context_port: std::sync::Arc<dyn iteron_ctx::ContextPort>,
     /// Explicit operator home supplied by the composition root. The kernel never reads `HOME`.
     context_home_dir: Option<std::path::PathBuf>,
     /// Exact verified plugin skill directories selected once by startup composition.
     dependency_skill_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// Immutable, composition-root-discovered agent definitions. Children inherit this exact Arc;
     /// neither repository drift nor a nested worker can widen or replace it mid-run.
-    agent_catalog: std::sync::Arc<core_agents::AgentCatalog>,
+    agent_catalog: std::sync::Arc<iteron_agents::AgentCatalog>,
     agent_catalog_pinned: bool,
     /// Immutable policy-bundle projection resolved once at process boot.
-    boot_bundle: std::sync::Arc<core_agents::BootBundle>,
+    boot_bundle: std::sync::Arc<iteron_agents::BootBundle>,
     /// The resolved memory segment for this run, recalled + recorded ONCE (REC-INJECT). `None`
     /// until `resolve_injection` runs; `Some("")` means "resolved, nothing to inject". Reused from
     /// the RECORD on resume — never re-read from disk mid-run (the live bug the R5 review flagged
@@ -1964,7 +1966,7 @@ impl Agent {
     /// typed image payload is passed only to the main writer requests derived from this call.
     pub async fn follow_up_content(
         &mut self,
-        content: &core_protocol::ContentSegments,
+        content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;
@@ -1985,7 +1987,7 @@ impl Agent {
     /// or infers media types; it only carries the typed images to an explicitly capable provider.
     pub async fn run_content(
         &mut self,
-        content: &core_protocol::ContentSegments,
+        content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
         let input_images = content.images().cloned().collect();
         self.run_with_images(content.text(), input_images).await
@@ -1994,7 +1996,7 @@ impl Agent {
     async fn run_with_images(
         &mut self,
         task: &str,
-        input_images: Vec<core_protocol::ImageContent>,
+        input_images: Vec<iteron_protocol::ImageContent>,
     ) -> Result<Outcome, KernelError> {
         self.run_with_images_mode(task, input_images, true, None)
             .await
@@ -2003,7 +2005,7 @@ impl Agent {
     async fn run_with_images_mode(
         &mut self,
         task: &str,
-        input_images: Vec<core_protocol::ImageContent>,
+        input_images: Vec<iteron_protocol::ImageContent>,
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
@@ -2053,7 +2055,7 @@ impl Agent {
         }
         let orchestrate = allow_orchestration
             && self.effort.profile().orchestration
-                == core_protocol::OrchestrationMode::Orchestrated
+                == iteron_protocol::OrchestrationMode::Orchestrated
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
@@ -2203,7 +2205,7 @@ impl Agent {
     async fn drive_with_images(
         &mut self,
         task: &str,
-        input_images: &[core_protocol::ImageContent],
+        input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let input_images = self.admit_input_images(input_images)?;
         let messages = self.admit_submission(task)?;
@@ -2271,7 +2273,7 @@ impl Agent {
         &mut self,
         messages: Vec<Message>,
         relevance_task: &str,
-        input_images: &[core_protocol::ImageContent],
+        input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut messages = messages;
         let outcome = self
@@ -2285,7 +2287,7 @@ impl Agent {
         &mut self,
         messages: &mut Vec<Message>,
         relevance_task: &str,
-        input_images: &[core_protocol::ImageContent],
+        input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
 
@@ -2620,7 +2622,7 @@ impl Agent {
             // than running sixteen together and fourteen strictly one at a time with no diagnostic
             // (Little's Law: a concurrency limit is the only honest knob — but it must be the only
             // one, and a hidden serial tail is a second, dishonest one).
-            let gov = core_sched::Governor::new(self.scheduled_tool_concurrency());
+            let gov = iteron_sched::Governor::new(self.scheduled_tool_concurrency());
             let model_span = PhaseSpan::enter(Phase::Model);
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
@@ -2653,7 +2655,7 @@ impl Agent {
             let mut streamed_text = String::new();
             let mut streamed_thinking = String::new();
             // I-53: transport metadata, captured here and folded into the agent after the turn.
-            let mut observed_rate_limit: Option<core_provider::RateLimitSnapshot> = None;
+            let mut observed_rate_limit: Option<iteron_provider::RateLimitSnapshot> = None;
             let model_lifecycle = self.lifecycle_emitter.clone();
             let model_correlation = self.lifecycle_correlation(Some(turn_id));
 
@@ -2723,13 +2725,13 @@ impl Agent {
                             // the record already masks the committed Block::Text, but the live UI / /export
                             // are the same exfiltration surfaces as tool output, which we scrub here too.
                             // The frontend adds a stateful cross-delta scrubber before rendering.
-                            let _ = tx.send(UiEvent::Text(core_record::redact::scrub(&t)));
+                            let _ = tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
                         }
                     }
                     StreamItem::ThinkingDelta(t) => {
                         streamed_thinking.push_str(&t);
                         if let Some(tx) = &ui_tx {
-                            let _ = tx.send(UiEvent::Thinking(core_record::redact::scrub(&t)));
+                            let _ = tx.send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
                         }
                     }
                     StreamItem::ToolUseComplete(tu) => {
@@ -2884,7 +2886,7 @@ impl Agent {
                     }
                     if matches!(
                         error,
-                        KernelError::Provider(core_provider::ProviderError::DeadlineExceeded)
+                        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded)
                     ) {
                         return self.finish(turn_id, Outcome::BudgetExhausted("max_wall_secs"));
                     }
@@ -2900,7 +2902,7 @@ impl Agent {
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                     return Ok(outcome);
                 }
-                return Err(core_provider::ProviderError::Decode(error.to_string()).into());
+                return Err(iteron_provider::ProviderError::Decode(error.to_string()).into());
             }
             // The stream completion callback is the dispatch boundary while TurnResult is the
             // transcript boundary. They must describe the exact same ordered calls; otherwise a
@@ -2932,7 +2934,7 @@ impl Agent {
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                     return Ok(outcome);
                 }
-                return Err(core_provider::ProviderError::Decode(
+                return Err(iteron_provider::ProviderError::Decode(
                     "provider stream/tool transcript projections disagree".into(),
                 )
                 .into());
@@ -2947,10 +2949,10 @@ impl Agent {
             // its first byte leaves every field `None` rather than reporting a zero it did not see.
             let stream_timing = match first_item_at {
                 Some(first) => StreamTiming {
-                    ttft_ms: Some(core_obs::duration_ms_ceil(
+                    ttft_ms: Some(iteron_obs::duration_ms_ceil(
                         first.saturating_duration_since(stream_start),
                     )),
-                    decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                    decode_ms: Some(iteron_obs::duration_ms_ceil(first.elapsed())),
                     stream_items: Some(stream_items),
                 },
                 None => StreamTiming::default(),
@@ -3035,7 +3037,7 @@ impl Agent {
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                     return Ok(outcome);
                 }
-                return Err(core_provider::ProviderError::Decode(
+                return Err(iteron_provider::ProviderError::Decode(
                     "provider emitted complete tool calls with a non-tool terminal reason".into(),
                 )
                 .into());
@@ -3144,9 +3146,9 @@ impl Agent {
                                     phase: Phase::Verify,
                                 },
                             );
-                            let verify_plan = core_verify::VerifierStrategy::plan_with(
+                            let verify_plan = iteron_verify::VerifierStrategy::plan_with(
                                 self.verifier.as_ref(),
-                                &core_verify::VerifierSlotObservation::gating(true),
+                                &iteron_verify::VerifierSlotObservation::gating(true),
                                 CapabilitySet::only(Capability::CodeExecuting)
                                     .intersect(self.authority_ceiling),
                             )
@@ -3168,7 +3170,7 @@ impl Agent {
                             }
                             let detail = truncate_tail(&verdict.detail, 3000);
                             match verdict.outcome {
-                                core_verify::VerificationOutcome::Pass => {
+                                iteron_verify::VerificationOutcome::Pass => {
                                     self.verification_repair_completed(turn_id);
                                     self.emit(
                                         turn_id,
@@ -3180,7 +3182,7 @@ impl Agent {
                                         "verify gate: `{cmd}` passed"
                                     )));
                                 }
-                                core_verify::VerificationOutcome::TestFailure => {
+                                iteron_verify::VerificationOutcome::TestFailure => {
                                     // Only a real candidate/test failure consumes the bounded
                                     // model-fix allowance. Harness faults must never masquerade as
                                     // three bad candidate attempts.
@@ -3227,7 +3229,7 @@ impl Agent {
                                     self.advance_turn()?;
                                     continue;
                                 }
-                                core_verify::VerificationOutcome::TimedOut => {
+                                iteron_verify::VerificationOutcome::TimedOut => {
                                     let deadline_exhausted = self.run_deadline_exhausted();
                                     let notice = if deadline_exhausted {
                                         format!(
@@ -3265,7 +3267,7 @@ impl Agent {
                                     };
                                     return self.finish(turn_id, outcome);
                                 }
-                                core_verify::VerificationOutcome::InfrastructureFailure => {
+                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
                                     let notice = format!(
                                         "verify gate: `{cmd}` infrastructure failure; stopping without consuming a test-failure retry"
                                     );
@@ -3288,7 +3290,7 @@ impl Agent {
                                     )?;
                                     return self.finish(turn_id, Outcome::HarnessError);
                                 }
-                                core_verify::VerificationOutcome::Cancelled => {
+                                iteron_verify::VerificationOutcome::Cancelled => {
                                     let notice = format!(
                                         "verify gate: `{cmd}` cancelled; stopping at a resumable safe point without consuming a test-failure retry"
                                     );
@@ -3328,7 +3330,7 @@ impl Agent {
                         return self.finish(turn_id, Outcome::Done);
                     }
                     StopReason::ToolUse => {
-                        return Err(core_provider::ProviderError::Decode(
+                        return Err(iteron_provider::ProviderError::Decode(
                             "provider ended with tool_use but emitted no complete tool call".into(),
                         )
                         .into());
@@ -3336,16 +3338,16 @@ impl Agent {
                     StopReason::StopSequence => {
                         // Core does not configure provider stop sequences. Treat an unsolicited
                         // stop-sequence terminal as an incomplete/invalid turn, never as success.
-                        return Err(core_provider::ProviderError::Decode(
+                        return Err(iteron_provider::ProviderError::Decode(
                             "provider returned an unsolicited stop_sequence terminal".into(),
                         )
                         .into());
                     }
                     StopReason::Refusal => {
-                        return Err(core_provider::ProviderError::Refusal.into());
+                        return Err(iteron_provider::ProviderError::Refusal.into());
                     }
                     StopReason::Unknown(code) => {
-                        return Err(core_provider::ProviderError::UnknownStopReason {
+                        return Err(iteron_provider::ProviderError::UnknownStopReason {
                             code: Box::new(code),
                         }
                         .into());
@@ -3538,7 +3540,7 @@ impl Agent {
                              re-run (ADR-003 dedup). Do NOT repeat it — change your approach. The \
                              earlier error was:\n{}",
                             tu.name,
-                            core_protocol::text::tail(prior, 800)
+                            iteron_protocol::text::tail(prior, 800)
                         ),
                         is_error: true,
                         trust: Trust::Workspace,
@@ -3571,7 +3573,7 @@ impl Agent {
                     any_error = true;
                     continue;
                 };
-                // Elevate a trust-mutating write (.git/CI/instruction/.core paths) so the gate
+                // Elevate a trust-mutating write (.git/CI/instruction/.iteron paths) so the gate
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
                 let governing_trust = self.governing_turn_trust(messages);
@@ -3579,19 +3581,23 @@ impl Agent {
                     self.authority_ceiling.intersect(self.policy_capabilities);
                 let ceiling_blocks_capability = !admitted_capabilities.contains(cap);
                 let taint_blocks_egress = cap.is_egress() && governing_trust != Trust::Trusted;
-                let gate_verdict = if self.bypass_permissions
-                    && self.permission_mode != PermissionMode::Plan
-                {
-                    // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
-                    // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
-                    // exact tool or its capability is still honored.
-                    bypass_verdict(&self.permission_rules, &tu.name, cap)
-                } else {
-                    core_protocol::gate(self.permission_mode, &self.permission_rules, &tu.name, cap)
-                };
+                let gate_verdict =
+                    if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+                        // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
+                        // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
+                        // exact tool or its capability is still honored.
+                        bypass_verdict(&self.permission_rules, &tu.name, cap)
+                    } else {
+                        iteron_protocol::gate(
+                            self.permission_mode,
+                            &self.permission_rules,
+                            &tu.name,
+                            cap,
+                        )
+                    };
                 // Task, immutable-policy and trust constraints remain in force even when a
                 // separately recorded operator bypass replaces the final permission-mode gate.
-                let verdict = core_kernel::admission::constrain_under_authority(
+                let verdict = iteron_kernel::admission::constrain_under_authority(
                     gate_verdict,
                     cap,
                     self.authority_ceiling,
@@ -3695,7 +3701,7 @@ impl Agent {
                                 text: format!(
                                     "hook: PreToolUse DENIED `{}`: {}",
                                     tu.name,
-                                    core_protocol::text::head(&reason, 200)
+                                    iteron_protocol::text::head(&reason, 200)
                                 ),
                             },
                         );
@@ -3745,7 +3751,7 @@ impl Agent {
                 // Intercept subagent dispatch only AFTER the ordinary capability gate and
                 // PreToolUse hook. Delegation spends provider budget and creates a child rollout;
                 // Plan/deny/Ask must therefore govern it just like every other effecting tool.
-                if tu.name == core_tools::DISPATCH_AGENT {
+                if tu.name == iteron_tools::DISPATCH_AGENT {
                     let subtask = tu
                         .input
                         .get("task")
@@ -3784,7 +3790,7 @@ impl Agent {
                 // real ultracode workflow via the engine + a `KernelSpawner` built from THIS agent's
                 // live route, then return its aggregated result. Governed by the same capability gate
                 // + PreToolUse hook, since it fans out real children that spend provider budget.
-                if tu.name == core_tools::WORKFLOW_TOOL {
+                if tu.name == iteron_tools::WORKFLOW_TOOL {
                     let input = tu.input.clone();
                     let workflow_gate = self
                         .brokered_lifecycle_gate(
@@ -3898,10 +3904,10 @@ impl Agent {
                         )
                         .await
                         {
-                            Ok(core_tools::ToolExecution::Definite(result)) => {
+                            Ok(iteron_tools::ToolExecution::Definite(result)) => {
                                 effects::ToolExecution::Definite(result)
                             }
-                            Ok(core_tools::ToolExecution::Unknown(result)) => {
+                            Ok(iteron_tools::ToolExecution::Unknown(result)) => {
                                 effects::ToolExecution::Unknown(result)
                             }
                             Err(()) => effects::ToolExecution::Unknown(interrupted_tool_result(
@@ -3999,7 +4005,7 @@ impl Agent {
                 // It now crosses the same boundary as the tool it observes (#16), so the hook's own
                 // intent/terminal pair is journalled after — never inside — the tool's.
                 {
-                    let ctx = serde_json::json!({"event":"PostToolUse","tool":r.tool_use_id,"is_error":r.is_error,"content":core_protocol::text::head(&r.content, 2000)}).to_string();
+                    let ctx = serde_json::json!({"event":"PostToolUse","tool":r.tool_use_id,"is_error":r.is_error,"content":iteron_protocol::text::head(&r.content, 2000)}).to_string();
                     self.brokered_hook(turn_id, HookEvent::PostToolUse, &ctx)
                         .await?;
                 }
@@ -4066,7 +4072,8 @@ impl Agent {
         for (index, call) in deferred {
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
-            if call.name == core_tools::DISPATCH_AGENT || call.name == core_tools::WORKFLOW_TOOL {
+            if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
+            {
                 break;
             }
             // A repeat of an already-failed action is answered from the record, not re-run. That
@@ -4099,7 +4106,7 @@ impl Agent {
                 if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
                     bypass_verdict(&self.permission_rules, &call.name, capability)
                 } else {
-                    core_protocol::gate(
+                    iteron_protocol::gate(
                         self.permission_mode,
                         &self.permission_rules,
                         &call.name,
@@ -4108,7 +4115,7 @@ impl Agent {
                 };
             // Only Auto. `Ask` needs the operator in sequence and `Deny` needs the loop's specific
             // refusal text, so both end the group rather than being decided here a second time.
-            if core_kernel::admission::constrain_under_authority(
+            if iteron_kernel::admission::constrain_under_authority(
                 gate_verdict,
                 capability,
                 self.authority_ceiling,
@@ -4156,7 +4163,7 @@ impl Agent {
         &mut self,
         turn_id: TurnId,
         batch: Vec<AutoApprovedCall>,
-        governor: &core_sched::Governor,
+        governor: &iteron_sched::Governor,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
     ) -> Result<(), KernelError> {
@@ -4174,7 +4181,7 @@ impl Agent {
         // Phase one: the durable intents, in tool order, before a single executor runs.
         let mut pending: Vec<(usize, ToolUse, String, effects::EffectTicket)> =
             Vec::with_capacity(batch.len());
-        let mut intents: Vec<core_protocol::intent::ToolIntent> = Vec::with_capacity(batch.len());
+        let mut intents: Vec<iteron_protocol::intent::ToolIntent> = Vec::with_capacity(batch.len());
         for admitted in batch {
             let AutoApprovedCall {
                 index,
@@ -4267,14 +4274,14 @@ impl Agent {
                 .await
                 {
                     Ok(execution) => execution,
-                    Err(()) => core_tools::ToolExecution::Unknown(interrupted_tool_result(
+                    Err(()) => iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
                         provider_tool_use_id.clone(),
                         started.elapsed().as_millis() as u64,
                     )),
                 };
                 match &mut execution {
-                    core_tools::ToolExecution::Definite(result)
-                    | core_tools::ToolExecution::Unknown(result) => {
+                    iteron_tools::ToolExecution::Definite(result)
+                    | iteron_tools::ToolExecution::Unknown(result) => {
                         result.tool_use_id = provider_tool_use_id;
                     }
                 }
@@ -4290,7 +4297,7 @@ impl Agent {
         {
             let effect_id = ticket.effect_id().clone();
             let (settlement, result, definite) = match execution {
-                core_tools::ToolExecution::Definite(result) => (
+                iteron_tools::ToolExecution::Definite(result) => (
                     effects::Settlement::Definite(EventKind::ToolDone {
                         result: result.clone(),
                         effect_id: Some(effect_id.clone()),
@@ -4303,7 +4310,7 @@ impl Agent {
                     result,
                     true,
                 ),
-                core_tools::ToolExecution::Unknown(result) => (
+                iteron_tools::ToolExecution::Unknown(result) => (
                     effects::Settlement::Unknown(
                         "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
                     ),
@@ -4390,7 +4397,7 @@ impl Agent {
     ///
     /// There is no `effect_id` because nothing was admitted: no executor was entered, so there is
     /// no admission event to point at, and minting one would put a lie on the record. That is why
-    /// `core_record` permits a missing effect id only on an error result — every value this commits
+    /// `iteron_record` permits a missing effect id only on an error result — every value this commits
     /// is one (I-42).
     fn commit_refused_tool_result(
         &mut self,
@@ -4531,7 +4538,7 @@ impl Agent {
             self.record_failed = true;
             self.diagnostic_record_append_failed();
             drop(ticket);
-            return Err(KernelError::Record(core_record::RecordError::Io(
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
                 std::io::Error::other("injected durable append failure"),
             )));
         }
@@ -4632,9 +4639,9 @@ impl Agent {
     /// Ordinary completed and interrupted turns checkpoint best-effort in Git workspaces. Drain
     /// uses the same boundary as a required recovery point after active execution has quiesced.
     fn checkpoint_at_turn_end(&mut self, turn: TurnId, required: bool) -> Result<(), KernelError> {
-        if !core_record::checkpoint_supported(&self.workspace) {
+        if !iteron_record::checkpoint_supported(&self.workspace) {
             if required {
-                return Err(KernelError::Record(core_record::RecordError::Io(
+                return Err(KernelError::Record(iteron_record::RecordError::Io(
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!(
@@ -4647,7 +4654,7 @@ impl Agent {
             return Ok(());
         }
         if self.runtime_state_dir.as_os_str().is_empty() {
-            return Err(KernelError::Record(core_record::RecordError::Io(
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "rollout has no runtime-state directory",
@@ -4655,13 +4662,13 @@ impl Agent {
             )));
         }
         let rollout_path = self.rollout.path().canonicalize().map_err(|error| {
-            KernelError::Record(core_record::RecordError::Io(std::io::Error::new(
+            KernelError::Record(iteron_record::RecordError::Io(std::io::Error::new(
                 error.kind(),
                 format!("cannot validate active rollout before checkpoint: {error}"),
             )))
         })?;
         if !rollout_path.starts_with(&self.runtime_state_dir) {
-            return Err(KernelError::Record(core_record::RecordError::Io(
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "active rollout is outside the invariant runtime-state directory",
@@ -4690,7 +4697,7 @@ impl Agent {
         // `at` names its sequence, exactly as before. The effect terminal follows it.
         let at = self.rollout.next_sequence();
         let runtime_state_dir = &self.runtime_state_dir;
-        let snapshot = match core_record::checkpoint_excluding_runtime_state(
+        let snapshot = match iteron_record::checkpoint_excluding_runtime_state(
             self.rollout.run_id(),
             at,
             &self.workspace,
@@ -4790,7 +4797,7 @@ impl Agent {
         let tool = tool_use.name.as_str();
         let arguments = ui_approval_arguments(&tool_use.input);
         let workspace = strict_utf8_head(
-            &core_record::redact::scrub(&self.workspace.display().to_string()),
+            &iteron_record::redact::scrub(&self.workspace.display().to_string()),
             2_048,
         );
         self.emit_durable(

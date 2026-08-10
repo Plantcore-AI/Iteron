@@ -806,7 +806,7 @@ Do not hand-build a partial OTLP implementation that silently diverges from the 
 
 ### 12.1 Data model
 
-Add a content-free `ContextLedger` under `core-ctx` with protocol projection types:
+Add a content-free `ContextLedger` under `iteron-ctx` with protocol projection types:
 
 ```rust
 struct ContextLedger {
@@ -1219,7 +1219,7 @@ Load tests:
 Add a new generated-catalog gate:
 
 ```text
-cargo run --locked -p core-xtask -- lifecycle check \
+cargo run --locked -p iteron-xtask -- lifecycle check \
   --hooks 192 --metrics 320 --logs 192 --spans 48
 ```
 
@@ -1230,16 +1230,16 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo test -p core-protocol --locked
-cargo test -p core-record --locked
-cargo test -p core-obs --locked
-cargo test -p core-ctx --locked
-cargo test -p core-cli hooks --locked
-cargo test -p core-cli telemetry --locked
-cargo test -p core-cli tui --locked
-cargo test -p core-cli --test tui_pty --locked
-cargo run --locked -p core-xtask -- tunables check
-cargo run --locked -p core-xtask -- boundaries check
+cargo test -p iteron-protocol --locked
+cargo test -p iteron-record --locked
+cargo test -p iteron-obs --locked
+cargo test -p iteron-ctx --locked
+cargo test -p iteron-cli hooks --locked
+cargo test -p iteron-cli telemetry --locked
+cargo test -p iteron-cli tui --locked
+cargo test -p iteron-cli --test tui_pty --locked
+cargo run --locked -p iteron-xtask -- tunables check
+cargo run --locked -p iteron-xtask -- boundaries check
 ```
 
 Run documentation checks when generated references/navigation change:

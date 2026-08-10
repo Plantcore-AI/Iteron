@@ -91,7 +91,7 @@ def load_entry(lock_path: Path, tool: str, host: str) -> dict[str, str]:
 
 
 def download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "Core-Code-release/1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Iteron-release/1"})
     context = ssl.create_default_context()
     opener = urllib.request.build_opener(
         StrictRedirectHandler(), urllib.request.HTTPSHandler(context=context)
@@ -203,7 +203,7 @@ def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     entry = load_entry(arguments.lock, arguments.tool, arguments.host)
-    with tempfile.TemporaryDirectory(prefix="core-code-tool-") as temporary_dir:
+    with tempfile.TemporaryDirectory(prefix="iteron-tool-") as temporary_dir:
         archive = Path(temporary_dir) / f"download.{entry['archive']}"
         download(entry["url"], archive)
         actual = sha256_file(archive)

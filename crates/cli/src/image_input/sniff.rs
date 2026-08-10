@@ -1,5 +1,5 @@
 use super::{ImageInputErrorKind, decode::validate_decodable};
-use core_protocol::input::ImageMediaType;
+use iteron_protocol::input::ImageMediaType;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -394,7 +394,7 @@ fn source_code(source: Option<&ResolutionSource>) -> String {
             resolver_id,
             fallback: false,
             ..
-        }) if resolver_id == "core://tunables/resolvers/literal-v1" => {
+        }) if resolver_id == "iteron://tunables/resolvers/literal-v1" => {
             "source.default.literal".to_owned()
         }
         Some(ResolutionSource::Default { .. }) => "source.default.resolved".to_owned(),

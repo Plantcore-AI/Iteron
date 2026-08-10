@@ -1,8 +1,8 @@
-# Core Code adapter for Terminal-Bench 2.1
+# Iteron adapter for Terminal-Bench 2.1
 
-This directory is the version-pinned bridge from Core Code to Harbor. It does
+This directory is the version-pinned bridge from Iteron to Harbor. It does
 not reimplement the Terminal-Bench verifier and does not translate tasks into
-the SWE-bench-shaped `core-eval` corpus. Harbor remains authoritative for task
+the SWE-bench-shaped `iteron-eval` corpus. Harbor remains authoritative for task
 images, resources, agent and verifier timeouts, artifact collection, rewards,
 and retry/trial layout.
 
@@ -47,16 +47,16 @@ The adapter requires exactly the one canonical credential variable for a
 built-in route. A custom `base_url` must use exactly a namespaced,
 sensitivity-classified key of the form
 `HARBOR_CORE_<LABEL>_<SENSITIVE_SUFFIX>` (for example,
-`HARBOR_CORE_GATEWAY_API_KEY`). Shell startup, loader, home, path, proxy and
+`HARBOR_ITERON_GATEWAY_API_KEY`). Shell startup, loader, home, path, proxy and
 Core configuration names such as `BASH_ENV`, `LD_PRELOAD`, `HOME`, `PATH`, and
-`CORE_CONFIG_HOME` are not accepted as credential names. Every additional
+`ITERON_CONFIG_HOME` are not accepted as credential names. Every additional
 environment key is rejected so configuration, proxies, or tuning flags cannot
 silently perturb an arm. Never put a literal credential value in YAML or an
 adapter kwarg.
 
 Core's operator home/config, memory, hooks, MCP declarations, sessions, and
 caches are rooted in unpredictable, fresh `/tmp/core-harbor-*` paths. Any
-task-provided `/app/.core` path is refused because project configuration or an
+task-provided `/app/.iteron` path is refused because project configuration or an
 agent catalog could perturb one experimental arm. The append-only Core runs,
 unmixed JSONL stdout, and machine contract are written under `/logs/agent`, so
 Harbor captures them with the trial record.
@@ -94,7 +94,7 @@ PYTHONPATH=/path/to/core/crates/eval/harbor \
   harbor jobs start --config /path/to/core-tb21.yaml --yes
 ```
 
-Run `python -m py_compile core_code_agent.py validate_upstream.py` and the
+Run `python -m py_compile iteron_agent.py validate_upstream.py` and the
 checked-in adapter tests against the pinned Harbor checkout before a campaign.
 A real qualification additionally requires one oracle smoke, one Core smoke,
 all 89 tasks times five trials, and inspection of Harbor `lock.json`, task

@@ -51,7 +51,7 @@ while IFS='=' read -r name _; do
   esac
 done < <(env)
 
-readonly REPO_SLUG="${GATE_REPO:-Plantcore-AI/core}"
+readonly REPO_SLUG="${GATE_REPO:-Plantcore-AI/Iteron}"
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -341,13 +341,13 @@ boundary_lane() {
   # weaker gate under the same context name.
   #
   # The workflow does NOT validate a candidate with the candidate's own validator: it builds
-  # core-xtask from the merge base and runs THAT binary against the working tree, so a change
+  # iteron-xtask from the merge base and runs THAT binary against the working tree, so a change
   # cannot loosen the rule that is judging it. Reproduce that here or do not claim this context.
   #
   # Needs full history: the W1 freeze commit is resolved through `git rev-parse`.
   set -o pipefail
-  cargo run --locked -p core-xtask -- conformance kernel || return 1
-  cargo run --locked -p core-xtask -- boundaries check || return 1
+  cargo run --locked -p iteron-xtask -- conformance kernel || return 1
+  cargo run --locked -p iteron-xtask -- boundaries check || return 1
 
   local base
   base="$(git merge-base "${GATE_BASE_REF:-origin/main}" HEAD)" || return 1
@@ -362,12 +362,12 @@ boundary_lane() {
     git worktree add --detach "$policy_root" "$base" >/dev/null || return 1
   fi
   # The base validator needs its OWN target directory. An ambient CARGO_TARGET_DIR is shared with
-  # the candidate build, so without this the base `core-xtask` overwrites the candidate's binary
+  # the candidate build, so without this the base `iteron-xtask` overwrites the candidate's binary
   # in a directory both builds treat as theirs — and the validator that judges the change would
   # be whichever one was compiled last.
   local policy_target="$policy_root/.gate-target"
-  local policy_bin="$policy_target/debug/core-xtask"
-  ( cd "$policy_root" && CARGO_TARGET_DIR="$policy_target" cargo build --locked -p core-xtask ) \
+  local policy_bin="$policy_target/debug/iteron-xtask"
+  ( cd "$policy_root" && CARGO_TARGET_DIR="$policy_target" cargo build --locked -p iteron-xtask ) \
     || return 1
   [[ -x "$policy_bin" ]] || { printf 'base validator did not build at %s\n' "$policy_bin" >&2; return 1; }
 

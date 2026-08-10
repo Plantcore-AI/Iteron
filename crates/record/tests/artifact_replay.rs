@@ -5,9 +5,9 @@
 //! writes a run, replays it from disk, and compares the artifact set rather than trusting that
 //! serialization round-trips.
 
-use core_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{Capability, Event, EventKind, RunId, Seq, TenantId, TurnId};
+use iteron_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Capability, Event, EventKind, RunId, Seq, TenantId, TurnId};
 
 struct Runs(std::path::PathBuf);
 
@@ -67,7 +67,7 @@ fn a_declared_artifact_survives_replay() {
     ];
 
     {
-        let mut rollout = core_record::Rollout::open(&runs.0, &run, TenantId::default()).unwrap();
+        let mut rollout = iteron_record::Rollout::open(&runs.0, &run, TenantId::default()).unwrap();
         for (index, artifact) in declared.iter().enumerate() {
             rollout
                 .append(&Event {
@@ -81,7 +81,7 @@ fn a_declared_artifact_survives_replay() {
         }
     }
 
-    let replayed = artifacts(&core_record::load_forked(&runs.0, &run).unwrap());
+    let replayed = artifacts(&iteron_record::load_forked(&runs.0, &run).unwrap());
     assert_eq!(
         replayed.len(),
         declared.len(),
@@ -100,7 +100,7 @@ fn a_declared_artifact_survives_replay() {
 #[test]
 fn the_content_address_is_not_masked_by_the_record_path() {
     let declared = artifact(9, "reports/summary.md");
-    let redacted = core_record::redact::redact_event(&Event {
+    let redacted = iteron_record::redact::redact_event(&Event {
         seq: Seq(1),
         turn: TurnId(1),
         kind: EventKind::ArtifactProduced {

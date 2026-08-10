@@ -202,7 +202,7 @@ fn validate_kernel_tax_bindings(
     )?;
     if producer != consumer {
         bail!(
-            "kernel-tax Rust fields/types differ between core_obs producer {:?} and strict eval consumer {:?}",
+            "kernel-tax Rust fields/types differ between iteron_obs producer {:?} and strict eval consumer {:?}",
             producer.fields,
             consumer.fields
         );
@@ -239,14 +239,14 @@ pub(super) fn validate_cli_source_bindings(
     let eval_source = read_bounded(root, EVAL_CONTRACT_SOURCE, MAX_SOURCE_BYTES)?;
     let eval_text = std::str::from_utf8(&eval_source)
         .with_context(|| format!("schema source '{EVAL_CONTRACT_SOURCE}' is not UTF-8"))?;
-    let eval_current = decimal_constant(&eval_source, "CORE_CLI_SCHEMA_VERSION", "u32")?;
+    let eval_current = decimal_constant(&eval_source, "ITERON_CLI_SCHEMA_VERSION", "u32")?;
     if eval_current != cli_version {
         bail!(
-            "eval CORE_CLI_SCHEMA_VERSION {eval_current} differs from CLI SCHEMA_VERSION {cli_version}"
+            "eval ITERON_CLI_SCHEMA_VERSION {eval_current} differs from CLI SCHEMA_VERSION {cli_version}"
         );
     }
     let supported =
-        decimal_slice_constant(&eval_source, "SUPPORTED_CORE_CLI_SCHEMA_VERSIONS", "u32")?;
+        decimal_slice_constant(&eval_source, "SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS", "u32")?;
     let supported_set = supported.iter().copied().collect::<BTreeSet<_>>();
     if supported_set != manifest_versions || supported.last() != Some(&cli_version) {
         bail!(
@@ -255,7 +255,7 @@ pub(super) fn validate_cli_source_bindings(
     }
     let supported_type_versions = crate::rust_source::public_string_u32_tuple_slice_const(
         &eval_source,
-        "SUPPORTED_CORE_CLI_TYPE_VERSIONS",
+        "SUPPORTED_ITERON_CLI_TYPE_VERSIONS",
     )?
     .into_iter()
     .collect::<BTreeSet<_>>();

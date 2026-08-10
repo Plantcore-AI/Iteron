@@ -1,4 +1,4 @@
-use core_evolve::{
+use iteron_evolve::{
     EvidenceRecorder, RecordedRunFixture, RecordedRunProjector, RetentionTrainingUse,
     TrainingAdmissionPolicy, TrajectoryProjection, TrajectoryRegistry,
 };
@@ -22,7 +22,7 @@ fn committed_record_fixture_projects_and_ingests_through_the_frozen_seam() {
         .unwrap();
 
     let root = std::env::temp_dir().join(format!(
-        "core-evolve-projection-integration-{}",
+        "iteron-evolve-projection-integration-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);

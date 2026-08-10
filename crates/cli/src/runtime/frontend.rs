@@ -1,8 +1,8 @@
 use super::*;
 
 impl Agent {
-    pub(crate) fn current_turn_id(&self) -> core_protocol::TurnId {
-        core_protocol::TurnId(self.seq_turn)
+    pub(crate) fn current_turn_id(&self) -> iteron_protocol::TurnId {
+        iteron_protocol::TurnId(self.seq_turn)
     }
 
     pub(crate) fn interrupt_handle(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {

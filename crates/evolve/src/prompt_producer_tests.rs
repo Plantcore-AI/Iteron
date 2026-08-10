@@ -4,7 +4,7 @@ use crate::{
     RewardVector, StrategyDecision, StrategySlot, TrainingAdmissionPolicy, TrainingConsent,
     TrajectoryEnvelope,
 };
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use serde_json::json;
 use std::collections::BTreeMap;
 

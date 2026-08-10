@@ -1,6 +1,6 @@
 # Repository enforcement
 
-This runbook turns Core Code's local collaboration contract into GitHub merge
+This runbook turns Iteron's local collaboration contract into GitHub merge
 enforcement. The repository remains in `bootstrap` mode until the public human
 identities and the protected `main` ruleset have both been verified.
 
@@ -130,8 +130,8 @@ checks report on the queued commit.
 3. Switch `enforcement.mode` to `active` and run:
 
    ```sh
-   cargo run --locked -p core-xtask -- boundaries generate
-   cargo run --locked -p core-xtask -- boundaries check
+   cargo run --locked -p iteron-xtask -- boundaries generate
+   cargo run --locked -p iteron-xtask -- boundaries check
    ```
 
 4. Merge the identity and assignment change, configure the `main` ruleset, and

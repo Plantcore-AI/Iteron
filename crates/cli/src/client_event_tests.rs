@@ -87,8 +87,8 @@ fn ui_variants() -> Vec<UiEvent> {
         },
         UiEvent::Phase(Phase::Tools),
         UiEvent::TurnEnd {
-            cost: core_obs::CostState::Unknown {
-                reason: core_obs::CostUnknownReason::BillingEvidenceMissing,
+            cost: iteron_obs::CostState::Unknown {
+                reason: iteron_obs::CostUnknownReason::BillingEvidenceMissing,
             },
             usage: Usage {
                 input: 10,
@@ -97,18 +97,18 @@ fn ui_variants() -> Vec<UiEvent> {
                 cache_read: 40,
                 thinking: 50,
             },
-            context: core_ctx::ContextEstimate {
+            context: iteron_ctx::ContextEstimate {
                 system_tokens: 1,
                 tool_tokens: 2,
                 transcript_tokens: 3,
                 framing_tokens: 4,
                 total_tokens: 10,
-                provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
             },
             model_context_window: Some(200_000),
             reserved_output_tokens: 8_192,
             compaction_trigger_tokens: 150_000,
-            effort: core_provider::EffortApplication::BudgetBased {
+            effort: iteron_provider::EffortApplication::BudgetBased {
                 requested: ReasoningEffort::High,
                 budget_tokens: 4_096,
             },
@@ -116,7 +116,7 @@ fn ui_variants() -> Vec<UiEvent> {
         UiEvent::SteerApplied { count: 3 },
         UiEvent::Notice("heads up".into()),
         UiEvent::ApprovalRequest {
-            id: core_protocol::SubmissionId(77),
+            id: iteron_protocol::SubmissionId(77),
             tool: "edit".into(),
             capability: Capability::TrustMutating,
             reason: "touches CLAUDE.md".into(),
@@ -313,18 +313,18 @@ fn the_wire_shape_of_every_variant_is_pinned() {
 #[test]
 fn cost_keeps_its_three_states_apart() {
     assert_eq!(
-        ClientCost::from(&core_obs::CostState::Zero),
+        ClientCost::from(&iteron_obs::CostState::Zero),
         ClientCost::Zero
     );
     assert_eq!(
-        ClientCost::from(&core_obs::CostState::Unknown {
-            reason: core_obs::CostUnknownReason::NoVerifiedRateCard
+        ClientCost::from(&iteron_obs::CostState::Unknown {
+            reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard
         }),
         ClientCost::Unknown {
             reason: "no_verified_rate_card".into()
         }
     );
-    let known = core_obs::CostState::Known {
+    let known = iteron_obs::CostState::Known {
         amount_microusd: 1_500_000,
         rate_card_digest: "sha256:abc".into(),
     };
@@ -334,7 +334,7 @@ fn cost_keeps_its_three_states_apart() {
 /// The client half of #78: a run declaring a product, on the same vocabulary a socket consumes.
 #[test]
 fn an_artifact_declaration_round_trips_on_the_client_vocabulary() {
-    use core_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
+    use iteron_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
     let declared = ArtifactRef {
         hash: format!("{:064x}", 1),
         schema: ArtifactSchema::FileDiff,
@@ -342,11 +342,11 @@ fn an_artifact_declaration_round_trips_on_the_client_vocabulary() {
             tool: "edit".into(),
         },
         provenance: Provenance {
-            run_id: core_protocol::RunId("run-1".into()),
+            run_id: iteron_protocol::RunId("run-1".into()),
             parent_hashes: Vec::new(),
             effect_id: None,
         },
-        permissions: core_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
+        permissions: iteron_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
         locator: "reports/summary.md".into(),
     };
     let event = ClientEvent::from(&declared);

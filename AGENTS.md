@@ -1,4 +1,4 @@
-# Core Code agent contract
+# Iteron agent contract
 
 This repository is public. Never add credentials, private sessions, machine state,
 company/client material, proprietary source, or unredistributable research
@@ -32,7 +32,7 @@ snapshots.
 - Agent/runtime changes require integration evidence. TUI changes require semantic
   and terminal-render evidence.
 - Every change must declare affected boundary IDs and invariant overlays. Run
-  `cargo run --locked -p core-xtask -- boundaries check` before completion.
+  `cargo run --locked -p iteron-xtask -- boundaries check` before completion.
 - Run formatting, all-target check, clippy with warnings denied, and all-target
   tests before claiming completion.
 - Do not add AI co-author or generated-by commit trailers.

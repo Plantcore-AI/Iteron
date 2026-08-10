@@ -2,7 +2,7 @@
 
 前面几节确立了两条不变量:microkernel 是冻结的 TCB,ABI(TaskEnvelope / ContextRequest / ToolIntent / EffectProposal / ArtifactRef)是稳定的类型边界。本节回答由此产生的核心问题:**在这个冻结的骨架之上,到底什么在进化,以什么形式沉淀,又如何安全地上线。** 这三问分别由类型(§6.1 至 §6.4)、流水线(§6.5)、门控(§6.6 至 §6.8)三组规范回答。
 
-Core Code 的定位可以压成一句:**特化一个 agent 意味着训练 harness,而不是训练 model。** 每一个非 kernel 的决策都是某个 typed policy space 里的一条 policy;它被训练出来的状态是一等公民,我们称之为 **harness checkpoint**,其具体类型是 `PolicyManifest`。它由任意训练方法(search/GEPA、SFT、preference、GRPO、RL)以**同一种形式**产出,由一个**独立的 evaluator** 在 vertical 自持的 held-out 目标上打分,像 release 一样被 promote 与 rollback,并能跨冻结的 base model 携带。一句话:**weights 学的是 prior,harness 学的是 situation。** 权重沉淀通用先验,harness checkpoint 沉淀某个 vertical 的具体情境(私有轨迹、人工纠正、工具清单、自持 verifier);这些信号对每一个 base model 都天然是 out-of-distribution 的,而且刷新速度快于任何模型发布周期。
+Iteron 的定位可以压成一句:**特化一个 agent 意味着训练 harness,而不是训练 model。** 每一个非 kernel 的决策都是某个 typed policy space 里的一条 policy;它被训练出来的状态是一等公民,我们称之为 **harness checkpoint**,其具体类型是 `PolicyManifest`。它由任意训练方法(search/GEPA、SFT、preference、GRPO、RL)以**同一种形式**产出,由一个**独立的 evaluator** 在 vertical 自持的 held-out 目标上打分,像 release 一样被 promote 与 rollback,并能跨冻结的 base model 携带。一句话:**weights 学的是 prior,harness 学的是 situation。** 权重沉淀通用先验,harness checkpoint 沉淀某个 vertical 的具体情境(私有轨迹、人工纠正、工具清单、自持 verifier);这些信号对每一个 base model 都天然是 out-of-distribution 的,而且刷新速度快于任何模型发布周期。
 
 本节的规范性内容围绕以下六件事展开:harness checkpoint 的类型(§6.1)、可进化的 typed policy space(§6.2)、方法无关性与模型的关系(§6.3)、checkpoint algebra(§6.4)、离线非权威的进化流水线(§6.5)、capability-monotone admission 与独立 evaluator(§6.6 与 §6.7),最后是进化边界的硬约束、open-substrate/closed-pipeline 拆分,以及诚实的现状披露(§6.8 至 §6.10)。
 
@@ -207,9 +207,9 @@ admission 是 candidate 进入流水线的第一道、也是最强的一道门�
 
 ### 6.9 open-substrate vs closed-training-pipeline:一条清晰的拆分
 
-Core Code 在开放性上做一条**刻意的拆分**:
+Iteron 在开放性上做一条**刻意的拆分**:
 
-- **open substrate(开放基座)。** microkernel、五个 ABI 契约、`StrategySlot` 命名空间、`PolicyManifest`/`PolicyBundle` 类型、admission 与 promotion 的**契约与语义**,构成公开的 Plantcore-AI/core 基座。任何人都能对着这套 typed ABI 产出、diff、admit、评估一个 checkpoint。
+- **open substrate(开放基座)。** microkernel、五个 ABI 契约、`StrategySlot` 命名空间、`PolicyManifest`/`PolicyBundle` 类型、admission 与 promotion 的**契约与语义**,构成公开的 Plantcore-AI/Iteron 基座。任何人都能对着这套 typed ABI 产出、diff、admit、评估一个 checkpoint。
 - **closed training pipeline(闭源训练侧)。** 具体的 **evolution/training 流水线**(candidate producer 的实现、搜索/训练算法、内部评估资产)**不开源**:采用 bring-your-own(自带 producer)或一个 closed-source 的 evolution service。
 
 这条拆分的技术后果就是 §6.3(c):因为 artifact 类型(trajectory、PolicyManifest)是开放且方法无关的,**流水线的产出可用于训练 model**(post-training 语料),即便流水线本身是闭源的。open substrate 让 checkpoint 可携带、可审计、可组合;closed pipeline 让"如何产出更好的 checkpoint"成为可保护的资产。两者互不污染:基座不含任何训练机密,训练侧不改任何 ABI。一个自带 producer 的第三方,只要产出的 `PolicyManifest` 通过 `validate` 与 admission,就能接入同一条流水线,而无需暴露其内部训练算法。
@@ -220,7 +220,7 @@ Core Code 在开放性上做一条**刻意的拆分**:
 
 本节描述的是**目标架构**与已落地的**契约层**;定位是前瞻性的(prospective),须诚实标注现状:
 
-- Core Code 处于 **pre-alpha**:一个能跑但仍是模块化的 monolith;kernel 目前仍硬依赖约 10 个 crate,尚未收敛到最小 TCB。
+- Iteron 处于 **pre-alpha**:一个能跑但仍是模块化的 monolith;kernel 目前仍硬依赖约 10 个 crate,尚未收敛到最小 TCB。
 - **live self-evolution activation 是 NO-GO**:`crates/evolve` 明确在 runtime TCB 之外,无 loader、无 runtime registry handle,不能载入、授予、执行或热插一条 policy。它当前只支持**记录、离线校验与评估**。
 - **尚无 first-party benchmark 数字**:本节不含任何 tier 内部数字;能力结论(如"训练出的 harness 击败手搭基线")是一个**待验证**的实验设计,其成立与否 gate 在尚未运行的 held-out 结果上。
 - escape-hatch 的 blob 到 typed 晋升路径目前是**设计承诺**,尚无 ADAS 式 artifact 真正 round-trip 进空间。

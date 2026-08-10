@@ -109,8 +109,8 @@ def load_manifest(path: Path) -> dict[str, object]:
         raise ReleaseToolError("release manifest does not match schema v3")
     if (
         document["command"] != "core"
-        or document["product"] != "Core Code"
-        or document["repository"] != "https://github.com/Plantcore-AI/core"
+        or document["product"] != "Iteron"
+        or document["repository"] != "https://github.com/Plantcore-AI/Iteron"
     ):
         raise ReleaseToolError("release manifest identifies the wrong product")
     validate_commit(document["commit"] if isinstance(document["commit"], str) else "")

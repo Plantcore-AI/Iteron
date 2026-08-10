@@ -1,6 +1,6 @@
 use super::*;
 use crate::{CostState, CostUnknownReason, Ledger};
-use core_protocol::{
+use iteron_protocol::{
     CostAttribution, CostProjectionIdentity, EffectId, Event, EventKind, RunId, Seq, TenantId,
     ToolResult, Trust, TurnId, WorkflowCostEvidence, WorkflowMetrics,
 };
@@ -428,9 +428,9 @@ fn signed_workflow_aggregate_overflow_degrades_to_unknown() {
     let mut total_usage = usage;
     total_usage.add(&usage);
     let terminal = event(EventKind::SubagentFinishedV2 {
-        version: core_protocol::WorkflowEventVersion::V2,
+        version: iteron_protocol::WorkflowEventVersion::V2,
         sub_run: "overflow-child".into(),
-        outcome: core_protocol::WorkflowChildOutcome::Done,
+        outcome: iteron_protocol::WorkflowChildOutcome::Done,
         metrics: WorkflowMetrics {
             provider_attempts: 2,
             completed_turns: 2,
@@ -777,13 +777,13 @@ fn dangling_child_admissions_are_unknown_and_duplicate_start_forms_resolve_once(
         agent: "investigator".into(),
     });
     let workflow_start = event(EventKind::WorkflowV2 {
-        version: core_protocol::WorkflowEventVersion::V2,
+        version: iteron_protocol::WorkflowEventVersion::V2,
         workflow_id: "workflow-open".into(),
-        event: core_protocol::WorkflowEvent::ChildStarted {
+        event: iteron_protocol::WorkflowEvent::ChildStarted {
             task_id: 7,
             sub_run: "child-open".into(),
             spawn_seq: Seq(1),
-            budget: core_protocol::Budget::default(),
+            budget: iteron_protocol::Budget::default(),
         },
     });
 
@@ -801,12 +801,12 @@ fn dangling_child_admissions_are_unknown_and_duplicate_start_forms_resolve_once(
     }
 
     let terminal = event(EventKind::WorkflowV2 {
-        version: core_protocol::WorkflowEventVersion::V2,
+        version: iteron_protocol::WorkflowEventVersion::V2,
         workflow_id: "workflow-open".into(),
-        event: core_protocol::WorkflowEvent::ChildFinished {
+        event: iteron_protocol::WorkflowEvent::ChildFinished {
             task_id: 7,
             sub_run: Some("child-open".into()),
-            outcome: core_protocol::WorkflowChildOutcome::Done,
+            outcome: iteron_protocol::WorkflowChildOutcome::Done,
             metrics: WorkflowMetrics::default(),
             error_code: None,
             error_detail: None,
@@ -823,12 +823,12 @@ fn dangling_child_admissions_are_unknown_and_duplicate_start_forms_resolve_once(
     assert_eq!(ledger.cost_state(), CostState::Zero);
 
     let missing_sub_run_terminal = event(EventKind::WorkflowV2 {
-        version: core_protocol::WorkflowEventVersion::V2,
+        version: iteron_protocol::WorkflowEventVersion::V2,
         workflow_id: "workflow-open".into(),
-        event: core_protocol::WorkflowEvent::ChildFinished {
+        event: iteron_protocol::WorkflowEvent::ChildFinished {
             task_id: 7,
             sub_run: None,
-            outcome: core_protocol::WorkflowChildOutcome::Failed,
+            outcome: iteron_protocol::WorkflowChildOutcome::Failed,
             metrics: WorkflowMetrics::default(),
             error_code: Some("lost-child".into()),
             error_detail: None,
@@ -850,13 +850,13 @@ fn dangling_child_admissions_are_unknown_and_duplicate_start_forms_resolve_once(
 fn workflow_sub_run_cannot_be_reused_by_two_started_tasks() {
     let started = |task_id| {
         event(EventKind::Workflow {
-            version: core_protocol::WorkflowEventVersion::V1,
+            version: iteron_protocol::WorkflowEventVersion::V1,
             workflow_id: "workflow-unique".into(),
-            event: core_protocol::WorkflowEvent::ChildStarted {
+            event: iteron_protocol::WorkflowEvent::ChildStarted {
                 task_id,
                 sub_run: "shared-started-child".into(),
                 spawn_seq: Seq(task_id as u64),
-                budget: core_protocol::Budget::default(),
+                budget: iteron_protocol::Budget::default(),
             },
         })
     };
@@ -1105,7 +1105,7 @@ fn signed_child_projections_are_required_for_known_workflow_cost() {
     };
     let terminal = event(EventKind::SubagentFinished {
         sub_run: "child".into(),
-        outcome: core_protocol::WorkflowChildOutcome::Done,
+        outcome: iteron_protocol::WorkflowChildOutcome::Done,
         metrics,
         error_code: None,
         error_detail: None,
@@ -1147,7 +1147,7 @@ fn duplicate_direct_child_terminal_cannot_double_count_signed_cost() {
     };
     let terminal = event(EventKind::SubagentFinished {
         sub_run: "child-duplicate".into(),
-        outcome: core_protocol::WorkflowChildOutcome::Done,
+        outcome: iteron_protocol::WorkflowChildOutcome::Done,
         metrics,
         error_code: None,
         error_detail: None,
@@ -1194,12 +1194,12 @@ fn workflow_task_and_sub_run_cannot_repeat_or_mix_terminal_forms() {
         ..WorkflowMetrics::default()
     };
     let workflow_terminal = event(EventKind::Workflow {
-        version: core_protocol::WorkflowEventVersion::V1,
+        version: iteron_protocol::WorkflowEventVersion::V1,
         workflow_id: "workflow-1".into(),
-        event: core_protocol::WorkflowEvent::ChildFinished {
+        event: iteron_protocol::WorkflowEvent::ChildFinished {
             task_id: 7,
             sub_run: Some("shared-child".into()),
-            outcome: core_protocol::WorkflowChildOutcome::Done,
+            outcome: iteron_protocol::WorkflowChildOutcome::Done,
             metrics: metrics.clone(),
             error_code: None,
             error_detail: None,
@@ -1209,7 +1209,7 @@ fn workflow_task_and_sub_run_cannot_repeat_or_mix_terminal_forms() {
     });
     let direct_terminal = event(EventKind::SubagentFinished {
         sub_run: "shared-child".into(),
-        outcome: core_protocol::WorkflowChildOutcome::Done,
+        outcome: iteron_protocol::WorkflowChildOutcome::Done,
         metrics,
         error_code: None,
         error_detail: None,
@@ -1261,12 +1261,12 @@ fn workflow_projection_cannot_move_to_another_task_or_sub_run() {
     };
     let terminal = |task_id, sub_run: &str| {
         event(EventKind::Workflow {
-            version: core_protocol::WorkflowEventVersion::V1,
+            version: iteron_protocol::WorkflowEventVersion::V1,
             workflow_id: "workflow-1".into(),
-            event: core_protocol::WorkflowEvent::ChildFinished {
+            event: iteron_protocol::WorkflowEvent::ChildFinished {
                 task_id,
                 sub_run: Some(sub_run.into()),
-                outcome: core_protocol::WorkflowChildOutcome::Done,
+                outcome: iteron_protocol::WorkflowChildOutcome::Done,
                 metrics: metrics.clone(),
                 error_code: None,
                 error_detail: None,
@@ -1301,7 +1301,7 @@ fn oversized_child_evidence_is_rejected_before_any_hmac_work() {
         )
         .unwrap();
     forged.signature = format!("hmac-sha256:{}", "0".repeat(64));
-    let projection_count = core_protocol::MAX_WORKFLOW_COST_PROJECTIONS + 1;
+    let projection_count = iteron_protocol::MAX_WORKFLOW_COST_PROJECTIONS + 1;
     let metrics = WorkflowMetrics {
         provider_attempts: projection_count as u32,
         completed_turns: projection_count as u32,
@@ -1314,7 +1314,7 @@ fn oversized_child_evidence_is_rejected_before_any_hmac_work() {
     };
     let terminal = event(EventKind::SubagentFinished {
         sub_run: "oversized-child".into(),
-        outcome: core_protocol::WorkflowChildOutcome::Done,
+        outcome: iteron_protocol::WorkflowChildOutcome::Done,
         metrics,
         error_code: None,
         error_detail: None,

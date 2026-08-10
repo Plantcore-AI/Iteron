@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core_code_agent import CoreCodeAgent, _split_model_route
+from iteron_agent import IteronAgent, _split_model_route
 from harbor.agents.factory import AgentFactory
 from harbor.environments.base import BaseEnvironment
 from harbor.models.trial.config import AgentConfig
@@ -47,7 +47,7 @@ class FakeEnvironment:
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
-class CoreCodeAgentTests(unittest.TestCase):
+class IteronAgentTests(unittest.TestCase):
     def _agent(
         self,
         root: Path,
@@ -56,10 +56,10 @@ class CoreCodeAgentTests(unittest.TestCase):
         binary_arch: str = "x86_64",
         model_name: str = "openai/test-model",
         **kwargs: object,
-    ) -> CoreCodeAgent:
+    ) -> IteronAgent:
         binary = root / "core-linux"
         digest = _linux_elf(binary)
-        return CoreCodeAgent(
+        return IteronAgent(
             root / "logs",
             binary_path=binary,
             binary_sha256=digest,
@@ -100,7 +100,7 @@ class CoreCodeAgentTests(unittest.TestCase):
                 "LD_PRELOAD",
                 "PATH",
                 "HOME",
-                "CORE_CONFIG_HOME",
+                "ITERON_CONFIG_HOME",
                 "HTTPS_PROXY",
                 "BASH_ENV_API_KEY",
             ):
@@ -115,11 +115,11 @@ class CoreCodeAgentTests(unittest.TestCase):
                         extra_env={dangerous: "credential-fixture-value"},
                     )
 
-            credential_env = "HARBOR_CORE_GATEWAY_API_KEY"
+            credential_env = "HARBOR_ITERON_GATEWAY_API_KEY"
             binary = root / "core-linux"
             digest = _linux_elf(binary)
             config = AgentConfig(
-                import_path="core_code_agent:CoreCodeAgent",
+                import_path="iteron_agent:IteronAgent",
                 model_name="openai/test-model",
                 env={credential_env: "credential-fixture-value"},
                 kwargs={
@@ -133,7 +133,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             agent = AgentFactory.create_agent_from_config(
                 config, logs_dir=root / "logs"
             )
-            self.assertIsInstance(agent, CoreCodeAgent)
+            self.assertIsInstance(agent, IteronAgent)
             environment = FakeEnvironment()
             environment._persistent_env = {"TASK_MARKER": "task"}
             with BaseEnvironment.scoped_exec_env(environment, agent.extra_env):
@@ -151,7 +151,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(run_env),  # type: ignore[arg-type]
-                {"TASK_MARKER", credential_env, "HOME", "CORE_CONFIG_HOME"},
+                {"TASK_MARKER", credential_env, "HOME", "ITERON_CONFIG_HOME"},
             )
             self.assertNotIn("BASH_ENV", run_env)  # type: ignore[operator]
             self.assertNotIn("LD_PRELOAD", run_env)  # type: ignore[operator]
@@ -168,7 +168,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             linked = root / "linked"
             linked.symlink_to(real, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, "snapshot"):
-                CoreCodeAgent(
+                IteronAgent(
                     root / "logs",
                     binary_path=linked / source.name,
                     binary_sha256=digest,
@@ -177,7 +177,7 @@ class CoreCodeAgentTests(unittest.TestCase):
                     extra_env={"OPENAI_API_KEY": "credential-fixture-value"},
                 )
 
-            agent = CoreCodeAgent(
+            agent = IteronAgent(
                 root / "logs",
                 binary_path=source,
                 binary_sha256=digest,
@@ -203,7 +203,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             asyncio.run(agent.install(environment))
             self.assertEqual(len(environment.uploads), 1)
             upload = environment.uploads[0][1]
-            self.assertRegex(upload, r"^/tmp/core-code-bin-[0-9a-f]{32}$")
+            self.assertRegex(upload, r"^/tmp/iteron-bin-[0-9a-f]{32}$")
             install_call = environment.calls[-1]
             install_command = str(install_call["command"])
             self.assertIn("exec 9<", install_command)
@@ -224,7 +224,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             run_call = environment.calls[-1]
             run_command = str(run_call["command"])
             self.assertEqual(run_call["cwd"], "/app")
-            self.assertEqual(set(run_call["env"]), {"HOME", "CORE_CONFIG_HOME"})
+            self.assertEqual(set(run_call["env"]), {"HOME", "ITERON_CONFIG_HOME"})
             self.assertIn("refusing task-provided Core project state", run_command)
             self.assertIn("exec 8> /logs/agent/core.stream.jsonl", run_command)
             self.assertIn("| tee /proc/self/fd/8", run_command)

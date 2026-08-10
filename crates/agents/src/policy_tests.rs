@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::bundle::ResolvedPolicy;
+use iteron_protocol::bundle::ResolvedPolicy;
 
 fn digest(seed: char) -> String {
     std::iter::repeat_n(seed, 64).collect()
@@ -124,7 +124,7 @@ fn unknown_or_invalid_bundle_is_fail_safe_baseline() {
         bundle_id: "bundle-2".into(),
         digest: digest('c'),
         policies: vec![ResolvedPolicy {
-            slot: core_protocol::slot::SlotId("core/context".into()),
+            slot: iteron_protocol::slot::SlotId("core/context".into()),
             policy_id: "prefer-structural-search".into(),
             version: "1".into(),
             digest: digest('d'),

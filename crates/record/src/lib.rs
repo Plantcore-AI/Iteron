@@ -1,4 +1,4 @@
-//! core-record — the nondeterminism boundary.
+//! iteron-record — the nondeterminism boundary.
 //!
 //! Every reproducible system quarantines nondeterminism behind a recorded boundary and
 //! makes the code above it a pure function of the record (ADR-006). This crate is that
@@ -43,14 +43,14 @@ pub type TunablesSnapshotError = session::tunables::TunablesSnapshotError;
 
 /// Project an atomically accepted resolver result into its bounded durable identity.
 pub fn snapshot_from_resolved(
-    resolved: &core_tunables::ResolvedTunableSet,
-) -> Result<core_protocol::RunGenesisTunablesSnapshot, TunablesSnapshotError> {
+    resolved: &iteron_tunables::ResolvedTunableSet,
+) -> Result<iteron_protocol::RunGenesisTunablesSnapshot, TunablesSnapshotError> {
     session::tunables::snapshot_from_resolved(resolved)
 }
 
 /// Validate bounds, state invariants, and the recomputed canonical self-digest.
 pub fn validate_tunables_snapshot(
-    snapshot: &core_protocol::RunGenesisTunablesSnapshot,
+    snapshot: &iteron_protocol::RunGenesisTunablesSnapshot,
 ) -> Result<(), TunablesSnapshotError> {
     session::tunables::validate_tunables_snapshot(snapshot)
 }
@@ -61,7 +61,7 @@ pub fn fork_with_tunables_snapshot(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    expected: &iteron_protocol::RunGenesisTunablesSnapshot,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(RunId, TunablesCompatibility), RecordError> {
     session::fork_with_tunables_snapshot(runs_dir, parent, at, tenant, expected, legacy)
@@ -73,13 +73,13 @@ pub fn fork_with_resolved_tunables(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    resolved: &core_tunables::ResolvedTunableSet,
+    resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(RunId, TunablesCompatibility), RecordError> {
     session::fork_with_resolved_tunables(runs_dir, parent, at, tenant, resolved, legacy)
 }
 
-use core_protocol::{
+use iteron_protocol::{
     Event, EventKind, MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, RunId,
     Seq, TenantId,
 };
@@ -220,7 +220,7 @@ pub enum RecordError {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("pricing evidence: {0}")]
-    Pricing(#[from] core_obs::PricingError),
+    Pricing(#[from] iteron_obs::PricingError),
     /// Another live writer already owns this run's journal. Retrying the same run concurrently
     /// would fork the in-memory hash-chain heads and irreversibly interleave the append stream, so
     /// the second writer is rejected before it scans or mutates the file.
@@ -644,7 +644,9 @@ fn state_root_of(runs_dir: &Path) -> Option<PathBuf> {
         walked.push(component);
         if root.is_none()
             && let Component::Normal(name) = component
-            && name.to_str().is_some_and(core_protocol::home::is_home_dir)
+            && name
+                .to_str()
+                .is_some_and(iteron_protocol::home::is_home_dir)
         {
             // The OUTERMOST `.core` is the one sitting in the repository, which is the directory
             // git would otherwise stage.
@@ -685,12 +687,12 @@ pub(crate) fn create_state_dir(dir: &Path) -> std::io::Result<()> {
 /// The pattern is two lines, and the second one is load-bearing:
 ///
 /// ```text
-/// /.core/**
-/// !/.core/**/
+/// /.iteron/**
+/// !/.iteron/**/
 /// ```
 ///
-/// The obvious `/.core/` would ignore the same files, but it also makes `.core` — and under
-/// `/.core/**` alone, `.core/runs` — an *ignored directory entry*. `git add` treats a pathspec that
+/// The obvious `/.iteron/` would ignore the same files, but it also makes `.core` — and under
+/// `/.iteron/**` alone, `.iteron/runs` — an *ignored directory entry*. `git add` treats a pathspec that
 /// names an ignored entry as a fatal error, not a no-op, and the checkpoint stages with
 /// `add -A -- . :(top,literal,exclude)<runtime state dir>`, which names it exactly. Either
 /// directory form would therefore have turned every checkpoint in the repository into a hard
@@ -710,7 +712,7 @@ fn exclude_state_dir_from_git(state_root: &Path) {
     if !git_dir.is_dir() {
         return;
     }
-    let home = core_protocol::home::HOME_DIR;
+    let home = iteron_protocol::home::HOME_DIR;
     let files = format!("/{home}/**");
     let keep_dirs = format!("!/{home}/**/");
     let already_excluded = |text: &str| {
@@ -743,7 +745,7 @@ fn exclude_state_dir_from_git(state_root: &Path) {
     if !existing.is_empty() && !existing.ends_with('\n') {
         addition.push('\n');
     }
-    addition.push_str("# Core Code per-repository state (run records, memory, skills).\n");
+    addition.push_str("# Iteron per-repository state (run records, memory, skills).\n");
     addition.push_str(&files);
     addition.push('\n');
     addition.push_str(&keep_dirs);
@@ -834,7 +836,7 @@ impl Rollout {
         dir: &Path,
         run: &RunId,
         tenant: TenantId,
-        expected: &core_protocol::RunGenesisTunablesSnapshot,
+        expected: &iteron_protocol::RunGenesisTunablesSnapshot,
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
         let rollout = Self::open_existing(dir, run, tenant)?;
@@ -854,7 +856,7 @@ impl Rollout {
         dir: &Path,
         run: &RunId,
         tenant: TenantId,
-        resolved: &core_tunables::ResolvedTunableSet,
+        resolved: &iteron_tunables::ResolvedTunableSet,
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
         let expected = snapshot_from_resolved(resolved)?;
@@ -868,7 +870,7 @@ impl Rollout {
     pub fn append_fresh_genesis_with_tunables(
         &mut self,
         run_start: &Event,
-        resolved: &core_tunables::ResolvedTunableSet,
+        resolved: &iteron_tunables::ResolvedTunableSet,
     ) -> Result<(Seq, Seq), RecordError> {
         if !matches!(
             &run_start.kind,
@@ -891,8 +893,8 @@ impl Rollout {
     pub(crate) fn append_genesis_snapshot(
         &mut self,
         run_start: &Event,
-        snapshot: core_protocol::RunGenesisTunablesSnapshot,
-        inherited_from: Option<core_protocol::RunGenesisTunablesInheritance>,
+        snapshot: iteron_protocol::RunGenesisTunablesSnapshot,
+        inherited_from: Option<iteron_protocol::RunGenesisTunablesInheritance>,
     ) -> Result<(Seq, Seq), RecordError> {
         if !self.is_empty() || !matches!(&run_start.kind, EventKind::RunStart { .. }) {
             return Err(TunablesSnapshotError::GenesisOrder {
@@ -906,7 +908,7 @@ impl Rollout {
             seq: Seq::ZERO,
             turn: run_start.turn,
             kind: EventKind::TunablesSnapshot {
-                version: core_protocol::RunGenesisTunablesVersion::V1,
+                version: iteron_protocol::RunGenesisTunablesVersion::V1,
                 snapshot,
                 inherited_from,
             },
@@ -1381,7 +1383,7 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
 /// exact match.
 pub fn replay_with_tunables_snapshot(
     path: &Path,
-    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    expected: &iteron_protocol::RunGenesisTunablesSnapshot,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
     let events = replay(path)?;
@@ -1394,7 +1396,7 @@ pub fn replay_with_tunables_snapshot(
 /// Resolver-typed convenience wrapper for [`replay_with_tunables_snapshot`].
 pub fn replay_with_resolved_tunables(
     path: &Path,
-    resolved: &core_tunables::ResolvedTunableSet,
+    resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
     let expected = snapshot_from_resolved(resolved)?;
@@ -1404,7 +1406,7 @@ pub fn replay_with_resolved_tunables(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{
+    use iteron_protocol::{
         Block, DurableEnvironmentContext, DurableInstructionContext, Effort, EventKind, Message,
         Phase, ProviderState, ProviderStateFormat, Role, Trust, TurnId,
     };
@@ -1798,7 +1800,7 @@ mod tests {
                 seq: Seq::ZERO,
                 turn: TurnId(0),
                 kind: EventKind::TurnEnd {
-                    usage: core_protocol::Usage::default(),
+                    usage: iteron_protocol::Usage::default(),
                     ttft_ms: None,
                     decode_ms: None,
                     stream_items: None,
@@ -1858,17 +1860,17 @@ mod tests {
         let dir = test_dir("schema-tag-validation");
         let run = RunId("schema-tag-validation".into());
         let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
-        let v1_metrics = core_protocol::WorkflowMetrics {
+        let v1_metrics = iteron_protocol::WorkflowMetrics {
             model_ms: Some(0),
             tools_ms: Some(0),
-            ..core_protocol::WorkflowMetrics::default()
+            ..iteron_protocol::WorkflowMetrics::default()
         };
         let invalid = [
             EventKind::Workflow {
-                version: core_protocol::WorkflowEventVersion::V1,
+                version: iteron_protocol::WorkflowEventVersion::V1,
                 workflow_id: "w".into(),
-                event: core_protocol::WorkflowEvent::Finished {
-                    outcome: core_protocol::WorkflowOutcome::Drained,
+                event: iteron_protocol::WorkflowEvent::Finished {
+                    outcome: iteron_protocol::WorkflowOutcome::Drained,
                     metrics: v1_metrics.clone(),
                     elapsed_ms: 0,
                     error_code: None,
@@ -1876,27 +1878,27 @@ mod tests {
                 },
             },
             EventKind::Workflow {
-                version: core_protocol::WorkflowEventVersion::V1,
+                version: iteron_protocol::WorkflowEventVersion::V1,
                 workflow_id: "w".into(),
-                event: core_protocol::WorkflowEvent::Finished {
-                    outcome: core_protocol::WorkflowOutcome::Done,
-                    metrics: core_protocol::WorkflowMetrics::default(),
+                event: iteron_protocol::WorkflowEvent::Finished {
+                    outcome: iteron_protocol::WorkflowOutcome::Done,
+                    metrics: iteron_protocol::WorkflowMetrics::default(),
                     elapsed_ms: 0,
                     error_code: None,
                     error_detail: None,
                 },
             },
             EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V1,
+                version: iteron_protocol::WorkflowEventVersion::V1,
                 workflow_id: "w".into(),
-                event: core_protocol::WorkflowEvent::Started {
+                event: iteron_protocol::WorkflowEvent::Started {
                     name: "w".into(),
                     class: "direct".into(),
                 },
             },
             EventKind::SubagentFinished {
                 sub_run: "child".into(),
-                outcome: core_protocol::WorkflowChildOutcome::Drained,
+                outcome: iteron_protocol::WorkflowChildOutcome::Drained,
                 metrics: v1_metrics.clone(),
                 error_code: None,
                 error_detail: None,
@@ -1905,18 +1907,18 @@ mod tests {
             },
             EventKind::SubagentFinished {
                 sub_run: "child".into(),
-                outcome: core_protocol::WorkflowChildOutcome::Done,
-                metrics: core_protocol::WorkflowMetrics::default(),
+                outcome: iteron_protocol::WorkflowChildOutcome::Done,
+                metrics: iteron_protocol::WorkflowMetrics::default(),
                 error_code: None,
                 error_detail: None,
                 summary_digest: None,
                 evidence_bytes: 0,
             },
             EventKind::SubagentFinishedV2 {
-                version: core_protocol::WorkflowEventVersion::V1,
+                version: iteron_protocol::WorkflowEventVersion::V1,
                 sub_run: "child".into(),
-                outcome: core_protocol::WorkflowChildOutcome::Done,
-                metrics: core_protocol::WorkflowMetrics::default(),
+                outcome: iteron_protocol::WorkflowChildOutcome::Done,
+                metrics: iteron_protocol::WorkflowMetrics::default(),
                 error_code: None,
                 error_detail: None,
                 summary_digest: None,
@@ -1941,10 +1943,10 @@ mod tests {
                 seq: Seq::ZERO,
                 turn: TurnId(0),
                 kind: EventKind::Workflow {
-                    version: core_protocol::WorkflowEventVersion::V1,
+                    version: iteron_protocol::WorkflowEventVersion::V1,
                     workflow_id: "legacy-compatible".into(),
-                    event: core_protocol::WorkflowEvent::Finished {
-                        outcome: core_protocol::WorkflowOutcome::Done,
+                    event: iteron_protocol::WorkflowEvent::Finished {
+                        outcome: iteron_protocol::WorkflowOutcome::Done,
                         metrics: v1_metrics,
                         elapsed_ms: 0,
                         error_code: None,
@@ -1966,7 +1968,7 @@ mod tests {
         let dir = test_dir("tool-terminal-identity");
         let run = RunId("tool-terminal-identity".into());
         let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
-        let result = |is_error: bool| core_protocol::ToolResult {
+        let result = |is_error: bool| iteron_protocol::ToolResult {
             tool_use_id: "call-1".into(),
             content: "ok".into(),
             is_error,
@@ -1978,13 +1980,13 @@ mod tests {
             // Successful, admitted, but anonymous: the audited shape.
             EventKind::ToolDone {
                 result: result(false),
-                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                effect_id: Some(iteron_protocol::EffectId("fx1-00000000-0000".into())),
                 tool: None,
             },
             // Named but empty is the same defect wearing a value.
             EventKind::ToolDone {
                 result: result(false),
-                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                effect_id: Some(iteron_protocol::EffectId("fx1-00000000-0000".into())),
                 tool: Some(String::new()),
             },
             // Successful with no admission event: 77 of the 81.
@@ -2024,7 +2026,7 @@ mod tests {
                 turn: TurnId(0),
                 kind: EventKind::ToolDone {
                     result: result(false),
-                    effect_id: Some(core_protocol::EffectId("fx1-00000000-0001".into())),
+                    effect_id: Some(iteron_protocol::EffectId("fx1-00000000-0001".into())),
                     tool: Some("edit".into()),
                 },
             })
@@ -2048,7 +2050,7 @@ mod tests {
                     seq: Seq::ZERO,
                     turn: TurnId(0),
                     kind: EventKind::ToolDone {
-                        result: core_protocol::ToolResult {
+                        result: iteron_protocol::ToolResult {
                             tool_use_id: "call-1".into(),
                             content: "ok".into(),
                             is_error: true,
@@ -2104,7 +2106,7 @@ mod tests {
             kind: EventKind::RunStart {
                 cwd: dir.display().to_string(),
                 model: "model".into(),
-                effort: core_protocol::Effort::Medium,
+                effort: iteron_protocol::Effort::Medium,
                 created_at: 1,
                 environment: None,
                 parent_run: None,
@@ -2358,7 +2360,7 @@ mod tests {
     /// environment variable is absent and this is a no-op.
     #[test]
     fn child_process_holds_rollout_writer_lock() {
-        let Ok(dir) = std::env::var("CORE_RECORD_LOCK_TEST_DIR") else {
+        let Ok(dir) = std::env::var("ITERON_RECORD_LOCK_TEST_DIR") else {
             return;
         };
         let dir = PathBuf::from(dir);
@@ -2385,7 +2387,7 @@ mod tests {
             .arg("--exact")
             .arg("tests::child_process_holds_rollout_writer_lock")
             .arg("--nocapture")
-            .env("CORE_RECORD_LOCK_TEST_DIR", &dir)
+            .env("ITERON_RECORD_LOCK_TEST_DIR", &dir)
             .spawn()
             .unwrap();
 
@@ -2494,7 +2496,7 @@ mod tests {
 
     #[test]
     fn secrets_in_tool_output_are_scrubbed_in_the_record() {
-        use core_protocol::{Block, EventKind, Message, Role, ToolResult, Trust};
+        use iteron_protocol::{Block, EventKind, Message, Role, ToolResult, Trust};
         let dir = std::env::temp_dir().join(format!("core-rec-redact-{}", std::process::id()));
         let run = RunId("t5".into());
         let leaked = "found key sk-\
@@ -2827,18 +2829,18 @@ AbCdEf1234567890AbCdEf1234567890"
                         environment: Some(environment),
                         ..
                     } if environment.text == "environment snapshot"
-                        && environment.trust == core_protocol::Trust::Workspace
+                        && environment.trust == iteron_protocol::Trust::Workspace
                 ));
                 assert!(events.iter().any(|event| matches!(
                     &event.kind,
                     EventKind::ContextInjection {
-                        instructions: Some(core_protocol::DurableInstructionContext {
+                        instructions: Some(iteron_protocol::DurableInstructionContext {
                             environment: Some(environment),
                             ..
                         }),
                         ..
                     } if environment.text == "environment snapshot"
-                        && environment.trust == core_protocol::Trust::Workspace
+                        && environment.trust == iteron_protocol::Trust::Workspace
                 )));
             }
             for (line, event) in lines.iter().zip(events) {
@@ -2863,17 +2865,17 @@ AbCdEf1234567890AbCdEf1234567890"
         let ignore = repo.join(".gitignore");
         std::fs::write(&ignore, "target/\n").unwrap();
 
-        let runs = repo.join(".core").join("runs");
+        let runs = repo.join(".iteron").join("runs");
         let rollout = Rollout::open(&runs, &RunId("first".into()), TenantId::default()).unwrap();
         drop(rollout);
 
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert!(
-            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            exclude.lines().any(|line| line.trim() == "/.iteron/**"),
             "the state directory's files must be excluded: {exclude}"
         );
         assert!(
-            exclude.lines().any(|line| line.trim() == "!/.core/**/"),
+            exclude.lines().any(|line| line.trim() == "!/.iteron/**/"),
             "the directories stay un-ignored so a checkpoint pathspec may name them: {exclude}"
         );
         assert_eq!(
@@ -2894,21 +2896,21 @@ AbCdEf1234567890AbCdEf1234567890"
     }
 
     /// I-45. Opening a rollout is not the only way the state directory comes into being: a bare
-    /// `core reindex` in a fresh repository creates it too, and used to create it unclaimed — the
+    /// `iteron reindex` in a fresh repository creates it too, and used to create it unclaimed — the
     /// index and its lock file were then staged by the next `git add -A`. Whichever path gets there
     /// first has to make the claim.
     #[test]
     fn maintenance_that_creates_the_state_directory_claims_the_exclusion_too() {
         let repo = test_dir("git-exclude-reindex");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        let runs = repo.join(".core").join("runs");
+        let runs = repo.join(".iteron").join("runs");
 
         assert_eq!(session::reindex(&runs).unwrap(), 0);
 
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude"))
             .expect("reindex creating the state directory claims it");
         assert!(
-            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            exclude.lines().any(|line| line.trim() == "/.iteron/**"),
             "{exclude}"
         );
         let _ = std::fs::remove_dir_all(&repo);
@@ -2936,7 +2938,7 @@ AbCdEf1234567890AbCdEf1234567890"
 #[cfg(test)]
 mod timeline_tests {
     use super::*;
-    use core_protocol::{Event, EventKind, RunId, Seq, TenantId, TurnId};
+    use iteron_protocol::{Event, EventKind, RunId, Seq, TenantId, TurnId};
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

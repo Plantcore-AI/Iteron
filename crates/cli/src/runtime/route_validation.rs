@@ -16,7 +16,7 @@ pub(super) fn validate_route_identifier(
             reason: "must be non-empty, control-free, and within its byte bound",
         });
     }
-    if core_record::redact::scrub_route_identifier(value) != value {
+    if iteron_record::redact::scrub_route_identifier(value) != value {
         return Err(KernelError::InvalidRouteMetadata {
             field,
             reason: "looks like a credential and cannot enter the durable route record",
@@ -56,27 +56,27 @@ pub(super) fn validate_pricing_route_digest(
 
 pub(super) fn replay_logical_rollout(
     path: &std::path::Path,
-) -> Result<Vec<core_protocol::Event>, core_record::RecordError> {
+) -> Result<Vec<iteron_protocol::Event>, iteron_record::RecordError> {
     match (
         path.parent(),
         path.file_stem().and_then(|stem| stem.to_str()),
     ) {
         (Some(dir), Some(stem)) => {
-            core_record::load_forked(dir, &core_protocol::RunId(stem.to_string()))
+            iteron_record::load_forked(dir, &iteron_protocol::RunId(stem.to_string()))
         }
-        _ => core_record::replay(path),
+        _ => iteron_record::replay(path),
     }
 }
 
 pub(super) fn replay_scoped_rollout(
     path: &std::path::Path,
-) -> Result<Vec<core_record::ScopedEvent>, core_record::RecordError> {
+) -> Result<Vec<iteron_record::ScopedEvent>, iteron_record::RecordError> {
     match (
         path.parent(),
         path.file_stem().and_then(|stem| stem.to_str()),
     ) {
         (Some(dir), Some(stem)) => {
-            core_record::load_forked_scoped(dir, &core_protocol::RunId(stem.to_string()))
+            iteron_record::load_forked_scoped(dir, &iteron_protocol::RunId(stem.to_string()))
         }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

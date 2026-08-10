@@ -9,7 +9,7 @@ impl Agent {
     /// byte-for-byte, the single `extract_meta` parse, a freshly minted run id, the
     /// [`KernelSpawner`] built from this agent's live route + paths, the aggregate budget, the
     /// degraded sink fanned out with any attached frontend sink, and the re-launchable manifest
-    /// `core workflow list|resume|watch` reads. Every failure that must abort the tool call before
+    /// `iteron workflow list|resume|watch` reads. Every failure that must abort the tool call before
     /// anything starts happens here, so a returned [`crate::workflow::PreparedWorkflow`] is an
     /// admitted run with its sidecar already on disk.
     ///
@@ -27,7 +27,7 @@ impl Agent {
     ///
     /// The current session's resolved provider, budgets and authority still construct the child
     /// spawner; only the script, ambient args, display name and resume cache come from the durable
-    /// sidecars. This is the in-process equivalent of `core workflow resume <run-id>` used by the
+    /// sidecars. This is the in-process equivalent of `iteron workflow resume <run-id>` used by the
     /// interactive workflow panel.
     pub(crate) fn prepare_workflow_resume(
         &self,
@@ -121,7 +121,7 @@ impl Agent {
                 .cloned()
                 .ok_or_else(|| "Workflow ultracode: `args.taskClass` is required".to_string())
                 .and_then(|value| {
-                    serde_json::from_value::<core_agents::TaskClass>(value)
+                    serde_json::from_value::<iteron_agents::TaskClass>(value)
                         .map_err(|_| "Workflow ultracode: `args.taskClass` is invalid".to_string())
                 })?;
             if !class.fans_out() {
@@ -131,8 +131,8 @@ impl Agent {
                 .get("maxLeaves")
                 .and_then(|value| value.as_u64())
                 .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(core_agents::FAN_CAP)
-                .clamp(1, core_agents::FAN_CAP);
+                .unwrap_or(iteron_agents::FAN_CAP)
+                .clamp(1, iteron_agents::FAN_CAP);
             object.insert("task".into(), serde_json::Value::String(task));
             object.insert(
                 "taskClass".into(),
@@ -170,7 +170,7 @@ impl Agent {
         };
         // One parse: `extract_meta` spins up a QuickJS runtime, and the live tree wants the
         // DECLARED phases as well as the name so every phase box exists on the first frame.
-        let meta = core_workflow::extract_meta(&script);
+        let meta = iteron_workflow::extract_meta(&script);
         let declared_phases = meta
             .as_ref()
             .and_then(|meta| meta.phases.clone())
@@ -178,13 +178,13 @@ impl Agent {
         let workflow_name = meta
             .and_then(|meta| meta.name)
             .unwrap_or_else(|| "workflow".into());
-        // Mint a fresh, time-ordered run id the way the standalone `core workflow run` path does.
+        // Mint a fresh, time-ordered run id the way the standalone `iteron workflow run` path does.
         // Deriving it from the turn counter made every `Workflow` tool call in ONE assistant
         // response share an id — hence one journal, one child-rollout namespace, and a second call
         // that silently replayed the first's cached outcomes instead of running.
         let run_id = resume_run_id
             .map(str::to_owned)
-            .unwrap_or_else(|| core_workflow::RunId::generate().to_string());
+            .unwrap_or_else(|| iteron_workflow::RunId::generate().to_string());
         let workflows_dir = self.runtime_state_dir.join("subagents").join("workflows");
 
         let mut cx = self.kernel_spawner_context(&route, &run_id);
@@ -244,35 +244,35 @@ impl Agent {
                 class,
                 max_leaves: allocation.active_workers,
             });
-            core_workflow::RunLimits::new(
+            iteron_workflow::RunLimits::new(
                 fan_concurrency_permits(allocation.active_workers),
                 allocation.active_workers.saturating_add(1),
             )
             .map_err(|error| format!("Workflow: invalid ultracode engine budget: {error}"))?
         } else {
             cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
-            // The same soft halving `core_agents::subagent_budget` gives a general workflow child.
+            // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
             cx.budget.max_tokens = self
                 .remaining_provider_tokens()
                 .map(|remaining| remaining / 2);
             let kernel_limits = in_turn_workflow_budget()
                 .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
-            core_workflow::RunLimits::new(
+            iteron_workflow::RunLimits::new(
                 kernel_limits.max_concurrency(),
                 kernel_limits.max_agent_calls(),
             )
             .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?
         };
-        let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
+        let spawner: std::sync::Arc<dyn iteron_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
-        let mut spec = core_workflow::RunSpec::new(script.clone())
+        let mut spec = iteron_workflow::RunSpec::new(script.clone())
             .with_args(args.clone())
-            .with_run_id(core_workflow::RunId::new(run_id.clone()))
+            .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
             .with_workflows_dir(workflows_dir.clone())
             .with_limits(engine_limits);
         if resume_run_id.is_some() {
-            spec = spec.with_resume_from(core_workflow::RunId::new(run_id.clone()));
+            spec = spec.with_resume_from(iteron_workflow::RunId::new(run_id.clone()));
         }
         // A degraded agent resolves to JS `null` and the script's `.filter(Boolean)` deletes it, so
         // a discarded sink turned an exhausted budget into a plausibly-short result. Keep the
@@ -289,7 +289,7 @@ impl Agent {
         );
 
         // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
-        // the kernel writes its journal into the very directory `core workflow list` enumerates, so
+        // the kernel writes its journal into the very directory `iteron workflow list` enumerates, so
         // without the manifest every model-launched run listed forever as unnamed, model-less and
         // `running`.
         if resume_run_id.is_none()
@@ -329,7 +329,7 @@ impl Agent {
     /// `spawn_subagent`). [`Self::prepare_workflow`] builds the run from THIS agent's live route +
     /// paths and persists its re-launchable sidecars, the installed
     /// [`crate::workflow::WorkflowLauncher`] (by default the kernel's own, which is exactly
-    /// [`core_workflow::WorkflowEngine::launch`] — background `RunHandle`, review B3) starts it, and
+    /// [`iteron_workflow::WorkflowEngine::launch`] — background `RunHandle`, review B3) starts it, and
     /// this method `join`s it within the turn so the model receives the aggregated result. The
     /// launch banner (run id) is emitted as a `Notice`.
     ///
@@ -383,7 +383,7 @@ impl Agent {
         let declared_phases = prepared.declared_phases.clone();
         let degraded = prepared.degraded.clone();
 
-        // The launch banner. It names `core workflow list` — the surface that can show this run
+        // The launch banner. It names `iteron workflow list` — the surface that can show this run
         // AFTER the turn, and from another process. A frontend with the progress seam installed
         // also gets the live tree below; one that does not still gets this line, so the run is never
         // invisible.
@@ -391,7 +391,7 @@ impl Agent {
             turn_id,
             EventKind::Notice {
                 text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); `core workflow list` tracks it"
+                    "Workflow `{workflow_name}` launched (run {run_id}); `iteron workflow list` tracks it"
                 ),
             },
         );
@@ -445,7 +445,7 @@ impl Agent {
             }
         };
 
-        // A run that never produced a report is still a directory `core workflow list` enumerates:
+        // A run that never produced a report is still a directory `iteron workflow list` enumerates:
         // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
         // on the error path — and the journal's new exclusive lock makes that path reachable (a
         // colliding run id is refused here, not silently interleaved). Without this the failure

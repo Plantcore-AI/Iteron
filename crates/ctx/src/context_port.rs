@@ -7,10 +7,10 @@ use crate::memory::{
     MemoryStrategy,
 };
 use crate::{outline, skills};
-use core_protocol::context::{
+use iteron_protocol::context::{
     ContextGrant, ContextSegment, ContextSelector, ContextSource, MAX_CONTEXT_SEGMENTS,
 };
-use core_protocol::{Trust, home, slot::StrategySlot};
+use iteron_protocol::{Trust, home, slot::StrategySlot};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -261,13 +261,13 @@ impl ContextPort for PortStub {
 }
 
 struct GrantBuilder<'a> {
-    request: &'a core_protocol::context::ContextRequest,
+    request: &'a iteron_protocol::context::ContextRequest,
     segments: Vec<ContextSegment>,
     bytes: usize,
 }
 
 impl<'a> GrantBuilder<'a> {
-    fn new(request: &'a core_protocol::context::ContextRequest) -> Self {
+    fn new(request: &'a iteron_protocol::context::ContextRequest) -> Self {
         Self {
             request,
             segments: Vec::new(),
@@ -370,9 +370,9 @@ fn memory_stores(workspace: &Path, home_dir: Option<&Path>) -> Vec<MemStore> {
 mod tests {
     use super::*;
     use crate::{ContextSlotObservation, ContextStrategy};
-    use core_protocol::Capability;
-    use core_protocol::capability_set::CapabilitySet;
-    use core_protocol::context::{ContextSource, RequestId};
+    use iteron_protocol::Capability;
+    use iteron_protocol::capability_set::CapabilitySet;
+    use iteron_protocol::context::{ContextSource, RequestId};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -457,7 +457,7 @@ mod tests {
         .unwrap();
 
         let mut observation = ContextSlotObservation::baseline(RequestId(23), "src/lib.rs");
-        observation.instruction_scopes = vec![core_protocol::context::InstructionScope::Project];
+        observation.instruction_scopes = vec![iteron_protocol::context::InstructionScope::Project];
         observation.memory_keys = vec!["named-fact".into()];
         observation.transcript_turns = 1;
         observation.recall_memory = false;

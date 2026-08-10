@@ -4,8 +4,8 @@
 //! the task and selected-policy ceilings, applies the trust-egress conjunct, and only then consults
 //! the frozen permission gate. None of these inputs can add authority held by another input.
 
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{Capability, PermissionMode, PermissionRules, Trust, Verdict, gate};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Capability, PermissionMode, PermissionRules, Trust, Verdict, gate};
 
 /// Apply task/policy/trust constraints to a gate decision.
 ///

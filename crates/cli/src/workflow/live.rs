@@ -1,9 +1,9 @@
 //! Terminal adapter for live workflow runs.
 
 use super::ui_safe_progress;
-use core_workflow::events::{ProgressEvent, ProgressSink};
-use core_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use iteron_workflow::events::{ProgressEvent, ProgressSink};
+use iteron_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};
 use std::sync::Arc;
 
 /// A [`ProgressSink`] that folds every engine event into a shared live [`crate::block::WorkflowRunCard`]
@@ -318,8 +318,8 @@ async fn launch_live(
     render_live(card, handle, theme).await
 }
 
-/// Run one fully-specified [`RunSpec`], rendering the live tree (design §3.3). `core workflow run`
-/// (TTY) and `core workflow resume` (TTY) both call it. Non-TTY uses [`StdoutProgressSink`].
+/// Run one fully-specified [`RunSpec`], rendering the live tree (design §3.3). `iteron workflow run`
+/// (TTY) and `iteron workflow resume` (TTY) both call it. Non-TTY uses [`StdoutProgressSink`].
 ///
 /// This used to await `WorkflowEngine::execute` directly — a bare future with no cancellation
 /// handle — which is why Ctrl-C could not stop a run: raw mode had already suppressed `SIGINT`, and
@@ -348,7 +348,7 @@ pub(super) fn new_run_card(
     card
 }
 
-/// The `RunHandle` counterpart of [`run_live`] for `core workflow watch <runId>`, which re-launches a
+/// The `RunHandle` counterpart of [`run_live`] for `iteron workflow watch <runId>`, which re-launches a
 /// prior run. Same loop, same interrupt contract. Non-TTY uses [`StdoutProgressSink`].
 pub async fn watch_live(
     spec: RunSpec,

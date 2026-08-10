@@ -2,9 +2,9 @@
 
 ### 1.1 命题 (Thesis)
 
-Core Code 的命题只有一句:
+Iteron 的命题只有一句:
 
-> **Transformer 是模型 (model) 的通用、可训练架构;Core Code 要成为 harness 的通用、可训练架构。**
+> **Transformer 是模型 (model) 的通用、可训练架构;Iteron 要成为 harness 的通用、可训练架构。**
 
 这句话把两个通常被分开对待的东西并置。model 是被 train 出来的:它有一个通用架构 (Transformer)、一个可度量的目标函数、一套可复现的训练管线,于是"专精化一个 model"是一门系统工程,而不是手艺。harness (即承载一个 agent 去完成任务的那一整套非模型逻辑:路由、规划、上下文选择、记忆、调度、工具策略、校验、多 agent 协作) 今天却仍然靠直觉手工维护。本规范主张:harness 与 model 一样,存在一个**可形式化的边界**与一个**可被优化的策略面 (policy surface)**;因此 harness 的设计与优化,MUST 从启发式 (heuristic) 与直觉,升格为一门可度量、可复现、可优化的**系统工程与科学**。这个策略面不是自由文本或任意代码,而是一个 typed 空间 (见 §1.3 的 StrategySlot 与 §1.7 的稳定 typed ABI);正是"typed"这个性质,让"度量、复现、优化"从口号变成可执行的操作。
 
@@ -50,9 +50,9 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 
 ### 1.4 这不是什么:不是 AutoML/AutoAgent 平台,而是一个可训练的**substrate**
 
-一个自然的误读是把 Core Code 当作一个 "AutoML / AutoAgent" 平台,即一个"喂进任务、自动帮你搭出一个 agent"的黑箱优化器。**它不是。** 本规范在此把区别钉死,因为它决定了全文的框架:
+一个自然的误读是把 Iteron 当作一个 "AutoML / AutoAgent" 平台,即一个"喂进任务、自动帮你搭出一个 agent"的黑箱优化器。**它不是。** 本规范在此把区别钉死,因为它决定了全文的框架:
 
-| 维度 | AutoML / AutoAgent 式框架 | Core Code (可训练 substrate) |
+| 维度 | AutoML / AutoAgent 式框架 | Iteron (可训练 substrate) |
 |---|---|---|
 | 交付物 | 一个"最优 agent"或一段自动搭好的流水线 | 一个稳定的 typed ABI 加一个可被任意方法训练的策略空间 |
 | 优化方法 | 平台自带、内置、通常单一的搜索/优化器 | **不绑定方法**;bring-your-own (搜索/SFT/偏好/GRPO/RL 皆可),都发射同一种 PolicyManifest |
@@ -61,9 +61,9 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 | 安全 | 常是事后附加 | 安全 MUST NOT 是自进化算子的不动点;deny-by-default 内建 |
 | 评估 | 常由优化器自身闭环 | 由**独立 evaluator** 在**垂类拥有的 held-out 目标**上打分,候选者不能自评/自晋升 |
 
-关键差别在"substrate"这个词。Transformer 不是一个"帮你自动造模型"的平台;它是一个**通用的、可训练的架构**,一个稳定的基座,你带着数据和训练管线来,得到你的 model。Core Code 的定位与之同构:它提供一个稳定的、厂商中立的可训练**基座**,你带着垂类数据和 (你自己的) 训练管线来,得到你的垂类 harness。**方法是你带的,基座是中立的;被优化的是策略,被冻结的是权威。** 这也直接回答"这算是一个工程/AutoML 平台吗":它是一个工程学科的基座 (substrate),不是一个替你做决定的自动化产品。
+关键差别在"substrate"这个词。Transformer 不是一个"帮你自动造模型"的平台;它是一个**通用的、可训练的架构**,一个稳定的基座,你带着数据和训练管线来,得到你的 model。Iteron 的定位与之同构:它提供一个稳定的、厂商中立的可训练**基座**,你带着垂类数据和 (你自己的) 训练管线来,得到你的垂类 harness。**方法是你带的,基座是中立的;被优化的是策略,被冻结的是权威。** 这也直接回答"这算是一个工程/AutoML 平台吗":它是一个工程学科的基座 (substrate),不是一个替你做决定的自动化产品。
 
-需要同样明确的一点:Core Code 的**进化/训练管线本身不属于本开源基座**。本规范开源的是 runtime 基座、稳定 ABI、以及 PolicyManifest 制品格式;产生 candidate 的训练管线是 bring-your-own,或由一个闭源的进化服务提供。开源的是"harness 的通用可训练架构"这个基座,不是某一家的训练方法 (与 §1.6 的开源范围一致)。
+需要同样明确的一点:Iteron 的**进化/训练管线本身不属于本开源基座**。本规范开源的是 runtime 基座、稳定 ABI、以及 PolicyManifest 制品格式;产生 candidate 的训练管线是 bring-your-own,或由一个闭源的进化服务提供。开源的是"harness 的通用可训练架构"这个基座,不是某一家的训练方法 (与 §1.6 的开源范围一致)。
 
 ### 1.5 为什么必须可进化 (evolvable)
 
@@ -76,11 +76,11 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 - **进化包不包括"选内核"或"跑一个 agent 步骤"?不。** 进化选的是策略 (StrategySlot 的取值),不是内核;microkernel 的接口在进化过程中**不变**。进化产生的是一个静态制品 (PolicyManifest),不是一次 agent 运行。
 - **进化涉不涉及训练 model?默认不。** 主路径是在**不训练 model** 的前提下进化 harness,以求得 co-design 之效 (可移植、model-agnostic)。当确需改权重时,把 curated 轨迹经 SFT/偏好/RL 回流,并 MUST 经过**同一道** admission 与评测门再入。即训练可以发生在两侧,但 harness 是那个恒可用、可移植、model 无关的一侧。
 
-由此也澄清一个常见问题:"这个平台的产物能不能拿去训练 model?"可以:curated 的轨迹与 harness checkpoint 是极好的 post-training 语料,但那属于 model 一侧的、可选的回流路径,且必须重新过评测门;它不是 Core Code 的主张,主张是**在冻结 model 的前提下进化 harness**。
+由此也澄清一个常见问题:"这个平台的产物能不能拿去训练 model?"可以:curated 的轨迹与 harness checkpoint 是极好的 post-training 语料,但那属于 model 一侧的、可选的回流路径,且必须重新过评测门;它不是 Iteron 的主张,主张是**在冻结 model 的前提下进化 harness**。
 
 ### 1.6 为什么必须开源 (open)
 
-Core Code 的参考基座 MUST 开源,理由有两层,都不是姿态而是工程必需:
+Iteron 的参考基座 MUST 开源,理由有两层,都不是姿态而是工程必需:
 
 **(a) 可信边界只能被验证,不能被声明。** 当一个系统能自主提交副作用 (side-effects),包括写文件、调外部服务、执行命令,信任就不能靠"我们保证很安全"来建立,只能靠一条**可审计、可阅读的边界**来验证。因此开源是正确性与安全性的**前置条件**,而不是一个营销选项:microkernel 那条"内核绝不做什么"的负空间 (negative space,见 §1.7),必须是任何人都能读到、能核对的。
 
@@ -120,9 +120,9 @@ Core Code 的参考基座 MUST 开源,理由有两层,都不是姿态而是工�
 
 ### 1.8 现状诚实声明 (Status)
 
-本规范描述的是 Core Code 的**目标契约 (target contract)**,而非一份已达成一致性 (conformance) 的现状声明。为避免任何过度承诺,现状如实陈述如下:
+本规范描述的是 Iteron 的**目标契约 (target contract)**,而非一份已达成一致性 (conformance) 的现状声明。为避免任何过度承诺,现状如实陈述如下:
 
-- Core Code 目前是 **pre-alpha**:一个能运行、但仍是**模块化单体 (modular monolith)** 的系统。它已被切分为受机器校验的开发边界 (protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等 crate),但 kernel 仍**硬依赖若干具体实现**,CLI/TUI 仍参与运行时组装。**因此 Core Code 目前尚不宣称 microkernel 一致性。** 上述模块边界是"人的开发边界",不等于运行时隔离 (即 §1.7 三层结构目前是目标形态,尚未完全落地)。
+- Iteron 目前是 **pre-alpha**:一个能运行、但仍是**模块化单体 (modular monolith)** 的系统。它已被切分为受机器校验的开发边界 (protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等 crate),但 kernel 仍**硬依赖若干具体实现**,CLI/TUI 仍参与运行时组装。**因此 Iteron 目前尚不宣称 microkernel 一致性。** 上述模块边界是"人的开发边界",不等于运行时隔离 (即 §1.7 三层结构目前是目标形态,尚未完全落地)。
 - 活体的自我进化激活 (live self-evolution activation) 目前是 **NO-GO**:进化控制平面被描述为**未来的、隔离的**平面 (对照 §1.5 的离线、人类把关流水线,它是那条流水线的成熟形态,而非早期切片的既有能力)。
 - 目前**没有第一方基准数字 (no first-party benchmark number)**。本节所述的定位与分层是**前瞻性的 (prospective)**,是本规范要去建立的目标,而不是已经测得的既成事实。
 

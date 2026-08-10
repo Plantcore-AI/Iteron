@@ -30,7 +30,7 @@ impl LiveFixture {
             .unwrap()
             .join("target")
             .join(format!(
-                "core-bwrap-{label}-{}-{nonce:x}",
+                "iteron-bwrap-{label}-{}-{nonce:x}",
                 std::process::id()
             ));
         let workspace = root.join("workspace");
@@ -193,7 +193,7 @@ fn capability_probe_requires_native_descriptor_binding() {
     let args = bwrap_probe_args(11);
     assert!(
         args.windows(3)
-            .any(|window| window == ["--bind-fd", "11", "/tmp/core-bwrap-fd-probe"]),
+            .any(|window| window == ["--bind-fd", "11", "/tmp/iteron-bwrap-fd-probe"]),
         "an older bwrap without --bind-fd must fail the executable capability probe"
     );
 }
@@ -328,7 +328,10 @@ fn toolchain_mounts_are_narrow_read_only_and_exclude_credentials() {
     let root = std::env::current_dir()
         .unwrap()
         .join("target")
-        .join(format!("core-bwrap-args-{}-{nonce:x}", std::process::id()));
+        .join(format!(
+            "iteron-bwrap-args-{}-{nonce:x}",
+            std::process::id()
+        ));
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".cargo/registry")).unwrap();
     std::fs::create_dir_all(home.join(".npm/_cacache")).unwrap();
@@ -409,7 +412,7 @@ fn toolchain_mount_ignores_an_allowlisted_symlink_that_escapes_home() {
         .unwrap()
         .join("target")
         .join(format!(
-            "core-bwrap-symlink-{}-{nonce:x}",
+            "iteron-bwrap-symlink-{}-{nonce:x}",
             std::process::id()
         ));
     let home = root.join("home");
@@ -755,21 +758,21 @@ async fn d4_13_d5_14_linux_live_enforces_writes_home_secret_and_exact_env_name()
     };
     confinement
         .sensitive_env_names
-        .push("CORE_SANDBOX_ROUTE".into());
+        .push("ITERON_SANDBOX_ROUTE".into());
     let fake_home = fixture.fake_home.to_str().unwrap();
     let outside_write = fixture.outside_write.to_str().unwrap();
     let output = sandbox
         .run_with_synthetic_parent_env(
             "printf workspace-write-allowed > inside-write || exit 91; \
-             if printf escaped > \"$CORE_TEST_OUTSIDE_WRITE\"; then echo outside-write-open; exit 97; else echo outside-write-blocked; fi; \
+             if printf escaped > \"$ITERON_TEST_OUTSIDE_WRITE\"; then echo outside-write-open; exit 97; else echo outside-write-blocked; fi; \
              if cat \"$HOME/.ssh/id_fixture\" 2>/dev/null; then echo home-secret-open; exit 98; else echo home-secret-blocked; fi; \
              if ! cat \"$HOME/.cargo/registry/cache_fixture\"; then echo toolchain-cache-blocked; exit 96; else echo toolchain-cache-readable; fi; \
-             if [ -n \"${CORE_SANDBOX_ROUTE+x}\" ]; then echo exact-env-open; exit 99; else echo exact-env-cleared; fi",
+             if [ -n \"${ITERON_SANDBOX_ROUTE+x}\" ]; then echo exact-env-open; exit 99; else echo exact-env-cleared; fi",
             &confinement,
             &[
                 ("HOME", fake_home),
-                ("CORE_TEST_OUTSIDE_WRITE", outside_write),
-                ("CORE_SANDBOX_ROUTE", "synthetic-exact-must-not-leak"),
+                ("ITERON_TEST_OUTSIDE_WRITE", outside_write),
+                ("ITERON_SANDBOX_ROUTE", "synthetic-exact-must-not-leak"),
             ],
         )
         .await

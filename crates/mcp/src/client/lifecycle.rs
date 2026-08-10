@@ -281,7 +281,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        core_sandbox::configure_process_group(&mut command);
+        iteron_sandbox::configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         let mut process = OwnedProcess::new(child);
         tokio::time::timeout(Duration::from_secs(2), async {

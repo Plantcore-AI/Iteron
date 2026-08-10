@@ -10,7 +10,7 @@ use crate::protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_r
 use crate::tool_catalog::ToolCatalogBuilder;
 use crate::tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name};
 use crate::{McpError, McpServerPolicy, McpToolCallEvidence, McpToolOutcome, McpWire};
-use core_protocol::{ToolSpec, capability_set::CapabilitySet};
+use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
 use std::sync::Arc;

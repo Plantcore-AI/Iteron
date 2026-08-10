@@ -6,7 +6,7 @@ use crate::{
     tool_catalog::ToolCatalogBuilder,
     tool_filter::McpToolFilter,
 };
-use core_protocol::{ToolSpec, capability_set::CapabilitySet};
+use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::json;
 
 pub(super) async fn list_tools(

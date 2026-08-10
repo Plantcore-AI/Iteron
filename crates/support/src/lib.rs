@@ -19,14 +19,14 @@
 //! reader of the bundle is shown fabricated facts. Every key is validated and every value is
 //! escaped to a single line, so no input can invent structure.
 //!
-//! On redaction: values pass through [`core_record::redact::scrub`], which masks *known* secret
+//! On redaction: values pass through [`iteron_record::redact::scrub`], which masks *known* secret
 //! shapes. That is a real reduction and not a guarantee -- a novel credential format is not a
 //! shape it knows. The allowlist is what bounds exposure; scrubbing is defence in depth behind it.
 //!
 //! Building a bundle is not consent to send it. [`Bundle`] has no transmit path -- it renders to
 //! text, and moving that text anywhere is a separate, explicit act.
 
-use core_record::redact::scrub;
+use iteron_record::redact::scrub;
 use std::collections::BTreeMap;
 
 /// Environment variables permitted into a bundle. Deliberately short, and deliberately excluding

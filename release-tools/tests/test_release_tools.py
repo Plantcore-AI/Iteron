@@ -54,7 +54,7 @@ class ReleaseToolsTest(unittest.TestCase):
         return argparse.Namespace(
             binary=self.write("core", "#!/bin/sh\nprintf 'core 0.0.1\\n'\n", 0o755),
             license=self.write("LICENSE", "Apache-2.0\n"),
-            readme=self.write("README.md", "# Core Code\n"),
+            readme=self.write("README.md", "# Iteron\n"),
             licenses=self.write("THIRD_PARTY_LICENSES.html", "<html>licenses</html>\n"),
             notices=self.write("THIRD_PARTY_NOTICES.txt", "notices\n"),
             sbom=self.write("SBOM.spdx.json", "{}\n"),
@@ -82,7 +82,7 @@ class ReleaseToolsTest(unittest.TestCase):
             {
                 "cargo": "cargo 1.90.0",
                 "commit": "a" * 40,
-                "product": "Core Code",
+                "product": "Iteron",
                 "rustc": "rustc 1.90.0",
                 "schema_version": 1,
                 "target": "aarch64-apple-darwin",
@@ -112,7 +112,7 @@ class ReleaseToolsTest(unittest.TestCase):
         first = package.build_archive(first_arguments)
         second = package.build_archive(self.package_arguments(second_dir))
         self.assertEqual(sha256_file(first), sha256_file(second))
-        root = "core-code-v0.0.1-aarch64-apple-darwin"
+        root = "iteron-v0.0.1-aarch64-apple-darwin"
         with tarfile.open(first, "r:gz") as archive:
             members = archive.getmembers()
             self.assertEqual(
@@ -157,7 +157,7 @@ class ReleaseToolsTest(unittest.TestCase):
     def test_content_verifier_extracts_the_packaged_native_command(self) -> None:
         target = "aarch64-apple-darwin"
         archive = package.build_archive(self.package_arguments(self.root / "native", target))
-        root = "core-code-v0.0.1-aarch64-apple-darwin"
+        root = "iteron-v0.0.1-aarch64-apple-darwin"
         destination = self.root / "native-extract" / root / "core"
         verify_release.extract_tar(archive, root, target, destination)
         self.assertEqual(destination.read_bytes(), (self.root / "core").read_bytes())
@@ -172,13 +172,13 @@ class ReleaseToolsTest(unittest.TestCase):
         )
         self.assertEqual(sha256_file(first), sha256_file(second))
         self.assertEqual(first.suffix, ".zip")
-        root = "core-code-v0.0.1-x86_64-pc-windows-msvc"
+        root = "iteron-v0.0.1-x86_64-pc-windows-msvc"
         with zipfile.ZipFile(first) as archive:
             self.assertEqual(
                 archive.namelist(),
                 [
                     f"{root}/",
-                    f"{root}/core.exe",
+                    f"{root}/iteron.exe",
                     f"{root}/LICENSE",
                     f"{root}/README.md",
                     f"{root}/THIRD_PARTY_LICENSES.html",
@@ -190,7 +190,7 @@ class ReleaseToolsTest(unittest.TestCase):
             self.assertTrue(all(not member.is_dir() for member in archive.infolist()[1:]))
 
     def test_windows_pe_verifier_requires_amd64_pe32_plus_executable(self) -> None:
-        binary = self.root / "core.exe"
+        binary = self.root / "iteron.exe"
         image = bytearray(512)
         image[:2] = b"MZ"
         image[0x3C:0x40] = (128).to_bytes(4, "little")
@@ -304,7 +304,7 @@ class ReleaseToolsTest(unittest.TestCase):
                 {
                     "id": "RUSTSEC-2020-0071",
                     "reason": "The affected API is unreachable in this release.",
-                    "tracking_issue": "https://github.com/Plantcore-AI/core/issues/123",
+                    "tracking_issue": "https://github.com/Plantcore-AI/Iteron/issues/123",
                 }
             ],
         }
@@ -327,7 +327,7 @@ class ReleaseToolsTest(unittest.TestCase):
         fake = self.write(
             "cargo-audit",
             """#!/bin/sh
-if test -n "${CORE_AUDIT_TEST_SECRET+x}"; then
+if test -n "${ITERON_AUDIT_TEST_SECRET+x}"; then
   printf 'ambient environment leaked\n'
   exit 2
 fi
@@ -347,11 +347,11 @@ exit 1
             'version = 3\n[[package]]\nname = "time"\nversion = "0.1.44"\n',
         )
         policy = dependency_audit.AuditPolicy("0.22.2", "rustsec", ())
-        os.environ["CORE_AUDIT_TEST_SECRET"] = "must-not-cross"
+        os.environ["ITERON_AUDIT_TEST_SECRET"] = "must-not-cross"
         try:
             result = dependency_audit.run_audit(fake, database, lockfile, policy)
         finally:
-            os.environ.pop("CORE_AUDIT_TEST_SECRET", None)
+            os.environ.pop("ITERON_AUDIT_TEST_SECRET", None)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"RUSTSEC-2020-0071", result.output)
 
@@ -372,7 +372,7 @@ exit 1
             )
             self.assertRegex(
                 entry["tracking_issue"],
-                r"^https://github\.com/Plantcore-AI/core/issues/\d+$",
+                r"^https://github\.com/Plantcore-AI/Iteron/issues/\d+$",
             )
         self.assertEqual(
             tuple(entry["id"] for entry in raw["ignored_advisories"]),
@@ -562,7 +562,7 @@ exit 1
         )
         self.assertNotIn("grep -Fq", ci)
         self.assertIn(
-            "check='core-xtask boundaries check-base --base <rev>'", ci
+            "check='iteron-xtask boundaries check-base --base <rev>'", ci
         )
         self.assertIn(
             '"$POLICY_ROOT/governance/boundaries.json" >/dev/null', ci
@@ -674,7 +674,7 @@ exit 1
         self.assertIn("gh api \\", receipt)
         self.assertIn("2>&1", receipt)
         self.assertIn(
-            "Plantcore-AI/core/.github/workflows/runtime-receipt.yml@",
+            "Plantcore-AI/Iteron/.github/workflows/runtime-receipt.yml@",
             receipt,
         )
         self.assertIn(
@@ -695,7 +695,7 @@ exit 1
             receipt,
         )
         self.assertIn(
-            "name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}",
+            "name: iteron-client-runtime-receipt-attempt-${{ github.run_attempt }}",
             receipt,
         )
         self.assertIn("retention-days: 90", receipt)
@@ -729,7 +729,7 @@ exit 1
             verification,
         )
         self.assertIn(
-            "POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask",
+            "POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask",
             verification,
         )
         self.assertIn(
@@ -979,7 +979,7 @@ exit 1
         self.assertEqual(process.stdout, "pathlib\n")
 
     def test_installer_render_is_exact(self) -> None:
-        template = "version='@CORE_CODE_VERSION@'\n"
+        template = "version='@ITERON_CODE_VERSION@'\n"
         self.assertEqual(render_installer.render(template, "0.0.1"), "version='v0.0.1'\n")
         with self.assertRaises(ReleaseToolError):
             render_installer.render("no marker", "0.0.1")
@@ -1070,11 +1070,11 @@ exit 1
 
     def test_release_dependency_graph_unions_target_trees(self) -> None:
         metadata = {
-            "workspace_members": ["path+core-cli#0.0.1"],
+            "workspace_members": ["path+iteron-cli#0.0.1"],
             "packages": [
                 {
-                    "id": "path+core-cli#0.0.1",
-                    "name": "core-cli",
+                    "id": "path+iteron-cli#0.0.1",
+                    "name": "iteron-cli",
                     "version": "0.0.1",
                     "source": None,
                 },
@@ -1099,10 +1099,10 @@ exit 1
             ],
         }
         darwin = self.write(
-            "darwin.tree", "core-cli v0.0.1 (/workspace)\nnormal v1.0.0\ndarwin v1.0.0\n"
+            "darwin.tree", "iteron-cli v0.0.1 (/workspace)\nnormal v1.0.0\ndarwin v1.0.0\n"
         )
         linux = self.write(
-            "linux.tree", "core-cli v0.0.1 (/workspace)\nnormal v1.0.0 (*)\nlinux v1.0.0\n"
+            "linux.tree", "iteron-cli v0.0.1 (/workspace)\nnormal v1.0.0 (*)\nlinux v1.0.0\n"
         )
         self.assertEqual(
             legal.release_dependency_ids(metadata, [darwin, linux]),
@@ -1128,7 +1128,7 @@ exit 1
                     "versionInfo": f"sha256:{digest}",
                     "checksums": [{"algorithm": "SHA256", "checksumValue": digest}],
                 },
-                {"SPDXID": "SPDXRef-core", "name": "core-cli", "versionInfo": "0.0.1"},
+                {"SPDXID": "SPDXRef-core", "name": "iteron-cli", "versionInfo": "0.0.1"},
                 {"SPDXID": "SPDXRef-a", "name": "a", "versionInfo": "1.0.0"},
             ],
             "relationships": [
@@ -1148,7 +1148,7 @@ exit 1
         normalized = sbom.normalize(
             document, "0.0.1", "x86_64-unknown-linux-musl", 1_700_000_000, digest
         )
-        self.assertEqual(normalized["name"], "Core-Code-0.0.1-x86_64-unknown-linux-musl")
+        self.assertEqual(normalized["name"], "Iteron-0.0.1-x86_64-unknown-linux-musl")
         self.assertEqual(normalized["creationInfo"]["created"], "2023-11-14T22:13:20Z")
         self.assertEqual(normalized["packages"][0]["name"], "a")
 
@@ -1159,7 +1159,7 @@ exit 1
         self.write("dist/THIRD_PARTY_LICENSES.html", "licenses\n")
         self.write("dist/THIRD_PARTY_NOTICES.txt", "notices\n")
         target = "aarch64-apple-darwin"
-        base = f"core-code-v0.0.1-{target}.tar.gz"
+        base = f"iteron-v0.0.1-{target}.tar.gz"
         for name in (
             base,
             f"{base}.machine-contract.json",
@@ -1199,7 +1199,7 @@ exit 1
             )
         )
         result = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(result["product"], "Core Code")
+        self.assertEqual(result["product"], "Iteron")
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
         self.assertEqual(result["targets"][target]["target"], target)
         self.assertEqual(result["cli_stream_versions"], [4, 5])
@@ -1242,9 +1242,9 @@ exit 1
         targets = ("aarch64-apple-darwin", "x86_64-pc-windows-msvc")
         for index, target in enumerate(targets):
             base = (
-                f"core-code-v0.0.1-{target}.zip"
+                f"iteron-v0.0.1-{target}.zip"
                 if target.endswith("windows-msvc")
-                else f"core-code-v0.0.1-{target}.tar.gz"
+                else f"iteron-v0.0.1-{target}.tar.gz"
             )
             for suffix in ("", ".provenance.json", ".spdx.json", ".sbom-attestation.json"):
                 self.write(f"disagree-dist/{base}{suffix}", f"{base}{suffix}")
@@ -1290,7 +1290,7 @@ exit 1
         self.assertEqual(fixture["protocol_version"], 1)
 
     def test_content_identity_rejects_one_flipped_manifest_or_archive_byte(self) -> None:
-        for name in ("release-manifest.json", "core-code-v0.0.1-fixture.tar.gz"):
+        for name in ("release-manifest.json", "iteron-v0.0.1-fixture.tar.gz"):
             with self.subTest(name=name):
                 path = self.write(name, "original bytes\n")
                 evidence = {
@@ -1352,7 +1352,7 @@ exit 1
             extract_dir=self.root / "verified-extract",
         )
         binary = verify_release.verify_artifact(verifier_arguments)
-        self.assertEqual(binary.name, "core.exe")
+        self.assertEqual(binary.name, "iteron.exe")
         self.assertEqual(binary.read_bytes(), arguments.binary.read_bytes())
         archive.write_bytes(archive.read_bytes() + b"tamper")
         verifier_arguments.extract_dir = self.root / "tampered-extract"

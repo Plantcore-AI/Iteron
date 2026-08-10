@@ -1,6 +1,6 @@
 # Evolution boundary
 
-Core Code includes types for a future governed strategy-evolution control plane.
+Iteron includes types for a future governed strategy-evolution control plane.
 It does **not** currently train, fine-tune, run GRPO, or promote a live policy.
 
 ## Intended separation

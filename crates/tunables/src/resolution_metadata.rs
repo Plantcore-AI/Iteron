@@ -2,13 +2,13 @@ use crate::{ActivationSpec, DefaultSpec, SourceSpec};
 
 macro_rules! resolver_id {
     ($id:literal) => {
-        concat!("core://tunables/resolvers/", $id, "-v1")
+        concat!("iteron://tunables/resolvers/", $id, "-v1")
     };
 }
 
 macro_rules! catalog_id {
     ($id:literal) => {
-        concat!("core://tunables/catalogs/", $id, "-v1")
+        concat!("iteron://tunables/catalogs/", $id, "-v1")
     };
 }
 
@@ -67,7 +67,7 @@ macro_rules! operator_default {
         crate::DefaultSpec {
             kind: crate::DefaultKind::Dynamic,
             resolver: crate::DefaultResolver::Operator {
-                input_id: concat!("core://tunables/operator-inputs/", $id, "-v1"),
+                input_id: concat!("iteron://tunables/operator-inputs/", $id, "-v1"),
             },
             requirement: crate::DefaultValueRequirement::Required,
             value: None,

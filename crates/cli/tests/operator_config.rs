@@ -1,7 +1,7 @@
 //! The public onboarding surfaces, exercised through the real binary.
 //!
 //! Every behaviour here is process-global (the config root, the environment, a file lock), so it
-//! is pinned by spawning `core` rather than by mutating this test process. That also makes the
+//! is pinned by spawning `iteron` rather than by mutating this test process. That also makes the
 //! assertions exactly what an operator sees.
 
 use std::io::Read;
@@ -19,10 +19,10 @@ impl Scratch {
     fn new(name: &str) -> Self {
         let serial = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "core-cli-operator-{name}-{}-{serial}",
+            "iteron-cli-operator-{name}-{}-{serial}",
             std::process::id()
         ));
-        std::fs::create_dir_all(root.join("home/.core")).unwrap();
+        std::fs::create_dir_all(root.join("home/.iteron")).unwrap();
         std::fs::create_dir_all(root.join("repo")).unwrap();
         Self(root)
     }
@@ -36,7 +36,7 @@ impl Scratch {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.home().join(".core/config.json")
+        self.home().join(".iteron/config.json")
     }
 
     fn write_config(&self, text: &str) {
@@ -54,7 +54,7 @@ impl Drop for Scratch {
     }
 }
 
-/// Run `core` with NO ambient HOME, so only `CORE_CONFIG_HOME` can select a config root.
+/// Run `iteron` with NO ambient HOME, so only `ITERON_CONFIG_HOME` can select a config root.
 fn run(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
     run_with(home, repo, arguments, &[])
 }
@@ -65,12 +65,12 @@ fn run_with(
     arguments: &[&str],
     extra_env: &[(&str, &str)],
 ) -> (ExitStatus, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
-        .env("CORE_CONFIG_HOME", home)
+        .env("ITERON_CONFIG_HOME", home)
         .current_dir(repo)
         .args(arguments)
         .stdin(Stdio::null())
@@ -110,7 +110,7 @@ fn run_with(
 }
 
 /// I-25 — both non-test readers of the user config path were reads and the only writes lived in
-/// test code, so there was no supported way to persist a choice at all. `core config set` is the
+/// test code, so there was no supported way to persist a choice at all. `iteron config set` is the
 /// one writer, and the value it writes is visible to the next launch.
 #[test]
 fn i25_config_set_persists_and_the_next_launch_sees_it() {
@@ -267,7 +267,7 @@ fn i24_core_config_home_selects_the_config_root() {
 #[test]
 fn i23_both_credential_spellings_load_and_a_file_entry_resolves() {
     let scratch = Scratch::new("credential-spellings");
-    let token_path = scratch.home().join(".core/credentials/plan");
+    let token_path = scratch.home().join(".iteron/credentials/plan");
     std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
     std::fs::write(&token_path, "plan-token\n").unwrap();
     #[cfg(unix)]
@@ -302,7 +302,7 @@ fn i23_both_credential_spellings_load_and_a_file_entry_resolves() {
 #[test]
 fn i28_auth_status_distinguishes_env_file_and_absent() {
     let scratch = Scratch::new("auth-status");
-    let token_path = scratch.home().join(".core/credentials/glm");
+    let token_path = scratch.home().join(".iteron/credentials/glm");
     std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
     std::fs::write(&token_path, r#"{"token":"t","expires_at_unix":4102444800}"#).unwrap();
     #[cfg(unix)]
@@ -337,7 +337,7 @@ fn i28_auth_status_distinguishes_env_file_and_absent() {
 #[test]
 fn i28_auth_logout_removes_the_credential_and_leaves_the_provider_entry() {
     let scratch = Scratch::new("auth-logout");
-    let token_path = scratch.home().join(".core/credentials/gw");
+    let token_path = scratch.home().join(".iteron/credentials/gw");
     std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
     std::fs::write(&token_path, "gw-token\n").unwrap();
     #[cfg(unix)]

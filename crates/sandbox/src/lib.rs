@@ -1,4 +1,4 @@
-//! core-sandbox — capability confinement.
+//! iteron-sandbox — capability confinement.
 //!
 //! A sandbox confines capability, never judgment (`docs/intake/sandbox-and-security.md`). Its
 //! job here is ADR-007: run repo-controlled code (bash/build/test) with writes confined to the
@@ -130,7 +130,7 @@ impl Confinement {
         Confinement {
             workspace: workspace.into(),
             scratch: std::env::temp_dir().join(format!(
-                "core-sandbox-private-{}-{nanos:x}-{serial:x}",
+                "iteron-sandbox-private-{}-{nanos:x}-{serial:x}",
                 std::process::id()
             )),
             allow_egress: false,

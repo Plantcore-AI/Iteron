@@ -72,7 +72,7 @@ impl Capabilities {
             Color::None
         };
 
-        let screen_reader = get("CORE_SCREEN_READER").is_some_and(|v| !v.is_empty());
+        let screen_reader = get("ITERON_SCREEN_READER").is_some_and(|v| !v.is_empty());
         let presentation = if screen_reader || dumb {
             Presentation::Semantic
         } else {
@@ -254,7 +254,7 @@ mod tests {
         // Padding and box drawing are read aloud as content; colour is not, so it survives.
         let caps = Capabilities::detect(env(&[
             ("TERM", "xterm-256color"),
-            ("CORE_SCREEN_READER", "1"),
+            ("ITERON_SCREEN_READER", "1"),
         ]));
         assert_eq!(caps.presentation, Presentation::Semantic);
         assert!(!caps.may_use_layout());

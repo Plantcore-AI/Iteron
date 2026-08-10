@@ -2,16 +2,16 @@
 //!
 //! The user configuration carries immutable signed artifacts and names the environment variables
 //! that hold their HMAC keys. This module is the only production seam that reads those variables;
-//! the kernel receives an opaque [`core_obs::PricingPort`] and never sees key bytes or price tables.
+//! the kernel receives an opaque [`iteron_obs::PricingPort`] and never sees key bytes or price tables.
 
-use core_obs::{HmacPricingAuthority, HmacPricingKey, PricingPort};
-use core_protocol::{PricingRoute, PricingVersion, RateCard, SignedRateCard, TokenRateCard};
+use iteron_obs::{HmacPricingAuthority, HmacPricingKey, PricingPort};
+use iteron_protocol::{PricingRoute, PricingVersion, RateCard, SignedRateCard, TokenRateCard};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::sync::Arc;
 
-const MAX_RATE_CARDS: usize = core_obs::MAX_TRUSTED_RATE_CARDS;
+const MAX_RATE_CARDS: usize = iteron_obs::MAX_TRUSTED_RATE_CARDS;
 
 /// One public signed rate-card artifact plus an indirect process-local key reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ impl RateCardConfig {
         }
     }
 
-    /// Render a signed artifact as the exact `rate_cards[]` entry `~/.core/config.json` accepts.
+    /// Render a signed artifact as the exact `rate_cards[]` entry `~/.iteron/config.json` accepts.
     ///
     /// Without this, producing a card meant hand-assembling four route fields, a content digest
     /// and an HMAC signature, and the only routine that could compute the last two was a library
@@ -91,7 +91,7 @@ pub fn sign_config_entry(
 ) -> anyhow::Result<RateCardConfig> {
     validate_key_env(key_env).map_err(anyhow::Error::msg)?;
     let key = decode_signing_key(key_env, key_material)?;
-    let signed = core_obs::sign_rate_card(rate_card, signer_id, key)
+    let signed = iteron_obs::sign_rate_card(rate_card, signer_id, key)
         .map_err(|error| anyhow::anyhow!("cannot sign this rate card: {error}"))?;
     Ok(RateCardConfig::from_signed(&signed, key_env))
 }
@@ -125,7 +125,7 @@ pub fn validate_rate_card_configs(cards: &[RateCardConfig]) -> Result<(), String
     for card in cards {
         validate_key_env(&card.key_env)?;
         let signed = card.signed_artifact();
-        core_obs::validate_rate_card_digest(&signed)
+        iteron_obs::validate_rate_card_digest(&signed)
             .map_err(|error| format!("invalid signed rate card: {error}"))?;
         if !digests.insert(signed.rate_card_digest) {
             return Err("duplicate rate-card digest in configuration".into());
@@ -203,7 +203,7 @@ fn validate_key_env(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_obs::sign_rate_card;
+    use iteron_obs::sign_rate_card;
 
     const NOW: u64 = 1_800_000_000;
 
@@ -239,7 +239,7 @@ mod tests {
             expires_at_unix_secs: rate_card.expires_at_unix_secs,
             rates: rate_card.rates,
             signer_id: signed.signer_id,
-            key_env: "CORE_PRICING_TEST_KEY".into(),
+            key_env: "ITERON_PRICING_TEST_KEY".into(),
             rate_card_digest: signed.rate_card_digest,
             signature: signed.signature,
         };
@@ -277,7 +277,7 @@ mod tests {
             Ok(_) => panic!("invalid key material must be rejected"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("CORE_PRICING_TEST_KEY"));
+        assert!(error.contains("ITERON_PRICING_TEST_KEY"));
         assert!(!error.contains(secret));
     }
 
@@ -310,14 +310,14 @@ mod tests {
         let entry = sign_config_entry(
             rate_card.clone(),
             "pricing-root-v1",
-            "CORE_PRICING_TEST_KEY",
+            "ITERON_PRICING_TEST_KEY",
             &hex,
         )
         .expect("shipped tooling signs an operator-authored card");
 
         validate_rate_card_configs(std::slice::from_ref(&entry))
             .expect("the entry the operator is handed must pass the loader's own gate");
-        assert_eq!(entry.key_env, "CORE_PRICING_TEST_KEY");
+        assert_eq!(entry.key_env, "ITERON_PRICING_TEST_KEY");
         let serialized = serde_json::to_string(&entry).unwrap();
         assert!(
             !serialized.contains(&hex),
@@ -361,12 +361,12 @@ mod tests {
         let error = sign_config_entry(
             rate_card.clone(),
             "pricing-root-v1",
-            "CORE_PRICING_TEST_KEY",
+            "ITERON_PRICING_TEST_KEY",
             secret,
         )
         .expect_err("32 bytes of hex or nothing")
         .to_string();
-        assert!(error.contains("CORE_PRICING_TEST_KEY"));
+        assert!(error.contains("ITERON_PRICING_TEST_KEY"));
         assert!(!error.contains(secret));
 
         assert!(
@@ -400,7 +400,7 @@ mod tests {
                 "thinking_microusd_per_million":1
             },
             "signer_id":"root",
-            "key_env":"CORE_PRICING_KEY",
+            "key_env":"ITERON_PRICING_KEY",
             "rate_card_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "signature":"hmac-sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "signing_key":"plaintext"

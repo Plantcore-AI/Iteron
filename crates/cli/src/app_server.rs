@@ -13,12 +13,12 @@
 //! Here the runtime is resident. One long-lived task owns the `Agent`, drains the SQ, and publishes
 //! the EQ. The frontend holds queue endpoints and a negotiated protocol version, nothing else.
 //!
-//! # Why the EQ does not carry `core_protocol::Event`
+//! # Why the EQ does not carry `iteron_protocol::Event`
 //!
 //! This is the one design decision in this module that is not obvious, so it is recorded rather
 //! than left to be rediscovered.
 //!
-//! `core_protocol::EqEnvelope` carries `core_protocol::Event`, and translating the kernel's
+//! `iteron_protocol::EqEnvelope` carries `iteron_protocol::Event`, and translating the kernel's
 //! [`UiEvent`] into `EventKind` is **lossy in four places the frontend actually renders**:
 //!
 //! - `UiEvent::TurnEnd` carries seven fields; `EventKind::TurnEnd` carries one (`usage`). The cost
@@ -28,12 +28,12 @@
 //! - `UiEvent::ToolEnd.diff` has no `EventKind` home; the durable record is deliberately terse.
 //! - `UiEvent::ApprovalRequest.reason` — the operator-facing justification — has no field to go in.
 //!
-//! Closing those would mean adding variants and fields to `core_protocol`, and this issue's
+//! Closing those would mean adding variants and fields to `iteron_protocol`, and this issue's
 //! acceptance criteria forbid changing the frozen wire types: WS1 owns them, this lane only
 //! consumes them. Carrying `UiEvent` in a versioned envelope of our own satisfies both — the wire
 //! is version-negotiated in both directions, and no frozen type moves.
 //!
-//! The SQ is different: it carries `core_protocol::SqEnvelope` unchanged, because `Op` expresses
+//! The SQ is different: it carries `iteron_protocol::SqEnvelope` unchanged, because `Op` expresses
 //! everything the frontend submits.
 //!
 //! # Backpressure
@@ -56,7 +56,7 @@ use self::control::{apply_control, apply_immediate_control, is_immediate_control
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
 use crate::runtime::{Agent, UiEvent};
-use core_protocol::{
+use iteron_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
     ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SqEnvelope,
     SubmissionId, SubmissionLifecycleState, TurnId, TurnLifecycleState,
@@ -94,8 +94,8 @@ const SQ_CONTROL_RESERVE_BYTES: usize = SQ_CAPACITY * SQ_ENTRY_OVERHEAD_BYTES;
 /// payload plus controls can occupy at most 256 queue slots. Charging the actual text and encoded
 /// image lengths prevents 256 maximum payloads from multiplying into a multi-GiB queue.
 pub(crate) const SQ_BYTE_CAPACITY: usize = SQ_ENTRY_OVERHEAD_BYTES
-    + core_protocol::task::MAX_TASK_TEXT_BYTES
-    + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+    + iteron_protocol::task::MAX_TASK_TEXT_BYTES
+    + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
     + SQ_CONTROL_RESERVE_BYTES;
 
 /// Event-queue depth.
@@ -114,9 +114,9 @@ pub(crate) struct TerminalSummary {
     pub(crate) outcome: Outcome,
     pub(crate) assistant_text: String,
     pub(crate) run_id: String,
-    pub(crate) cost: core_obs::CostState,
+    pub(crate) cost: iteron_obs::CostState,
     pub(crate) turns: u32,
-    pub(crate) kernel_tax: core_obs::KernelTax,
+    pub(crate) kernel_tax: iteron_obs::KernelTax,
     pub(crate) error: Option<String>,
     pub(crate) memo_hits: u64,
     pub(crate) memo_misses: u64,
@@ -149,15 +149,15 @@ impl TerminalSummary {
 /// submission order or they are lost, duplicated, or reordered across the turn boundary.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionSnapshot {
-    pub(crate) mode: core_protocol::PermissionMode,
-    pub(crate) effort: core_protocol::Effort,
+    pub(crate) mode: iteron_protocol::PermissionMode,
+    pub(crate) effort: iteron_protocol::Effort,
     pub(crate) model: String,
-    pub(crate) cost: core_obs::CostState,
-    pub(crate) last_turn_usage: Option<core_protocol::Usage>,
+    pub(crate) cost: iteron_obs::CostState,
+    pub(crate) last_turn_usage: Option<iteron_protocol::Usage>,
     pub(crate) unadmitted_steers: Vec<String>,
     /// The capability rules in force. Dynamic: `/permissions` changes them, and the frontend
     /// renders them, so they cannot be a session-invariant fact.
-    pub(crate) permission_rules: core_protocol::PermissionRules,
+    pub(crate) permission_rules: iteron_protocol::PermissionRules,
     /// The ledger line the status panel prints.
     pub(crate) ledger_summary: String,
     /// One line of provider quota, read from the response headers of the last request. `None`
@@ -221,7 +221,7 @@ impl ServerEvent {
             self,
             Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_))
                 | Self::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
-                    event: core_workflow::events::ProgressEvent::AgentActivity { .. },
+                    event: iteron_workflow::events::ProgressEvent::AgentActivity { .. },
                     ..
                 })
         )
@@ -232,11 +232,11 @@ impl ServerEvent {
 ///
 /// # Why this is not on the SQ
 ///
-/// It should be. `core_protocol::Op` has six variants — `UserInput`, `Steer`, `Interrupt`,
+/// It should be. `iteron_protocol::Op` has six variants — `UserInput`, `Steer`, `Interrupt`,
 /// `Drain`, `ApprovalResponse`, `Unknown` — and **none of them can express `/model`, `/effort`,
 /// `/mode`, `/permissions` or `/compact`**. Adding one is a change to the frozen wire types, which
 /// WS1 owns and this issue's acceptance criteria explicitly forbid: "zero changes to
-/// `core_protocol`; this issue only consumes them."
+/// `iteron_protocol`; this issue only consumes them."
 ///
 /// So the runtime is owned by the server — the frontend holds no `Agent` — and the operations the
 /// wire cannot yet carry travel on a typed in-process channel beside it. That is a smaller lie than
@@ -247,13 +247,13 @@ impl ServerEvent {
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
     /// `/effort`
-    SetEffort(core_protocol::Effort),
+    SetEffort(iteron_protocol::Effort),
     /// `/mode`
-    SetPermissionMode(core_protocol::PermissionMode),
+    SetPermissionMode(iteron_protocol::PermissionMode),
     /// `/permissions <capability> <verdict>`
     SetCapabilityRule {
-        capability: core_protocol::Capability,
-        verdict: core_protocol::Verdict,
+        capability: iteron_protocol::Capability,
+        verdict: iteron_protocol::Verdict,
     },
     /// `/model` — one transaction: durable audit append, capability fields, rate-card rebind.
     SelectModel(Box<ModelSelection>),
@@ -330,7 +330,7 @@ pub(crate) struct WorkflowControlReply {
 /// reaches the resident runtime, so the live session cannot be disturbed by an adoption that was
 /// never possible.
 pub(crate) struct AdoptRun {
-    pub(crate) rollout: core_record::Rollout,
+    pub(crate) rollout: iteron_record::Rollout,
     /// Empty operator-created run: record a new genesis and dispatch its first prompt as a fresh
     /// turn instead of treating it as a resumed transcript.
     pub(crate) fresh: bool,
@@ -359,7 +359,7 @@ pub(crate) enum SideRequest {
 /// No `Debug`: `Arc<dyn Provider>` has none, and a hand-written one that printed the identifiers
 /// while eliding the handle would put a provider id and a catalog digest into whatever logged it.
 pub(crate) struct ModelSelection {
-    pub(crate) provider: std::sync::Arc<dyn core_provider::Provider>,
+    pub(crate) provider: std::sync::Arc<dyn iteron_provider::Provider>,
     pub(crate) provider_id: String,
     pub(crate) model_id: String,
     pub(crate) catalog_digest: String,
@@ -421,11 +421,11 @@ pub(crate) struct ControlRequest {
 
 /// A versioned EQ envelope.
 ///
-/// Deliberately not `core_protocol::EqEnvelope` — see the module docs for the four losses that
+/// Deliberately not `iteron_protocol::EqEnvelope` — see the module docs for the four losses that
 /// would force.
 #[derive(Debug, Clone)]
 pub(crate) struct EventEnvelope {
-    /// Monotonic live-delivery cursor. This is deliberately not `core_protocol::Seq`, which names
+    /// Monotonic live-delivery cursor. This is deliberately not `iteron_protocol::Seq`, which names
     /// the durable hash-chained Rollout order. Reconnect code must never conflate the two.
     pub(crate) seq: u64,
     pub(crate) protocol_version: u32,
@@ -486,7 +486,7 @@ pub(crate) struct AppServerClient {
     submissions: SubmissionSender,
     negotiated_version: u32,
     next_submission_id: Arc<AtomicU64>,
-    lifecycle: core_obs::lifecycle::LifecycleEmitter,
+    lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
 }
 
 #[derive(Debug, Clone)]
@@ -599,7 +599,7 @@ impl AppServerClient {
     pub(crate) fn record_lifecycle(&self, event_name: &str, payload: LifecyclePayload) {
         let _ = self.lifecycle.emit(
             event_name,
-            core_obs::lifecycle::LifecycleCorrelation::default(),
+            iteron_obs::lifecycle::LifecycleCorrelation::default(),
             payload,
         );
     }
@@ -640,7 +640,9 @@ impl AppServerClient {
         Self::connect_to(
             server_version,
             SubmissionSender::Bare(submissions),
-            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         )
     }
 
@@ -649,7 +651,7 @@ impl AppServerClient {
         submissions: mpsc::Sender<QueuedSubmission>,
         priority_submissions: mpsc::Sender<QueuedSubmission>,
         budget: Arc<Semaphore>,
-        lifecycle: core_obs::lifecycle::LifecycleEmitter,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
@@ -667,7 +669,7 @@ impl AppServerClient {
     fn connect_to(
         server_version: u32,
         submissions: SubmissionSender,
-        lifecycle: core_obs::lifecycle::LifecycleEmitter,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
         if server_version != PROTOCOL_VERSION {
             return Err(ProtocolVersionError {
@@ -713,9 +715,9 @@ impl AppServerClient {
             _ => None,
         };
         let envelope = SqEnvelope::with_version_and_id(self.negotiated_version, id, op);
-        let correlation = core_obs::lifecycle::LifecycleCorrelation {
+        let correlation = iteron_obs::lifecycle::LifecycleCorrelation {
             submission_id: Some(id),
-            ..core_obs::lifecycle::LifecycleCorrelation::default()
+            ..iteron_obs::lifecycle::LifecycleCorrelation::default()
         };
         let _ = self.lifecycle.emit(
             "submission.created",
@@ -803,9 +805,9 @@ impl AppServerClient {
                 if matches!(&error, SubmitError::Busy) {
                     let _ = self.lifecycle.emit(
                         "queue.overflow",
-                        core_obs::lifecycle::LifecycleCorrelation {
+                        iteron_obs::lifecycle::LifecycleCorrelation {
                             submission_id: Some(id),
-                            ..core_obs::lifecycle::LifecycleCorrelation::default()
+                            ..iteron_obs::lifecycle::LifecycleCorrelation::default()
                         },
                         LifecyclePayload {
                             count: Some(u64::try_from(self.queue_depth()).unwrap_or(u64::MAX)),
@@ -831,13 +833,13 @@ fn submission_weight(op: &Op) -> usize {
                 .as_slice()
                 .iter()
                 .fold(0usize, |bytes, segment| match segment {
-                    core_protocol::ContentSegment::Text { text } => {
+                    iteron_protocol::ContentSegment::Text { text } => {
                         bytes.saturating_add(text.len())
                     }
-                    core_protocol::ContentSegment::Image { image } => {
+                    iteron_protocol::ContentSegment::Image { image } => {
                         bytes.saturating_add(image.data.encoded_len())
                     }
-                    core_protocol::ContentSegment::Unknown => bytes,
+                    iteron_protocol::ContentSegment::Unknown => bytes,
                 })
         }
         // Same rule as the segment list above: every variable-size allocation `Op` exposes is
@@ -865,12 +867,12 @@ fn submission_weight(op: &Op) -> usize {
 }
 
 /// The frontend's end of the wire: a client to submit through and a queue to read.
-/// A registered tool, reduced to the three fields a client renders. `core_tools::ToolSpec` is not
+/// A registered tool, reduced to the three fields a client renders. `iteron_tools::ToolSpec` is not
 /// public, so this is what crosses the attach boundary instead of the spec.
 pub(crate) struct ToolFact {
     pub(crate) name: String,
     pub(crate) description: String,
-    pub(crate) capability: core_protocol::Capability,
+    pub(crate) capability: iteron_protocol::Capability,
 }
 
 /// What a client is handed once, at attach time, and may read for the life of the session.
@@ -880,8 +882,8 @@ pub(crate) struct ToolFact {
 /// copied across the boundary instead of being asked for on every keystroke.
 pub(crate) struct SessionFacts {
     pub(crate) session_id: SessionId,
-    pub(crate) context_ledgers: core_ctx::ContextLedgerStore,
-    pub(crate) memory_traces: core_ctx::MemoryTraceStore,
+    pub(crate) context_ledgers: iteron_ctx::ContextLedgerStore,
+    pub(crate) memory_traces: iteron_ctx::MemoryTraceStore,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     pub(crate) telemetry_health: Option<crate::runtime::telemetry::TelemetryHealth>,
     pub(crate) workspace: std::path::PathBuf,
@@ -902,7 +904,7 @@ pub(crate) struct SessionFacts {
     /// The exact immutable `Arc` the runtime resolves child definitions against. Keeping object
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
     /// executable state while the resident runtime continues using its pinned catalog.
-    pub(crate) agent_catalog: Arc<core_agents::AgentCatalog>,
+    pub(crate) agent_catalog: Arc<iteron_agents::AgentCatalog>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -925,7 +927,7 @@ pub(crate) struct Attached {
 /// **The composition root.** The one place an `Agent` is handed to an App Server, and the one place
 /// the wire's version, capacities and ownership are decided.
 ///
-/// The interactive TUI attaches here today; the one-shot path and the headless `core serve` (#44)
+/// The interactive TUI attaches here today; the one-shot path and the headless `iteron serve` (#44)
 /// attach to this same function rather than building a second wire of their own. That is the point
 /// of it being a function: a client that constructs its own transport is a client that can drift
 /// from the protocol the server speaks, which is the failure this lane exists to remove.
@@ -996,8 +998,8 @@ pub(crate) struct AppServerHandle {
     pub(crate) events: mpsc::Receiver<EventEnvelope>,
     /// Content-free, bounded local lifecycle evidence. Reading it never asks the runtime actor or
     /// an exporter to stop what it is doing.
-    pub(crate) lifecycle: core_obs::lifecycle::LifecycleBus,
-    pub(crate) lifecycle_otel: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(crate) lifecycle: iteron_obs::lifecycle::LifecycleBus,
+    pub(crate) lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     /// The control plane. See [`Control`] for why it is not the SQ.
     pub(crate) control: mpsc::Sender<ControlRequest>,
@@ -1011,7 +1013,7 @@ pub(crate) struct EventPublisher {
     dropped: usize,
     next_seq: u64,
     lossless: bool,
-    lifecycle: core_obs::lifecycle::LifecycleEmitter,
+    lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     lifecycle_hooks: Option<crate::runtime::lifecycle_hooks::LifecycleHookDispatcher>,
     session_id: Option<SessionId>,
     run_id: Option<RunId>,
@@ -1024,7 +1026,7 @@ impl EventPublisher {
     fn new(
         events: mpsc::Sender<EventEnvelope>,
         lossless: bool,
-        lifecycle: core_obs::lifecycle::LifecycleEmitter,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     ) -> Self {
         Self {
             events,
@@ -1051,7 +1053,7 @@ impl EventPublisher {
         self.lifecycle_hooks = Some(dispatcher);
     }
 
-    fn lifecycle_emitter(&self) -> core_obs::lifecycle::LifecycleEmitter {
+    fn lifecycle_emitter(&self) -> iteron_obs::lifecycle::LifecycleEmitter {
         self.lifecycle.clone()
     }
 
@@ -1059,13 +1061,13 @@ impl EventPublisher {
         &self,
         turn_id: Option<TurnId>,
         submission_id: Option<SubmissionId>,
-    ) -> core_obs::lifecycle::LifecycleCorrelation {
-        core_obs::lifecycle::LifecycleCorrelation {
+    ) -> iteron_obs::lifecycle::LifecycleCorrelation {
+        iteron_obs::lifecycle::LifecycleCorrelation {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
             turn_id,
             submission_id,
-            ..core_obs::lifecycle::LifecycleCorrelation::default()
+            ..iteron_obs::lifecycle::LifecycleCorrelation::default()
         }
     }
 
@@ -1093,7 +1095,7 @@ impl EventPublisher {
         payload: LifecyclePayload,
     ) {
         let mut correlation = self.lifecycle_correlation(None, None);
-        correlation.workflow_id = workflow_id.map(|id| core_protocol::WorkflowId(id.to_owned()));
+        correlation.workflow_id = workflow_id.map(|id| iteron_protocol::WorkflowId(id.to_owned()));
         if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
             && let Some(dispatcher) = &self.lifecycle_hooks
         {
@@ -1103,7 +1105,7 @@ impl EventPublisher {
 
     fn record_job_lifecycle(&self, event_name: &str, job_id: &str, payload: LifecyclePayload) {
         let mut correlation = self.lifecycle_correlation(None, None);
-        correlation.job_id = Some(core_protocol::JobId(job_id.to_owned()));
+        correlation.job_id = Some(iteron_protocol::JobId(job_id.to_owned()));
         if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
             && let Some(dispatcher) = &self.lifecycle_hooks
         {
@@ -1119,8 +1121,8 @@ impl EventPublisher {
         payload: LifecyclePayload,
     ) {
         let mut correlation = self.lifecycle_correlation(None, None);
-        correlation.workflow_id = Some(core_protocol::WorkflowId(workflow_id.to_owned()));
-        correlation.subagent_id = Some(core_protocol::SubagentId(format!(
+        correlation.workflow_id = Some(iteron_protocol::WorkflowId(workflow_id.to_owned()));
+        correlation.subagent_id = Some(iteron_protocol::SubagentId(format!(
             "{workflow_id}:agent-{index}"
         )));
         if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
@@ -1270,12 +1272,12 @@ pub(crate) struct ServerEnds {
 /// The protocol version the in-process runtime advertises to a connecting frontend.
 ///
 /// Overridable only so a process-level test can point the frontend at a server that does not speak
-/// its protocol. `core-cli` is a managed binary-only package — the boundary authority forbids it a
+/// its protocol. `iteron-cli` is a managed binary-only package — the boundary authority forbids it a
 /// library target — so a skewed server cannot be injected any other way, and the refusal path would
 /// otherwise be unreachable in every test that can actually run the frontend. A user who sets it
 /// gets a refusal to attach and a diagnostic; there is nothing else behind the door.
 pub(crate) fn advertised_version() -> u32 {
-    std::env::var("CORE_APP_SERVER_PROTOCOL_VERSION")
+    std::env::var("ITERON_APP_SERVER_PROTOCOL_VERSION")
         .ok()
         .and_then(|raw| raw.trim().parse::<u32>().ok())
         .unwrap_or(PROTOCOL_VERSION)
@@ -1296,11 +1298,11 @@ fn wire_with_policy(
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
-    let lifecycle = core_obs::lifecycle::LifecycleBus::default();
-    let lifecycle_emitter = core_obs::lifecycle::LifecycleEmitter::new(lifecycle.clone());
+    let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+    let lifecycle_emitter = iteron_obs::lifecycle::LifecycleEmitter::new(lifecycle.clone());
     let _ = lifecycle_emitter.emit(
         "queue.capacity_resolved",
-        core_obs::lifecycle::LifecycleCorrelation::default(),
+        iteron_obs::lifecycle::LifecycleCorrelation::default(),
         LifecyclePayload {
             count: Some(u64::try_from(SQ_CAPACITY).unwrap_or(u64::MAX)),
             magnitude: Some(u64::try_from(SQ_BYTE_CAPACITY).unwrap_or(u64::MAX)),
@@ -1308,7 +1310,7 @@ fn wire_with_policy(
         },
     );
     let lifecycle_otel =
-        core_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
+        iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
     let client = AppServerClient::connect_weighted(
         advertised_version(),
@@ -1349,8 +1351,8 @@ pub(crate) enum RunInput {
     /// Carried untouched from the operation so the kernel, not the router, decides admission.
     Files {
         text: String,
-        images: Vec<core_protocol::ImageContent>,
-        files: Vec<core_protocol::FileContent>,
+        images: Vec<iteron_protocol::ImageContent>,
+        files: Vec<iteron_protocol::FileContent>,
     },
 }
 
@@ -1559,30 +1561,30 @@ impl AppServer {
             let dispatcher = events.lifecycle_hooks.clone();
             processes.bind_lifecycle_observer(std::sync::Arc::new(move |notice| {
                 let outcome = match notice.kind {
-                    core_tools::ProcessLifecycleKind::Spawned => "spawned",
-                    core_tools::ProcessLifecycleKind::Exited => "exited",
-                    core_tools::ProcessLifecycleKind::Stopped => "stopped",
-                    core_tools::ProcessLifecycleKind::TimedOut => "timed_out",
-                    core_tools::ProcessLifecycleKind::OutputLimitExceeded => "output_limit",
-                    core_tools::ProcessLifecycleKind::IoFailed => "io_failed",
-                    core_tools::ProcessLifecycleKind::CleanupUnknown => "cleanup_unknown",
+                    iteron_tools::ProcessLifecycleKind::Spawned => "spawned",
+                    iteron_tools::ProcessLifecycleKind::Exited => "exited",
+                    iteron_tools::ProcessLifecycleKind::Stopped => "stopped",
+                    iteron_tools::ProcessLifecycleKind::TimedOut => "timed_out",
+                    iteron_tools::ProcessLifecycleKind::OutputLimitExceeded => "output_limit",
+                    iteron_tools::ProcessLifecycleKind::IoFailed => "io_failed",
+                    iteron_tools::ProcessLifecycleKind::CleanupUnknown => "cleanup_unknown",
                 };
                 let event_ids: &[&str] = match notice.kind {
-                    core_tools::ProcessLifecycleKind::Spawned => {
+                    iteron_tools::ProcessLifecycleKind::Spawned => {
                         &["process.spawned", "background.detached"]
                     }
-                    core_tools::ProcessLifecycleKind::Exited => {
+                    iteron_tools::ProcessLifecycleKind::Exited => {
                         &["process.kill_sent", "process.reaped", "background.stopped"]
                     }
-                    core_tools::ProcessLifecycleKind::CleanupUnknown => &[
+                    iteron_tools::ProcessLifecycleKind::CleanupUnknown => &[
                         "process.kill_sent",
                         "process.reap_failed",
                         "background.orphan_detected",
                     ],
-                    core_tools::ProcessLifecycleKind::Stopped
-                    | core_tools::ProcessLifecycleKind::TimedOut
-                    | core_tools::ProcessLifecycleKind::OutputLimitExceeded
-                    | core_tools::ProcessLifecycleKind::IoFailed => &[
+                    iteron_tools::ProcessLifecycleKind::Stopped
+                    | iteron_tools::ProcessLifecycleKind::TimedOut
+                    | iteron_tools::ProcessLifecycleKind::OutputLimitExceeded
+                    | iteron_tools::ProcessLifecycleKind::IoFailed => &[
                         "process.term_sent",
                         "process.kill_sent",
                         "process.reaped",
@@ -1591,7 +1593,7 @@ impl AppServer {
                 };
                 for event_id in event_ids {
                     let mut correlation = base_correlation.clone();
-                    correlation.job_id = Some(core_protocol::JobId(notice.job_id.clone()));
+                    correlation.job_id = Some(iteron_protocol::JobId(notice.job_id.clone()));
                     if let Ok(event) = emitter.emit(
                         event_id,
                         correlation,
@@ -2496,7 +2498,7 @@ impl AppServer {
         // grace for the engine's own safe point, and write the terminal record either way, so no
         // run is left listing as `running` forever. The operator is told twice — the receipt the
         // model got stated this exact rule up front, and the report below names every run that was
-        // stopped together with the `core workflow resume` that continues it.
+        // stopped together with the `iteron workflow resume` that continues it.
         //
         // This runs on EVERY exit from the loop above, which is what makes "the session cannot end
         // with a run it does not account for" a property of the type rather than of a call site.
@@ -2540,7 +2542,7 @@ fn first_prompt_title(input: &RunInput) -> String {
         RunInput::Text(text) | RunInput::Files { text, .. } => text.as_str(),
         RunInput::Content(segments) => segments.text(),
     };
-    core_record::session::title_from_text(text)
+    iteron_record::session::title_from_text(text)
 }
 
 async fn settle_kernel_submission_events(
@@ -2741,7 +2743,7 @@ async fn run_lifecycle_gate(
         "hook gate failed closed because its durable journal is unavailable".to_string()
     })?;
     let context = serde_json::json!({
-        "catalog_version": core_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+        "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
         "event_id": event_id,
         "submission_id": submission_id.0,
         "turn_id": turn_id.map(|turn| turn.0),
@@ -2888,14 +2890,14 @@ fn legacy_user_prompt_context(op: &Op, submission_id: SubmissionId) -> Option<St
                 .as_slice()
                 .iter()
                 .find_map(|segment| match segment {
-                    core_protocol::ContentSegment::Text { text } => Some(text.as_str()),
-                    core_protocol::ContentSegment::Image { .. }
-                    | core_protocol::ContentSegment::Unknown => None,
+                    iteron_protocol::ContentSegment::Text { text } => Some(text.as_str()),
+                    iteron_protocol::ContentSegment::Image { .. }
+                    | iteron_protocol::ContentSegment::Unknown => None,
                 })?;
             let images = segments
                 .as_slice()
                 .iter()
-                .filter(|segment| matches!(segment, core_protocol::ContentSegment::Image { .. }))
+                .filter(|segment| matches!(segment, iteron_protocol::ContentSegment::Image { .. }))
                 .count();
             (prompt, images, 0)
         }
@@ -2929,7 +2931,7 @@ async fn publish_workflow_progress(
     events: &mut EventPublisher,
     progress: crate::workflow::WorkflowRunUiEvent,
 ) {
-    use core_workflow::events::{ProgressEvent, WorkflowState};
+    use iteron_workflow::events::{ProgressEvent, WorkflowState};
 
     match &progress {
         crate::workflow::WorkflowRunUiEvent::KernelActivity { kind, .. } => match kind {
@@ -3082,8 +3084,8 @@ async fn publish_settled(
 /// constant, so `assert!` over them is optimised out and would pass even if the relation broke.
 const _: () = assert!(
     SQ_ENTRY_OVERHEAD_BYTES
-        + core_protocol::task::MAX_TASK_TEXT_BYTES
-        + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+        + iteron_protocol::task::MAX_TASK_TEXT_BYTES
+        + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
         <= SQ_BYTE_CAPACITY
 );
 
@@ -3101,7 +3103,9 @@ mod tests {
         let mut events = EventPublisher::new(
             eq_tx,
             true,
-            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         let notification = publish_settled(
             &mut events,
@@ -3130,7 +3134,7 @@ mod tests {
 
     #[test]
     fn only_a_workflow_activity_tick_is_droppable_under_backpressure() {
-        use core_workflow::events::{ProgressEvent, WorkflowState};
+        use iteron_workflow::events::{ProgressEvent, WorkflowState};
         let progress = |event| {
             ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
                 run_id: "wf_1".into(),
@@ -3201,13 +3205,13 @@ mod tests {
 
     fn snapshot() -> Box<SessionSnapshot> {
         Box::new(SessionSnapshot {
-            mode: core_protocol::PermissionMode::default(),
-            effort: core_protocol::Effort::default(),
+            mode: iteron_protocol::PermissionMode::default(),
+            effort: iteron_protocol::Effort::default(),
             model: "test-model".into(),
-            cost: core_obs::CostState::default(),
+            cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
-            permission_rules: core_protocol::PermissionRules::new(),
+            permission_rules: iteron_protocol::PermissionRules::new(),
             ledger_summary: String::new(),
             rate_limit: None,
         })
@@ -3218,9 +3222,9 @@ mod tests {
             outcome: Outcome::HarnessError,
             assistant_text: String::new(),
             run_id: "test-run".into(),
-            cost: core_obs::CostState::Zero,
+            cost: iteron_obs::CostState::Zero,
             turns: 0,
-            kernel_tax: core_obs::KernelTax::default(),
+            kernel_tax: iteron_obs::KernelTax::default(),
             error: Some("done".into()),
             memo_hits: 0,
             memo_misses: 0,
@@ -3259,9 +3263,9 @@ mod tests {
             outcome: Outcome::Done,
             assistant_text: "parity reply".into(),
             run_id: "run-client-parity".into(),
-            cost: core_obs::CostState::default(),
+            cost: iteron_obs::CostState::default(),
             turns: 1,
-            kernel_tax: core_obs::KernelTax::default(),
+            kernel_tax: iteron_obs::KernelTax::default(),
             error: None,
             memo_hits: 0,
             memo_misses: 0,
@@ -3304,17 +3308,16 @@ mod tests {
         // process dies. This one refuses, and the refusal is what the operator sees.
         let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
         let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
-        let client =
-            AppServerClient::connect_weighted(
-                PROTOCOL_VERSION,
-                tx,
-                priority_tx,
-                Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
-                core_obs::lifecycle::LifecycleEmitter::new(
-                    core_obs::lifecycle::LifecycleBus::default(),
-                ),
-            )
-            .expect("handshake");
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .expect("handshake");
         let mut accepted = 0usize;
         for _ in 0..(SQ_CAPACITY * 4) {
             match client.submit(Op::UserInput {
@@ -3337,13 +3340,13 @@ mod tests {
 
     #[test]
     fn sq_weight_counts_actual_text_and_encoded_image_bytes() {
-        let segments = core_protocol::ContentSegments::new(vec![
-            core_protocol::ContentSegment::Text {
+        let segments = iteron_protocol::ContentSegments::new(vec![
+            iteron_protocol::ContentSegment::Text {
                 text: "describe".into(),
             },
-            core_protocol::ContentSegment::Image {
-                image: core_protocol::ImageContent::new(
-                    core_protocol::ImageMediaType::Png,
+            iteron_protocol::ContentSegment::Image {
+                image: iteron_protocol::ImageContent::new(
+                    iteron_protocol::ImageMediaType::Png,
                     "iVBORw0KGgo=",
                 )
                 .unwrap(),
@@ -3358,8 +3361,8 @@ mod tests {
         assert_eq!(
             SQ_BYTE_CAPACITY,
             SQ_ENTRY_OVERHEAD_BYTES
-                + core_protocol::task::MAX_TASK_TEXT_BYTES
-                + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+                + iteron_protocol::task::MAX_TASK_TEXT_BYTES
+                + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
                 + SQ_CONTROL_RESERVE_BYTES
         );
         assert!(
@@ -3369,12 +3372,12 @@ mod tests {
 
         // File chips are charged the same way, path included, so a queue full of them is bounded
         // in bytes and not merely in entries.
-        let file = core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap();
+        let file = iteron_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap();
         let with_files = Op::UserInputV3 {
             text: "review".into(),
             images: vec![
-                core_protocol::ImageContent::new(
-                    core_protocol::ImageMediaType::Png,
+                iteron_protocol::ImageContent::new(
+                    iteron_protocol::ImageMediaType::Png,
                     "iVBORw0KGgo=",
                 )
                 .unwrap(),
@@ -3400,17 +3403,16 @@ mod tests {
         let budget = Arc::new(Semaphore::new(weight));
         let (tx, mut rx) = mpsc::channel::<QueuedSubmission>(4);
         let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(1);
-        let client =
-            AppServerClient::connect_weighted(
-                PROTOCOL_VERSION,
-                tx,
-                priority_tx,
-                budget.clone(),
-                core_obs::lifecycle::LifecycleEmitter::new(
-                    core_obs::lifecycle::LifecycleBus::default(),
-                ),
-            )
-            .unwrap();
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            budget.clone(),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .unwrap();
 
         client
             .submit(op.clone())
@@ -3444,7 +3446,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             false,
-            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         for i in 0..64 {
             publisher
@@ -3497,7 +3501,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             false,
-            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
 
         let flood = tokio::spawn(async move {
@@ -3574,7 +3580,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             true,
-            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         let publish = tokio::spawn(async move {
             publisher
@@ -3636,13 +3644,13 @@ mod tests {
             route(&Op::UserInput { text: "hi".into() }),
             Routed::StartTurn(RunInput::Text("hi".into()))
         );
-        let multimodal = core_protocol::ContentSegments::new(vec![
-            core_protocol::ContentSegment::Text {
+        let multimodal = iteron_protocol::ContentSegments::new(vec![
+            iteron_protocol::ContentSegment::Text {
                 text: "describe".into(),
             },
-            core_protocol::ContentSegment::Image {
-                image: core_protocol::ImageContent::new(
-                    core_protocol::ImageMediaType::Png,
+            iteron_protocol::ContentSegment::Image {
+                image: iteron_protocol::ImageContent::new(
+                    iteron_protocol::ImageMediaType::Png,
                     "iVBORw0KGgo=",
                 )
                 .unwrap(),
@@ -3655,7 +3663,7 @@ mod tests {
             }),
             Routed::StartTurn(RunInput::Content(multimodal))
         );
-        let files = vec![core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap()];
+        let files = vec![iteron_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap()];
         assert_eq!(
             route(&Op::UserInputV3 {
                 text: "review".into(),
@@ -3674,7 +3682,7 @@ mod tests {
             Op::Interrupt,
             Op::Drain,
             Op::ApprovalResponse {
-                id: core_protocol::SubmissionId(1),
+                id: iteron_protocol::SubmissionId(1),
                 approved: true,
                 remember: false,
             },
@@ -3720,18 +3728,18 @@ mod tests {
     struct StubProvider;
 
     #[async_trait::async_trait]
-    impl core_provider::Provider for StubProvider {
+    impl iteron_provider::Provider for StubProvider {
         async fn turn(
             &self,
-            _request: &core_provider::TurnRequest,
-            _on_item: &mut (dyn FnMut(core_provider::StreamItem) + Send),
-        ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
-            Ok(core_provider::TurnResult {
-                blocks: vec![core_protocol::Block::Text {
+            _request: &iteron_provider::TurnRequest,
+            _on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+            Ok(iteron_provider::TurnResult {
+                blocks: vec![iteron_protocol::Block::Text {
                     text: "side reply".into(),
                 }],
-                stop_reason: core_protocol::StopReason::EndTurn,
-                usage: core_provider::UsageReport::complete(core_protocol::Usage::default()),
+                stop_reason: iteron_protocol::StopReason::EndTurn,
+                usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
             })
         }
     }
@@ -3744,16 +3752,16 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl core_provider::Provider for BackgroundPlanningProvider {
+    impl iteron_provider::Provider for BackgroundPlanningProvider {
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
 
         async fn turn(
             &self,
-            request: &core_provider::TurnRequest,
-            _on_item: &mut (dyn FnMut(core_provider::StreamItem) + Send),
-        ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
+            request: &iteron_provider::TurnRequest,
+            _on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
             let text = if request.system.starts_with("You plan a READ-ONLY") {
                 self.planner_started.notify_one();
                 self.release_planner.notified().await;
@@ -3765,28 +3773,28 @@ mod tests {
             } else {
                 "The main thread is available while the background investigation continues."
             };
-            Ok(core_provider::TurnResult {
-                blocks: vec![core_protocol::Block::Text { text: text.into() }],
-                stop_reason: core_protocol::StopReason::EndTurn,
-                usage: core_provider::UsageReport::complete(core_protocol::Usage::default()),
+            Ok(iteron_provider::TurnResult {
+                blocks: vec![iteron_protocol::Block::Text { text: text.into() }],
+                stop_reason: iteron_protocol::StopReason::EndTurn,
+                usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
             })
         }
     }
 
     fn agent_in(workspace: &std::path::Path) -> Agent {
-        let rollout = core_record::Rollout::open(
-            &workspace.join(".core/runs"),
-            &core_protocol::RunId("control-plane".into()),
-            core_protocol::TenantId::default(),
+        let rollout = iteron_record::Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("control-plane".into()),
+            iteron_protocol::TenantId::default(),
         )
         .unwrap();
         let mut agent = Agent::new(
             Arc::new(StubProvider),
-            core_tools::Registry::coding_agent(workspace).unwrap(),
+            iteron_tools::Registry::coding_agent(workspace).unwrap(),
             rollout,
             "m".into(),
             "system".into(),
-            core_protocol::Budget {
+            iteron_protocol::Budget {
                 max_turns: 4,
                 max_usd: None,
                 max_tokens: None,
@@ -3946,7 +3954,7 @@ mod tests {
                 String::new(),
             )
             .unwrap();
-        let workflows_dir = workspace.join(".core/runs/subagents/workflows");
+        let workflows_dir = workspace.join(".iteron/runs/subagents/workflows");
         let run_id = "wf-panel-resume";
         let script =
             "export const meta = { name: 'panel resume', phases: ['restore'] }; return 42;";
@@ -4039,20 +4047,20 @@ mod tests {
     #[tokio::test]
     async fn ultracode_planning_renders_in_one_detached_run_while_the_main_thread_returns() {
         let workspace = temp_workspace("ultracode-detached-planning");
-        let rollout = core_record::Rollout::open(
-            &workspace.join(".core/runs"),
-            &core_protocol::RunId("ultracode-detached".into()),
-            core_protocol::TenantId::default(),
+        let rollout = iteron_record::Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("ultracode-detached".into()),
+            iteron_protocol::TenantId::default(),
         )
         .unwrap();
         let provider = Arc::new(BackgroundPlanningProvider::default());
         let mut agent = Agent::new(
             provider.clone(),
-            core_tools::Registry::coding_agent(&workspace).unwrap(),
+            iteron_tools::Registry::coding_agent(&workspace).unwrap(),
             rollout,
             "model-a".into(),
             "system".into(),
-            core_protocol::Budget {
+            iteron_protocol::Budget {
                 max_turns: 20,
                 max_usd: None,
                 max_tokens: None,
@@ -4063,9 +4071,9 @@ mod tests {
         agent.workspace = workspace.clone();
         agent
             .configure_initial_runtime_policy(
-                core_protocol::Effort::Ultracode,
-                core_protocol::PermissionMode::default(),
-                core_protocol::PermissionRules::new(),
+                iteron_protocol::Effort::Ultracode,
+                iteron_protocol::PermissionMode::default(),
+                iteron_protocol::PermissionRules::new(),
             )
             .unwrap();
         agent
@@ -4121,7 +4129,7 @@ mod tests {
                 }) => declared_planning |= phases.iter().any(|phase| phase == "planning"),
                 ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
                     event:
-                        core_workflow::ProgressEvent::AgentStarted {
+                        iteron_workflow::ProgressEvent::AgentStarted {
                             phase: Some(phase), ..
                         },
                     ..

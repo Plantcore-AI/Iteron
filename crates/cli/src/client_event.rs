@@ -1,7 +1,7 @@
 //! The published, versioned wire form of the event queue.
 //!
 //! `app_server.rs` records the decision this module exists to serve: the EQ deliberately does not
-//! carry `core_protocol::Event`, because projecting `UiEvent` onto `EventKind` loses four things a
+//! carry `iteron_protocol::Event`, because projecting `UiEvent` onto `EventKind` loses four things a
 //! frontend renders. So the queue carries a Rust enum with no wire form, and a client in another
 //! process cannot consume it at all.
 //!
@@ -15,7 +15,7 @@
 //!
 //! - `TurnEnd`'s seven fields collapsed to one on `EventKind`. All seven are carried.
 //! - `SteerApplied` had no counterpart at all. It is [`ClientEvent::SteerApplied`], with `count`.
-//! - `ToolEnd.diff` had no home. It is carried as `core_protocol::FileDiff`, whole.
+//! - `ToolEnd.diff` had no home. It is carried as `iteron_protocol::FileDiff`, whole.
 //! - `ApprovalRequest.reason`, the operator-facing justification, had no field to go in. It is
 //!   carried, alongside `capability`, `arguments` and `workspace`.
 //!
@@ -36,7 +36,7 @@
 //! # Relationship to the frozen `stream-json` result contract
 //!
 //! `output.rs` owns the *result* of a run: one terminal document, versioned by
-//! `SUPPORTED_CORE_CLI_SCHEMA_VERSIONS`, consumed by eval. This module owns the *progress* of a
+//! `SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS`, consumed by eval. This module owns the *progress* of a
 //! run: many frames, consumed by a frontend as they arrive. They describe the same run and are
 //! deliberately not the same contract.
 //!
@@ -49,8 +49,8 @@ use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi,
     WorkflowRunOutcomeUi, WorkflowTaskUi, WorkflowUiEvent,
 };
-use core_protocol::wire::{PROTOCOL_VERSION, ProtocolVersionError};
-use core_protocol::{Capability, FileDiff, Phase, ReasoningEffort, Usage};
+use iteron_protocol::wire::{PROTOCOL_VERSION, ProtocolVersionError};
+use iteron_protocol::{Capability, FileDiff, Phase, ReasoningEffort, Usage};
 use serde::{Deserialize, Serialize};
 
 /// One item on the published event queue.
@@ -154,7 +154,7 @@ pub enum ClientEvent {
     /// durable `EventKind::ArtifactProduced`, from the same handle, so a socket client and the
     /// record cannot disagree about what was produced.
     ArtifactProduced {
-        artifact: core_protocol::artifact::ArtifactRef,
+        artifact: iteron_protocol::artifact::ArtifactRef,
     },
 }
 
@@ -310,32 +310,32 @@ pub enum ClientWorkflowEvent {
     },
 }
 
-impl From<&core_protocol::artifact::ArtifactRef> for ClientEvent {
-    fn from(artifact: &core_protocol::artifact::ArtifactRef) -> Self {
+impl From<&iteron_protocol::artifact::ArtifactRef> for ClientEvent {
+    fn from(artifact: &iteron_protocol::artifact::ArtifactRef) -> Self {
         Self::ArtifactProduced {
             artifact: artifact.clone(),
         }
     }
 }
 
-impl From<&core_obs::CostState> for ClientCost {
-    fn from(cost: &core_obs::CostState) -> Self {
+impl From<&iteron_obs::CostState> for ClientCost {
+    fn from(cost: &iteron_obs::CostState) -> Self {
         match cost {
-            core_obs::CostState::Zero => Self::Zero,
-            core_obs::CostState::Known { .. } => Self::Known {
+            iteron_obs::CostState::Zero => Self::Zero,
+            iteron_obs::CostState::Known { .. } => Self::Known {
                 // `usd()` is the frozen accessor; recomputing from microusd here would be a second
                 // implementation of the same conversion, free to drift from the authoritative one.
                 usd: cost.usd().unwrap_or_default(),
             },
-            core_obs::CostState::Unknown { reason } => Self::Unknown {
+            iteron_obs::CostState::Unknown { reason } => Self::Unknown {
                 reason: reason.code().to_owned(),
             },
         }
     }
 }
 
-impl From<&core_ctx::ContextEstimate> for ClientContextEstimate {
-    fn from(estimate: &core_ctx::ContextEstimate) -> Self {
+impl From<&iteron_ctx::ContextEstimate> for ClientContextEstimate {
+    fn from(estimate: &iteron_ctx::ContextEstimate) -> Self {
         Self {
             system_tokens: estimate.system_tokens,
             tool_tokens: estimate.tool_tokens,
@@ -347,9 +347,9 @@ impl From<&core_ctx::ContextEstimate> for ClientContextEstimate {
     }
 }
 
-impl From<&core_provider::EffortApplication> for ClientEffortApplication {
-    fn from(effort: &core_provider::EffortApplication) -> Self {
-        use core_provider::EffortApplication as E;
+impl From<&iteron_provider::EffortApplication> for ClientEffortApplication {
+    fn from(effort: &iteron_provider::EffortApplication) -> Self {
+        use iteron_provider::EffortApplication as E;
         match effort {
             E::Exact { requested } => Self::Exact {
                 requested: *requested,

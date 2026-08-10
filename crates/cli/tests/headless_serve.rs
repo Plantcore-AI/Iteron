@@ -1,4 +1,4 @@
-use core_protocol::wire::PROTOCOL_VERSION;
+use iteron_protocol::wire::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 const PROVIDER_ID: &str = "headless-fixture";
 const MODEL_ID: &str = "headless-model";
-const KEY_ENV: &str = "CORE_HEADLESS_TEST_KEY";
+const KEY_ENV: &str = "ITERON_HEADLESS_TEST_KEY";
 const KEY: &str = "bounded-loopback-placeholder";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,7 +36,7 @@ impl Scratch {
             std::env::temp_dir().join(format!("core-headless-serve-{}-{id}", std::process::id()));
         let scratch = Self { root };
         fs::create_dir_all(scratch.repo()).unwrap();
-        fs::create_dir_all(scratch.home().join(".core")).unwrap();
+        fs::create_dir_all(scratch.home().join(".iteron")).unwrap();
         fs::create_dir_all(scratch.runs()).unwrap();
         let config = json!({
             "provider": PROVIDER_ID,
@@ -59,7 +59,7 @@ impl Scratch {
             }]
         });
         fs::write(
-            scratch.home().join(".core/config.json"),
+            scratch.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).unwrap(),
         )
         .unwrap();
@@ -202,7 +202,7 @@ fn fresh_bearer_token() -> String {
 }
 
 fn core_command(scratch: &Scratch) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
         .env("HOME", scratch.home())

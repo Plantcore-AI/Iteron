@@ -7,7 +7,7 @@
 //! local [`crate::Interval`] shape, signs through [`crate::IndependentEvaluator`], and stores the
 //! immutable result.
 //!
-//! There is intentionally no dependency on `core-eval`. Its statistical helpers are private and
+//! There is intentionally no dependency on `iteron-eval`. Its statistical helpers are private and
 //! return bounds without point estimates. The committed report format is the cross-crate boundary:
 //! bounds come from the eval lane, while point estimates, pairing, hard-constraint counters, and
 //! overlap are recomputed here from the paired rows and governed identities.

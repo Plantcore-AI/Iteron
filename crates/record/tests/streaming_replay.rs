@@ -1,5 +1,5 @@
-use core_protocol::{Event, EventKind, RunId, Seq, TenantId, TurnId};
-use core_record::{Rollout, replay};
+use iteron_protocol::{Event, EventKind, RunId, Seq, TenantId, TurnId};
+use iteron_record::{Rollout, replay};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -66,7 +66,7 @@ static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 fn test_directory() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "core-record-streaming-{}-{}",
+        "iteron-record-streaming-{}-{}",
         std::process::id(),
         TEMP_ID.fetch_add(1, Ordering::Relaxed)
     ))

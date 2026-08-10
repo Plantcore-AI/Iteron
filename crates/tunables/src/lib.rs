@@ -68,17 +68,17 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 3;
 /// Schema version carried by every semantic family entry.
 pub const FAMILY_SCHEMA_VERSION: u16 = 2;
 /// Stable logical registry identity.
-pub const REGISTRY_ID: &str = "core-tunables";
+pub const REGISTRY_ID: &str = "iteron-tunables";
 /// Revision of the family set under schema v3.
 pub const REGISTRY_REVISION: u16 = 4;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
-pub const CANONICALIZATION: &str = "core-tunables-json-v3";
+pub const CANONICALIZATION: &str = "iteron-tunables-json-v3";
 /// Canonical byte encoding used for each entry's semantic digest.
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
 /// Golden digest for revision 4; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "c36f74c84c198eda6171905dd618035f31439ee704e98583a383eac03064209c";
+    "8a1621cf1e51d9936ccbdceefe3f35ab6fdd9c580a2d4bcce3b1dfa3769fc48c";

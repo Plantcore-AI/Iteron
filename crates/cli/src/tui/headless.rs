@@ -21,7 +21,7 @@ use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent, 
 use crate::output;
 use crate::runtime::UiEvent;
 use anyhow::{Context, Result, bail};
-use core_protocol::PROTOCOL_VERSION;
+use iteron_protocol::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -247,7 +247,7 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
                     log(json!({
                         "component": "app_server",
                         "event": "protocol_error",
-                        "message": core_record::redact::scrub(&error.to_string()),
+                        "message": iteron_record::redact::scrub(&error.to_string()),
                     }));
                     break;
                 }
@@ -727,7 +727,7 @@ async fn send_rollout_inner<W: AsyncWrite + Unpin>(
     // detached replay still retains the sole permit until its bounded file read has actually
     // finished, so another connection cannot multiply replay memory.
     let (replay_permit, events) =
-        tokio::task::spawn_blocking(move || (replay_permit, core_record::replay(&path)))
+        tokio::task::spawn_blocking(move || (replay_permit, iteron_record::replay(&path)))
             .await
             .context("Rollout replay task join")?;
     let events = events.context("replay Rollout for reconnect fallback")?;
@@ -753,7 +753,7 @@ fn error_frame(code: &'static str, message: &str) -> ServerFrame {
     ServerFrame::Error {
         protocol_version: PROTOCOL_VERSION,
         code,
-        message: core_record::redact::scrub(message),
+        message: iteron_record::redact::scrub(message),
     }
 }
 
@@ -764,7 +764,7 @@ fn log(value: Value) {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
-    use core_protocol::{input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
+    use iteron_protocol::{input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
 
     /// Kept in this orchestration module because the client-evidence boundary names this selector.
     #[test]

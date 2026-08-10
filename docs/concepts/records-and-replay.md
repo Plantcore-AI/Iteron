@@ -47,7 +47,7 @@ legacy policies. An admitted historical record returns `LegacyUnpinned`, never `
 automatic migration or new authority is fabricated.
 
 This is an evidence and compatibility boundary, not runtime admission by itself. The provider-free
-`core tunables` command remains a simulation, and a composition root must deliberately call the
+`iteron tunables` command remains a simulation, and a composition root must deliberately call the
 resolved-set genesis/check APIs before it can claim a run is pinned. The snapshot authenticates no
 external evidence, binds no policy to an executor, and makes no family trainable.
 
@@ -68,5 +68,5 @@ output boundaries, but users must still treat run files as private because they
 can contain source excerpts, paths, prompts, model output, diffs, and tool
 evidence.
 
-Do not commit `.core/runs`, paste a real record into a public issue, or mistake a
+Do not commit `.iteron/runs`, paste a real record into a public issue, or mistake a
 same-disk record for a backup.

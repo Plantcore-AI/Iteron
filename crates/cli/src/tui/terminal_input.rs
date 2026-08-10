@@ -27,7 +27,7 @@ const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
 /// Operator escape hatch for the blocking progressive-keyboard probe. Any value other than empty
 /// or `0` skips the query outright and keeps the portable Ctrl-J path.
-pub(crate) const NO_KEYBOARD_ENHANCEMENT_ENV: &str = "CORE_NO_KBD_ENHANCEMENT";
+pub(crate) const NO_KEYBOARD_ENHANCEMENT_ENV: &str = "ITERON_NO_KBD_ENHANCEMENT";
 
 #[derive(Debug, Default)]
 pub(crate) struct TerminalInput {
@@ -43,7 +43,7 @@ impl TerminalInput {
     /// on a terminal the environment already says can answer an interactive query. It shares the
     /// OSC 11 gate (`interactive_query_supported` excludes `TERM=dumb`, tmux and screen, which
     /// multiplex the reply away) plus the console/isatty pair check, and an operator can disable it
-    /// outright with `CORE_NO_KBD_ENHANCEMENT`.
+    /// outright with `ITERON_NO_KBD_ENHANCEMENT`.
     ///
     /// Crossterm answers the Windows case with a hard-coded `false`, so Windows runs the query
     /// natively instead: the query bytes and the primary device-attributes sentinel share one

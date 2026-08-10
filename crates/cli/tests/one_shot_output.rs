@@ -29,7 +29,7 @@ const MAX_PROXY_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_PROXY_CONNECTIONS: usize = 8;
 const PROVIDER_ID: &str = "golden";
 const MODEL_ID: &str = "golden-model";
-const TEST_KEY_ENV: &str = "CORE_GOLDEN_TEST_KEY";
+const TEST_KEY_ENV: &str = "ITERON_GOLDEN_TEST_KEY";
 const TEST_KEY: &str = "integration-test-placeholder";
 const DEFAULT_TASK: &str = "return the deterministic fixture response";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
@@ -44,12 +44,12 @@ impl Scratch {
     fn new(label: &str, api_root: &str) -> Self {
         let id = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "core-cli-one-shot-{label}-{}-{id}",
+            "iteron-cli-one-shot-{label}-{}-{id}",
             std::process::id()
         ));
         let scratch = Self { root };
         fs::create_dir_all(scratch.repo()).expect("create isolated repository");
-        fs::create_dir_all(scratch.home().join(".core")).expect("create isolated Core home");
+        fs::create_dir_all(scratch.home().join(".iteron")).expect("create isolated Core home");
         fs::create_dir_all(scratch.runs()).expect("create isolated rollout directory");
 
         let config = json!({
@@ -73,7 +73,7 @@ impl Scratch {
             }]
         });
         fs::write(
-            scratch.home().join(".core/config.json"),
+            scratch.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).expect("encode test config"),
         )
         .expect("write isolated test config");
@@ -90,7 +90,7 @@ impl Scratch {
             "max_wall_secs": 5
         });
         fs::write(
-            scratch.home().join(".core/config.json"),
+            scratch.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).expect("encode isolated GLM config"),
         )
         .expect("write isolated GLM config");
@@ -115,10 +115,10 @@ impl Scratch {
             json!("glm-5.2-cli-process-capability@v2");
         document["glm_standard_chat"]["capabilities"]["glm-5.2"]["captured_at_unix_secs"] =
             json!(captured);
-        core_provider::StaticProviderMetadata::stamp_content_versions(&mut document)
+        iteron_provider::StaticProviderMetadata::stamp_content_versions(&mut document)
             .expect("stamp operator metadata content versions");
 
-        let path = self.home().join(".core/provider-metadata.json");
+        let path = self.home().join(".iteron/provider-metadata.json");
         let bytes = serde_json::to_vec(&document).expect("encode operator metadata");
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -152,18 +152,18 @@ impl Scratch {
     }
 
     fn seed_redacted_resume(&self, run_id: &str) {
-        let run = core_protocol::RunId(run_id.into());
+        let run = iteron_protocol::RunId(run_id.into());
         let mut rollout =
-            core_record::Rollout::open(&self.runs(), &run, core_protocol::TenantId::default())
+            iteron_record::Rollout::open(&self.runs(), &run, iteron_protocol::TenantId::default())
                 .expect("open diagnostic resume fixture");
         rollout
-            .append(&core_protocol::Event {
-                seq: core_protocol::Seq::ZERO,
-                turn: core_protocol::TurnId(0),
-                kind: core_protocol::EventKind::RunStart {
+            .append(&iteron_protocol::Event {
+                seq: iteron_protocol::Seq::ZERO,
+                turn: iteron_protocol::TurnId(0),
+                kind: iteron_protocol::EventKind::RunStart {
                     cwd: self.repo().display().to_string(),
                     model: MODEL_ID.into(),
-                    effort: core_protocol::Effort::Low,
+                    effort: iteron_protocol::Effort::Low,
                     created_at: 1,
                     environment: None,
                     parent_run: None,
@@ -176,13 +176,13 @@ impl Scratch {
             })
             .expect("append diagnostic fixture genesis");
         rollout
-            .append(&core_protocol::Event {
-                seq: core_protocol::Seq::ZERO,
-                turn: core_protocol::TurnId(0),
-                kind: core_protocol::EventKind::Message {
-                    message: core_protocol::Message {
-                        role: core_protocol::Role::Assistant,
-                        content: vec![core_protocol::Block::ToolUse(core_protocol::ToolUse {
+            .append(&iteron_protocol::Event {
+                seq: iteron_protocol::Seq::ZERO,
+                turn: iteron_protocol::TurnId(0),
+                kind: iteron_protocol::EventKind::Message {
+                    message: iteron_protocol::Message {
+                        role: iteron_protocol::Role::Assistant,
+                        content: vec![iteron_protocol::Block::ToolUse(iteron_protocol::ToolUse {
                             id: "resume-secret-read".into(),
                             name: "read_file".into(),
                             input: json!({"path":"fixture.txt"}),
@@ -193,18 +193,18 @@ impl Scratch {
             .expect("append diagnostic fixture tool request");
         let secret = "sk-ant-api03-SuperSecretResumeTokenValue12345";
         rollout
-            .append(&core_protocol::Event {
-                seq: core_protocol::Seq::ZERO,
-                turn: core_protocol::TurnId(0),
-                kind: core_protocol::EventKind::Message {
-                    message: core_protocol::Message {
-                        role: core_protocol::Role::User,
-                        content: vec![core_protocol::Block::ToolResult(
-                            core_protocol::ToolResult {
+            .append(&iteron_protocol::Event {
+                seq: iteron_protocol::Seq::ZERO,
+                turn: iteron_protocol::TurnId(0),
+                kind: iteron_protocol::EventKind::Message {
+                    message: iteron_protocol::Message {
+                        role: iteron_protocol::Role::User,
+                        content: vec![iteron_protocol::Block::ToolResult(
+                            iteron_protocol::ToolResult {
                                 tool_use_id: "resume-secret-read".into(),
                                 content: format!("provider returned {secret}"),
                                 is_error: false,
-                                trust: core_protocol::Trust::Workspace,
+                                trust: iteron_protocol::Trust::Workspace,
                                 latency_ms: 1,
                             },
                         )],
@@ -652,7 +652,7 @@ fn core_command_with_task(
     extra_args: &[&str],
     task: &str,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, user config, or launcher. The only credential
     // visible to the child is the inert placeholder consumed by the loopback-only provider.
     command
@@ -693,7 +693,7 @@ fn core_command_with_task(
 }
 
 fn sessions_command(scratch: &Scratch) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
         .env("HOME", scratch.home())
@@ -741,7 +741,7 @@ fn preserve_windows_process_environment(command: &mut Command) {
 
 #[cfg(unix)]
 fn glm_core_command(scratch: &Scratch, format: &str, proxy_url: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Exercise the built-in official GLM route without inheriting developer network state. Both
     // conventional proxy spellings point at the same loopback-only CONNECT rejector, so no DNS or
     // public connection is needed and the inert key can never reach an origin.
@@ -1066,7 +1066,7 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
     assert!(scratch.runs().join("sessions.index").is_file());
 
     // Listing is deliberately credential-free and exits before provider construction. The
-    // core-record unit gate instruments this same `list` call and proves covered runs execute zero
+    // iteron-record unit gate instruments this same `list` call and proves covered runs execute zero
     // `meta_from_replay` calls; this process gate freezes the CLI routing to that fast path.
     let sessions = collect_core(sessions_command(&scratch).spawn().unwrap());
     assert_eq!(sessions.status.code(), Some(0));
@@ -1082,10 +1082,11 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
             "continuing most recent session in this repo: {run_id}"
         ))
     );
-    let meta = core_record::meta(&scratch.runs(), &core_protocol::RunId(run_id.clone())).unwrap();
+    let meta =
+        iteron_record::meta(&scratch.runs(), &iteron_protocol::RunId(run_id.clone())).unwrap();
     assert_eq!(meta.turns, 2);
     let index = fs::read_to_string(scratch.runs().join("sessions.index")).unwrap();
-    let indexed: Vec<core_record::SessionMeta> = index
+    let indexed: Vec<iteron_record::SessionMeta> = index
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
@@ -1118,7 +1119,7 @@ fn startup_timing_is_opt_in_and_reports_every_pre_first_frame_phase() {
     let server = MockProvider::spawn(Reply::Success);
     let scratch = Scratch::new("startup-timing-on", &server.api_root);
     let mut command = core_command(&scratch, "text", 1, &[]);
-    command.env("CORE_STARTUP_TIMING", "1");
+    command.env("ITERON_STARTUP_TIMING", "1");
     let output = collect_core(command.spawn().expect("spawn the real core binary"));
     server.finish();
 
@@ -1196,9 +1197,9 @@ fn client_parity_scripted_task_completes_in_one_shot() {
 #[test]
 fn one_shot_refuses_app_server_version_skew_before_provider_dispatch() {
     let scratch = Scratch::new("one-shot-version-skew", "http://127.0.0.1:9/v1");
-    let skewed = core_protocol::PROTOCOL_VERSION + 1;
+    let skewed = iteron_protocol::PROTOCOL_VERSION + 1;
     let mut command = core_command(&scratch, "json", 1, &[]);
-    command.env("CORE_APP_SERVER_PROTOCOL_VERSION", skewed.to_string());
+    command.env("ITERON_APP_SERVER_PROTOCOL_VERSION", skewed.to_string());
     let output = collect_core(command.spawn().expect("spawn skewed one-shot client"));
 
     assert!(!output.status.success());
@@ -1209,7 +1210,7 @@ fn one_shot_refuses_app_server_version_skew_before_provider_dispatch() {
     let stderr = std::str::from_utf8(&output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains(&format!(
         "unsupported SQ/EQ protocol version {skewed}; expected {}",
-        core_protocol::PROTOCOL_VERSION
+        iteron_protocol::PROTOCOL_VERSION
     )));
     assert!(
         !stderr.contains("provider response"),
@@ -1321,20 +1322,20 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
             "the deliberately rejected local proxy produces a harness failure"
         );
 
-        let events = core_record::replay(&only_rollout_path(&scratch))
+        let events = iteron_record::replay(&only_rollout_path(&scratch))
             .expect("built-in GLM rollout remains hash-valid after transport failure");
         let notices = events
             .iter()
             .enumerate()
             .filter_map(|(index, event)| match &event.kind {
-                core_protocol::EventKind::Notice { text } => Some((index, text.as_str())),
+                iteron_protocol::EventKind::Notice { text } => Some((index, text.as_str())),
                 _ => None,
             })
             .collect::<Vec<_>>();
         let turn_starts = events
             .iter()
             .enumerate()
-            .filter(|(_, event)| matches!(event.kind, core_protocol::EventKind::TurnStart))
+            .filter(|(_, event)| matches!(event.kind, iteron_protocol::EventKind::TurnStart))
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1469,11 +1470,11 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     );
     assert_eq!(resumed_system.matches(original).count(), 1);
     assert!(!resumed_system.contains(changed));
-    let injections = core_record::replay(&rollout_path)
+    let injections = iteron_record::replay(&rollout_path)
         .expect("resume rollout replays")
         .into_iter()
         .filter_map(|event| match event.kind {
-            core_protocol::EventKind::ContextInjection {
+            iteron_protocol::EventKind::ContextInjection {
                 text,
                 trust,
                 instructions,
@@ -1484,15 +1485,15 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     assert_eq!(injections.len(), 1);
     let (legacy_text, legacy_trust, instructions) = &injections[0];
     assert!(legacy_text.is_empty());
-    assert_eq!(*legacy_trust, core_protocol::Trust::Trusted);
+    assert_eq!(*legacy_trust, iteron_protocol::Trust::Trusted);
     let instructions = instructions.as_ref().expect("durable frontend context");
-    assert_eq!(instructions.text, core_ctx::framed("AGENTS.md", original));
-    assert_eq!(instructions.trust, core_protocol::Trust::Untrusted);
+    assert_eq!(instructions.text, iteron_ctx::framed("AGENTS.md", original));
+    assert_eq!(instructions.trust, iteron_protocol::Trust::Untrusted);
     let environment = instructions
         .environment
         .as_ref()
         .expect("fresh environment snapshot");
-    assert_eq!(environment.trust, core_protocol::Trust::Workspace);
+    assert_eq!(environment.trust, iteron_protocol::Trust::Workspace);
     assert_eq!(first_system.matches(&environment.text).count(), 1);
     assert!(environment.text.contains("workspace_cwd:"));
     assert!(environment.text.contains("date_utc:"));
@@ -1548,18 +1549,18 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     assert!(!first_system.contains("untracked-private-name"));
 
     let rollout_path = only_rollout_path(&scratch);
-    let first_events = core_record::replay(&rollout_path).expect("replay fresh rollout");
+    let first_events = iteron_record::replay(&rollout_path).expect("replay fresh rollout");
     let created_at = first_events
         .iter()
         .find_map(|event| match event.kind {
-            core_protocol::EventKind::RunStart { created_at, .. } => Some(created_at),
+            iteron_protocol::EventKind::RunStart { created_at, .. } => Some(created_at),
             _ => None,
         })
         .expect("fresh genesis timestamp");
     let environment = first_events
         .iter()
         .find_map(|event| match &event.kind {
-            core_protocol::EventKind::ContextInjection {
+            iteron_protocol::EventKind::ContextInjection {
                 instructions: Some(instructions),
                 ..
             } => instructions.environment.as_ref(),
@@ -1569,13 +1570,13 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     let genesis_environment = first_events
         .iter()
         .find_map(|event| match &event.kind {
-            core_protocol::EventKind::RunStart { environment, .. } => environment.as_ref(),
+            iteron_protocol::EventKind::RunStart { environment, .. } => environment.as_ref(),
             _ => None,
         })
         .expect("crash-safe genesis environment snapshot");
     assert_eq!(genesis_environment, environment);
-    assert_eq!(environment.trust, core_protocol::Trust::Workspace);
-    assert!(environment.text.len() <= core_protocol::MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES);
+    assert_eq!(environment.trust, iteron_protocol::Trust::Workspace);
+    assert!(environment.text.len() <= iteron_protocol::MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES);
     assert!(
         environment
             .text
@@ -1612,13 +1613,13 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     let resumed_system = request_system(&resumed_request);
     assert_eq!(resumed_system, first_system);
     assert!(!resumed_system.contains("facts-changed"));
-    let injections = core_record::replay(&rollout_path)
+    let injections = iteron_record::replay(&rollout_path)
         .unwrap()
         .into_iter()
         .filter(|event| {
             matches!(
                 event.kind,
-                core_protocol::EventKind::ContextInjection { .. }
+                iteron_protocol::EventKind::ContextInjection { .. }
             )
         })
         .count();

@@ -7,8 +7,8 @@
 //! taints the turn's egress via `ToolResult.trust`, ADR-007).
 
 use crate::{Registry, ToolError, boxfut, err_result};
-use core_ctx::skills::SkillCatalog;
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_ctx::skills::SkillCatalog;
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use std::path::Path;
 
 fn load_skill(id: String, name: &str, root: &Path, operator_home: Option<&Path>) -> ToolResult {
@@ -55,7 +55,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 if name.is_empty() {
                     return err_result(id, "use_skill needs a `name`".into());
                 }
-                let home = core_protocol::home::operator();
+                let home = iteron_protocol::home::operator();
                 load_skill(id, &name, &root, home.as_deref())
             })
         },

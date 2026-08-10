@@ -15,7 +15,7 @@ mod types;
 mod tests;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use serde::Serialize;
 use std::sync::Arc;
 use supervisor::Supervisor;

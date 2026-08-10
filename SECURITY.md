@@ -2,10 +2,10 @@
 
 ## Current support level
 
-Core Code is pre-alpha. Only the current `main` branch receives security fixes. There
+Iteron is pre-alpha. Only the current `main` branch receives security fixes. There
 are no supported stable releases yet.
 
-Do not run Core Code unattended on sensitive repositories or treat its sandbox as a
+Do not run Iteron unattended on sensitive repositories or treat its sandbox as a
 confidentiality boundary.
 
 Since 2026-08-05 the shipped default is **unconfined and ungated**: the capability
@@ -30,7 +30,7 @@ never held by it. `--ask-permissions` and `--mode plan` put the conjunct back.
 Delegated sub-agents now inherit the session's posture instead of running gated with
 nobody to ask; their capability ceiling is unchanged and still intersected downward.
 Treat a prompt-injection payload in an untrusted repository as
-having the authority of the account running `core`, and choose the posture
+having the authority of the account running `iteron`, and choose the posture
 accordingly. A sandbox never made hostile code safe; its absence makes the blast
 radius your home directory.
 

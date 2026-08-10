@@ -1,4 +1,4 @@
-//! core-provider — the model seam.
+//! iteron-provider — the model seam.
 //!
 //! The load-bearing capability here is **mid-stream `tool_use` completion detection**: the
 //! Anthropic streaming grammar guarantees a tool call's input is fully known at that block's
@@ -12,7 +12,7 @@
 //! dossier) are present as an interface + a conservative default, with the richer policy
 //! marked TODO against their ADRs.
 
-use core_protocol::{Block, Message, StopReason, ToolSpec, ToolUse};
+use iteron_protocol::{Block, Message, StopReason, ToolSpec, ToolUse};
 use std::time::{Duration, SystemTime};
 
 pub mod anthropic;
@@ -209,7 +209,7 @@ pub enum ProviderError {
     /// bounded carrier explicitly.
     #[error("provider returned an unrecognized stop reason")]
     UnknownStopReason {
-        code: Box<core_protocol::StopReasonCode>,
+        code: Box<iteron_protocol::StopReasonCode>,
     },
     #[error("logical run wall-clock deadline exhausted")]
     DeadlineExceeded,
@@ -1058,7 +1058,7 @@ pub struct TurnRequest {
     /// The kernel validates and scopes these before constructing the request; adapters that
     /// advertise image support may serialize them without re-reading files or interpreting MIME
     /// types. Text-only requests always carry an empty vector.
-    pub input_images: Vec<core_protocol::ImageContent>,
+    pub input_images: Vec<iteron_protocol::ImageContent>,
     pub tools: Vec<ToolSpec>,
     pub max_tokens: u32,
     /// Cache breakpoint after the system prompt + tools (the stable prefix). ADR-002:
@@ -1068,7 +1068,7 @@ pub struct TurnRequest {
     pub thinking_budget: u32,
     /// Semantic model effort, independent of the thinking-token budget and of harness
     /// orchestration. Adapters must not infer this value from `thinking_budget`.
-    pub reasoning_effort: core_protocol::ReasoningEffort,
+    pub reasoning_effort: iteron_protocol::ReasoningEffort,
 }
 
 /// Bounded, secret-free strategy notice emitted before a provider request. Notices are
@@ -1117,22 +1117,22 @@ impl StaticMetadataNoticeRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffortApplication {
     Exact {
-        requested: core_protocol::ReasoningEffort,
+        requested: iteron_protocol::ReasoningEffort,
     },
     Mapped {
-        requested: core_protocol::ReasoningEffort,
-        sent: core_protocol::ReasoningEffort,
+        requested: iteron_protocol::ReasoningEffort,
+        sent: iteron_protocol::ReasoningEffort,
     },
     BudgetBased {
-        requested: core_protocol::ReasoningEffort,
+        requested: iteron_protocol::ReasoningEffort,
         budget_tokens: u32,
     },
     ToggleOnly {
-        requested: core_protocol::ReasoningEffort,
+        requested: iteron_protocol::ReasoningEffort,
         enabled: bool,
     },
     Unsupported {
-        requested: core_protocol::ReasoningEffort,
+        requested: iteron_protocol::ReasoningEffort,
     },
 }
 
@@ -1476,7 +1476,7 @@ pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod guard_tests {
     use super::*;
-    use core_protocol::Usage;
+    use iteron_protocol::Usage;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -1492,7 +1492,7 @@ mod guard_tests {
             max_tokens: 32,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
         }
     }
 

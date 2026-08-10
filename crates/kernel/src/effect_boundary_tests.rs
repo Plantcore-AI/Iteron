@@ -17,7 +17,7 @@ use crate::effects::{
     BrokerError, BrokeredEffect, BrokeredOutcome, DurableEffectLog, EffectDisposition, Settlement,
     broker_effect, open_effect, settle_effect,
 };
-use core_protocol::{
+use iteron_protocol::{
     Block, Capability, Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,11 +35,11 @@ struct ProbeLog {
 }
 
 impl DurableEffectLog for ProbeLog {
-    fn append_effect(&mut self, event: &Event) -> Result<Seq, core_record::RecordError> {
+    fn append_effect(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError> {
         let index = self.appends;
         self.appends += 1;
         if self.fail_on_append == Some(index) {
-            return Err(core_record::RecordError::Io(std::io::Error::other(
+            return Err(iteron_record::RecordError::Io(std::io::Error::other(
                 "probe: durable append refused",
             )));
         }
@@ -338,7 +338,7 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
     // then disappears before it can append any terminal.
     {
         let mut rollout =
-            core_record::Rollout::open(&runs_dir, &parent, tenant.clone()).expect("open parent");
+            iteron_record::Rollout::open(&runs_dir, &parent, tenant.clone()).expect("open parent");
         rollout
             .append(&Event {
                 seq: Seq::ZERO,
@@ -370,13 +370,13 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
     let parent_events;
     {
         let parent_path = runs_dir.join(format!("{}.jsonl", parent.0));
-        let before = core_record::replay(&parent_path).expect("replay the crashed journal");
+        let before = iteron_record::replay(&parent_path).expect("replay the crashed journal");
         let crashed = EffectJournal::replay(&before).expect("fold the crashed journal");
         let pending = crashed.pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
 
-        let mut rollout = core_record::Rollout::open_existing(&runs_dir, &parent, tenant.clone())
+        let mut rollout = iteron_record::Rollout::open_existing(&runs_dir, &parent, tenant.clone())
             .expect("resume parent");
         rollout
             .append(&Event {
@@ -390,7 +390,7 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
             })
             .expect("fsync recovery marker");
 
-        parent_events = core_record::replay(&parent_path).expect("replay reconciled parent");
+        parent_events = iteron_record::replay(&parent_path).expect("replay reconciled parent");
         let reconciled =
             EffectJournal::replay(&parent_events).expect("fold the reconciled journal");
         assert!(reconciled.pending().is_empty());
@@ -433,10 +433,10 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
         .expect("reconciled parent has a tail")
         .seq;
     let child =
-        core_record::fork(&runs_dir, &parent, fork_at, &tenant).expect("fork reconciled parent");
+        iteron_record::fork(&runs_dir, &parent, fork_at, &tenant).expect("fork reconciled parent");
     {
         let mut rollout =
-            core_record::Rollout::open(&runs_dir, &child, tenant.clone()).expect("open child");
+            iteron_record::Rollout::open(&runs_dir, &child, tenant.clone()).expect("open child");
         rollout
             .append(&Event {
                 seq: Seq::ZERO,
@@ -469,13 +469,13 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
         Some(parent_commit),
         "the child must have an independently committed physical chain"
     );
-    let provenance = core_record::meta(&runs_dir, &child)
+    let provenance = iteron_record::meta(&runs_dir, &child)
         .expect("child metadata")
         .parent
         .expect("fork provenance");
     assert_eq!(provenance.parent_hash_at_seq, parent_commit);
 
-    let logical = core_record::load_forked(&runs_dir, &child).expect("load logical fork");
+    let logical = iteron_record::load_forked(&runs_dir, &child).expect("load logical fork");
     assert_eq!(
         serde_json::to_value(&logical[..parent_events.len()]).expect("serialize logical prefix"),
         serde_json::to_value(&parent_events).expect("serialize parent prefix"),
@@ -988,12 +988,12 @@ fn a_registry_tool_terminal_is_not_restamped_by_the_boundary() {
         &mut log,
         ticket,
         Settlement::Definite(EventKind::ToolDone {
-            result: core_protocol::ToolResult {
+            result: iteron_protocol::ToolResult {
                 tool_use_id: "call-0".into(),
                 content: "fixture".into(),
                 is_error: false,
                 latency_ms: 7,
-                trust: core_protocol::Trust::Workspace,
+                trust: iteron_protocol::Trust::Workspace,
             },
             effect_id: Some(effect_id),
             tool: Some("edit".into()),
@@ -1015,7 +1015,7 @@ fn a_registry_tool_terminal_is_not_restamped_by_the_boundary() {
 #[test]
 fn an_unmeasured_terminal_omits_the_key_rather_than_writing_null() {
     let encoded = serde_json::to_value(EventKind::EffectDone {
-        id: core_protocol::EffectId("effect-1".into()),
+        id: iteron_protocol::EffectId("effect-1".into()),
         tool: "provider".into(),
         duration_ms: None,
     })
@@ -1025,7 +1025,7 @@ fn an_unmeasured_terminal_omits_the_key_rather_than_writing_null() {
         "an unmeasured duration must be absent, not null: {encoded}"
     );
     let measured = serde_json::to_value(EventKind::EffectDone {
-        id: core_protocol::EffectId("effect-1".into()),
+        id: iteron_protocol::EffectId("effect-1".into()),
         tool: "provider".into(),
         duration_ms: Some(0),
     })

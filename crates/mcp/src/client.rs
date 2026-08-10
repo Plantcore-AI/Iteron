@@ -8,7 +8,7 @@ use crate::{
     request,
     tool_filter::{McpToolFilter, validate_bare_tool_name},
 };
-use core_protocol::{ToolSpec, capability_set::CapabilitySet};
+use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -615,7 +615,7 @@ mod tests {
     #[cfg(unix)]
     fn pid_file(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "core-mcp-{tag}-{}-{}",
+            "iteron-mcp-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -820,7 +820,7 @@ mod tests {
         let observation_path = pid_file("safe-env");
         unsafe {
             std::env::set_var(
-                "CORE_TEST_PRICING_KEY",
+                "ITERON_TEST_PRICING_KEY",
                 "mcp-pricing-sentinel-must-not-cross",
             );
             std::env::set_var("XDG_CONFIG_HOME", "mcp-allowlist-sentinel-must-not-cross");
@@ -828,7 +828,7 @@ mod tests {
         let args = vec![
             "-c".to_string(),
             concat!(
-                "printf '%s|%s|%s' \"${CORE_TEST_PRICING_KEY-EMPTY}\" \"${XDG_CONFIG_HOME-EMPTY}\" \"$PWD\" > \"$1\"; ",
+                "printf '%s|%s|%s' \"${ITERON_TEST_PRICING_KEY-EMPTY}\" \"${XDG_CONFIG_HOME-EMPTY}\" \"$PWD\" > \"$1\"; ",
                 "IFS= read -r init; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
@@ -837,7 +837,7 @@ mod tests {
             "mcp-test".to_string(),
             observation_path.to_string_lossy().into_owned(),
         ];
-        let sensitive = vec!["CORE_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
+        let sensitive = vec!["ITERON_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
         let client = McpClient::connect_with_deadlines_and_sensitive_env_names(
             "/bin/bash",
             &args,
@@ -849,7 +849,7 @@ mod tests {
         .await
         .unwrap();
         unsafe {
-            std::env::remove_var("CORE_TEST_PRICING_KEY");
+            std::env::remove_var("ITERON_TEST_PRICING_KEY");
             std::env::remove_var("XDG_CONFIG_HOME");
         }
         let observation = std::fs::read_to_string(&observation_path).unwrap();

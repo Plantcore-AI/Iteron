@@ -1,10 +1,10 @@
-//! Eval-side projection into independently signed `core-evolve` held-out evidence.
+//! Eval-side projection into independently signed `iteron-evolve` held-out evidence.
 
 use crate::measurement::{
     KernelTaxLine, MeasurementError, PairedEvaluationReport, compare_manifests,
 };
 use crate::types::{EvaluationManifest, EvaluationPurpose, Partition};
-use core_evolve::{
+use iteron_evolve::{
     HeldOutEvaluation, IndependentEvaluator, Interval, PolicyRef, PromotionAuthorityError,
     PromotionEvidence, SignedHeldOutEvaluation, VerifiedCandidateInputs,
 };

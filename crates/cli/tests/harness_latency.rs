@@ -25,7 +25,7 @@
 //! # Why it is `#[ignore]`d
 //!
 //! Timing belongs in a job that cannot block a merge. The CI job runs it with `--ignored`; a
-//! developer runs `cargo test -p core-cli --test harness_latency -- --ignored`.
+//! developer runs `cargo test -p iteron-cli --test harness_latency -- --ignored`.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -37,7 +37,7 @@ use std::time::Duration;
 
 const PROVIDER_ID: &str = "latency";
 const MODEL_ID: &str = "latency-model";
-const TEST_KEY_ENV: &str = "CORE_LATENCY_TEST_KEY";
+const TEST_KEY_ENV: &str = "ITERON_LATENCY_TEST_KEY";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Turns in the fixed script. Enough that per-turn amortization is meaningful and the record has
@@ -74,7 +74,7 @@ impl Scratch {
             std::env::temp_dir().join(format!("core-harness-latency-{}-{id}", std::process::id()));
         let scratch = Self { root };
         std::fs::create_dir_all(scratch.repo()).expect("create isolated repository");
-        std::fs::create_dir_all(scratch.home().join(".core")).expect("create isolated Core home");
+        std::fs::create_dir_all(scratch.home().join(".iteron")).expect("create isolated Core home");
         std::fs::create_dir_all(scratch.runs()).expect("create isolated rollout directory");
         let config = serde_json::json!({
             "provider": PROVIDER_ID,
@@ -94,7 +94,7 @@ impl Scratch {
             }]
         });
         std::fs::write(
-            scratch.home().join(".core/config.json"),
+            scratch.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).expect("encode fixture config"),
         )
         .expect("write fixture config");
@@ -192,7 +192,7 @@ fn read_request(stream: &mut TcpStream) -> Option<()> {
 
 /// Kernel tax, in microseconds, for one replay of the fixed script.
 fn one_replay(scratch: &Scratch) -> u64 {
-    let output = Command::new(env!("CARGO_BIN_EXE_core"))
+    let output = Command::new(env!("CARGO_BIN_EXE_iteron"))
         .env_clear()
         .env("HOME", scratch.home())
         .env("PATH", "/usr/bin:/bin")
@@ -264,7 +264,7 @@ fn harness_attributable_time_stays_within_its_budget() {
         .min()
         .expect("REPLAYS is non-zero");
 
-    let budget = std::env::var("CORE_HARNESS_TAX_BUDGET_US")
+    let budget = std::env::var("ITERON_HARNESS_TAX_BUDGET_US")
         .ok()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(DEFAULT_BUDGET_US_PER_TURN);
@@ -278,7 +278,7 @@ fn harness_attributable_time_stays_within_its_budget() {
     assert!(
         floor <= budget,
         "harness-attributable time regressed: {floor}us/turn against a {budget}us/turn budget. \
-         A doubling is the signal this job exists for; set CORE_HARNESS_TAX_BUDGET_US if this \
+         A doubling is the signal this job exists for; set ITERON_HARNESS_TAX_BUDGET_US if this \
          runner is simply slower than the machine the budget was calibrated on."
     );
 }

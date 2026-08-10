@@ -12,8 +12,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const INDEX_DOMAIN: &[u8] = b"core-eval/evidence-bundle-index/v1\0";
-const SIGNATURE_DOMAIN: &[u8] = b"core-eval/evidence-bundle-signature/v1\0";
+const INDEX_DOMAIN: &[u8] = b"iteron-eval/evidence-bundle-index/v1\0";
+const SIGNATURE_DOMAIN: &[u8] = b"iteron-eval/evidence-bundle-signature/v1\0";
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ATTESTATION_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_GENERATED_BYTES: u64 = 16 * 1024 * 1024;
@@ -263,7 +263,7 @@ fn write_bundle(input: BundleWriteInput<'_>) -> Result<EvidenceBundleIndex, Evid
     }
     let unsigned = UnsignedBundleIndex {
         schema_version: 1,
-        bundle_type: "core-eval-signed-evidence".into(),
+        bundle_type: "iteron-eval-signed-evidence".into(),
         public_key: input.signer.public_key_hex(),
         comparison: input.comparison,
         files,

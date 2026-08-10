@@ -1,6 +1,6 @@
 use super::*;
-use core_agents::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
-use core_evolve::{PolicyBundle, PolicyRef, StrategySlot};
+use iteron_agents::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
+use iteron_evolve::{PolicyBundle, PolicyRef, StrategySlot};
 
 fn digest(seed: char) -> String {
     std::iter::repeat_n(seed, 64).collect()
@@ -31,18 +31,18 @@ fn a_promoted_bundle_shifts_tool_selection_across_two_boots() {
     ))))
     .expect("a promoted bundle projects and resolves");
 
-    let filter = core_agents::ToolFilter::All;
+    let filter = iteron_agents::ToolFilter::All;
     let selection_a = narrow_under(&filter, baseline_boot.tool_preference());
     let selection_b = narrow_under(&filter, governed_boot.tool_preference());
 
     // The demo, printed. Run it with:
-    //   cargo test -p core-cli --bins bundle_adapter -- --nocapture
+    //   cargo test -p iteron-cli --bins bundle_adapter -- --nocapture
     println!("boot A (no active bundle)      tool order: {selection_a:?}");
     println!("boot B (promoted bundle)       tool order: {selection_b:?}");
     println!(
         "kernel TCB unchanged across both boots: PROTOCOL_VERSION={} (frozen at W1; \
          `conformance kernel` fails if it moves)",
-        core_protocol::wire::PROTOCOL_VERSION
+        iteron_protocol::wire::PROTOCOL_VERSION
     );
     println!(
         "governed by: bundle {} policy {}",

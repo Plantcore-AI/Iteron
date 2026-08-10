@@ -1,19 +1,19 @@
 //! CLI-side workflow wiring: a real provider-backed [`AgentSpawner`] and the non-TTY stdout progress
-//! renderer (design §3.5). The `core workflow run` subcommand (in `main.rs`) composes these with
-//! `core_workflow::WorkflowEngine`.
+//! renderer (design §3.5). The `iteron workflow run` subcommand (in `main.rs`) composes these with
+//! `iteron_workflow::WorkflowEngine`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use core_protocol::{Effort, Message};
-use core_provider::{Provider, StreamItem, TurnRequest};
-use core_workflow::events::{
+use iteron_protocol::{Effort, Message};
+use iteron_provider::{Provider, StreamItem, TurnRequest};
+use iteron_workflow::events::{
     PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, WorkflowState, fmt_count,
     fmt_duration, truncate_preview,
 };
-use core_workflow::{
+use iteron_workflow::{
     AgentCall, AgentOutcome, AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -35,16 +35,16 @@ pub use projection::{
 
 /// The system prompt every workflow sub-agent runs under. Kept terse: a workflow `agent()` call is a
 /// bounded, single-shot query, not a full coding session.
-const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Core Code workflow. Answer the \
+const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Iteron workflow. Answer the \
 given task directly and concisely in plain text. Do not ask clarifying questions; produce exactly \
 the requested output and nothing else.";
 
 /// OPT-IN FALLBACK SPAWNER: one real provider completion per `agent()` call.
 ///
-/// This is NOT the default. `core workflow run|resume|watch` builds a
+/// This is NOT the default. `iteron workflow run|resume|watch` builds a
 /// [`crate::runtime::KernelSpawner`] — an owned child `Agent` with a read-only `Registry`, its own
 /// child `Rollout`, and the parent's inherited route/pricing. This single-turn spawner is reached
-/// only through `CORE_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
+/// only through `ITERON_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
 /// tools and no child `Agent` loop: it isolates provider behavior from harness behavior. The trait
 /// boundary is the same for both, so nothing above this line depends on which one is installed.
 /// This fallback supports only the built-in `generic` agent and the exact model resolved by the
@@ -388,7 +388,7 @@ impl ProgressSink for PartialWorkSink {
 // The interactive-TUI progress seam (ADR-0001 step 1,
 // docs/project/decisions/0001-workflow-renderer-convergence.md).
 //
-// `core workflow run` (TTY) already renders the script engine's phase→agent tree through
+// `iteron workflow run` (TTY) already renders the script engine's phase→agent tree through
 // `CardProgressSink` above. A workflow launched from INSIDE the interactive TUI — the `Workflow`
 // tool, `runtime.rs::launch_workflow` — had no such wire: the engine emitted `ProgressEvent`s into
 // a sink that kept only degradation reasons, so the operator watched a blank turn for minutes.
@@ -542,7 +542,7 @@ pub struct PreparedWorkflow {
     /// The script's declared `meta.phases`, so the card shows the shape of the run on frame one
     /// instead of growing it phase by phase.
     pub declared_phases: Vec<String>,
-    /// The directory `core workflow list` enumerates. The manifest is already written into it.
+    /// The directory `iteron workflow list` enumerates. The manifest is already written into it.
     pub workflows_dir: PathBuf,
     /// The engine's run request: script, args, run id, workflows dir and aggregate limits.
     pub spec: RunSpec,
@@ -637,7 +637,7 @@ pub trait WorkflowLauncher: Send + Sync {
         Collected::Unknown(format!(
             "Workflow: run `{run_id}` is not owned by this session. Runs launched here complete \
              inside the turn that started them, so there is nothing to collect; \
-             `core workflow list` shows every run on disk."
+             `iteron workflow list` shows every run on disk."
         ))
     }
 
@@ -780,7 +780,7 @@ pub fn killed_run_summary(
         "Workflow `{name}` (run {run_id}) was KILLED at the engine's next safe point. It never \
          reached its own `return`, so it has no return value — this is a cancellation with a \
          partial result, not a crash.\n\n{produced}{omitted}{interrupted}{}\n\n{} agent(s) replayed \
-         from cache, {} ran live. `core workflow list` records the run.",
+         from cache, {} ran live. `iteron workflow list` records the run.",
         degraded_section(degraded),
         report.cache_hits,
         report.cache_misses
@@ -789,13 +789,13 @@ pub fn killed_run_summary(
 
 /// The terminal record for a run that produced no report of its own.
 ///
-/// A run that never reported is still a directory `core workflow list` enumerates — `persist_inputs`
+/// A run that never reported is still a directory `iteron workflow list` enumerates — `persist_inputs`
 /// created it before the engine started — so leaving it unwritten is the "stub that never reaches a
 /// terminal state" failure, one layer up. The zeroed totals mean "none were settled", which is true:
 /// the engine failed before it could aggregate any. They are not a claim that the run was free.
 pub fn unreported_run(run_id: &str, message: &str) -> RunReport {
     RunReport {
-        run_id: core_workflow::RunId::new(run_id.to_string()),
+        run_id: iteron_workflow::RunId::new(run_id.to_string()),
         value: serde_json::json!({ "error": message }),
         stopped: true,
         cache_hits: 0,
@@ -1015,7 +1015,7 @@ struct SupervisorInner {
 /// 1. **Nothing is orphaned.** Every detached run is registered before it is announced, and a reaper
 ///    task holds the handle for as long as the run lives. `serve` cannot return without going
 ///    through [`Self::shutdown`], which cancels and reaps.
-/// 2. **No result is lost.** The reaper persists the terminal sidecar (`core workflow list`) and
+/// 2. **No result is lost.** The reaper persists the terminal sidecar (`iteron workflow list`) and
 ///    keeps the model-facing summary for `collect`, which is built by [`run_result_summary`] — the
 ///    same function the in-turn path uses.
 /// 3. **The model is never told a turn completed when it did not.** `launch` returns
@@ -1033,7 +1033,7 @@ impl WorkflowSupervisor {
     /// The one sentence handed to the model with every receipt. A constant so the exit rule the
     /// model is told and the exit rule [`Self::shutdown`] enforces cannot drift apart.
     pub const OWNERSHIP: &'static str = "This session owns the run. Ending the session stops it at the engine's next safe point; \
-         its journal is kept, so `core workflow resume <run-id>` continues it in a new process.";
+         its journal is kept, so `iteron workflow resume <run-id>` continues it in a new process.";
 
     pub fn new(settled: tokio::sync::mpsc::UnboundedSender<RunSettled>) -> Arc<Self> {
         Arc::new_cyclic(|me| WorkflowSupervisor {
@@ -1377,14 +1377,14 @@ impl WorkflowSupervisor {
                     run.state = SupervisedState::Failed { error: message };
                     lines.push(format!(
                         "workflow `{}` (run {id}) did not stop within {}s and was recorded as \
-                         stopped at exit; resume it with `core workflow resume {id}`",
+                         stopped at exit; resume it with `iteron workflow resume {id}`",
                         run.name,
                         grace.as_secs()
                     ));
                 }
                 _ => lines.push(format!(
                     "workflow `{}` (run {id}) was stopped when the session ended; resume it with \
-                     `core workflow resume {id}`",
+                     `iteron workflow resume {id}`",
                     run.name
                 )),
             }
@@ -1440,7 +1440,7 @@ impl WorkflowLauncher for WorkflowSupervisor {
         let inner = self.inner.lock().unwrap();
         let Some(run) = inner.runs.get(run_id) else {
             return Collected::Unknown(format!(
-                "Workflow: run `{run_id}` was not started by this session. `core workflow list` \
+                "Workflow: run `{run_id}` was not started by this session. `iteron workflow list` \
                  shows every run on disk."
             ));
         };
@@ -1528,7 +1528,7 @@ impl WorkflowLauncher for WorkflowSupervisor {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Persistence + enumeration for the background-launch surface (`core workflow list/resume/watch`).
+// Persistence + enumeration for the background-launch surface (`iteron workflow list/resume/watch`).
 //
 // The engine persists only the outcome `journal.jsonl` under `<workflows_dir>/<run_id>/`. To make a
 // run re-launchable (`resume`/`watch`) and listable by a LATER process, the CLI writes two sidecars
@@ -1637,7 +1637,7 @@ pub fn load_script(workflows_dir: &Path, run_id: &str) -> Option<String> {
     std::fs::read_to_string(run_dir(workflows_dir, run_id).join("script.js")).ok()
 }
 
-/// One row of `core workflow list` (also the durable summary the TUI can rehydrate).
+/// One row of `iteron workflow list` (also the durable summary the TUI can rehydrate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunListing {
     pub run_id: String,
@@ -1675,7 +1675,7 @@ fn derive_status(result: Option<&RunResult>, has_journal: bool) -> &'static str 
 }
 
 /// Largest journal opened by the first-frame rehydration path. The run remains durable and
-/// available to `core workflow list|resume`; it is merely omitted from the startup inventory.
+/// available to `iteron workflow list|resume`; it is merely omitted from the startup inventory.
 const MAX_RECENT_JOURNAL_BYTES: u64 = 256 * 1024;
 
 /// Strict summary used by restart rehydration. Unlike the human-invoked full listing, the first
@@ -1712,7 +1712,7 @@ fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, u
 }
 
 /// Load one restart-safe listing through the same manifest/script/result readers used by
-/// `core workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
+/// `iteron workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
 pub(crate) fn load_run_listing(workflows_dir: &Path, run_id: String) -> Option<RunListing> {
     let manifest = load_manifest(workflows_dir, &run_id)?;
     // A restored row advertises the run id accepted by resume/watch, so the persisted script must
@@ -1789,7 +1789,7 @@ pub fn run_status(report: &RunReport) -> &'static str {
     }
 }
 
-/// Stable process contract for `core workflow run|resume|watch`: clean success is 0, any settled
+/// Stable process contract for `iteron workflow run|resume|watch`: clean success is 0, any settled
 /// agent failure is 1, and operator cancellation remains 130.
 pub fn run_exit_code(report: &RunReport) -> u8 {
     if report.stopped {
@@ -1818,9 +1818,9 @@ pub fn final_status_line(run_id: &str, report: &RunReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Block, StopReason, Usage};
-    use core_provider::{ProviderError, TurnResult, UsageReport};
-    use core_workflow::{RunId, RunReport};
+    use iteron_protocol::{Block, StopReason, Usage};
+    use iteron_provider::{ProviderError, TurnResult, UsageReport};
+    use iteron_workflow::{RunId, RunReport};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1880,7 +1880,7 @@ mod tests {
 
     fn scratch_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "core-cli-workflow-{tag}-{}-{}",
+            "iteron-cli-workflow-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2001,7 +2001,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     #[test]
     fn a_run_that_only_wrote_a_journal_lists_as_an_unnamed_running_stub() {
         // The in-turn (`Workflow` tool) path used to do exactly this: write its journal into the
-        // directory `core workflow list` enumerates and never call either persistence helper. This
+        // directory `iteron workflow list` enumerates and never call either persistence helper. This
         // pins what that looked like, so the assertion below is a real difference.
         let workflows_dir = scratch_dir("orphan");
         let run = run_dir(&workflows_dir, "wf_orphan");
@@ -2400,7 +2400,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     /// clearing control sequence and a credential-shaped token.
     ///
     /// The credential is delimited from what precedes it because `crate::semantic_text::ui_safe_text` defers
-    /// to `core_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
+    /// to `iteron_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
     /// that the seam ROUTES untrusted strings through the frontend's one gate — not a second,
     /// private redaction implementation, which is exactly the drift that would let the two
     /// disagree about what a secret looks like.
@@ -2894,7 +2894,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         let line = report.lines.join("\n");
         assert!(line.contains(&run_id), "{line}");
         assert!(
-            line.contains("core workflow resume"),
+            line.contains("iteron workflow resume"),
             "the operator is told how to continue it: {line}"
         );
 

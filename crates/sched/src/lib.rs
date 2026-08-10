@@ -1,4 +1,4 @@
-//! core-sched — the resilience and overlap layer.
+//! iteron-sched — the resilience and overlap layer.
 //!
 //! Against a rate-limited, heavy-tailed model API, the only honest knob is bounded inflight
 //! concurrency (Little's Law), and retries need dual budgets + full-jitter backoff — a single

@@ -51,7 +51,9 @@ impl Environment {
             // NO_COLOR is active when present and non-empty. `NO_COLOR=` is the convention's
             // explicit inactive shape and must not silently flatten a configured theme.
             no_color: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
-            preset: bounded_env("CORE_THEME").as_deref().and_then(parse_preset),
+            preset: bounded_env("ITERON_THEME")
+                .as_deref()
+                .and_then(parse_preset),
             colorfgbg: bounded_env("COLORFGBG"),
             color_depth: ColorDepth::from_hints(term.as_deref(), colorterm.as_deref()),
             interactive_query_supported,

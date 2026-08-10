@@ -7,7 +7,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_context_port(
         &mut self,
-        port: std::sync::Arc<dyn core_ctx::ContextPort>,
+        port: std::sync::Arc<dyn iteron_ctx::ContextPort>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -24,7 +24,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_context_strategy(
         &mut self,
-        strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -46,7 +46,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_tool_policy(
         &mut self,
-        policy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        policy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -64,7 +64,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_memory_strategy(
         &mut self,
-        strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -84,14 +84,14 @@ impl Agent {
         &self,
     ) -> Option<(
         std::path::PathBuf,
-        std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
-        core_protocol::TurnId,
+        std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
+        iteron_protocol::TurnId,
     )> {
         self.memory_workspace.clone().map(|workspace| {
             (
                 workspace,
                 self.memory_strategy.clone(),
-                core_protocol::TurnId(self.seq_turn),
+                iteron_protocol::TurnId(self.seq_turn),
             )
         })
     }
@@ -104,7 +104,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_router(
         &mut self,
-        router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -122,7 +122,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_planner(
         &mut self,
-        planner: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        planner: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -140,7 +140,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_collaboration(
         &mut self,
-        collaboration: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -158,7 +158,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_scheduler(
         &mut self,
-        scheduler: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -176,7 +176,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_verifier(
         &mut self,
-        verifier: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -194,7 +194,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_model_router(
         &mut self,
-        router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -239,7 +239,7 @@ impl Agent {
     /// Install the operator-selected active bundle before any child registry is constructed.
     pub fn set_boot_bundle(
         &mut self,
-        bundle: std::sync::Arc<core_agents::BootBundle>,
+        bundle: std::sync::Arc<iteron_agents::BootBundle>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -261,14 +261,14 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::InstructionContextAlreadyResolved);
         }
-        let max = core_ctx::MAX_MERGED_INSTRUCTION_BYTES;
+        let max = iteron_ctx::MAX_MERGED_INSTRUCTION_BYTES;
         if text.len() > max {
             return Err(KernelError::InstructionContextTooLarge {
                 bytes: text.len(),
                 max,
             });
         }
-        let text = core_record::redact::scrub(&text);
+        let text = iteron_record::redact::scrub(&text);
         if text.len() > max {
             return Err(KernelError::InstructionContextTooLarge {
                 bytes: text.len(),
@@ -309,7 +309,7 @@ impl Agent {
                 max,
             });
         }
-        let text = core_record::redact::scrub(&text);
+        let text = iteron_record::redact::scrub(&text);
         if text.len() > max {
             return Err(KernelError::EnvironmentContextTooLarge {
                 bytes: text.len(),

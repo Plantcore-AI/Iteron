@@ -25,8 +25,8 @@
 //!
 //! The test is pure (no filesystem, network, or subprocess), so it is deterministic on the gate.
 
-use core_eval::types::{EVAL_EXIT_RUN_FAILURES, EVAL_EXIT_SUCCESS, EVAL_SCHEMA_VERSION};
-use core_eval::{
+use iteron_eval::types::{EVAL_EXIT_RUN_FAILURES, EVAL_EXIT_SUCCESS, EVAL_SCHEMA_VERSION};
+use iteron_eval::{
     CellResult, CostStatus, EvaluationManifest, EvaluationPurpose, OracleStatus, Partition,
     RunStatus, SamplingControl,
 };
@@ -68,9 +68,9 @@ fn cell(config: &str, status: RunStatus, terminal: Option<&str>, exit: Option<i3
 /// `self.cells`, so the aggregate/comparison/selection blocks are built with the production
 /// reducers purely to keep the artifact well-formed.
 fn manifest(cells: Vec<CellResult>) -> EvaluationManifest {
-    let aggregate = core_eval::aggregate(&cells, 3);
-    let comparison = core_eval::compare(&aggregate, "verify_OFF", "verify_ON");
-    let selections = core_eval::selection_summaries(&cells);
+    let aggregate = iteron_eval::aggregate(&cells, 3);
+    let comparison = iteron_eval::compare(&aggregate, "verify_OFF", "verify_ON");
+    let selections = iteron_eval::selection_summaries(&cells);
     EvaluationManifest {
         schema_version: EVAL_SCHEMA_VERSION,
         run_id: "run-d14-02".into(),
@@ -87,12 +87,12 @@ fn manifest(cells: Vec<CellResult>) -> EvaluationManifest {
         core_agent_wall_secs: 1_800,
         core_process_grace_secs: 30,
         core_process_timeout_secs: 1_830,
-        result_path: PathBuf::from("core-eval-result.json"),
+        result_path: PathBuf::from("iteron-eval-result.json"),
         cells,
         aggregate,
         comparison,
         selections,
-        kernel_tax: core_eval::types::KernelTaxObservation::default(),
+        kernel_tax: iteron_eval::types::KernelTaxObservation::default(),
     }
 }
 

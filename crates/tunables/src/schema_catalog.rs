@@ -20,39 +20,39 @@ const fn namespaced_id() -> ScalarDomain {
 /// Immutable, versioned definitions for every scalar catalog ID used by a family schema.
 pub const SCALAR_CATALOGS: &[ScalarCatalogDefinition] = &[
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/providers-v1",
+        id: "iteron://tunables/catalogs/providers-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/models-v1",
+        id: "iteron://tunables/catalogs/models-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/provider-reasoning-levels-v1",
+        id: "iteron://tunables/catalogs/provider-reasoning-levels-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/token-estimators-v1",
+        id: "iteron://tunables/catalogs/token-estimators-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/tool-capabilities-v1",
+        id: "iteron://tunables/catalogs/tool-capabilities-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/model-routes-v1",
+        id: "iteron://tunables/catalogs/model-routes-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/provider-service-tiers-v1",
+        id: "iteron://tunables/catalogs/provider-service-tiers-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/agent-roles-v1",
+        id: "iteron://tunables/catalogs/agent-roles-v1",
         value_domain: namespaced_id(),
     },
     ScalarCatalogDefinition {
-        id: "core://tunables/catalogs/binary-inspectors-v1",
+        id: "iteron://tunables/catalogs/binary-inspectors-v1",
         value_domain: namespaced_id(),
     },
 ];

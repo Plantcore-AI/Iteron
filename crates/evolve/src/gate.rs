@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 pub const EVOLUTION_GATE_SCHEMA_VERSION: u16 = 1;
 
-const GATE_DOMAIN: &str = "core-evolve/evolution-proven/v1";
-const DEMO_GATE_KEY: &[u8] = b"core-evolve-public-gate-key-v1";
+const GATE_DOMAIN: &str = "iteron-evolve/evolution-proven/v1";
+const DEMO_GATE_KEY: &[u8] = b"iteron-evolve-public-gate-key-v1";
 const MAX_GATE_SUMMARY_BYTES: usize = 256 * 1024;
 const MAX_TRANSCRIPT_READ_BYTES: u64 = 16 * 1024 * 1024;
 

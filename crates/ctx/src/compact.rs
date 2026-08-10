@@ -17,7 +17,7 @@
 //! [`plan_at_turn_end`]: CompactionPolicy::plan_at_turn_end
 //! [`plan_before_overflow`]: CompactionPolicy::plan_before_overflow
 
-use core_protocol::{Block, Message, Role, ToolSpec};
+use iteron_protocol::{Block, Message, Role, ToolSpec};
 
 /// Provenance for the request-size number. This is never labelled as provider tokenization: it is
 /// a fast, deterministic admission estimate used before a request exists.
@@ -583,8 +583,8 @@ mod tests {
             name: "read_file".into(),
             description: "x".repeat(350),
             input_schema: Default::default(),
-            purity: core_protocol::Purity::Pure,
-            capability: core_protocol::Capability::ReadOnly,
+            purity: iteron_protocol::Purity::Pure,
+            capability: iteron_protocol::Capability::ReadOnly,
         }];
         let estimate = estimate_request_context(&"s".repeat(350), &messages, &tools);
         assert!(estimate.system_tokens >= 100);
@@ -608,15 +608,15 @@ mod tests {
                 name: "read_file".into(),
                 description: "x".repeat(350),
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
-                purity: core_protocol::Purity::Pure,
-                capability: core_protocol::Capability::ReadOnly,
+                purity: iteron_protocol::Purity::Pure,
+                capability: iteron_protocol::Capability::ReadOnly,
             },
             ToolSpec {
                 name: "bash".into(),
                 description: "y".repeat(120),
                 input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}}}),
-                purity: core_protocol::Purity::Effecting,
-                capability: core_protocol::Capability::CodeExecuting,
+                purity: iteron_protocol::Purity::Effecting,
+                capability: iteron_protocol::Capability::CodeExecuting,
             },
         ];
         let mut estimator = RequestEstimator::new();

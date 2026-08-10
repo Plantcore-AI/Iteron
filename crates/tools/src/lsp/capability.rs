@@ -308,7 +308,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "core-lsp-capability-{label}-{}-{nonce:x}",
+                "iteron-lsp-capability-{label}-{}-{nonce:x}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&path).unwrap();

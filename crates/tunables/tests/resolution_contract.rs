@@ -1,4 +1,4 @@
-use core_tunables::{
+use iteron_tunables::{
     ActivationEvidence, ActivationPredicate, CatalogSnapshot, ConstraintEvidence,
     ConstraintProjection, ConstraintRelation, ConstraintValue, CrossFieldRule, DeclaredValue,
     DefaultEvidence, DefaultResolver, EntryOutcome, EvidenceState, EvidenceSubject, ExplainError,
@@ -92,7 +92,7 @@ fn synthetic_report() -> ResolutionReport {
         .map(|family| {
             if matches!(
                 family.implementation_status,
-                core_tunables::ImplementationStatus::Missing
+                iteron_tunables::ImplementationStatus::Missing
             ) {
                 return ResolvedEntry {
                     ordinal: family.ordinal,
@@ -404,19 +404,19 @@ fn owned_value(value: TunableValue) -> ResolutionValue {
 
 fn resolver_id(resolver: DefaultResolver) -> String {
     match resolver {
-        DefaultResolver::Literal => "core://tunables/resolvers/literal-v1".to_owned(),
+        DefaultResolver::Literal => "iteron://tunables/resolvers/literal-v1".to_owned(),
         DefaultResolver::Builtin { resolver_id } => resolver_id.to_owned(),
         DefaultResolver::ModelMetadata { field } => {
-            format!("core://tunables/resolvers/model-metadata/{field}-v1")
+            format!("iteron://tunables/resolvers/model-metadata/{field}-v1")
         }
         DefaultResolver::ProviderCapability { capability } => {
-            format!("core://tunables/resolvers/provider-capability/{capability}-v1")
+            format!("iteron://tunables/resolvers/provider-capability/{capability}-v1")
         }
         DefaultResolver::Transport { field } => {
-            format!("core://tunables/resolvers/transport/{field}-v1")
+            format!("iteron://tunables/resolvers/transport/{field}-v1")
         }
         DefaultResolver::RuntimeObservation { field } => {
-            format!("core://tunables/resolvers/runtime-observation/{field}-v1")
+            format!("iteron://tunables/resolvers/runtime-observation/{field}-v1")
         }
         DefaultResolver::GovernedCatalog { catalog_id } => catalog_id.to_owned(),
         DefaultResolver::Operator { input_id } => input_id.to_owned(),
@@ -465,7 +465,7 @@ fn catalog_snapshot_values(catalog_id: &str, values: BTreeSet<String>) -> Catalo
     }
     let digest_sha256 = hex::encode(Sha256::digest(
         serde_json::to_vec(&Payload {
-            canonicalization: "core-tunables-catalog-snapshot-json-v1",
+            canonicalization: "iteron-tunables-catalog-snapshot-json-v1",
             catalog_id,
             value_count: values.len(),
             values: &values,
@@ -780,7 +780,7 @@ fn complete_registry_driven_resolution_succeeds_and_explains_all_active_families
     let second = resolve(permuted).unwrap();
     assert_eq!(first, second);
     let report = first.report();
-    assert_eq!(report.entries.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(report.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
     for (entry, family) in report.entries.iter().zip(families()) {
         if family.implementation_status == ImplementationStatus::Missing {
             assert!(matches!(entry.outcome, EntryOutcome::Unavailable));
@@ -870,7 +870,7 @@ fn optional_constrained_fields_need_evidence_only_when_present() {
         assert!(matches!(
             &entry.outcome,
             EntryOutcome::Unresolved {
-                reason: core_tunables::UnresolvedReason::ExternalConstraintMissing {
+                reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
                     field: actual_field,
                     ceiling: actual_ceiling,
                 }
@@ -1270,7 +1270,7 @@ fn catalog_reference_requires_and_accepts_whole_catalog_attestation() {
     assert!(matches!(
         report.entries[usize::from(family.ordinal - 1)].outcome,
         EntryOutcome::Unresolved {
-            reason: core_tunables::UnresolvedReason::ExternalConstraintMissing { .. }
+            reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing { .. }
         }
     ));
 
@@ -1607,7 +1607,7 @@ fn unavailable_158_and_human_json_reason_codes_are_identical() {
     let inactive = families()
         .iter()
         .find(|family| {
-            family.implementation_status != core_tunables::ImplementationStatus::Missing
+            family.implementation_status != iteron_tunables::ImplementationStatus::Missing
                 && family.activation.inactive_reason.is_some()
         })
         .unwrap();
@@ -1619,11 +1619,11 @@ fn unavailable_158_and_human_json_reason_codes_are_identical() {
         },
     };
     let expected = match inactive.activation.inactive_reason.unwrap() {
-        core_tunables::InactiveReason::ConfigurationAbsent => "inactive.configuration_absent",
-        core_tunables::InactiveReason::GroupedOrIncompleteSeam => {
+        iteron_tunables::InactiveReason::ConfigurationAbsent => "inactive.configuration_absent",
+        iteron_tunables::InactiveReason::GroupedOrIncompleteSeam => {
             "inactive.grouped_or_incomplete_seam"
         }
-        core_tunables::InactiveReason::NotImplemented => "inactive.not_implemented",
+        iteron_tunables::InactiveReason::NotImplemented => "inactive.not_implemented",
     };
     assert_code_parity(&report, inactive.id, expected);
 }
@@ -1787,7 +1787,7 @@ fn forged_metadata_shadow_codes_and_aggregate_bounds_fail_closed() {
     entry.effective = None;
     entry.provenance = None;
     entry.outcome = EntryOutcome::Unresolved {
-        reason: core_tunables::UnresolvedReason::ResolverEvidenceMissing {
+        reason: iteron_tunables::UnresolvedReason::ResolverEvidenceMissing {
             resolver_id: resolver_id(family.default.resolver),
         },
     };
@@ -1900,7 +1900,7 @@ fn direct_value_beats_same_binding_profile_and_registry_order_beats_vector_order
     assert_eq!(entry.adjustments.len(), 1);
     assert_eq!(
         entry.adjustments[0].policy_id,
-        "core://tunables/adjustments/clamp-numeric-v1"
+        "iteron://tunables/adjustments/clamp-numeric-v1"
     );
 }
 
@@ -1949,7 +1949,7 @@ fn activation_default_route_and_constraint_evidence_fail_closed() {
     let seam = families()
         .iter()
         .find_map(|family| match family.activation.predicate {
-            core_tunables::ActivationPredicate::RuntimeDerived { seam } => Some(seam),
+            iteron_tunables::ActivationPredicate::RuntimeDerived { seam } => Some(seam),
             _ => None,
         })
         .unwrap();
@@ -2090,13 +2090,13 @@ fn resolve_failure_is_atomic_deterministic_and_still_reports_all_160_families() 
     assert!(report.entries.iter().any(|entry| matches!(
         entry.outcome,
         EntryOutcome::Unresolved {
-            reason: core_tunables::UnresolvedReason::ResolverEvidenceMissing { .. }
+            reason: iteron_tunables::UnresolvedReason::ResolverEvidenceMissing { .. }
         }
     )));
     assert!(report.entries.iter().any(|entry| matches!(
         entry.outcome,
         EntryOutcome::Unresolved {
-            reason: core_tunables::UnresolvedReason::ExternalConstraintMissing { .. }
+            reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing { .. }
         }
     )));
 }
@@ -2111,7 +2111,7 @@ fn resolver_failure_from_missing_scalar_catalogs_remains_explainable() {
     assert!(matches!(
         report.entries[0].outcome,
         EntryOutcome::Unresolved {
-            reason: core_tunables::UnresolvedReason::ResolverEvidenceMissing { .. }
+            reason: iteron_tunables::UnresolvedReason::ResolverEvidenceMissing { .. }
         }
     ));
     assert!(explain_text(&report).is_ok());
@@ -2136,7 +2136,7 @@ fn provider_rejection_reason_has_stable_redacted_code() {
     let mut report = synthetic_report();
     let family = families()
         .iter()
-        .find(|family| family.requirements.provider != core_tunables::ProviderRequirement::None)
+        .find(|family| family.requirements.provider != iteron_tunables::ProviderRequirement::None)
         .unwrap();
     let entry = &mut report.entries[usize::from(family.ordinal - 1)];
     entry.effective = None;
@@ -2160,7 +2160,7 @@ fn genuine_missing_selected_route_report_explains_exact_sorted_capabilities() {
     input.runtime.admitted_routes.clear();
     input.runtime.selected_route = None;
     input.runtime.catalogs = vec![catalog_snapshot(
-        "core://tunables/catalogs/model-routes-v1",
+        "iteron://tunables/catalogs/model-routes-v1",
         "fixture:route",
     )];
     input.declared_values = vec![DeclaredValue {

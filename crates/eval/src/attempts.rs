@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const DOMAIN: &[u8] = b"core-eval/attempt-ledger/v1\0";
+const DOMAIN: &[u8] = b"iteron-eval/attempt-ledger/v1\0";
 const MAX_LEDGER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 pub const MAX_PHYSICAL_ATTEMPTS: u8 = 5;
@@ -277,7 +277,7 @@ pub fn sidecar_path(output: &Path) -> PathBuf {
     let name = output
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("core-eval-result.json");
+        .unwrap_or("iteron-eval-result.json");
     output.with_file_name(format!("{name}.attempts.jsonl"))
 }
 
@@ -301,7 +301,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-attempt-ledger-{}-{nonce:x}.jsonl",
+            "iteron-eval-attempt-ledger-{}-{nonce:x}.jsonl",
             std::process::id(),
         ));
         let _ = std::fs::remove_file(&path);

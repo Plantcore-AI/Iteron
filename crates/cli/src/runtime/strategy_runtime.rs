@@ -3,12 +3,12 @@
 //! The strategies see only already-gathered observations. World access stays in `ContextPort`,
 //! while authority stays in the kernel gate and Registry.
 
-use core_ctx::{ContextPort, ContextPortInput, ContextSlotObservation, ContextStrategy};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::context::RequestId;
-use core_protocol::slot::StrategySlot;
-use core_protocol::{Capability, ToolUse, Trust, TurnId};
-use core_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
+use iteron_ctx::{ContextPort, ContextPortInput, ContextSlotObservation, ContextStrategy};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::RequestId;
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{Capability, ToolUse, Trust, TurnId};
+use iteron_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
 use std::path::Path;
 
 pub(crate) struct LiveContext {
@@ -16,8 +16,8 @@ pub(crate) struct LiveContext {
     pub governing_trust: Trust,
     /// Exact bounded source projection used to assemble `text`. The runtime consumes this only for
     /// content-free decision evidence; durable provider bytes remain the authoritative record.
-    pub segments: Vec<core_protocol::context::ContextSegment>,
-    pub memory_audit: Option<core_ctx::MemoryRecallAudit>,
+    pub segments: Vec<iteron_protocol::context::ContextSegment>,
+    pub memory_audit: Option<iteron_ctx::MemoryRecallAudit>,
 }
 
 pub(crate) struct LiveContextRequest<'a> {

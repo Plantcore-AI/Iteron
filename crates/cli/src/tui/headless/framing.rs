@@ -482,7 +482,7 @@ async fn send_fragmented<W: AsyncWrite + Unpin>(
             .await
             .context("fragment encoder ended before the declared chunk count")??;
         let chunk = ServerFrame::FrameChunk {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             stream: plan.identity.stream,
             logical_type: plan.identity.logical_type,
             seq: plan.identity.seq,
@@ -603,7 +603,7 @@ mod tests {
 
     fn event(seq: u64, text: String) -> ServerFrame {
         ServerFrame::Event {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             seq,
             event: json!({"text": text}),
         }
@@ -634,9 +634,9 @@ mod tests {
     #[test]
     fn maximum_protocol_task_rollout_uses_fragments_below_the_physical_cap() {
         let rollout = ServerFrame::Rollout {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             rollout_seq: 11,
-            event: json!({"task": "x".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES)}),
+            event: json!({"task": "x".repeat(iteron_protocol::task::MAX_TASK_TEXT_BYTES)}),
         };
         let (payload, _) = prepare(rollout).unwrap();
         let PreparedPayload::Fragmented {
@@ -650,7 +650,7 @@ mod tests {
         assert!(logical_bytes > MAX_SERVER_FRAME_BYTES);
         assert!(chunk_count >= 2);
         let sample = ServerFrame::FrameChunk {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             stream: "rollout",
             logical_type: "rollout",
             seq: None,
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn valid_maximum_provider_result_is_measured_without_a_whole_encoded_allocation() {
         let result = ServerFrame::Result {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             seq: 7,
             result: json!({"assistant_text": "\u{0000}".repeat(MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES)}),
         };
@@ -729,7 +729,7 @@ mod tests {
         let (mut writer, _reader) = tokio::io::duplex(1);
         let budget = Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES));
         let bytes = encode_physical(&ServerFrame::Error {
-            protocol_version: core_protocol::PROTOCOL_VERSION,
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
             code: "fixture",
             message: "x".repeat(1024),
         })
@@ -755,7 +755,7 @@ mod tests {
         let mut ring = ReplayRing::with_limits(1, usize::MAX);
         ring.push(Arc::new(
             EncodedServerFrame::from_live(ServerFrame::Result {
-                protocol_version: core_protocol::PROTOCOL_VERSION,
+                protocol_version: iteron_protocol::PROTOCOL_VERSION,
                 seq: 1,
                 result: json!({"assistant_text":"first"}),
             })

@@ -16,7 +16,7 @@ context you need instead of guessing.";
 /// An operator-opened conversation with its own context, cost ledger and append-only record.
 pub struct SideConversation {
     pub(super) agent: Agent,
-    run_id: core_protocol::RunId,
+    run_id: iteron_protocol::RunId,
     record_path: std::path::PathBuf,
     asks: u32,
 }
@@ -125,8 +125,8 @@ impl Agent {
         side.hooks = self.hooks.clone();
         side.hook_effect_journal = self.hook_effect_journal.clone();
         side.delegation_depth = self.delegation_depth.saturating_add(1);
-        side.effort = if self.effort == core_protocol::Effort::Ultracode {
-            core_protocol::Effort::Max
+        side.effort = if self.effort == iteron_protocol::Effort::Ultracode {
+            iteron_protocol::Effort::Max
         } else {
             self.effort
         };

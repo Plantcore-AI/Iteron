@@ -14,7 +14,7 @@ use ratatui::text::Span;
 /// state. Secret-shaped substrings are redacted and terminal control characters are escaped so a
 /// tool/user string cannot inject terminal commands or rewrite earlier rows.
 pub(crate) fn ui_safe_text(text: &str) -> String {
-    let scrubbed = core_record::redact::scrub(text);
+    let scrubbed = iteron_record::redact::scrub(text);
     let mut safe = String::with_capacity(scrubbed.len());
     for ch in scrubbed.chars() {
         match ch {

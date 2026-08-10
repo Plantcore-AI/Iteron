@@ -13,9 +13,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-const EVALUATION_DOMAIN: &str = "core-evolve/independent-evaluation/v1";
-const CHECKPOINT_EVALUATION_DOMAIN: &str = "core-evolve/checkpoint-evaluation/v1";
-const STAGE_RESULT_DOMAIN: &str = "core-evolve/stage-result/v1";
+const EVALUATION_DOMAIN: &str = "iteron-evolve/independent-evaluation/v1";
+const CHECKPOINT_EVALUATION_DOMAIN: &str = "iteron-evolve/checkpoint-evaluation/v1";
+const STAGE_RESULT_DOMAIN: &str = "iteron-evolve/stage-result/v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeldOutEvaluation {
@@ -109,14 +109,14 @@ impl SignedHeldOutEvaluation {
     /// outside this crate — `pub(crate)` fields, no accessor of any kind — while
     /// [`crate::HeldOutEvidenceBridge`]'s own doc told an implementor that the `base_model` argument
     /// was "checkable against the returned report". It was not: a probe crate holding only
-    /// `core-evolve` got `E0616: field report is private`. The crate now ships one bounded
+    /// `iteron-evolve` got `E0616: field report is private`. The crate now ships one bounded
     /// implementation, but the seam remains public and externally implementable; a property that
     /// only an in-crate implementation could use would still make that contract false.
     ///
     /// **The barrier is the key, not the field visibility.** `pub(crate)` stops a struct literal
     /// from outside and nothing more: this type derives `Deserialize`, and serde's generated impl
     /// lives inside this crate, so `serde_json::from_value` reconstitutes one from a crate holding
-    /// only `core-evolve` — a review did exactly that, with an attacker-chosen evaluator id and
+    /// only `iteron-evolve` — a review did exactly that, with an attacker-chosen evaluator id and
     /// signature, and mutated the contents on the way through. What that forgery cannot do is make
     /// the HMAC verify against an anchor the authority configured, which is the whole guarantee and
     /// the only one worth stating.

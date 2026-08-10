@@ -21,13 +21,13 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
         contract,
         "admit_type_version",
         r#"fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
-            if !SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.contains(&actual) {
+            if !SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.contains(&actual) {
                 return Err(ContractError::SchemaVersion {
                     actual,
-                    expected: CORE_CLI_SCHEMA_VERSION,
+                    expected: ITERON_CLI_SCHEMA_VERSION,
                 });
             }
-            if !SUPPORTED_CORE_CLI_TYPE_VERSIONS.contains(&(kind, actual)) {
+            if !SUPPORTED_ITERON_CLI_TYPE_VERSIONS.contains(&(kind, actual)) {
                 return Err(ContractError::TypeVersion {
                     kind: kind.to_owned(),
                     actual,

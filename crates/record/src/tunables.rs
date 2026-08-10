@@ -1,11 +1,11 @@
 //! Immutable run-genesis tunables evidence and exact-compatibility checks.
 
-use core_protocol::{
+use iteron_protocol::{
     EventKind, MAX_RUN_GENESIS_TUNABLE_ENTRIES, MAX_RUN_GENESIS_TUNABLE_ID_BYTES,
     RUN_GENESIS_TUNABLES_CANONICALIZATION, RunGenesisTunableEntry, RunGenesisTunableState,
     RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, RunGenesisTunablesVersion,
 };
-use core_tunables::{EntryState, ResolvedTunableSet};
+use iteron_tunables::{EntryState, ResolvedTunableSet};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
@@ -24,6 +24,17 @@ pub enum LegacyTunablesPolicy {
 pub enum TunablesCompatibility {
     Exact,
     LegacyUnpinned,
+}
+
+/// The registry identity written before the product was renamed to Iteron.
+///
+/// Records are immutable, so a run recorded by an older build legitimately carries the old
+/// identity. Decoding accepts it; nothing writes it. Producing a snapshot always uses
+/// [`iteron_tunables::REGISTRY_ID`].
+const LEGACY_REGISTRY_ID: &str = "core-tunables";
+
+fn is_known_registry_id(registry_id: &str) -> bool {
+    registry_id == iteron_tunables::REGISTRY_ID || registry_id == LEGACY_REGISTRY_ID
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -115,7 +126,7 @@ pub fn validate_tunables_snapshot(
         || snapshot.registry_schema_version == 0
         || snapshot.family_schema_version == 0
         || snapshot.registry_revision == 0
-        || snapshot.registry_id != core_tunables::REGISTRY_ID
+        || !is_known_registry_id(&snapshot.registry_id)
     {
         return Err(TunablesSnapshotError::Invalid {
             reason: "registry identity or schema version is invalid",
@@ -182,7 +193,7 @@ pub fn snapshot_from_resolved(
 }
 
 fn snapshot_from_report(
-    report: &core_tunables::ResolutionReport,
+    report: &iteron_tunables::ResolutionReport,
 ) -> Result<RunGenesisTunablesSnapshot, TunablesSnapshotError> {
     let entries = report
         .entries
@@ -211,8 +222,8 @@ fn snapshot_from_report(
         canonicalization: RUN_GENESIS_TUNABLES_CANONICALIZATION.to_owned(),
         resolution_schema_version: report.schema_version,
         registry_id: report.registry_id.to_owned(),
-        registry_schema_version: core_tunables::REGISTRY_SCHEMA_VERSION,
-        family_schema_version: core_tunables::FAMILY_SCHEMA_VERSION,
+        registry_schema_version: iteron_tunables::REGISTRY_SCHEMA_VERSION,
+        family_schema_version: iteron_tunables::FAMILY_SCHEMA_VERSION,
         registry_revision: report.registry_revision,
         registry_digest_sha256: report.registry_digest.to_owned(),
         input_digest_sha256: report.input_digest_sha256.clone(),
@@ -278,7 +289,7 @@ impl GenesisTunablesState {
                 } => match (parent_run, forked_at, parent_hash_at_seq) {
                     (None, None, None) => Some(None),
                     (Some(parent_run), Some(_), Some(parent_hash))
-                        if crate::validate_run_id(&core_protocol::RunId(parent_run.clone()))
+                        if crate::validate_run_id(&iteron_protocol::RunId(parent_run.clone()))
                             .is_ok()
                             && is_sha256(parent_hash) =>
                     {
@@ -357,7 +368,7 @@ impl GenesisTunablesState {
 }
 
 pub(crate) fn snapshot_from_events(
-    events: &[core_protocol::Event],
+    events: &[iteron_protocol::Event],
 ) -> Result<Option<RunGenesisTunablesSnapshot>, TunablesSnapshotError> {
     let mut state = GenesisTunablesState::default();
     for event in events {
@@ -383,7 +394,7 @@ pub(crate) fn fixture_snapshot() -> RunGenesisTunablesSnapshot {
         .map(|ordinal| RunGenesisTunableEntry {
             ordinal: u16::try_from(ordinal).unwrap(),
             family_id: format!("family_{ordinal}"),
-            semantic_key: format!("core.tunables.family_{ordinal}"),
+            semantic_key: format!("iteron.tunables.family_{ordinal}"),
             state: RunGenesisTunableState::Effective,
         })
         .collect();
@@ -391,11 +402,11 @@ pub(crate) fn fixture_snapshot() -> RunGenesisTunablesSnapshot {
         version: RunGenesisTunablesVersion::V1,
         canonicalization: RUN_GENESIS_TUNABLES_CANONICALIZATION.to_owned(),
         resolution_schema_version: 1,
-        registry_id: core_tunables::REGISTRY_ID.to_owned(),
-        registry_schema_version: core_tunables::REGISTRY_SCHEMA_VERSION,
-        family_schema_version: core_tunables::FAMILY_SCHEMA_VERSION,
-        registry_revision: core_tunables::REGISTRY_REVISION,
-        registry_digest_sha256: core_tunables::REGISTRY_DIGEST_SHA256.to_owned(),
+        registry_id: iteron_tunables::REGISTRY_ID.to_owned(),
+        registry_schema_version: iteron_tunables::REGISTRY_SCHEMA_VERSION,
+        family_schema_version: iteron_tunables::FAMILY_SCHEMA_VERSION,
+        registry_revision: iteron_tunables::REGISTRY_REVISION,
+        registry_digest_sha256: iteron_tunables::REGISTRY_DIGEST_SHA256.to_owned(),
         input_digest_sha256: digest.to_owned(),
         effective_digest_sha256: digest.to_owned(),
         resolution_digest_sha256: digest.to_owned(),

@@ -71,13 +71,6 @@ use block::SPINNER;
 use command_surfaces::*;
 use composer_images::*;
 use control_submission::*;
-use core_ctx::ContextEstimate;
-use core_obs::CostState;
-use core_protocol::{
-    Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
-    Verdict,
-};
-use core_provider::EffortApplication;
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -85,6 +78,13 @@ pub(crate) use driver_support::char_width;
 use driver_support::*;
 use event_actions::*;
 use event_projection::*;
+use iteron_ctx::ContextEstimate;
+use iteron_obs::CostState;
+use iteron_protocol::{
+    Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
+    Verdict,
+};
+use iteron_provider::EffortApplication;
 use picker_catalog::*;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -149,8 +149,8 @@ pub(crate) struct Session {
     /// The control plane. See `app_server::Control` for why these are not `Op`s.
     control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
     /// Shared bounded content-free lifecycle flight recorder.
-    lifecycle: core_obs::lifecycle::LifecycleBus,
-    lifecycle_otel: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    lifecycle: iteron_obs::lifecycle::LifecycleBus,
+    lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     /// Runtime state the status line mirrors. Refreshed from every control reply and from the
     /// terminal event of every turn — the frontend never reads it off an `Agent` again.
     state: app_server::SessionSnapshot,
@@ -163,8 +163,8 @@ impl Session {
     fn new(
         handle_client: app_server::AppServerClient,
         control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
-        lifecycle: core_obs::lifecycle::LifecycleBus,
-        lifecycle_otel: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+        lifecycle: iteron_obs::lifecycle::LifecycleBus,
+        lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
         state: app_server::SessionSnapshot,
         facts: app_server::SessionFacts,
     ) -> Self {
@@ -185,27 +185,27 @@ impl Session {
         &self.facts.workspace
     }
 
-    pub(crate) fn session_id(&self) -> &core_protocol::SessionId {
+    pub(crate) fn session_id(&self) -> &iteron_protocol::SessionId {
         &self.facts.session_id
     }
 
-    pub(crate) fn lifecycle_snapshot(&self) -> core_obs::lifecycle::FlightRecorderSnapshot {
+    pub(crate) fn lifecycle_snapshot(&self) -> iteron_obs::lifecycle::FlightRecorderSnapshot {
         self.lifecycle.snapshot()
     }
 
     pub(crate) fn lifecycle_otel_snapshot(
         &self,
-    ) -> Option<core_obs::otel::lifecycle::LifecycleTelemetrySnapshot> {
+    ) -> Option<iteron_obs::otel::lifecycle::LifecycleTelemetrySnapshot> {
         self.lifecycle_otel
             .as_ref()
             .map(|runtime| runtime.snapshot())
     }
 
-    pub(crate) fn context_ledger_snapshot(&self) -> core_ctx::ContextLedgerSnapshot {
+    pub(crate) fn context_ledger_snapshot(&self) -> iteron_ctx::ContextLedgerSnapshot {
         self.facts.context_ledgers.snapshot()
     }
 
-    pub(crate) fn memory_trace_snapshot(&self) -> core_ctx::MemoryTraceSnapshot {
+    pub(crate) fn memory_trace_snapshot(&self) -> iteron_ctx::MemoryTraceSnapshot {
         self.facts.memory_traces.snapshot()
     }
 
@@ -227,7 +227,7 @@ impl Session {
     pub(crate) fn record_lifecycle(
         &self,
         event_name: &str,
-        payload: core_protocol::LifecyclePayload,
+        payload: iteron_protocol::LifecyclePayload,
     ) {
         self.client.record_lifecycle(event_name, payload);
     }
@@ -277,23 +277,23 @@ impl Session {
     /// so that production code has exactly one way to obtain a `Session`: `app_server::wire`.
     #[cfg(test)]
     pub(crate) fn for_test(
-        submissions: tokio::sync::mpsc::Sender<core_protocol::SqEnvelope>,
+        submissions: tokio::sync::mpsc::Sender<iteron_protocol::SqEnvelope>,
     ) -> Self {
         let (control, _control_rx) = tokio::sync::mpsc::channel(1);
         Self {
             client: app_server::AppServerClient::connect(
-                core_protocol::PROTOCOL_VERSION,
+                iteron_protocol::PROTOCOL_VERSION,
                 submissions,
             )
             .expect("the in-process server speaks the current protocol"),
             control,
-            lifecycle: core_obs::lifecycle::LifecycleBus::default(),
+            lifecycle: iteron_obs::lifecycle::LifecycleBus::default(),
             lifecycle_otel: None,
             state: app_server::SessionSnapshot {
-                mode: core_protocol::PermissionMode::default(),
-                effort: core_protocol::Effort::default(),
+                mode: iteron_protocol::PermissionMode::default(),
+                effort: iteron_protocol::Effort::default(),
                 model: "test-model".into(),
-                cost: core_obs::CostState::default(),
+                cost: iteron_obs::CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
@@ -301,9 +301,9 @@ impl Session {
                 rate_limit: None,
             },
             facts: app_server::SessionFacts {
-                session_id: core_protocol::SessionId("session-test".into()),
-                context_ledgers: core_ctx::ContextLedgerStore::default(),
-                memory_traces: core_ctx::MemoryTraceStore::default(),
+                session_id: iteron_protocol::SessionId("session-test".into()),
+                context_ledgers: iteron_ctx::ContextLedgerStore::default(),
+                memory_traces: iteron_ctx::MemoryTraceStore::default(),
                 hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth::default(),
                 telemetry_health: None,
                 workspace: std::path::PathBuf::new(),
@@ -314,7 +314,7 @@ impl Session {
                 initial_model_context_window: None,
                 registry_tools: Vec::new(),
                 dependency_skill_dirs: Vec::new(),
-                agent_catalog: Arc::new(core_agents::AgentCatalog::builtin_only()),
+                agent_catalog: Arc::new(iteron_agents::AgentCatalog::builtin_only()),
             },
         }
     }
@@ -330,7 +330,7 @@ impl Session {
     /// The execution catalog captured by the App Server at attach time. This is deliberately not
     /// reconstructed from `workspace` or an ambient operator home: those paths may drift while the
     /// resident runtime continues resolving children against this immutable snapshot.
-    pub(crate) fn agent_catalog(&self) -> &core_agents::AgentCatalog {
+    pub(crate) fn agent_catalog(&self) -> &iteron_agents::AgentCatalog {
         &self.facts.agent_catalog
     }
 
@@ -1052,7 +1052,7 @@ struct App {
     pending_tools: VecDeque<PendingToolProjection>,
     /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
     workflow_index: std::collections::HashMap<String, u64>,
-    /// The workflow region's store: the QuickJS `core-workflow` runs this TUI is watching, each
+    /// The workflow region's store: the QuickJS `iteron-workflow` runs this TUI is watching, each
     /// bound to the one live phase→agent tree card that renders it (design §3.2 store), plus the
     /// region's focus and collapse state. The interactive-REPL seam, driven by
     /// `workflow_run_ui_event` (ADR-0001 step 1). The transcript card remains the authority the
@@ -1061,7 +1061,7 @@ struct App {
     /// Fullscreen workflow inspection/control state. The run tree itself stays in transcript
     /// cards; this owns only selection, action feedback and the latest supervisor inventory.
     workflows_panel: workflows_panel::View,
-    /// `<runtime_state_dir>/subagents/workflows` — the directory `core workflow list` enumerates,
+    /// `<runtime_state_dir>/subagents/workflows` — the directory `iteron workflow list` enumerates,
     /// derived the same way the kernel derives it (the rollout file's parent). It is what lets the
     /// monitor rebuild prior runs after a restart; `None` for a session with no rollout parent,
     /// which simply restores nothing.
@@ -1292,7 +1292,7 @@ pub async fn run(
     let mut keymap_watcher = keymap::Watcher::new(crate::config::user_config_path());
     // Drain is a runtime/session control and never depends on Git availability.
     let drain_available = true;
-    let terminal_capabilities = core_statusline::Capabilities::detect(|name| {
+    let terminal_capabilities = iteron_statusline::Capabilities::detect(|name| {
         std::env::var(name).ok().filter(|value| value.len() <= 128)
     });
     let initial_session_name = session_display_name(&facts.rollout_path);
@@ -1300,7 +1300,7 @@ pub async fn run(
     let mut guard = TermGuard::new()?;
     let _ = guard.set_title(
         terminal_capabilities,
-        &format!("Core Code · {initial_session_name}"),
+        &format!("Iteron · {initial_session_name}"),
     );
     // Catchable termination signals restore the terminal immediately, then wake the owned event
     // loop. The loop reaps any transcript helper before it performs the final process exit.
@@ -1349,7 +1349,7 @@ pub async fn run(
     let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
     app.session_name = initial_session_name;
-    if terminal_capabilities.presentation == core_statusline::Presentation::Semantic {
+    if terminal_capabilities.presentation == iteron_statusline::Presentation::Semantic {
         // Screen-reader mode keeps the same keyboard-complete interaction model, but removes the
         // raster logo and colour-only distinctions from the initial surface. Later blocks already
         // carry role/status words in addition to glyphs, so monochrome preserves their semantics.
@@ -1359,7 +1359,7 @@ pub async fn run(
             0,
             block::BlockKind::Notice {
                 level: block::NoticeLevel::Info,
-                text: "Core Code. Ready. Screen-reader semantic presentation is active.".into(),
+                text: "Iteron. Ready. Screen-reader semantic presentation is active.".into(),
             },
         )));
         app.mark_transcript_changed();
@@ -1636,7 +1636,7 @@ pub async fn run(
             if terminal_session_name != app.session_name {
                 let _ = guard.replace_title(
                     terminal_capabilities,
-                    &format!("Core Code · {}", app.session_name),
+                    &format!("Iteron · {}", app.session_name),
                 );
                 terminal_session_name.clone_from(&app.session_name);
             }
@@ -2442,7 +2442,7 @@ pub async fn run(
                         // Cheap by construction: the scan is string work, and the one file read it
                         // can trigger happens once, because a converted path is replaced by its
                         // anchor and is no longer a path the next keystroke can find.
-                        if app.editor.chip_count() < core_protocol::input::MAX_INPUT_IMAGES {
+                        if app.editor.chip_count() < iteron_protocol::input::MAX_INPUT_IMAGES {
                             attach_bare_image_paths(&mut app, &repo);
                         }
                         app.refresh_completion(&repo);

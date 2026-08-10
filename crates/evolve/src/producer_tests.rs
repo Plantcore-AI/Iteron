@@ -3,7 +3,7 @@ use crate::{
     DataClass, DataGovernance, GovernedDatasetError, PolicyBundle, RetentionTrainingUse,
     RewardVector, StrategySlot, TrainingAdmissionPolicy, TrainingConsent, TrajectoryEnvelope,
 };
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use std::collections::BTreeMap;
 
 const D: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

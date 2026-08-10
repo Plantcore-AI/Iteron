@@ -9,8 +9,8 @@ pub use crate::static_metadata::{
     GLM_STANDARD_CHAT_MANIFEST, GLM_STANDARD_CHAT_MODELS, StaticCatalogManifest,
 };
 use crate::{AvailabilityTransition, ProviderError, api_error_from_response};
-use core_protocol::{TokenRateCard, Usage};
 use futures_util::StreamExt;
+use iteron_protocol::{TokenRateCard, Usage};
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -782,7 +782,7 @@ impl ProviderInstance {
         let credential = self.credential.resolve()?;
         let mut mac = Hmac::<Sha256>::new_from_slice(local_key)
             .expect("HMAC-SHA256 accepts every key length");
-        update_mac_part(&mut mac, b"core/catalog-cache-credential-scope/v1");
+        update_mac_part(&mut mac, b"iteron/catalog-cache-credential-scope/v1");
         update_mac_part(&mut mac, self.id.as_bytes());
         update_mac_part(&mut mac, self.api_root.as_str().as_bytes());
         update_mac_part(&mut mac, adapter_scope_name(self.adapter).as_bytes());
@@ -2914,7 +2914,7 @@ fn valid_health_key(value: &str, max_bytes: usize) -> bool {
 // gateway never inherits an official provider's list price merely by sharing its wire syntax.
 //
 // Token-to-money projection stays the observability/pricing strategy layer's signed authority
-// (`core_protocol::pricing`); this only *publishes* the per-route rate and offers a matching
+// (`iteron_protocol::pricing`); this only *publishes* the per-route rate and offers a matching
 // list-price realization so the amount can finally be attached to a route/model.
 // ===========================================================================
 
@@ -2924,7 +2924,7 @@ const MICROTOKENS_PER_TOKEN_CLASS: u128 = 1_000_000;
 /// One published, route-scoped list-price snapshot for a model family.
 ///
 /// The rates are fixed-point micro-USD per one million tokens, exactly as
-/// [`core_protocol::TokenRateCard`] documents, so a realized amount here reconciles against a
+/// [`iteron_protocol::TokenRateCard`] documents, so a realized amount here reconciles against a
 /// signed `CostProjection` on identical inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishedRateCard {
@@ -4505,7 +4505,7 @@ mod tests {
 #[cfg(test)]
 mod d2_23_pricing {
     use super::*;
-    use core_protocol::Usage;
+    use iteron_protocol::Usage;
 
     /// D2-23 — a route-bound model rate card must exist so a dollar cost is finally realized.
     ///
@@ -4638,7 +4638,7 @@ pub const MODEL_ROUTER_SLOT_VERSION: u16 = 1;
 /// routes than this has a catalog problem, not a routing problem.
 pub const MAX_RESOLVED_ROUTES: usize = 32;
 
-/// Upper bound on one model identity, matching `core_agents`' own bound on `AgentDef::model` so a
+/// Upper bound on one model identity, matching `iteron_agents`' own bound on `AgentDef::model` so a
 /// definition that validates there cannot be refused here for length alone.
 pub const MAX_ROUTE_MODEL_BYTES: usize = 512;
 
@@ -4717,7 +4717,7 @@ impl ModelRouterObservation {
     }
 }
 
-/// The same bound `core_agents::AgentDef::validate` applies to a definition's model, restated here
+/// The same bound `iteron_agents::AgentDef::validate` applies to a definition's model, restated here
 /// because this crate must not depend on that one and a slot may not be handed an identity whose
 /// well-formedness nobody checked.
 fn model_identity_is_well_formed(model: &str) -> bool {
@@ -4800,19 +4800,19 @@ impl std::error::Error for ModelRouterError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteProposal {
     pub model: String,
-    pub eligible: core_protocol::capability_set::CapabilitySet,
+    pub eligible: iteron_protocol::capability_set::CapabilitySet,
 }
 
 /// The built-in `core/model_router`: the parent's route unless something explicitly asks otherwise,
 /// and never a model the caller has no evidence for.
 pub struct ModelRouterStrategy {
-    slot: core_protocol::slot::SlotId,
+    slot: iteron_protocol::slot::SlotId,
 }
 
 impl Default for ModelRouterStrategy {
     fn default() -> Self {
         Self {
-            slot: core_protocol::slot::SlotId("core/model_router".into()),
+            slot: iteron_protocol::slot::SlotId("core/model_router".into()),
         }
     }
 }
@@ -4821,7 +4821,7 @@ impl ModelRouterStrategy {
     pub fn route(
         &self,
         input: &ModelRouterObservation,
-        ceiling: core_protocol::capability_set::CapabilitySet,
+        ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ModelRouteProposal, ModelRouterError> {
         Self::route_with(self, input, ceiling)
     }
@@ -4832,9 +4832,9 @@ impl ModelRouterStrategy {
     /// the same guarantees, because the evidence check lives here rather than inside any
     /// implementation.
     pub fn route_with(
-        slot: &dyn core_protocol::slot::StrategySlot,
+        slot: &dyn iteron_protocol::slot::StrategySlot,
         input: &ModelRouterObservation,
-        ceiling: core_protocol::capability_set::CapabilitySet,
+        ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ModelRouteProposal, ModelRouterError> {
         if slot.slot().as_persisted_str() != "core/model_router" {
             return Err(ModelRouterError::WrongSlot);
@@ -4843,12 +4843,12 @@ impl ModelRouterStrategy {
         let payload = serde_json::to_value(input).map_err(|_| {
             ModelRouterError::InvalidObservation("routing observation is not serialisable")
         })?;
-        let observation = core_protocol::slot::SlotObservation {
+        let observation = iteron_protocol::slot::SlotObservation {
             slot: slot.slot().clone(),
             ceiling,
             payload,
         };
-        let outcome = core_protocol::slot::decide_narrowed(slot, &observation);
+        let outcome = iteron_protocol::slot::decide_narrowed(slot, &observation);
         let decision = serde_json::from_value::<ModelRouterDecision>(outcome.decision)
             .map_err(|_| ModelRouterError::InvalidDecision("routing decision is invalid"))?;
         match decision {
@@ -4871,9 +4871,9 @@ impl ModelRouterStrategy {
         }
     }
 
-    fn unknown_outcome() -> core_protocol::slot::SlotOutcome {
-        core_protocol::slot::SlotOutcome {
-            admitted: core_protocol::capability_set::CapabilitySet::none(),
+    fn unknown_outcome() -> iteron_protocol::slot::SlotOutcome {
+        iteron_protocol::slot::SlotOutcome {
+            admitted: iteron_protocol::capability_set::CapabilitySet::none(),
             decision: serde_json::to_value(ModelRouterDecision::Unknown)
                 .expect("unit routing decision serializes"),
         }
@@ -4906,15 +4906,15 @@ impl ModelRouterStrategy {
     }
 }
 
-impl core_protocol::slot::StrategySlot for ModelRouterStrategy {
-    fn slot(&self) -> &core_protocol::slot::SlotId {
+impl iteron_protocol::slot::StrategySlot for ModelRouterStrategy {
+    fn slot(&self) -> &iteron_protocol::slot::SlotId {
         &self.slot
     }
 
     fn decide(
         &self,
-        observation: &core_protocol::slot::SlotObservation,
-    ) -> core_protocol::slot::SlotOutcome {
+        observation: &iteron_protocol::slot::SlotObservation,
+    ) -> iteron_protocol::slot::SlotOutcome {
         if observation.slot != self.slot {
             return Self::unknown_outcome();
         }
@@ -4926,7 +4926,7 @@ impl core_protocol::slot::StrategySlot for ModelRouterStrategy {
         if input.validate().is_err() {
             return Self::unknown_outcome();
         }
-        core_protocol::slot::SlotOutcome {
+        iteron_protocol::slot::SlotOutcome {
             admitted: observation.ceiling,
             decision: serde_json::to_value(Self::decide_route(&input))
                 .expect("routing decision serializes"),
@@ -4940,26 +4940,26 @@ impl core_protocol::slot::StrategySlot for ModelRouterStrategy {
 /// call asked for. A pack that wants "children never leave the route I paid to resolve" can ship
 /// exactly this shape without the runtime knowing it happened.
 pub struct BoundRouteOnlyModelRouter {
-    slot: core_protocol::slot::SlotId,
+    slot: iteron_protocol::slot::SlotId,
 }
 
 impl Default for BoundRouteOnlyModelRouter {
     fn default() -> Self {
         Self {
-            slot: core_protocol::slot::SlotId("core/model_router".into()),
+            slot: iteron_protocol::slot::SlotId("core/model_router".into()),
         }
     }
 }
 
-impl core_protocol::slot::StrategySlot for BoundRouteOnlyModelRouter {
-    fn slot(&self) -> &core_protocol::slot::SlotId {
+impl iteron_protocol::slot::StrategySlot for BoundRouteOnlyModelRouter {
+    fn slot(&self) -> &iteron_protocol::slot::SlotId {
         &self.slot
     }
 
     fn decide(
         &self,
-        observation: &core_protocol::slot::SlotObservation,
-    ) -> core_protocol::slot::SlotOutcome {
+        observation: &iteron_protocol::slot::SlotObservation,
+    ) -> iteron_protocol::slot::SlotOutcome {
         if observation.slot != self.slot {
             return ModelRouterStrategy::unknown_outcome();
         }
@@ -4976,7 +4976,7 @@ impl core_protocol::slot::StrategySlot for BoundRouteOnlyModelRouter {
                 reason: ModelRouteRefusal::NoRouteEvidence,
             },
         };
-        core_protocol::slot::SlotOutcome {
+        iteron_protocol::slot::SlotOutcome {
             admitted: observation.ceiling,
             decision: serde_json::to_value(decision).expect("routing decision serializes"),
         }
@@ -4990,9 +4990,9 @@ mod model_router_slot_tests {
         ModelRouteRefusal, ModelRouterDecision, ModelRouterError, ModelRouterObservation,
         ModelRouterStrategy,
     };
-    use core_protocol::Capability;
-    use core_protocol::capability_set::CapabilitySet;
-    use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
+    use iteron_protocol::Capability;
+    use iteron_protocol::capability_set::CapabilitySet;
+    use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
 
     fn ceiling() -> CapabilitySet {
         CapabilitySet::only(Capability::ReadOnly)

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn session_picker_items(
-    mut sessions: Vec<core_record::SessionMeta>,
+    mut sessions: Vec<iteron_record::SessionMeta>,
     current_run: &str,
     runs: &Path,
 ) -> Vec<PickItem> {
@@ -80,7 +80,7 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
         .and_then(|presentation| presentation.title)
         .filter(|title| !title.trim().is_empty());
     let recorded = || {
-        core_record::list(runs, &core_protocol::TenantId::default())
+        iteron_record::list(runs, &iteron_protocol::TenantId::default())
             .into_iter()
             .find(|metadata| metadata.run_id.0 == run)
             .map(|metadata| metadata.title)
@@ -117,7 +117,7 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
     let items = session_picker_items(
-        core_record::list(&runs, &core_protocol::TenantId::default()),
+        iteron_record::list(&runs, &iteron_protocol::TenantId::default()),
         current_run,
         &runs,
     );
@@ -174,11 +174,11 @@ pub(super) async fn handle_sessions_command(
             adopt_session(app, session, directory, run).await
         }
         "preview" if !run.is_empty() => {
-            let identity = core_protocol::RunId(run.to_owned());
-            let metadata = core_record::list(&runs, &core_protocol::TenantId::default())
+            let identity = iteron_protocol::RunId(run.to_owned());
+            let metadata = iteron_record::list(&runs, &iteron_protocol::TenantId::default())
                 .into_iter()
                 .find(|metadata| metadata.run_id == identity);
-            match (metadata, core_record::load_forked(&runs, &identity)) {
+            match (metadata, iteron_record::load_forked(&runs, &identity)) {
                 (Some(metadata), Ok(events)) => {
                     let presentation = session_management::load(&runs, run).unwrap_or_default();
                     let mut rows = vec![
@@ -274,10 +274,10 @@ pub(super) async fn handle_sessions_command(
                 );
                 return;
             }
-            match core_record::delete(
+            match iteron_record::delete(
                 &runs,
-                &core_protocol::TenantId::default(),
-                &core_protocol::RunId(run.to_owned()),
+                &iteron_protocol::TenantId::default(),
+                &iteron_protocol::RunId(run.to_owned()),
             ) {
                 Ok(()) => {
                     let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
@@ -287,9 +287,9 @@ pub(super) async fn handle_sessions_command(
                     let _ = session_management::remove(&runs, run);
                     session.record_lifecycle(
                         "session.deleted",
-                        core_protocol::LifecyclePayload {
+                        iteron_protocol::LifecyclePayload {
                             outcome_code: Some("deleted".into()),
-                            ..core_protocol::LifecyclePayload::default()
+                            ..iteron_protocol::LifecyclePayload::default()
                         },
                     );
                     app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
@@ -342,18 +342,18 @@ pub(super) async fn create_fresh_session(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let run = core_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-    let rollout = match core_record::Rollout::open(&runs, &run, core_protocol::TenantId::default())
-    {
-        Ok(rollout) => rollout,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot create session: {error}"),
-            );
-            return;
-        }
-    };
+    let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
+    let rollout =
+        match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
+            Ok(rollout) => rollout,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("cannot create session: {error}"),
+                );
+                return;
+            }
+        };
     let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
     let capabilities = directory.selection_capabilities(&selection);
     let reply = session

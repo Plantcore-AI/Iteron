@@ -29,7 +29,7 @@ pub(super) async fn handle_registered_command(
         SlashCommand::Effort => {
             if arg.is_empty() {
                 open_picker(app, session, directory, "effort"); // interactive picker (R7.a)
-            } else if let Some(e) = core_protocol::Effort::parse(arg) {
+            } else if let Some(e) = iteron_protocol::Effort::parse(arg) {
                 if commit_effort(app, session, e).await {
                     app.push(fg(Color::Green), format!("effort set to {}", e.label()));
                 }
@@ -342,7 +342,10 @@ pub(super) async fn handle_registered_command(
             let mut rows = vec![
                 kv(
                     "catalog",
-                    &format!("{} lifecycle events", core_protocol::lifecycle::EVENT_COUNT),
+                    &format!(
+                        "{} lifecycle events",
+                        iteron_protocol::lifecycle::EVENT_COUNT
+                    ),
                 ),
                 kv("recorded", &snapshot.events.len().to_string()),
                 kv("next ordinal", &snapshot.next_ordinal.to_string()),
@@ -360,9 +363,9 @@ pub(super) async fn handle_registered_command(
                     "OTel catalog",
                     &format!(
                         "{} metrics · {} logs · {} spans",
-                        core_obs::otel::catalog::METRIC_INSTRUMENT_COUNT,
-                        core_obs::otel::catalog::LOG_SCHEMA_COUNT,
-                        core_obs::otel::catalog::SPAN_TEMPLATE_COUNT
+                        iteron_obs::otel::catalog::METRIC_INSTRUMENT_COUNT,
+                        iteron_obs::otel::catalog::LOG_SCHEMA_COUNT,
+                        iteron_obs::otel::catalog::SPAN_TEMPLATE_COUNT
                     ),
                 ),
                 kv(
@@ -667,7 +670,7 @@ pub(super) async fn handle_registered_command(
                 app.push(fg(Color::Red), "memory not available");
                 return;
             };
-            let store = core_ctx::MemoryStore::at(ws);
+            let store = iteron_ctx::MemoryStore::at(ws);
             let mut sub = arg.split_whitespace();
             match sub.next() {
                 Some("add") => {
@@ -770,8 +773,8 @@ pub(super) async fn handle_registered_command(
                         match review.verified_diffs() {
                             Ok(documents) => {
                                 for document in documents {
-                                    let text = core_record::redact::scrub(document);
-                                    for diff in core_protocol::FileDiff::from_unified(&text) {
+                                    let text = iteron_record::redact::scrub(document);
+                                    for diff in iteron_protocol::FileDiff::from_unified(&text) {
                                         app.push_block(block::BlockKind::Diff(diff));
                                     }
                                 }
@@ -822,14 +825,14 @@ pub(super) async fn handle_registered_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            match core_record::replay(&path) {
+            match iteron_record::replay(&path) {
                 Ok(events) if !events.is_empty() => {
                     let at = events.last().map(|e| e.seq).unwrap();
-                    match core_record::fork(
+                    match iteron_record::fork(
                         &runs,
-                        &core_protocol::RunId(stem),
+                        &iteron_protocol::RunId(stem),
                         at,
-                        &core_protocol::TenantId::default(),
+                        &iteron_protocol::TenantId::default(),
                     ) {
                         Ok(child) => {
                             app.note(
@@ -850,7 +853,7 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::Skills => {
             let home = crate::config::config_home();
-            let cat = core_ctx::skills::SkillCatalog::discover_for_operator_with_dependencies(
+            let cat = iteron_ctx::skills::SkillCatalog::discover_for_operator_with_dependencies(
                 home.as_deref(),
                 session.workspace(),
                 session.dependency_skill_dirs(),
@@ -862,7 +865,7 @@ pub(super) async fn handle_registered_command(
                 .collect();
             if rows.is_empty() {
                 rows.push(block::PanelRow::Note(
-                    "no skills (add <repo>/.core/skills or <repo>/.agents/skills)".into(),
+                    "no skills (add <repo>/.iteron/skills or <repo>/.agents/skills)".into(),
                 ));
             }
             for e in cat.errors() {
@@ -890,7 +893,7 @@ pub(super) async fn handle_registered_command(
                 rows.push(kv(key, &value));
             }
             rows.push(block::PanelRow::Note(
-                "persist a choice with `core config set <key> <value>`".into(),
+                "persist a choice with `iteron config set <key> <value>`".into(),
             ));
             app.panel("⚙", "config", rows);
         }
@@ -946,7 +949,7 @@ pub(super) async fn handle_registered_command(
                 .iter()
                 .map(|tool| block::PanelRow::Item {
                     label: format!("{}  [{}]", tool.name, cap_glyph(tool.capability)),
-                    hint: core_protocol::text::head(&tool.description, 70),
+                    hint: iteron_protocol::text::head(&tool.description, 70),
                 })
                 .collect();
             app.panel("⚙", &format!("{} tools available", rows.len()), rows);
@@ -960,7 +963,7 @@ pub(super) async fn handle_registered_command(
             if mcp.is_empty() {
                 app.note(
                     block::NoticeLevel::Info,
-                    "no MCP tools connected (configure servers in ~/.core/config.json)",
+                    "no MCP tools connected (configure servers in ~/.iteron/config.json)",
                 );
             } else {
                 let rows = mcp
@@ -969,7 +972,7 @@ pub(super) async fn handle_registered_command(
                         item(
                             "◈",
                             &tool.name,
-                            &core_protocol::text::head(&tool.description, 80),
+                            &iteron_protocol::text::head(&tool.description, 80),
                         )
                     })
                     .collect();
@@ -977,18 +980,18 @@ pub(super) async fn handle_registered_command(
             }
         }
         SlashCommand::Hooks => {
-            let hooks = core_protocol::home::operator()
+            let hooks = iteron_protocol::home::operator()
                 .map(|home| crate::runtime::hooks::Hooks::load_user(&home))
                 .unwrap_or_default();
             if hooks.is_empty() {
                 app.note(
                     block::NoticeLevel::Info,
-                    "no lifecycle hooks (add a \"hooks\" block to ~/.core/config.json)",
+                    "no lifecycle hooks (add a \"hooks\" block to ~/.iteron/config.json)",
                 );
             } else {
                 app.note(
                     block::NoticeLevel::Ok,
-                    "lifecycle hooks loaded from ~/.core/config.json (user config)",
+                    "lifecycle hooks loaded from ~/.iteron/config.json (user config)",
                 );
             }
         }
@@ -1013,7 +1016,7 @@ pub(super) async fn handle_registered_command(
             );
         }
         SlashCommand::Init => {
-            let dir = match ensure_real_workspace_dir(session.workspace(), ".core") {
+            let dir = match ensure_real_workspace_dir(session.workspace(), ".iteron") {
                 Ok(dir) => dir,
                 Err(error) => {
                     app.push(fg(Color::Red), format!("init refused: {error}"));
@@ -1028,7 +1031,7 @@ pub(super) async fn handle_registered_command(
                 );
             } else {
                 // Repository config can only choose a bare model and tighten ceilings. Provider,
-                // MCP, hooks, effort, and grants belong in trusted ~/.core/config.json.
+                // MCP, hooks, effort, and grants belong in trusted ~/.iteron/config.json.
                 let starter = crate::config::starter_project_config();
                 match write_new_synced(&cfg, starter.as_bytes()) {
                     Ok(_) => app.push(fg(Color::Green), format!("wrote {}", cfg.display())),
@@ -1059,7 +1062,7 @@ pub(super) async fn handle_registered_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            let events = match core_record::replay(&path) {
+            let events = match iteron_record::replay(&path) {
                 Ok(events) if !events.is_empty() => events,
                 Ok(_) => {
                     app.push(fg(Color::Red), "nothing to rewind yet");
@@ -1083,18 +1086,20 @@ pub(super) async fn handle_registered_command(
                         .filter(|event| {
                             matches!(
                                 event.kind,
-                                core_protocol::EventKind::Checkpoint { .. }
-                                    | core_protocol::EventKind::TurnStart
+                                iteron_protocol::EventKind::Checkpoint { .. }
+                                    | iteron_protocol::EventKind::TurnStart
                             )
                         })
                         .take(30)
                     {
-                        let kind =
-                            if matches!(event.kind, core_protocol::EventKind::Checkpoint { .. }) {
-                                "files + conversation"
-                            } else {
-                                "conversation"
-                            };
+                        let kind = if matches!(
+                            event.kind,
+                            iteron_protocol::EventKind::Checkpoint { .. }
+                        ) {
+                            "files + conversation"
+                        } else {
+                            "conversation"
+                        };
                         rows.push(item(
                             "•",
                             &format!("seq {}", event.seq.0),
@@ -1116,7 +1121,7 @@ pub(super) async fn handle_registered_command(
                 );
                 return;
             }
-            let run = core_protocol::RunId(stem);
+            let run = iteron_protocol::RunId(stem);
             let snapshot =
                 crate::workspace_review::checkpoint_at_or_before(&events, &run, request.at);
             let mut file_preview = None;
@@ -1184,19 +1189,19 @@ pub(super) async fn handle_registered_command(
                         "preview only · repeat `/rewind {} {} {} apply` to proceed",
                         request.at.0,
                         match request.scope {
-                            core_changeset::Scope::CodeAndConversation => "all",
-                            core_changeset::Scope::CodeOnly => "code",
-                            core_changeset::Scope::ConversationOnly => "conversation",
+                            iteron_changeset::Scope::CodeAndConversation => "all",
+                            iteron_changeset::Scope::CodeOnly => "code",
+                            iteron_changeset::Scope::ConversationOnly => "conversation",
                         },
                         match request.unrecorded {
-                            core_changeset::Unrecorded::Keep => "keep",
-                            core_changeset::Unrecorded::Delete => "delete",
+                            iteron_changeset::Unrecorded::Keep => "keep",
+                            iteron_changeset::Unrecorded::Delete => "delete",
                         }
                     ),
                 );
                 return;
             }
-            if request.unrecorded == core_changeset::Unrecorded::Delete
+            if request.unrecorded == iteron_changeset::Unrecorded::Delete
                 && file_preview
                     .as_ref()
                     .is_some_and(|preview| !preview.is_conclusive())
@@ -1211,10 +1216,10 @@ pub(super) async fn handle_registered_command(
             // Before overwriting even one tracked path, retain an exact local safety snapshot. It
             // is a Git object/ref, not a remote backup, and is described only as rollback material.
             let safety = if request.scope.touches_files() {
-                let safety_run = core_protocol::RunId(format!("rewind-safety-{}", run.0));
-                match core_record::checkpoint_excluding_runtime_state(
+                let safety_run = iteron_protocol::RunId(format!("rewind-safety-{}", run.0));
+                match iteron_record::checkpoint_excluding_runtime_state(
                     &safety_run,
-                    core_protocol::Seq(tail.saturating_add(1)),
+                    iteron_protocol::Seq(tail.saturating_add(1)),
                     session.workspace(),
                     &runs,
                 ) {
@@ -1231,14 +1236,14 @@ pub(super) async fn handle_registered_command(
                 None
             };
             if let Some(target) = snapshot.as_ref()
-                && let Err(error) = core_record::rewind_workspace_with_policy(
+                && let Err(error) = iteron_record::rewind_workspace_with_policy(
                     target,
                     session.workspace(),
-                    request.unrecorded == core_changeset::Unrecorded::Delete,
+                    request.unrecorded == iteron_changeset::Unrecorded::Delete,
                 )
             {
                 let rollback = safety.as_ref().map(|safety| {
-                    core_record::rewind_workspace_with_policy(safety, session.workspace(), true)
+                    iteron_record::rewind_workspace_with_policy(safety, session.workspace(), true)
                 });
                 app.note(
                     block::NoticeLevel::Err,
@@ -1248,11 +1253,11 @@ pub(super) async fn handle_registered_command(
             }
 
             if request.scope.touches_conversation() {
-                match core_record::fork(
+                match iteron_record::fork(
                     &runs,
                     &run,
                     request.at,
-                    &core_protocol::TenantId::default(),
+                    &iteron_protocol::TenantId::default(),
                 ) {
                     Ok(child) => {
                         app.note(
@@ -1263,7 +1268,7 @@ pub(super) async fn handle_registered_command(
                     }
                     Err(error) => {
                         if let Some(safety) = safety.as_ref() {
-                            let _ = core_record::rewind_workspace_with_policy(
+                            let _ = iteron_record::rewind_workspace_with_policy(
                                 safety,
                                 session.workspace(),
                                 true,
@@ -1297,7 +1302,7 @@ pub(super) async fn handle_registered_command(
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_default();
-                let exists = core_record::list(&runs, &core_protocol::TenantId::default())
+                let exists = iteron_record::list(&runs, &iteron_protocol::TenantId::default())
                     .iter()
                     .any(|session| session.run_id.0 == arg);
                 if exists {

@@ -1,11 +1,11 @@
 #![cfg(unix)]
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::measurement::{KernelTaxLine, MeasurementError, compare_manifests};
-use core_eval::report::{aggregate, compare};
-use core_eval::runner::score_candidate_diff;
-use core_eval::types::EVAL_SCHEMA_VERSION;
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::measurement::{KernelTaxLine, MeasurementError, compare_manifests};
+use iteron_eval::report::{aggregate, compare};
+use iteron_eval::runner::score_candidate_diff;
+use iteron_eval::types::EVAL_SCHEMA_VERSION;
+use iteron_eval::{
     CandidateOutput, CapturedHarnessCandidate, CellResult, CorpusManifest, CorpusTask, CostStatus,
     EvaluationManifest, EvaluationPurpose, EvidenceBundleInput, EvidenceIdentityPolicy,
     EvidenceProjectionError, EvidenceSigner, InsufficientPowerReason, OracleStatus,
@@ -15,7 +15,7 @@ use core_eval::{
     compile_evidence_bundle, measure_kernel_tax, run_evaluation_parallel, sign_held_out_evidence,
     trained_vs_untrained_report, verify_evidence_bundle,
 };
-use core_evolve::{
+use iteron_evolve::{
     ArtifactKind, BaseModelId, EvolutionMethod, IndependentEvaluator, PolicyRef,
     PromotionAuthorityKey, StrategySlot, VerifiedCandidateInputs,
 };
@@ -34,7 +34,7 @@ impl TempRoot {
             .expect("clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-ws4-{label}-{}-{nonce:x}",
+            "iteron-eval-ws4-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create temp root");
@@ -553,14 +553,15 @@ async fn physical_retry_uses_fresh_workspaces_and_emits_verifiable_sidecars() {
             .all(|cell| cell.run_status == RunStatus::Completed)
     );
 
-    let attempt_path = core_eval::attempts::sidecar_path(&options.output_path);
-    let ledger = core_eval::AttemptLedger::open(&attempt_path).expect("verify attempt hash chain");
+    let attempt_path = iteron_eval::attempts::sidecar_path(&options.output_path);
+    let ledger =
+        iteron_eval::AttemptLedger::open(&attempt_path).expect("verify attempt hash chain");
     assert_eq!(
         ledger.record_count(),
         9,
         "two attempts plus one normal cell"
     );
-    let attestation_path = core_eval::attestation::sidecar_path(&options.output_path);
+    let attestation_path = iteron_eval::attestation::sidecar_path(&options.output_path);
     let attestation: RunAttestation =
         serde_json::from_slice(&std::fs::read(&attestation_path).expect("read run attestation"))
             .expect("strict run attestation JSON");
@@ -727,7 +728,7 @@ fn synthetic_manifest(
         aggregate,
         selections: Vec::new(),
         cells,
-        kernel_tax: core_eval::types::KernelTaxObservation::default(),
+        kernel_tax: iteron_eval::types::KernelTaxObservation::default(),
     }
 }
 

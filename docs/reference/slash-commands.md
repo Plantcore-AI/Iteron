@@ -37,7 +37,7 @@ rather than dispatching an incomplete operation.
 | `/config` | Show resolved session and file configuration |
 | `/tunables [query\|load <file>]` | Search all 160 canonical families, or inspect a workspace-relative frozen-request simulation |
 | `/theme` | Select a color theme with preview |
-| `/init` | Scaffold repository `.core/config.json` and `AGENTS.md` |
+| `/init` | Scaffold repository `.iteron/config.json` and `AGENTS.md` |
 | `/quit` | Leave the TUI |
 
 Compatibility aliases resolve to the same typed command identity but are not

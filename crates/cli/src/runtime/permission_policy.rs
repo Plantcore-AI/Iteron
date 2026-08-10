@@ -4,11 +4,11 @@
 //! operator policy changes. It deliberately has no access to `Agent`: callers provide only the
 //! current snapshot and the durable log seam they intend to mutate.
 
-use core_protocol::{
+use iteron_protocol::{
     Capability, Effort, Event, EventKind, PermissionMode, PermissionRules,
     RuntimePolicyEventVersion, RuntimePolicySource, Seq, TurnId, Verdict,
 };
-use core_record::Rollout;
+use iteron_record::Rollout;
 
 /// A path whose write is trust-mutating regardless of the writing tool's static class.
 pub(super) fn is_trust_mutating_path(path: &str) -> bool {
@@ -16,7 +16,7 @@ pub(super) fn is_trust_mutating_path(path: &str) -> bool {
     let lower = path.trim_start_matches("./").to_ascii_lowercase();
     lower
         .split(['/', '\\'])
-        .any(|segment| matches!(segment, ".git" | ".github" | ".core" | ".claude"))
+        .any(|segment| matches!(segment, ".git" | ".github" | ".iteron" | ".claude"))
         || lower.ends_with("claude.md")
         || lower.ends_with("agents.md")
 }
@@ -49,11 +49,11 @@ pub(super) fn bypass_verdict(
 
 /// Narrow journal seam for runtime-policy transactions.
 pub(super) trait RuntimePolicyLog {
-    fn append_runtime_policy(&mut self, event: &Event) -> Result<Seq, core_record::RecordError>;
+    fn append_runtime_policy(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError>;
 }
 
 impl RuntimePolicyLog for Rollout {
-    fn append_runtime_policy(&mut self, event: &Event) -> Result<Seq, core_record::RecordError> {
+    fn append_runtime_policy(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError> {
         self.append(event)
     }
 }
@@ -64,7 +64,7 @@ pub(super) fn commit_effort_transition(
     current: &mut Effort,
     next: Effort,
     source: RuntimePolicySource,
-) -> Result<bool, core_record::RecordError> {
+) -> Result<bool, iteron_record::RecordError> {
     if *current == next {
         return Ok(false);
     }
@@ -89,7 +89,7 @@ pub(super) fn commit_permission_policy_transition(
     next_mode: PermissionMode,
     next_rules: PermissionRules,
     source: RuntimePolicySource,
-) -> Result<bool, core_record::RecordError> {
+) -> Result<bool, iteron_record::RecordError> {
     if *current_mode == next_mode && *current_rules == next_rules {
         return Ok(false);
     }
@@ -122,7 +122,7 @@ mod tests {
         fn append_runtime_policy(
             &mut self,
             event: &Event,
-        ) -> Result<Seq, core_record::RecordError> {
+        ) -> Result<Seq, iteron_record::RecordError> {
             if self.fail {
                 return Err(std::io::Error::other("injected policy append failure").into());
             }

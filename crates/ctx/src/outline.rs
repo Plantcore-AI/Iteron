@@ -149,7 +149,7 @@ fn is_ignored(name: &str) -> bool {
             | "dist"
             | "build"
             | "__pycache__"
-            | ".core"
+            | ".iteron"
     )
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn repo_outline_for_task_at_depth(
     token_budget: usize,
     query: &str,
 ) -> String {
-    let bounded_query = core_protocol::text::head(query, MAX_OUTLINE_QUERY_BYTES);
+    let bounded_query = iteron_protocol::text::head(query, MAX_OUTLINE_QUERY_BYTES);
     let identifiers = query_identifiers(&bounded_query);
     let mut files: Vec<OutlineFile> = Vec::new();
     let mut rejected = 0usize;
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn d6_07_outline_covers_rust_module_and_item_declarations() {
         let dir = std::env::temp_dir().join(format!(
-            "core-ctx-declaration-shapes-{}",
+            "iteron-ctx-declaration-shapes-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn d6_07_named_identifier_outranks_unrelated_declaration_volume() {
         let dir = std::env::temp_dir().join(format!(
-            "core-ctx-identifier-ranking-{}",
+            "iteron-ctx-identifier-ranking-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn outline_lists_declarations_and_respects_budget() {
-        let dir = std::env::temp_dir().join(format!("core-ctx-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("iteron-ctx-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("a.py"),
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn oversized_code_file_is_rejected_before_reading_and_disclosed() {
-        let dir = std::env::temp_dir().join(format!("core-ctx-large-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("iteron-ctx-large-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = std::fs::File::create(dir.join("huge.rs")).unwrap();
         file.set_len(MAX_OUTLINE_SOURCE_BYTES as u64 + 1).unwrap();
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn repository_wide_file_collection_is_hard_bounded_and_disclosed() {
         let dir = std::env::temp_dir().join(format!(
-            "core-ctx-many-files-{}-{:?}",
+            "iteron-ctx-many-files-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn suspicious_unicode_rejects_the_file_and_surfaces_the_omission() {
-        let dir = std::env::temp_dir().join(format!("core-ctx-bidi-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("iteron-ctx-bidi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hostile.rs"), "pub fn safe_\u{202e}hidden() {}\n").unwrap();
         std::fs::write(
@@ -491,7 +491,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir =
-            std::env::temp_dir().join(format!("core-ctx-d6-06-{}-{unique}", std::process::id()));
+            std::env::temp_dir().join(format!("iteron-ctx-d6-06-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("clean.rs"), "pub fn visible_declaration() {}\n").unwrap();
         std::fs::write(
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn a_tiny_budget_drops_files_and_says_so() {
-        let dir = std::env::temp_dir().join(format!("core-ctx-tiny-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("iteron-ctx-tiny-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..20 {
             std::fs::write(

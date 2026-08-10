@@ -29,7 +29,7 @@ impl Agent {
             max_tokens: 2048,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
         };
         // The hand-off note must not appear as assistant prose, but its provider stream is still
         // live work. Publish only cumulative decode counts through the internal-activity seam.
@@ -66,10 +66,10 @@ impl Agent {
             Ok(res) => {
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
-                        ttft_ms: Some(core_obs::duration_ms_ceil(
+                        ttft_ms: Some(iteron_obs::duration_ms_ceil(
                             first.saturating_duration_since(stream_start),
                         )),
-                        decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                        decode_ms: Some(iteron_obs::duration_ms_ceil(first.elapsed())),
                         stream_items: Some(stream_items),
                     },
                     None => StreamTiming::default(),
@@ -107,7 +107,7 @@ impl Agent {
     pub(super) fn record_compaction(
         &mut self,
         before: usize,
-        plan: &core_ctx::CompactionPlan,
+        plan: &iteron_ctx::CompactionPlan,
         summary: &str,
         after: usize,
     ) {
@@ -115,7 +115,7 @@ impl Agent {
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Compaction {
-                messages: core_ctx::compaction_seed(plan, summary),
+                messages: iteron_ctx::compaction_seed(plan, summary),
             },
         );
         self.lifecycle_event(
@@ -267,7 +267,7 @@ impl Agent {
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Compaction {
-                messages: core_ctx::compaction_seed(&plan, &summary),
+                messages: iteron_ctx::compaction_seed(&plan, &summary),
             },
         );
         self.emit(

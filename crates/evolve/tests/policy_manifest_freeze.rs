@@ -1,11 +1,11 @@
 //! The other half of the golden snapshot: the evolution documents, frozen at
 //! `EVOLUTION_SCHEMA_VERSION` 3.
 //!
-//! Issue #14 acceptance criterion 7 names `core-protocol` **and** `PolicyManifest`.
+//! Issue #14 acceptance criterion 7 names `iteron-protocol` **and** `PolicyManifest`.
 //! `crates/protocol/tests/abi_freeze.rs` covers the first and says in its own words that it can
 //! only cover half of the second: `PolicyManifest` lives here, in a crate that depends on
-//! `core-protocol`, so reaching the type from there needs a dev-dependency cycle back into the
-//! frozen crate's manifest. What that file freezes is the part `core-protocol` decides -
+//! `iteron-protocol`, so reaching the type from there needs a dev-dependency cycle back into the
+//! frozen crate's manifest. What that file freezes is the part `iteron-protocol` decides -
 //! `BTreeSet<Capability>` ordering and the `policy_manifest` artifact tag. This file freezes the
 //! document's own field set, from the only crate that can see it.
 //!
@@ -42,13 +42,13 @@
 //! N-1 migration written - see `crates/evolve/src/schema.rs`, which migrates exactly N-1 and
 //! rejects everything else fail-closed (docs/spec/evolution.md §6.4).
 
-use core_evolve::{
+use iteron_evolve::{
     ArtifactKind, BaseModelId, DataClass, DataGovernance, DatasetAuditKind, DeploymentStage,
     EVOLUTION_SCHEMA_VERSION, EvolutionMethod, PolicyBundle, PolicyManifest, PolicyRef,
     PromotionAssessment, PromotionAuditKind, PromotionOperation, PromotionRole, ProtocolRange,
     RewardVector, StrategyDecision, StrategySlot, TrainingConsent, TrajectoryEnvelope,
 };
-use core_protocol::{Capability, RunId, TenantId};
+use iteron_protocol::{Capability, RunId, TenantId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -462,13 +462,13 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
         ],
     );
     // `DeploymentStage` is a *closed* vocabulary under criterion 2. It cannot be registered beside
-    // the `core-protocol` ones in
+    // the `iteron-protocol` ones in
     // `crates/protocol/tests/abi_freeze.rs::the_closed_vocabularies_refuse_an_unrecognised_tag`,
-    // because `core-protocol` cannot depend on `core-evolve` and the type is not nameable from that
+    // because `iteron-protocol` cannot depend on `iteron-evolve` and the type is not nameable from that
     // file. Its entry in the register is therefore here.
     //
     // This comment used to claim `DeploymentStage` was "the only one that does not live in
-    // `core-protocol`". That was false, and a review that enumerated the crate found it: this crate
+    // `iteron-protocol`". That was false, and a review that enumerated the crate found it: this crate
     // has twelve serde-derived enums — ten public, plus the `pub(crate)` `RefusalCode` and
     // `JournalEvent` — and nine of them were in no register at all. SEVEN of those nine are
     // registered
@@ -527,7 +527,7 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
 /// `promotion_journal::vocabulary_tests`. Seven is what this test covers, not what was missing —
 /// naming it otherwise is how the count in this file went wrong twice already.
 ///
-/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found twelve — ten
+/// A review enumerated every `#[derive(Deserialize)] enum` in `iteron-evolve` and found twelve — ten
 /// public, plus `RefusalCode` and `JournalEvent`, which are `pub(crate)` and are registered in
 /// `promotion_journal::vocabulary_tests` because an integration test cannot name them. Three
 /// were registered — `ArtifactKind` and `EvolutionMethod` as open, `DeploymentStage` as closed. The

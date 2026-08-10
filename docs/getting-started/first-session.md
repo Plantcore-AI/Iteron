@@ -6,7 +6,7 @@
 core -C /path/to/repository
 ```
 
-With an interactive terminal, Core Code opens the TUI even when no task argument
+With an interactive terminal, Iteron opens the TUI even when no task argument
 is supplied. With no terminal, pass `-p` and a task for one-shot operation.
 
 ## Orient before changing anything
@@ -23,7 +23,7 @@ Useful commands:
 - `/tools` — registered tools and their capability classes;
 - `/permissions` — session permission rules;
 - `/diff` — current working-tree diff summary;
-- `/context` and `/cost` — the estimates or measurements Core Code actually has;
+- `/context` and `/cost` — the estimates or measurements Iteron actually has;
 - `/help` — the complete command list.
 
 ## Understand approval prompts

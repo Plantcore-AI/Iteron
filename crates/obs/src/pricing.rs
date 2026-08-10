@@ -11,7 +11,7 @@ use codec::{
     decode_hex, projection_auth_bytes, projection_content_bytes, rate_card_auth_bytes,
     rate_card_content_bytes, sha256_label, sign_mac, validate_prefixed_hex, verify_mac,
 };
-use core_protocol::{
+use iteron_protocol::{
     CostAttribution, CostProjection, CostProjectionIdentity, PricingRoute, PricingVersion,
     RateCard, SignedRateCard, TokenRateCard, Usage,
 };

@@ -1,9 +1,9 @@
-"""Pinned Harbor installed-agent adapter for the Core Code CLI.
+"""Pinned Harbor installed-agent adapter for the Iteron CLI.
 
 This module intentionally does not download an unversioned release.  The caller
 supplies one host-side Linux binary and its SHA-256; Harbor uploads those exact
 bytes into every fresh task environment.  Import it with Harbor's custom-agent
-surface, for example ``core_code_agent:CoreCodeAgent``.
+surface, for example ``iteron_agent:IteronAgent``.
 """
 
 from __future__ import annotations
@@ -172,20 +172,20 @@ def _split_model_route(model_name: str, provider: str | None) -> tuple[str, str]
     return inferred_provider, routed_model
 
 
-class CoreCodeAgent(BaseInstalledAgent):
+class IteronAgent(BaseInstalledAgent):
     """Run one exact Core binary inside a Harbor task environment.
 
     Harbor remains authoritative for the task image, CPU/memory/storage limits,
     task-specific agent timeout, verifier timeout, artifacts, and repetitions.
     Core receives the instruction and works in ``/app``.  Its user config,
     memory, hooks, MCP declarations, sessions, and caches start under fresh
-    private roots; a task-provided ``/app/.core`` path is refused rather than
+    private roots; a task-provided ``/app/.iteron`` path is refused rather than
     allowed to perturb an evaluation arm.
     """
 
     SUPPORTS_ATIF = False
     SUPPORTS_RESUME = False
-    _OUTPUT_FILENAME = "core.stream.jsonl"
+    _OUTPUT_FILENAME = "iteron.stream.jsonl"
 
     def __init__(
         self,
@@ -266,7 +266,7 @@ class CoreCodeAgent(BaseInstalledAgent):
         self._autonomous = autonomous
         self._credential_env = credential_env
         nonce = secrets.token_hex(16)
-        self._remote_binary = PurePosixPath(f"/tmp/core-code-bin-{nonce}")
+        self._remote_binary = PurePosixPath(f"/tmp/iteron-bin-{nonce}")
         self._remote_home = PurePosixPath(f"/tmp/core-harbor-home-{nonce}")
         self._remote_config_home = PurePosixPath(f"/tmp/core-harbor-config-{nonce}")
 
@@ -282,7 +282,7 @@ class CoreCodeAgent(BaseInstalledAgent):
 
     @staticmethod
     def name() -> str:
-        return "core-code"
+        return "iteron"
 
     def get_version_command(self) -> str | None:
         binary = shlex.quote(self._remote_binary.as_posix())
@@ -362,7 +362,7 @@ class CoreCodeAgent(BaseInstalledAgent):
         )
         env = {
             "HOME": self._remote_home.as_posix(),
-            "CORE_CONFIG_HOME": self._remote_config_home.as_posix(),
+            "ITERON_CONFIG_HOME": self._remote_config_home.as_posix(),
         }
         runs = EnvironmentPaths.agent_dir / "runs"
         expected = shlex.quote(self._binary_sha256)
@@ -375,11 +375,11 @@ class CoreCodeAgent(BaseInstalledAgent):
             f'test "$(stat -Lc %s /proc/self/fd/9)" -eq {self._binary_size}; '
             "actual=$(sha256sum /proc/self/fd/9 | awk '{print $1}'); "
             f'test "$actual" = {expected}; '
-            "if [ -e /app/.core ] || [ -L /app/.core ]; then "
+            "if [ -e /app/.iteron ] || [ -L /app/.iteron ]; then "
             "echo 'refusing task-provided Core project state' >&2; exit 78; fi; "
             f"{shlex.join(arguments)} </dev/null | tee /proc/self/fd/8"
         )
         await self.exec_as_agent(environment, command=command, env=env, cwd="/app")
 
 
-__all__ = ["CoreCodeAgent"]
+__all__ = ["IteronAgent"]

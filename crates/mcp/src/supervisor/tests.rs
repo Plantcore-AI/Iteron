@@ -12,7 +12,7 @@ mod unix {
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "core-mcp-supervisor-{tag}-{}-{}",
+            "iteron-mcp-supervisor-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

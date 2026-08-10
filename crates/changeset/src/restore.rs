@@ -131,7 +131,7 @@ pub struct Preview {
     /// True when the caller supplied no snapshot inventory, so "not in the snapshot" was inferred
     /// from `Presence::Untracked` rather than known.
     ///
-    /// That inference is **wrong** against `core-record`, whose snapshot captures untracked
+    /// That inference is **wrong** against `iteron-record`, whose snapshot captures untracked
     /// non-ignored files too: such a path *is* in the checkpoint and would be restored, not lost.
     /// Until an inventory is threaded through, a preview says so instead of asserting a
     /// classification it cannot make.
@@ -191,7 +191,7 @@ impl Preview {
 /// Preview a restore against an actual snapshot listing.
 ///
 /// This is the version that can answer the question `preview` could only guess at. `Presence::
-/// Untracked` does **not** mean "absent from the checkpoint": `core-record` captures untracked
+/// Untracked` does **not** mean "absent from the checkpoint": `iteron-record` captures untracked
 /// non-ignored files, so an untracked path may well be in the snapshot and would be *restored*
 /// rather than lost. Reporting it as irrecoverable would frighten a caller away from a safe
 /// restore; the mirror-image error deletes a file. Only the snapshot itself settles it.
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn an_untracked_path_the_snapshot_actually_contains_is_restored_not_lost() {
-        // The correction this exists for. `core-record` captures untracked non-ignored files, so
+        // The correction this exists for. `iteron-record` captures untracked non-ignored files, so
         // "untracked" never meant "absent from the checkpoint". Guessing frightens a caller away
         // from a safe restore; the mirror-image guess deletes a file.
         let c = changes(&["?? generated.rs"]);
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn a_preview_without_a_snapshot_inventory_says_so() {
-        // `Presence::Untracked` is not the same as "absent from the checkpoint": core-record's
+        // `Presence::Untracked` is not the same as "absent from the checkpoint": iteron-record's
         // snapshot captures untracked non-ignored files, so such a path would be *restored*, not
         // lost. Until an inventory is threaded through, the preview reports that it inferred.
         let p = preview(

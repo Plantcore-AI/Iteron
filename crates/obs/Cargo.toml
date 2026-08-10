@@ -1,12 +1,12 @@
 [package]
-name = "core-obs"
+name = "iteron-obs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-protocol = { path = "../protocol" }
+iteron-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hmac = { workspace = true }

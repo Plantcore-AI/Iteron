@@ -15,7 +15,7 @@ impl App {
         let welcome = block::Block::new(
             0,
             block::BlockKind::Welcome {
-                tagline: "Core Code · Build, explain, and verify".into(),
+                tagline: "Iteron · Build, explain, and verify".into(),
             },
         );
         App {
@@ -70,7 +70,7 @@ impl App {
             last_context: None,
             model_context_window: None,
             reserved_output_tokens: None,
-            compaction_trigger_tokens: core_ctx::CompactionPolicy::default().trigger_tokens,
+            compaction_trigger_tokens: iteron_ctx::CompactionPolicy::default().trigger_tokens,
             effort_application: None,
             turns: 0,
             pending: None,

@@ -1,12 +1,12 @@
 # 2. 体系结构总览 (Architecture Overview)
 
-本节给出 Core Code 的整体图景:系统由哪几个平面构成、它们通过什么互相连接、以及每一处机制被同一套判据约束。后续各节(microkernel 组件见 §3、ABI 契约见 §4、strategy slot 见 §5、evolution pipeline 见 §6、评测见 §7)都是本节这张地图上某一块的展开;读本节的目的,是在进入细节前先建立"哪一部分是冻结的、哪一部分是可进化的、二者以什么为界"的全局判断。
+本节给出 Iteron 的整体图景:系统由哪几个平面构成、它们通过什么互相连接、以及每一处机制被同一套判据约束。后续各节(microkernel 组件见 §3、ABI 契约见 §4、strategy slot 见 §5、evolution pipeline 见 §6、评测见 §7)都是本节这张地图上某一块的展开;读本节的目的,是在进入细节前先建立"哪一部分是冻结的、哪一部分是可进化的、二者以什么为界"的全局判断。
 
-Core Code 的定位是**"harness 的可训练基座"**:把一个 agent 专门化(specialize)到某个垂类,指的是**训练 harness,而不是训练 model**。除 microkernel 外,系统里每一个非内核决策都是**一个 typed policy space 里的策略**;它被训练后的状态是一等公民工件,即 **PolicyManifest(即 harness checkpoint)**。权重学的是先验(prior),harness 学的是具体处境(situation)。这一定位决定了整个体系结构必须回答一个结构性问题:**哪些东西可以被自我改进的算子(self-improving operator)改写,哪些绝对不能。** 答案就是下面的三平面切分。
+Iteron 的定位是**"harness 的可训练基座"**:把一个 agent 专门化(specialize)到某个垂类,指的是**训练 harness,而不是训练 model**。除 microkernel 外,系统里每一个非内核决策都是**一个 typed policy space 里的策略**;它被训练后的状态是一等公民工件,即 **PolicyManifest(即 harness checkpoint)**。权重学的是先验(prior),harness 学的是具体处境(situation)。这一定位决定了整个体系结构必须回答一个结构性问题:**哪些东西可以被自我改进的算子(self-improving operator)改写,哪些绝对不能。** 答案就是下面的三平面切分。
 
 ### 2.1 三个平面 (three planes)
 
-Core Code 在结构上 **MUST** 划分为三个平面,边界即信任边界:
+Iteron 在结构上 **MUST** 划分为三个平面,边界即信任边界:
 
 1. **Plane A: 固定运行时可信基 (Fixed runtime TCB)。** 一个冻结的 **microkernel**,是系统里唯一拥有环境权限(ambient authority)的部分,承载全部不可谈判的机制:identity & trust、capability admission(五个彼此独立的 capability class,授权恒以集合 `CapabilitySet` 承载,只取交不取并;`crates/protocol/src/capability_set.rs:1-19` 说明为何 MUST NOT 表示为某个序上的一个点)、唯一的 effect broker、确定性状态归约(一个 pure reducer)、canonical record/checkpoint/replay(SHA-256 hash-chained、tamper-evident)、budgets/deadlines/cancellation、version registry、kill/rollback,以及运行 reducer 所产出 action request 的 **bounded agent-loop driver**。它的形态被一份**否定清单(negative space)**同等地定义:microkernel **MUST NOT** 读取文件或环境变量、**MUST NOT** 调用任何 provider、**MUST NOT** 组装 prompt、**MUST NOT** 选择 context、**MUST NOT** spawn 进程、**MUST NOT** 解析 MCP、**MUST NOT** 渲染 UI、**MUST NOT** 训练或激活任何 policy。这份否定清单不是风格建议,而是可被机器校验的边界:任一条被违反,即视为 microkernel 一致性缺失(honest status 见 §2.7)。
 
@@ -22,7 +22,7 @@ Core Code 在结构上 **MUST** 划分为三个平面,边界即信任边界:
 
 三个平面在结构上围绕**一个中心工件**咬合:**PolicyManifest**,即 harness checkpoint。它是理解"这套体系如何连起来"的枢纽,因此在总览层就必须讲清。
 
-PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,定义在 StrategySlot 这一策略空间之上(§5;此处指槽的**身份**,即 `core_evolve::StrategySlot` 这个 newtype(`crates/evolve/src/lib.rs:131`),不是同名的 `core_protocol::slot::StrategySlot` trait(`crates/protocol/src/slot.rs:140-150`))。已冻结的 `PolicyManifest` 形如 `{ schema_version, policy: PolicyRef, artifact_kind, artifact_locator, parent: Option<PolicyRef>, method, protocol: ProtocolRange, required_capabilities: BTreeSet<Capability>, training_dataset_digest: Option<String>, evaluation_suite_digest, base_model }`(crates/evolve/src/lib.rs:448-465;冻结快照见 crates/evolve/tests/policy_manifest_freeze.rs)。几处容易读错的地方:身份与版本不在顶层,而在 `policy: PolicyRef { slot, policy_id, version, digest }`(lib.rs:422-428),其中 `digest` 是工件字节的摘要而非可变 URL;把多个 slot 绑成一束是另一个契约 `PolicyBundle.policies: Vec<PolicyRef>`(lib.rs:526-531),不是 manifest 上的字段;权限一侧的字段是 `required_capabilities`,它是候选**所申请**的能力集合,方向与"上界"相反,天花板由 admission 侧的 slot 天花板与精确父天花板给出,候选只能声明、不能授予(见 §6.6);血缘由 `parent: Option<PolicyRef>` 加 `training_dataset_digest` / `evaluation_suite_digest` 两个摘要承载,而不是一份自由形态的 `provenance`。它的关键性质:
+PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,定义在 StrategySlot 这一策略空间之上(§5;此处指槽的**身份**,即 `iteron_evolve::StrategySlot` 这个 newtype(`crates/evolve/src/lib.rs:131`),不是同名的 `iteron_protocol::slot::StrategySlot` trait(`crates/protocol/src/slot.rs:140-150`))。已冻结的 `PolicyManifest` 形如 `{ schema_version, policy: PolicyRef, artifact_kind, artifact_locator, parent: Option<PolicyRef>, method, protocol: ProtocolRange, required_capabilities: BTreeSet<Capability>, training_dataset_digest: Option<String>, evaluation_suite_digest, base_model }`(crates/evolve/src/lib.rs:448-465;冻结快照见 crates/evolve/tests/policy_manifest_freeze.rs)。几处容易读错的地方:身份与版本不在顶层,而在 `policy: PolicyRef { slot, policy_id, version, digest }`(lib.rs:422-428),其中 `digest` 是工件字节的摘要而非可变 URL;把多个 slot 绑成一束是另一个契约 `PolicyBundle.policies: Vec<PolicyRef>`(lib.rs:526-531),不是 manifest 上的字段;权限一侧的字段是 `required_capabilities`,它是候选**所申请**的能力集合,方向与"上界"相反,天花板由 admission 侧的 slot 天花板与精确父天花板给出,候选只能声明、不能授予(见 §6.6);血缘由 `parent: Option<PolicyRef>` 加 `training_dataset_digest` / `evaluation_suite_digest` 两个摘要承载,而不是一份自由形态的 `provenance`。它的关键性质:
 
 - **方法无关(method-agnostic)。** 无论候选是由 search/GEPA、SFT、preference optimization、GRPO 还是 offline RL 产生的,产出的**都是同一种 PolicyManifest**。训练方法可以任意替换,工件形态不变:这正是"harness checkpoint"这个名字的含义,它对 harness 而言,就像 model checkpoint 对权重而言。
 - **像 release 一样被治理。** 它被一个**独立的 evaluator** 在**垂类自持的 held-out objective** 上打分,然后像发布一个版本一样被 promote / rollback。promotion 的每一跳(shadow -> canary -> active)都是人工门控的,且每一跳都保留确定性 rollback 到上一个已知点。
@@ -149,6 +149,6 @@ PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,�
 
 ### 2.7 现状口径 (honest status)
 
-本节描述的三平面契约是**目标契约(target contract),不是已达成的一致性声明(conformance claim)。** Core Code 目前处于 **pre-alpha**:它是一个**可运行但仍为模块化单体(modular monolith)**的系统;工作区已按 protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等边界切分,且这些边界受机器校验(唯一路径责任、Cargo 依赖漂移检测),但**内核目前仍硬依赖约 10 个具体 crate**,CLI/TUI 仍参与运行时组装。因此 Core Code **尚未**声称 microkernel 一致性。**运行时的自我进化(live self-evolution)激活为 NO-GO**,全部进化循环停留在离线、人工门控的路径内;本规范**不含任何首方基准数字**。
+本节描述的三平面契约是**目标契约(target contract),不是已达成的一致性声明(conformance claim)。** Iteron 目前处于 **pre-alpha**:它是一个**可运行但仍为模块化单体(modular monolith)**的系统;工作区已按 protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等边界切分,且这些边界受机器校验(唯一路径责任、Cargo 依赖漂移检测),但**内核目前仍硬依赖约 10 个具体 crate**,CLI/TUI 仍参与运行时组装。因此 Iteron **尚未**声称 microkernel 一致性。**运行时的自我进化(live self-evolution)激活为 NO-GO**,全部进化循环停留在离线、人工门控的路径内;本规范**不含任何首方基准数字**。
 
 成熟形态(mature form)的目标是一个体量与业界生产级 coding agent 相当的完整系统;但本节所述的规模与广度是**前瞻性的定位**,**MUST NOT** 被用来描述任何早期演示切片的范围。换言之,读者 **MUST** 把"成熟形态"的每一处描述读作目标契约,而 **MUST NOT** 据此推断当前切片已具备该规模;凡本节陈述与当前实现不符处,以本节所标 pre-alpha 现状为准。从当前模块化单体走向目标契约的抽取路径是明确的:(1) versioned canonical command/event envelope;(2) 产出 action request 的 pure state reducer;(3) 唯一的 capability + effect broker;(4) 注入式的 provider / world / context / verification / scheduler port;(5) 带 bounded flow control 的长驻 session runtime;(6) 供 CLI/TUI 及未来客户端使用的 versioned App Server。后续各节即沿这条路径逐块展开。

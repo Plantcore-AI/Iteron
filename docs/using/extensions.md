@@ -1,6 +1,6 @@
 # Skills, hooks, and MCP
 
-Core Code has initial extension surfaces with different trust and effect models.
+Iteron has initial extension surfaces with different trust and effect models.
 They are not one interchangeable plugin API.
 
 ## Skills
@@ -8,15 +8,15 @@ They are not one interchangeable plugin API.
 A skill is a directory containing `SKILL.md`:
 
 ```text
-<root>/.core/skills/<name>/SKILL.md
+<root>/.iteron/skills/<name>/SKILL.md
 ```
 
 The file has `name` and `description` frontmatter plus an instruction body.
-Core Code injects a bounded name/description index and loads a body on demand through
+Iteron injects a bounded name/description index and loads a body on demand through
 the `use_skill` tool.
 
-- `~/.core/skills` is operator-owned and trusted.
-- `<repo>/.core/skills` is workspace input, not authority.
+- `~/.iteron/skills` is operator-owned and trusted.
+- `<repo>/.iteron/skills` is workspace input, not authority.
 - repository symlinks and skills under dependency/vendor paths are rejected or
   stripped.
 - suspicious bidirectional or invisible Unicode is rejected.
@@ -26,7 +26,7 @@ Use `/skills` to inspect discovery.
 ## Lifecycle hooks
 
 Hooks are arbitrary operator commands and therefore load **only** from
-`~/.core/config.json`. Supported event keys are `SessionStart`,
+`~/.iteron/config.json`. Supported event keys are `SessionStart`,
 `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
 
 ```json
@@ -73,15 +73,15 @@ never become printable configuration:
       "name": "remote-example",
       "transport": "http",
       "url": "https://mcp.example.com/mcp",
-      "header_env": { "x-tenant": "CORE_MCP_TENANT" },
+      "header_env": { "x-tenant": "ITERON_MCP_TENANT" },
       "oauth": {
-        "access_token_env": "CORE_MCP_ACCESS_TOKEN",
-        "expires_at_env": "CORE_MCP_ACCESS_EXPIRES_AT",
+        "access_token_env": "ITERON_MCP_ACCESS_TOKEN",
+        "expires_at_env": "ITERON_MCP_ACCESS_EXPIRES_AT",
         "refresh_url": "https://mcp.example.com/oauth/token",
-        "refresh_token_env": "CORE_MCP_REFRESH_TOKEN",
+        "refresh_token_env": "ITERON_MCP_REFRESH_TOKEN",
         "revoke_url": "https://mcp.example.com/oauth/revoke",
-        "client_id": "core-code",
-        "client_secret_env": "CORE_MCP_CLIENT_SECRET"
+        "client_id": "iteron",
+        "client_secret_env": "ITERON_MCP_CLIENT_SECRET"
       }
     }
   ]

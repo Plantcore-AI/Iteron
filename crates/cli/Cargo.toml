@@ -1,35 +1,35 @@
 [package]
-name = "core-cli"
+name = "iteron-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "core"
+name = "iteron"
 path = "src/main.rs"
 
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-record = { path = "../record" }
-core-obs = { path = "../obs" }
-core-provider = { path = "../provider" }
-core-tools = { path = "../tools" }
-core-sched = { path = "../sched" }
-core-workflow = { path = "../workflow" }
-core-kernel = { path = "../kernel" }
-core-ctx = { path = "../ctx" }
-core-agents = { path = "../agents" }
-core-evolve = { path = "../evolve" }
-core-eval = { path = "../eval" }
-core-mcp = { path = "../mcp" }
-core-verify = { path = "../verify" }
-core-sandbox = { path = "../sandbox" }
-core-tunables = { path = "../tunables" }
-core-changeset = { path = "../changeset" }
-core-marketplace = { path = "../marketplace" }
-core-statusline = { path = "../statusline" }
-core-support = { path = "../support" }
+iteron-protocol = { path = "../protocol" }
+iteron-record = { path = "../record" }
+iteron-obs = { path = "../obs" }
+iteron-provider = { path = "../provider" }
+iteron-tools = { path = "../tools" }
+iteron-sched = { path = "../sched" }
+iteron-workflow = { path = "../workflow" }
+iteron-kernel = { path = "../kernel" }
+iteron-ctx = { path = "../ctx" }
+iteron-agents = { path = "../agents" }
+iteron-evolve = { path = "../evolve" }
+iteron-eval = { path = "../eval" }
+iteron-mcp = { path = "../mcp" }
+iteron-verify = { path = "../verify" }
+iteron-sandbox = { path = "../sandbox" }
+iteron-tunables = { path = "../tunables" }
+iteron-changeset = { path = "../changeset" }
+iteron-marketplace = { path = "../marketplace" }
+iteron-statusline = { path = "../statusline" }
+iteron-support = { path = "../support" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

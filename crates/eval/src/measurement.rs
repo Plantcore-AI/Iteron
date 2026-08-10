@@ -139,7 +139,7 @@ impl PairedEvaluationReport {
             ".{}.tmp-{}",
             path.file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("core-eval-measurement"),
+                .unwrap_or("iteron-eval-measurement"),
             std::process::id()
         ));
         let mut file = std::fs::OpenOptions::new()

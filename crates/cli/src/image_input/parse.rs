@@ -1,7 +1,7 @@
 use super::{ImageInputError, ImageInputErrorKind, ImageMention, ParsedImagePath, SafeDisplayName};
 use crate::image_input::sniff::extension_format;
-use core_protocol::input::MAX_INPUT_IMAGES;
-use core_protocol::task::MAX_TASK_TEXT_BYTES;
+use iteron_protocol::input::MAX_INPUT_IMAGES;
+use iteron_protocol::task::MAX_TASK_TEXT_BYTES;
 use std::path::PathBuf;
 use url::Url;
 

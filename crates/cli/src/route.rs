@@ -199,23 +199,23 @@ impl RouteView {
     }
 }
 
-fn adapter_label(adapter: core_provider::AdapterKind) -> &'static str {
+fn adapter_label(adapter: iteron_provider::AdapterKind) -> &'static str {
     match adapter {
-        core_provider::AdapterKind::AnthropicMessages => "anthropic_messages",
-        core_provider::AdapterKind::OpenAiResponses => "openai_responses",
-        core_provider::AdapterKind::OpenAiCompatibleChat => "openai_chat",
+        iteron_provider::AdapterKind::AnthropicMessages => "anthropic_messages",
+        iteron_provider::AdapterKind::OpenAiResponses => "openai_responses",
+        iteron_provider::AdapterKind::OpenAiCompatibleChat => "openai_chat",
     }
 }
 
-fn error_profile_label(profile: core_provider::ErrorProfile) -> &'static str {
+fn error_profile_label(profile: iteron_provider::ErrorProfile) -> &'static str {
     match profile {
-        core_provider::ErrorProfile::Anthropic => "anthropic",
-        core_provider::ErrorProfile::OpenAi => "openai",
-        core_provider::ErrorProfile::DeepSeek => "deepseek",
-        core_provider::ErrorProfile::Glm => "glm",
-        core_provider::ErrorProfile::MiniMax => "minimax",
-        core_provider::ErrorProfile::Fireworks => "fireworks",
-        core_provider::ErrorProfile::CustomConservative => "custom",
+        iteron_provider::ErrorProfile::Anthropic => "anthropic",
+        iteron_provider::ErrorProfile::OpenAi => "openai",
+        iteron_provider::ErrorProfile::DeepSeek => "deepseek",
+        iteron_provider::ErrorProfile::Glm => "glm",
+        iteron_provider::ErrorProfile::MiniMax => "minimax",
+        iteron_provider::ErrorProfile::Fireworks => "fireworks",
+        iteron_provider::ErrorProfile::CustomConservative => "custom",
     }
 }
 

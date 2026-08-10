@@ -92,14 +92,14 @@ pub(super) fn submit_composer(
         app.editor.attachments(),
         app.editor.files(),
     );
-    if text.len() > core_protocol::task::MAX_TASK_TEXT_BYTES {
+    if text.len() > iteron_protocol::task::MAX_TASK_TEXT_BYTES {
         app.note(
             block::NoticeLevel::Warn,
             format!(
                 "submission refused: {} bytes exceeds the {}-byte task limit — the draft and its \
                  pasted blocks are untouched",
                 text.len(),
-                core_protocol::task::MAX_TASK_TEXT_BYTES
+                iteron_protocol::task::MAX_TASK_TEXT_BYTES
             ),
         );
         return;
@@ -156,7 +156,8 @@ pub(super) fn submit_staged_input(
             .map(|attachment| attachment.content().clone())
             .collect::<Vec<_>>();
         let files = staged_files.to_file_contents();
-        if let Err(reason) = core_protocol::input::validate_file_submission(&text, &images, &files)
+        if let Err(reason) =
+            iteron_protocol::input::validate_file_submission(&text, &images, &files)
         {
             app.note(
                 block::NoticeLevel::Warn,

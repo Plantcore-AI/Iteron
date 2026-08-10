@@ -7,11 +7,11 @@ use super::{
     CONTROL_RESPONSE_SECS, MAX_ACTIVE_JOBS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS,
     ProcessLifecycleObserver,
 };
-use core_sandbox::{
+use futures_util::future::join_all;
+use iteron_sandbox::{
     ConfinedProcess, ConfinedProcessControl, Confinement, PersistentBackend, SandboxError,
     spawn_confined_process,
 };
-use futures_util::future::join_all;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};

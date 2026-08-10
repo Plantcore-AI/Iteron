@@ -8,7 +8,7 @@
 //! # What is deliberately absent
 //!
 //! There is no create, admit, activate, promote, or swap here, and no way to reach the evolution
-//! crate: `crates/agents` does not depend on `core-evolve`, and neither does `crates/kernel`. The
+//! crate: `crates/agents` does not depend on `iteron-evolve`, and neither does `crates/kernel`. The
 //! only thing that crosses is [`ResolvedBundle`], which carries policy *identities* and no policy
 //! bodies. Live self-activation stays NO-GO because the surface that would perform it does not
 //! exist, not because a comment asks for restraint.
@@ -26,8 +26,8 @@
 //! point — an unknown policy must not be able to change what an agent does by being unrecognisable.
 
 use crate::def::ToolFilter;
-use core_protocol::bundle::{BundleResolutionError, PolicyBundleResolver, ResolvedBundle};
-use core_protocol::slot::SlotId;
+use iteron_protocol::bundle::{BundleResolutionError, PolicyBundleResolver, ResolvedBundle};
+use iteron_protocol::slot::SlotId;
 
 /// The slot whose promoted policy this module reads.
 pub fn tool_policy_slot() -> SlotId {

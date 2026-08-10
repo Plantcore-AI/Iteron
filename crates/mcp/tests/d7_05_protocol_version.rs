@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use core_mcp::{McpClient, McpError};
+use iteron_mcp::{McpClient, McpError};
 
 const CLIENT_VERSION: &str = "2025-11-25";
 const NEWER_SERVER_VERSION: &str = "2099-01-01";

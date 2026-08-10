@@ -27,7 +27,7 @@
 //! it is returned so the operator/model can decide (never silently egress to a different origin).
 
 use crate::{Registry, ToolError, boxfut, err_result};
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 
 /// Default output cap and line cap — bounded invariant #1. Raised from 100 KB / 1500 lines
 /// (owner-directed 2026-08-05): a single API reference or changelog page routinely exceeds both,
@@ -40,7 +40,7 @@ const TIMEOUT_SECS: u64 = 60;
 const MAX_REDIRECTS: usize = 5;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
-    "core/",
+    "iteron/",
     env!("CARGO_PKG_VERSION"),
     " (autonomous coding agent; web_fetch)"
 );
@@ -428,7 +428,7 @@ async fn brave_search(key: &str, query: &str, count: usize) -> Result<String, St
         return Err(format!(
             "search backend HTTP {} ({})",
             status.as_u16(),
-            core_protocol::text::head(&body, 300)
+            iteron_protocol::text::head(&body, 300)
         ));
     }
     let results = parse_brave_results(&body)?;
@@ -558,7 +558,7 @@ async fn tavily_search(key: &str, query: &str, count: usize) -> Result<String, S
         return Err(format!(
             "search backend HTTP {} ({})",
             status.as_u16(),
-            core_protocol::text::head(&body, 300)
+            iteron_protocol::text::head(&body, 300)
         ));
     }
     let results = parse_tavily_results(&body, count)?;
@@ -583,7 +583,7 @@ fn parse_tavily_results(json: &str, count: usize) -> Result<Vec<(String, String,
             .unwrap_or("")
             .to_string();
         let snippet_raw = it.get("content").and_then(|x| x.as_str()).unwrap_or("");
-        let snippet = core_protocol::text::head(snippet_raw, 280);
+        let snippet = iteron_protocol::text::head(snippet_raw, 280);
         if url.is_empty() {
             continue;
         }
@@ -626,7 +626,7 @@ async fn exa_search(key: &str, query: &str, count: usize) -> Result<String, Stri
         return Err(format!(
             "search backend HTTP {} ({})",
             status.as_u16(),
-            core_protocol::text::head(&body, 300)
+            iteron_protocol::text::head(&body, 300)
         ));
     }
     let results = parse_exa_results(&body, count)?;
@@ -655,7 +655,7 @@ fn parse_exa_results(json: &str, count: usize) -> Result<Vec<(String, String, St
             .and_then(|x| x.as_str())
             .or_else(|| it.get("snippet").and_then(|x| x.as_str()))
             .unwrap_or("");
-        let snippet = core_protocol::text::head(snippet_raw, 280);
+        let snippet = iteron_protocol::text::head(snippet_raw, 280);
         if url.is_empty() {
             continue;
         }
@@ -708,7 +708,7 @@ async fn zhipu_search(key: &str, query: &str, count: usize) -> Result<String, St
         return Err(format!(
             "search backend HTTP {} ({})",
             status.as_u16(),
-            core_protocol::text::head(&body, 300)
+            iteron_protocol::text::head(&body, 300)
         ));
     }
     let results = parse_zhipu_results(&body, count)?;
@@ -736,7 +736,7 @@ fn parse_zhipu_results(json: &str, count: usize) -> Result<Vec<(String, String, 
             .unwrap_or("")
             .to_string();
         let snippet_raw = it.get("content").and_then(|x| x.as_str()).unwrap_or("");
-        let snippet = core_protocol::text::head(snippet_raw, 280);
+        let snippet = iteron_protocol::text::head(snippet_raw, 280);
         if title.is_empty() && url.is_empty() && snippet.is_empty() {
             continue;
         }

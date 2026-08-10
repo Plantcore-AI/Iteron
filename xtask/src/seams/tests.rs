@@ -211,7 +211,7 @@ fn a_removed_seam_needs_its_exact_crate_binding_not_an_alias_or_test_impl() {
             &["TrajectoryProjection"],
             vec![source(
                 SATISFIABILITY_TEST,
-                "use core_evolve::HeldOutEvidenceBridge;\n\
+                "use iteron_evolve::HeldOutEvidenceBridge;\n\
                  impl HeldOutEvidenceBridge for TestOnly {}",
             )],
         )

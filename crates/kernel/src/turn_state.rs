@@ -4,7 +4,7 @@
 //! one; nothing here can be mutated in place, so "who changed this field" is never a question.
 
 use crate::turn_protocol::{ControlSignal, HarnessFault, TurnPhase};
-use core_protocol::Outcome;
+use iteron_protocol::Outcome;
 use serde::{Deserialize, Serialize};
 
 /// The ceilings a run is bound by. Pinned at admission and never re-read mid-run: a ceiling that

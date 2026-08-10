@@ -1,12 +1,12 @@
 use super::input::SourceDocument;
 use super::wire::{read_response, write_value};
 use super::{LspToolError, QueryKind};
-use core_lsp::documents::DocumentStore;
-use core_lsp::intel::{Query, ensure_fresh};
-use core_lsp::lifecycle::{Event, RestartPolicy, Session, State};
-use core_lsp::pending::{PendingRequests, ReplyDisposition};
-use core_lsp::{ServerEpoch, framing};
-use core_sandbox::{
+use iteron_lsp::documents::DocumentStore;
+use iteron_lsp::intel::{Query, ensure_fresh};
+use iteron_lsp::lifecycle::{Event, RestartPolicy, Session, State};
+use iteron_lsp::pending::{PendingRequests, ReplyDisposition};
+use iteron_lsp::{ServerEpoch, framing};
+use iteron_sandbox::{
     ConfinedProcess, Confinement, PersistentBackend, SandboxError,
     spawn_confined_process_from_workspace,
 };
@@ -431,7 +431,7 @@ async fn drain_stderr(mut stderr: tokio::process::ChildStderr, limit_hit: Arc<At
 
 fn accepted(
     disposition: ReplyDisposition,
-) -> Result<core_lsp::pending::CompletedRequest, LspToolError> {
+) -> Result<iteron_lsp::pending::CompletedRequest, LspToolError> {
     match disposition {
         ReplyDisposition::Accepted(completed) => Ok(completed),
         _ => Err(LspToolError::CorrelationRejected),
