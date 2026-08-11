@@ -2,7 +2,8 @@
 
 use super::KernelError;
 use iteron_protocol::{
-    Event, EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesVersion, RunId, Seq,
+    Event, EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesVersion,
+    RunGenesisTunablesVersionV2, RunId, Seq,
 };
 use iteron_record::{Rollout, TunablesCheckpoint, TunablesSnapshotError};
 use std::sync::Arc;
@@ -71,7 +72,7 @@ impl TunablesPin {
                 inherited_from,
             },
             TunablesCheckpoint::V2(snapshot) => EventKind::TunablesSnapshotV2 {
-                version: RunGenesisTunablesVersion::V2,
+                version: RunGenesisTunablesVersionV2::V2,
                 snapshot: snapshot.clone(),
                 inherited_from,
             },

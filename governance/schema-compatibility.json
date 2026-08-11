@@ -5,7 +5,7 @@
   "surfaces": [
     {
       "id": "protocol.sq-envelope",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": "protocol_version",
       "fixtures": [
         {
@@ -22,6 +22,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-v3.json",
           "format": "json",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-v4.json",
+          "format": "json",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -33,7 +38,7 @@
     },
     {
       "id": "protocol.op.user-input",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input" },
       "fixtures": [
@@ -51,6 +56,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -61,7 +71,7 @@
     },
     {
       "id": "protocol.op.user-input-v2",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input_v2" },
       "fixtures": [
@@ -79,6 +89,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v2-v3.json",
           "format": "json",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v2-v4.json",
+          "format": "json",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -89,7 +104,7 @@
     },
     {
       "id": "protocol.op.user-input-v3",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input_v3" },
       "fixtures": [
@@ -107,6 +122,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v3.json",
           "format": "json",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v4.json",
+          "format": "json",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -119,7 +139,7 @@
     },
     {
       "id": "protocol.op.approval-response",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "approval_response" },
       "fixtures": [
@@ -137,6 +157,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -149,7 +174,7 @@
     },
     {
       "id": "protocol.op.steer",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "steer" },
       "fixtures": [
@@ -167,6 +192,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -177,7 +207,7 @@
     },
     {
       "id": "protocol.op.interrupt",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "interrupt" },
       "fixtures": [
@@ -195,6 +225,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -204,7 +239,7 @@
     },
     {
       "id": "protocol.op.drain",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "drain" },
       "fixtures": [
@@ -222,6 +257,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -231,7 +271,7 @@
     },
     {
       "id": "protocol.op.force-cancel",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "selector": { "field": "op", "value": "force_cancel" },
       "fixtures": [
@@ -239,6 +279,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -248,7 +293,7 @@
     },
     {
       "id": "protocol.eq-envelope",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": "protocol_version",
       "fixtures": [
         {
@@ -265,6 +310,11 @@
           "path": "governance/schema-compat/fixtures/protocol/eq-v3.json",
           "format": "json",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/eq-v4.json",
+          "format": "json",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -275,7 +325,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 12,
+      "current_version": 13,
       "version_field": null,
       "fixtures": [
         {
@@ -342,6 +392,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-verification-policy-v12.jsonl",
           "format": "jsonl",
           "schema_version": 12
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-turn-ceiling-v13.jsonl",
+          "format": "jsonl",
+          "schema_version": 13
         }
       ],
       "fields": [
@@ -1076,7 +1131,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 8,
+      "current_version": 9,
       "version_field": null,
       "fixtures": [
         {
@@ -1118,6 +1173,11 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-verification-policy-v8.json",
           "format": "json",
           "schema_version": 8
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-turn-ceiling-v9.json",
+          "format": "json",
+          "schema_version": 9
         }
       ],
       "fields": [
@@ -2209,8 +2269,8 @@
       },
       "fixtures": [
         {
-          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
-          "format": "jsonl",
+          "path": "governance/schema-compat/fixtures/record/event-kind-turn-ceiling-v1.json",
+          "format": "json",
           "schema_version": 1
         }
       ],

@@ -1,0 +1,1 @@
+{"seq":0,"tenant":"default","prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"27fa9e605d3723ba91332a71232fff72e45c0da461e18adf96a7e590deb70584","payload":{"seq":0,"turn":1,"kind":{"kind":"turn_ceiling_changed","version":"v1","source":"operator","max_turns":80}},"ts_us":1}

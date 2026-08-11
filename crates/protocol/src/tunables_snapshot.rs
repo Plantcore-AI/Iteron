@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::RunGenesisTunableState;
+
 /// Maximum number of semantic families admitted in one genesis checkpoint.
 pub const MAX_RUN_GENESIS_TUNABLE_ENTRIES: usize = 160;
 /// Maximum UTF-8 bytes in stable registry/family/semantic/provenance identifiers.
@@ -25,52 +27,15 @@ pub const RUN_GENESIS_TUNABLES_CANONICALIZATION: &str = "core-run-genesis-tunabl
 /// Canonical encoding committed by [`RunGenesisTunablesSnapshotV2::snapshot_digest_sha256`].
 pub const RUN_GENESIS_TUNABLES_V2_CANONICALIZATION: &str = "core-run-genesis-tunables-json-v2";
 
-/// Schema version carried by each additive tunables checkpoint event.
+/// Closed schema version carried by the additive V2 tunables checkpoint event.
+///
+/// V1 keeps its published [`crate::RunGenesisTunablesVersion`] type byte- and source-identical.
+/// Giving the additive payload its own one-variant type prevents either event from accepting the
+/// other's version while retaining the immediate-base public V1 contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunGenesisTunablesVersion {
-    V1,
+pub enum RunGenesisTunablesVersionV2 {
     V2,
-}
-
-/// The only entry states an atomically successful resolver result may persist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunGenesisTunableState {
-    Effective,
-    Inactive,
-    Unavailable,
-}
-
-/// Historical V1 bounded per-family identity and state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunableEntry {
-    pub ordinal: u16,
-    pub family_id: String,
-    pub semantic_key: String,
-    pub state: RunGenesisTunableState,
-}
-
-/// Historical V1 immutable identity. It remains readable but is not reconstructable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunablesSnapshot {
-    pub version: RunGenesisTunablesVersion,
-    pub canonicalization: String,
-    pub resolution_schema_version: u16,
-    pub registry_id: String,
-    pub registry_schema_version: u16,
-    pub family_schema_version: u16,
-    pub registry_revision: u16,
-    pub registry_digest_sha256: String,
-    pub input_digest_sha256: String,
-    pub effective_digest_sha256: String,
-    pub resolution_digest_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_digest_sha256: Option<String>,
-    pub entries: Vec<RunGenesisTunableEntry>,
-    pub snapshot_digest_sha256: String,
 }
 
 /// Closed protocol projection of the fixed authorities registered by the tunables runtime. This
@@ -137,7 +102,7 @@ pub struct RunGenesisTunableEntryV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunGenesisTunablesSnapshotV2 {
-    pub version: RunGenesisTunablesVersion,
+    pub version: RunGenesisTunablesVersionV2,
     pub canonicalization: String,
     pub resolution_schema_version: u16,
     pub registry_id: String,
@@ -152,12 +117,4 @@ pub struct RunGenesisTunablesSnapshotV2 {
     pub profile_digest_sha256: Option<String>,
     pub entries: Vec<RunGenesisTunableEntryV2>,
     pub snapshot_digest_sha256: String,
-}
-
-/// Child-genesis binding to the exact parent checkpoint inherited across a fork or rewind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunablesInheritance {
-    pub parent_run: String,
-    pub parent_snapshot_digest_sha256: String,
 }

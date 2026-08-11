@@ -40,7 +40,6 @@ mod durability;
 mod failed_action_cache;
 mod file_submission;
 mod frontend;
-use frontend::ui_workflow_label;
 pub mod hooks;
 mod inbound_control;
 mod kernel_error;
@@ -94,21 +93,16 @@ use iteron_protocol::{
     AgentLoopState, Block, Budget, Capability, CostAttribution, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Effort, Event, EventKind,
     LifecyclePayload, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode,
-    PermissionRules, Phase, PricingRoute, Purity, Role, RunId, RuntimePolicyEventVersion,
+    PermissionRules, Phase, PricingRoute, Purity, Role, RuntimePolicyEventVersion,
     RuntimePolicySource, RuntimePolicyState, Seq, SignedRateCard, SqEnvelope, StopReason,
     SubmissionId, SubmissionRejectionReason, ToolResult, ToolUse, Trust, TurnId, Verdict,
 };
 #[cfg(test)]
 use iteron_provider::ProviderNotice;
-use iteron_provider::{
-    Provider, ProviderAttemptSemantics, RetryDisposition, StreamItem, TurnRequest, UsageReport,
-};
+use iteron_provider::{Provider, ProviderAttemptSemantics, StreamItem, TurnRequest, UsageReport};
 use iteron_record::Rollout;
 use iteron_tools::Registry;
 pub use kernel_error::KernelError;
-pub(crate) use operator_status::{
-    CollaborationRuntimeHealth, RuntimeOperatorStatusSnapshot, RuntimeOperatorStatusSources,
-};
 #[cfg(test)]
 use permission_policy::is_trust_mutating_path;
 use permission_policy::{
@@ -122,12 +116,10 @@ use provider_accounting::{
     bounded_provider_notice, bounded_provider_run_notice, elapsed_us,
     provider_run_notice_key_from_text, unix_now_secs,
 };
-pub(crate) use provider_governor_state::GovernedProviderRoute;
 use route_validation::{
     replay_logical_rollout, replay_scoped_rollout, validate_pricing_route_digest,
     validate_route_digest, validate_route_identifier,
 };
-pub(crate) use session_spawn_ledger::{DEFAULT_SESSION_SPAWN_CAP, SessionSpawnLedger};
 use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
@@ -135,17 +127,22 @@ use tool_interrupt::{
     await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
 };
 use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
-#[cfg(test)]
 pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
 pub(crate) type RuntimeBudgetHealth = operator_status::RuntimeBudgetHealth;
+pub(crate) type CollaborationRuntimeHealth = operator_status::CollaborationRuntimeHealth;
+pub(crate) type RuntimeOperatorStatusSnapshot = operator_status::RuntimeOperatorStatusSnapshot;
+pub(crate) type RuntimeOperatorStatusSources = operator_status::RuntimeOperatorStatusSources;
 pub(crate) type RuntimePolicyObservation = runtime_policy_overlay::RuntimePolicyObservation;
 pub(crate) type RuntimePolicyOverlayHandle = runtime_policy_overlay::RuntimePolicyOverlayHandle;
 pub(crate) type RuntimePolicyOverlaySnapshot = runtime_policy_overlay::RuntimePolicyOverlaySnapshot;
 pub(crate) type RuntimePolicyValue<T> = runtime_policy_overlay::RuntimePolicyValue<T>;
 pub(crate) type FailedActionCache = failed_action_cache::FailedActionCache;
+pub(crate) type GovernedProviderRoute = provider_governor_state::GovernedProviderRoute;
+pub(crate) type SessionSpawnLedger = session_spawn_ledger::SessionSpawnLedger;
 pub(crate) const FAILED_ACTION_CACHE_MAX_IDENTITIES: usize = failed_action_cache::MAX_IDENTITIES;
+pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP;
 
 pub(crate) const fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy
 {
@@ -1601,7 +1598,7 @@ ant-api03-AnotherLeakedSecret99887766"});
         let secret = "sk-\
 ant-api03-AnotherLeakedSecret99887766";
         let raw = format!("inspect\n{secret}  {}", "wide ".repeat(200));
-        let label = ui_workflow_label(&raw);
+        let label = frontend::ui_workflow_label(&raw);
         assert!(!label.contains('\n'));
         assert!(!label.contains("AnotherLeakedSecret"));
         assert!(label.contains("[REDACTED"));

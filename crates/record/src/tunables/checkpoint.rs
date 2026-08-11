@@ -7,7 +7,7 @@ use super::{
 };
 use iteron_protocol::{
     EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
-    RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion,
+    RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion, RunGenesisTunablesVersionV2,
 };
 
 /// One immutable checkpoint read from physical sequence one.
@@ -214,7 +214,7 @@ fn checkpoint_event(
             snapshot,
             inherited_from,
         } => {
-            if *version != RunGenesisTunablesVersion::V2 || *version != snapshot.version {
+            if *version != RunGenesisTunablesVersionV2::V2 || *version != snapshot.version {
                 return Err(TunablesSnapshotError::Invalid {
                     reason: "V2 event and snapshot versions disagree",
                 });

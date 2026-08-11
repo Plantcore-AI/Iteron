@@ -52,7 +52,7 @@ mod tunables;
 mod workflow;
 mod workspace_review;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use config::FileConfig;
 use iteron_protocol::{Budget, Outcome, RunId, TenantId};
 use iteron_record::Rollout;
@@ -472,7 +472,7 @@ fn warn_if_stale() {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum HarnessProfileArg {
     Interactive,
     Benchmark,

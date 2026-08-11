@@ -1067,7 +1067,7 @@ pub enum EventKind {
     /// Reconstructable immutable tunables checkpoint. This is a distinct additive top-level tag:
     /// readers that only know the V1 identity snapshot safely deserialize it as `Unknown`.
     TunablesSnapshotV2 {
-        version: crate::RunGenesisTunablesVersion,
+        version: crate::RunGenesisTunablesVersionV2,
         snapshot: crate::RunGenesisTunablesSnapshotV2,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inherited_from: Option<crate::RunGenesisTunablesInheritance>,
@@ -1893,9 +1893,9 @@ mod tests {
 
         let digest = "b".repeat(64);
         let current = EventKind::TunablesSnapshotV2 {
-            version: crate::RunGenesisTunablesVersion::V2,
+            version: crate::RunGenesisTunablesVersionV2::V2,
             snapshot: crate::RunGenesisTunablesSnapshotV2 {
-                version: crate::RunGenesisTunablesVersion::V2,
+                version: crate::RunGenesisTunablesVersionV2::V2,
                 canonicalization: crate::RUN_GENESIS_TUNABLES_V2_CANONICALIZATION.into(),
                 resolution_schema_version: 1,
                 registry_id: "iteron-tunables".into(),

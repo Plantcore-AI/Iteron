@@ -1210,7 +1210,7 @@ impl Rollout {
             TunablesCheckpoint::V2(snapshot) => {
                 validate_tunables_snapshot_v2(&snapshot)?;
                 EventKind::TunablesSnapshotV2 {
-                    version: iteron_protocol::RunGenesisTunablesVersion::V2,
+                    version: iteron_protocol::RunGenesisTunablesVersionV2::V2,
                     snapshot,
                     inherited_from,
                 }

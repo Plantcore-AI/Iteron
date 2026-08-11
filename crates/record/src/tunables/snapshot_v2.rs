@@ -9,7 +9,7 @@ use iteron_protocol::{
     MAX_RUN_GENESIS_TUNABLES_V2_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_DEPTH,
     MAX_RUN_GENESIS_TUNABLES_V2_NODES, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
-    RunGenesisTunableState, RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion,
+    RunGenesisTunableState, RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2,
 };
 use iteron_tunables::{
     EntryOutcome, EntryState, FixedAuthorityAttestation, FixedAuthorityId, ResolutionReport,
@@ -54,7 +54,7 @@ fn fixed_binding(attestation: &FixedAuthorityAttestation) -> RunGenesisFixedAuth
 
 #[derive(Serialize)]
 struct SnapshotPayloadV2<'a> {
-    version: RunGenesisTunablesVersion,
+    version: RunGenesisTunablesVersionV2,
     canonicalization: &'a str,
     resolution_schema_version: u16,
     registry_id: &'a str,
@@ -360,7 +360,7 @@ fn validated_report_fixed_attestations<'a>(
 pub fn validate_tunables_snapshot_v2(
     snapshot: &RunGenesisTunablesSnapshotV2,
 ) -> Result<(), TunablesSnapshotError> {
-    if snapshot.version != RunGenesisTunablesVersion::V2
+    if snapshot.version != RunGenesisTunablesVersionV2::V2
         || snapshot.canonicalization != RUN_GENESIS_TUNABLES_V2_CANONICALIZATION
     {
         return invalid("unsupported V2 snapshot version or canonicalization");
@@ -581,7 +581,7 @@ pub(super) fn snapshot_v2_from_report(
         })
         .collect::<Result<Vec<_>, TunablesSnapshotError>>()?;
     let mut snapshot = RunGenesisTunablesSnapshotV2 {
-        version: RunGenesisTunablesVersion::V2,
+        version: RunGenesisTunablesVersionV2::V2,
         canonicalization: RUN_GENESIS_TUNABLES_V2_CANONICALIZATION.to_owned(),
         resolution_schema_version: report.schema_version,
         registry_id: report.registry_id.to_owned(),
