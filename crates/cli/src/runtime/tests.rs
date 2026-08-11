@@ -1772,7 +1772,7 @@ mod gate_integration_tests {
         }
     }
 
-    fn temp_ws(tag: &str) -> std::path::PathBuf {
+    pub(super) fn temp_ws(tag: &str) -> std::path::PathBuf {
         let pid = std::process::id();
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1879,7 +1879,7 @@ mod gate_integration_tests {
         pricing
     }
 
-    fn agent_for(ws: &std::path::Path) -> Agent {
+    pub(super) fn agent_for(ws: &std::path::Path) -> Agent {
         let registry = Registry::coding_agent(ws).unwrap();
         let runs = ws.join(".iteron/runs");
         let rollout = Rollout::open(
@@ -13315,5 +13315,80 @@ ant-api03-SuperSecretModelToken12345"
             drop(parent);
             let _ = std::fs::remove_dir_all(&ws);
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_binding_tests {
+    use super::gate_integration_tests::*;
+    use crate::runtime::Agent;
+    use iteron_protocol::capability_set::CapabilitySet;
+    use iteron_protocol::slot::{SlotId, SlotObservation, StrategySlot, decide_narrowed};
+    use iteron_protocol::Capability;
+
+    fn bound(agent: &Agent) -> Vec<(&'static str, &std::sync::Arc<dyn StrategySlot>)> {
+        vec![
+            ("core/context", &agent.context_strategy),
+            ("core/tool_policy", &agent.tool_policy),
+            ("core/memory", &agent.memory_strategy),
+            ("core/router", &agent.router),
+            ("core/planner", &agent.planner),
+            ("core/collaboration", &agent.collaboration),
+            ("core/scheduler", &agent.scheduler),
+            ("core/verifier", &agent.verifier),
+            ("core/model_router", &agent.model_router),
+        ]
+    }
+
+    /// Every core slot is bound, at the composition root, to an implementation that claims that
+    /// same identity.
+    ///
+    /// This is the claim the replaceable-strategy design rests on, and nothing else asserted it.
+    /// A slot quietly reverting to an unbound or mis-identified implementation would hollow out
+    /// the seam while every other test kept passing, which is exactly how the specification came
+    /// to describe this seam as empty long after it had been filled.
+    #[test]
+    fn every_core_slot_is_bound_to_an_implementation_claiming_that_slot() {
+        let ws = temp_ws("slot-binding-identity");
+        let agent = agent_for(&ws);
+        for (slot, implementation) in bound(&agent) {
+            assert_eq!(
+                implementation.slot(),
+                &SlotId(slot.to_owned()),
+                "`{slot}` is bound to an implementation that reports a different identity"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// The narrowing contract, exercised against the production implementations.
+    ///
+    /// Until now this was proven only against a test double written to over-reach on purpose. A
+    /// slot is a policy and never a source of authority, so no production implementation may
+    /// return more than the ceiling it was handed, including when that ceiling is empty.
+    #[test]
+    fn no_production_slot_widens_the_ceiling_it_was_given() {
+        let ws = temp_ws("slot-binding-narrowing");
+        let agent = agent_for(&ws);
+        for (slot, implementation) in bound(&agent) {
+            for ceiling in [
+                CapabilitySet::none(),
+                CapabilitySet::only(Capability::ReadOnly),
+            ] {
+                let outcome = decide_narrowed(
+                    implementation.as_ref(),
+                    &SlotObservation {
+                        slot: SlotId(slot.to_owned()),
+                        ceiling,
+                        payload: serde_json::Value::Null,
+                    },
+                );
+                assert!(
+                    outcome.admitted.is_subset_of(ceiling),
+                    "`{slot}` admitted capabilities outside its ceiling"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }
