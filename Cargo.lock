@@ -1315,6 +1315,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
  "walkdir",
 ]
@@ -1327,6 +1328,8 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "iteron-evolve",
+ "iteron-protocol",
+ "iteron-record",
  "iteron-sandbox",
  "iteron-tunables",
  "iteron-verify",
@@ -1343,6 +1346,7 @@ name = "iteron-evolve"
 version = "0.0.4"
 dependencies = [
  "iteron-protocol",
+ "iteron-record",
  "serde",
  "serde_json",
  "sha2",
@@ -1399,6 +1403,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -1422,6 +1427,7 @@ version = "0.0.4"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1447,15 +1453,18 @@ dependencies = [
 name = "iteron-record"
 version = "0.0.4"
 dependencies = [
+ "getrandom 0.4.3",
  "hex",
  "iteron-obs",
  "iteron-protocol",
  "iteron-tunables",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
