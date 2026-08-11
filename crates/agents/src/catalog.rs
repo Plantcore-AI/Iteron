@@ -143,6 +143,7 @@ impl AgentCatalog {
         };
         cat.defs.push(AgentDef::generic());
         cat.defs.push(AgentDef::ultracode_planner());
+        cat.defs.push(AgentDef::isolated_writer());
 
         // User definitions: read directly (do not scan the whole home tree). Trusted.
         if let Some(user) = user {
@@ -170,7 +171,11 @@ impl AgentCatalog {
     /// A catalog with only the built-ins (no filesystem access) — for tests and headless runs.
     pub fn builtin_only() -> Self {
         AgentCatalog {
-            defs: vec![AgentDef::generic(), AgentDef::ultracode_planner()],
+            defs: vec![
+                AgentDef::generic(),
+                AgentDef::ultracode_planner(),
+                AgentDef::isolated_writer(),
+            ],
             errors: Vec::new(),
             sources_seen: 0,
             source_limit_reported: false,
@@ -537,7 +542,17 @@ mod tests {
             .expect("dynamic workflow planner is pinned beside the investigator");
         assert!(planner.tools.narrow().is_empty());
         assert_eq!(planner.budget.max_turns, 1);
-        assert_eq!(cat.defs().len(), 2);
+        // Name the built-ins rather than counting them: a bare count says nothing about which
+        // agent arrived, and the isolated writer is the one the workspace-boundary registry admits.
+        let names: Vec<_> = cat.defs().iter().map(|def| def.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "generic",
+                crate::ULTRACODE_PLANNER_NAME,
+                crate::ISOLATED_WRITER_NAME
+            ]
+        );
     }
 
     #[test]
@@ -670,7 +685,17 @@ mod tests {
             .collect();
         assert_eq!(names1, names2, "sorted discovery => reproducible order");
         // Built-ins first, then sorted workspace definitions.
-        assert_eq!(names1, vec!["generic", "ultracode-planner", "a", "b", "c"]);
+        assert_eq!(
+            names1,
+            vec![
+                "generic",
+                "ultracode-planner",
+                "isolated-writer",
+                "a",
+                "b",
+                "c"
+            ]
+        );
         std::fs::remove_dir_all(&user).ok();
         std::fs::remove_dir_all(&repo).ok();
     }

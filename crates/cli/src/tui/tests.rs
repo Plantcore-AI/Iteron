@@ -171,6 +171,9 @@ mod tests {
             context: ContextEstimate {
                 system_tokens: total / 4,
                 tool_tokens: total / 4,
+                conversation_tokens: total / 2,
+                tool_result_tokens: 0,
+                lsp_result_tokens: 0,
                 transcript_tokens: total / 2,
                 framing_tokens: 0,
                 total_tokens: total,
@@ -268,6 +271,7 @@ mod tests {
         iteron_record::SessionMeta {
             pricing_schema_version: 2,
             projection_schema_version: 1,
+            content_revocation_generation: 0,
             run_id: iteron_protocol::RunId(run_id.into()),
             tenant: iteron_protocol::TenantId::default(),
             cwd: std::path::PathBuf::from("/tmp/project"),
@@ -1666,6 +1670,46 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         buffer_text(&terminal)
     }
 
+    #[test]
+    fn mcp_status_panel_renders_live_server_lifecycle_evidence() {
+        let mut app = App::new();
+        mcp_command::render_reply(
+            &mut app,
+            app_server::McpControlReply {
+                servers: vec![crate::mcp::McpServerHealth {
+                    name: "docs".into(),
+                    transport: "stdio",
+                    phase: "ready".into(),
+                    generation: Some(7),
+                    reconnect_attempts: 1,
+                    reconnect_limit: 4,
+                    retry_after_ms: None,
+                    retained_tools: 12,
+                    catalog_current: true,
+                    busy: false,
+                    negotiated_protocol_version: Some("2025-03-26".into()),
+                    last_failure: Some("transport".into()),
+                }],
+                notice: None,
+            },
+        );
+
+        let screen = render_text(&mut app, 120, 20);
+        for expected in [
+            "1 session-owned MCP servers",
+            "docs",
+            "stdio",
+            "ready",
+            "generation 7",
+            "protocol 2025-03-26",
+            "reconnect 1/4",
+            "last failure transport",
+            "12 retained",
+        ] {
+            assert!(screen.contains(expected), "missing {expected:?}: {screen}");
+        }
+    }
+
     const PRODUCT_SIZES: [(u16, u16); 4] = [(40, 12), (80, 24), (120, 32), (200, 40)];
 
     #[test]
@@ -2297,6 +2341,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(command.contains("enter queues after this turn"));
 
         app.editor.clear();
+        app.editor.insert_str("/mcp cancel docs");
+        let immediate = render_text(&mut app, 80, 16);
+        assert!(immediate.contains("/mcp cancel docs"));
+        assert!(immediate.contains("enter runs this control now"));
+
+        app.editor.clear();
         app.editor.insert_str("also inspect the tests");
         let prose = render_text(&mut app, 80, 16);
         assert!(prose.contains("also inspect the tests"));
@@ -2318,6 +2368,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(
             input_destination(true, false, "  /model"),
             InputDestination::AfterTurn
+        );
+        assert_eq!(
+            input_destination(true, false, "  /mcp cancel docs"),
+            InputDestination::ImmediateCommand
+        );
+        assert_eq!(
+            input_destination(true, true, "/mcp stop docs"),
+            InputDestination::ImmediateCommand,
+            "MCP control remains reachable while the turn is already interrupting"
         );
         assert_eq!(
             input_destination(true, false, "!cargo test"),
@@ -2966,6 +3025,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(summary.clone()),
         };
@@ -3124,6 +3184,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(summary),
         };
@@ -3173,6 +3234,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
                 outcome: iteron_protocol::Outcome::Interrupted,
@@ -3231,6 +3293,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
                 outcome: iteron_protocol::Outcome::BudgetExhausted("max_turns"),
@@ -5908,6 +5971,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.last_context = Some(ContextEstimate {
             system_tokens: 1,
             tool_tokens: 2,
+            conversation_tokens: 3,
+            tool_result_tokens: 0,
+            lsp_result_tokens: 0,
             transcript_tokens: 3,
             framing_tokens: 4,
             total_tokens: 10,
@@ -5930,6 +5996,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             permission_rules: PermissionRules::new(),
             ledger_summary: String::new(),
             rate_limit: None,
+            mcp_health: Vec::new(),
         };
 
         clear_last_turn_telemetry_from(&mut app, &state);

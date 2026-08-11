@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod budget;
 #[path = "resolution_prepare_identity.rs"]
 mod identity;
+pub(crate) use identity::catalog_content_digest;
 
 pub(crate) struct PreparedInput {
     pub(crate) input: ResolutionInput,
@@ -90,6 +91,9 @@ fn canonicalize(input: &mut ResolutionInput) -> Result<(), String> {
         if let EvidenceState::Present { value } = &mut evidence.state {
             crate::resolution_value::normalize(value);
         }
+    }
+    for evidence in &mut input.activation_evidence {
+        evidence.family = canonical_family(&evidence.family)?.id.to_owned();
     }
     for evidence in &mut input.constraint_evidence {
         evidence.family = canonical_family(&evidence.family)?.id.to_owned();
@@ -197,22 +201,27 @@ fn validate_default_evidence(input: &ResolutionInput) -> Result<(), String> {
 }
 
 fn validate_activation_evidence(input: &ResolutionInput) -> Result<(), String> {
-    let known: BTreeSet<&str> = families()
+    let expected: BTreeMap<&str, &str> = families()
         .iter()
         .filter_map(|family| match family.activation.predicate {
-            ActivationPredicate::RuntimeDerived { seam } => Some(seam),
+            ActivationPredicate::RuntimeDerived { seam } => Some((family.id, seam)),
             _ => None,
         })
         .collect();
     let mut seen = BTreeSet::new();
     for evidence in &input.activation_evidence {
-        if !known.contains(evidence.seam.as_str())
-            || !seen.insert(evidence.seam.as_str())
+        if expected.get(evidence.family.as_str()).copied() != Some(evidence.seam.as_str())
+            || !seen.insert(evidence.family.as_str())
             || !crate::resolution_value::valid_sha256(&evidence.subject_digest_sha256)
             || !crate::resolution_value::valid_sha256(&evidence.evidence_digest_sha256)
         {
-            return Err("activation evidence is unknown, duplicated, or unattested".into());
+            return Err(
+                "activation evidence is unknown, mismatched, duplicated, or unattested".into(),
+            );
         }
+    }
+    if seen.len() != expected.len() {
+        return Err("runtime-derived activation evidence is incomplete".into());
     }
     Ok(())
 }
@@ -323,11 +332,13 @@ fn sort_semantic_vectors(input: &mut ResolutionInput) -> Result<(), String> {
     sort_by_json(&mut input.default_evidence)?;
     input.activation_evidence.sort_by(|left, right| {
         (
+            &left.family,
             &left.seam,
             &left.subject_digest_sha256,
             &left.evidence_digest_sha256,
         )
             .cmp(&(
+                &right.family,
                 &right.seam,
                 &right.subject_digest_sha256,
                 &right.evidence_digest_sha256,

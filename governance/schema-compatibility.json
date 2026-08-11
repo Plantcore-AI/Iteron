@@ -275,7 +275,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 8,
+      "current_version": 11,
       "version_field": null,
       "fixtures": [
         {
@@ -322,6 +322,21 @@
           "path": "governance/schema-compat/fixtures/record/rollout-tunables-snapshot-v8.jsonl",
           "format": "jsonl",
           "schema_version": 8
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-tunables-snapshot-v9.jsonl",
+          "format": "jsonl",
+          "schema_version": 9
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-policy-evidence-v10.jsonl",
+          "format": "jsonl",
+          "schema_version": 10
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-policy-bundle-v11.jsonl",
+          "format": "jsonl",
+          "schema_version": 11
         }
       ],
       "fields": [
@@ -1056,7 +1071,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 4,
+      "current_version": 7,
       "version_field": null,
       "fixtures": [
         {
@@ -1078,6 +1093,21 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-tunables-snapshot-v4.json",
           "format": "json",
           "schema_version": 4
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-tunables-snapshot-v5.json",
+          "format": "json",
+          "schema_version": 5
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-policy-evidence-v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-policy-bundle-v7.json",
+          "format": "json",
+          "schema_version": 7
         }
       ],
       "fields": [
@@ -1139,6 +1169,60 @@
         }
       ],
       "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.policy_decision",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "policy_decision"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-policy-evidence-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "evidence",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.policy_outcome",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "policy_outcome"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-policy-evidence-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "evidence",
+          "introduced_release": 1
+        },
         {
           "name": "kind",
           "introduced_release": 1
@@ -1843,6 +1927,78 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.event-kind.tunables_snapshot_v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "tunables_snapshot_v2"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-tunables-snapshot-v2.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "inherited_from",
+          "introduced_release": 1,
+          "optional": true
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "snapshot",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.policy_bundle_snapshot",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "policy_bundle_snapshot"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-policy-bundle-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "inherited_from",
+          "introduced_release": 1,
+          "optional": true
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "snapshot",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-kind.model_selected",
       "current_version": 1,
       "version_field": null,
@@ -1957,6 +2113,41 @@
         },
         {
           "name": "max_microusd",
+          "introduced_release": 1
+        },
+        {
+          "name": "source",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.turn_ceiling_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "turn_ceiling_changed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "max_turns",
           "introduced_release": 1
         },
         {
@@ -2611,6 +2802,86 @@
         { "name": "kind", "introduced_release": 1 },
         { "name": "parent_run_id", "introduced_release": 1 },
         { "name": "sub_run", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.policy-runtime-identity",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-policy-runtime-identity-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "bundle_digest_sha256", "introduced_release": 1 },
+        { "name": "bundle_id", "introduced_release": 1 },
+        { "name": "policy_digest_sha256", "introduced_release": 1 },
+        { "name": "policy_id", "introduced_release": 1 },
+        { "name": "policy_version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-policy-bundle-inheritance",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-policy-bundle-inheritance-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "parent_receipt_digest_sha256", "introduced_release": 1 },
+        { "name": "parent_run", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-policy-bundle-snapshot",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-policy-bundle-snapshot-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "bundle_digest_sha256", "introduced_release": 1 },
+        { "name": "bundle_id", "introduced_release": 1 },
+        { "name": "canonicalization", "introduced_release": 1 },
+        { "name": "coverage", "introduced_release": 1 },
+        { "name": "receipt_digest_sha256", "introduced_release": 1 },
+        { "name": "slots", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-policy-slot-binding",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-policy-slot-binding-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "implementation", "introduced_release": 1 },
+        { "name": "ordinal", "introduced_release": 1 },
+        { "name": "policy", "introduced_release": 1 },
+        { "name": "requested", "introduced_release": 1 },
+        { "name": "slot", "introduced_release": 1 },
+        { "name": "status", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },

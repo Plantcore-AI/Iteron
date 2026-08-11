@@ -54,15 +54,18 @@ pub use decompose::{
     RouterSlotError, RouterSlotObservation, RouterStrategy, TaskClass, router_slot,
 };
 pub use def::{
-    AgentDef, READ_ONLY_TOOLS, ToolFilter, ULTRACODE_PLANNER_NAME, subagent_budget,
-    subagent_budget_ceiling,
+    AgentDef, ISOLATED_WRITER_NAME, ISOLATED_WRITER_TOOLS, READ_ONLY_TOOLS, ToolFilter,
+    ULTRACODE_PLANNER_NAME, subagent_budget, subagent_budget_ceiling,
 };
 pub use planner::{
     PLANNER_SLOT_VERSION, PlannerDecision, PlannerError, PlannerObservation, PlannerPlan,
     PlannerProposal, PlannerStrategy,
 };
 pub use policy::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
-pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
+pub use reduce::{
+    CoverageError, CoverageExpectation, OrderedBundle, Summary, SummaryOutcome, reduce,
+    reduce_checked,
+};
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,
     WorkflowPlan,

@@ -15,30 +15,38 @@
 //! because ctx must not depend on a provider (keeps the layering clean and this crate testable).
 
 pub mod compact;
+mod compact_obligations;
+mod compaction_runtime;
 mod context_assembly;
 pub mod context_ledger;
+mod context_materialization;
 mod context_port;
 mod context_strategy;
 pub mod decision_store;
 pub mod instructions;
 pub mod memory;
+mod memory_runtime;
 pub mod memory_trace;
 pub mod outline;
+mod runtime_policy;
 pub mod skills;
 pub mod source;
+mod token_estimator;
 
 pub use compact::{
     CompactionPlan, CompactionPolicy, ContextEstimate, RequestEstimator, TokenEstimateProvenance,
     compaction_seed, compaction_summary_message, compaction_summary_range,
     estimate_request_context, replay_compaction,
 };
+pub use compaction_runtime::{CompactionHysteresis, SummaryProfile, SummaryTopology};
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
 pub use context_ledger::{
-    CacheClass, CacheEvidence, ContextDecision, ContextDecisionReason, ContextLedger,
-    ContextObservation, ContextObserver, ContextSegmentEvidence, ContextSegmentId,
+    CacheClass, CacheEvidence, CompactionEvidence, ContextDecision, ContextDecisionReason,
+    ContextLedger, ContextObservation, ContextObserver, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass, ContextTotals, ContextTransformEvidence, ContextTransformKind,
     NullContextObserver, TokenRange, TokenizerIdentity,
 };
+pub use context_materialization::ContextMaterializationAudit;
 pub use context_port::{
     ContextPort, ContextPortError, ContextPortInput, ContextValue, DefaultContextPort, PortStub,
 };
@@ -57,26 +65,32 @@ pub use instructions::{
 pub use memory::{
     Fact, FactRef, FileMemory, Framed, MAX_MEMORY_CANDIDATE_TEXT_BYTES, MAX_MEMORY_CANDIDATES,
     MAX_MEMORY_SLUG_BYTES, MAX_MEMORY_TASK_BYTES, MEMORY_SLOT_VERSION, MemBudget, MemError,
-    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallAudit, MemoryRecallPlan,
-    MemoryRecallProposal, MemoryRecallStrategy, MemorySegment, MemorySlotDecision, MemorySlotError,
-    MemorySlotObservation, MemoryStore, MemoryStrategy, MemoryWriteProposal, StoredFact,
-    merged_index,
+    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallAudit, MemoryRecallExclusion,
+    MemoryRecallExclusionKind, MemoryRecallPlan, MemoryRecallProposal, MemoryRecallStrategy,
+    MemorySegment, MemorySlotDecision, MemorySlotError, MemorySlotObservation, MemoryStore,
+    MemoryStrategy, MemoryWriteProposal, StoredFact, merged_index,
 };
+pub use memory_runtime::{MemoryRetrievalPolicy, SCORE_SCALE};
 pub use memory_trace::{
-    MAX_MEMORY_TRACE_VISIBILITY, MemoryAttributionEvidence, MemoryBudgetEvidence,
-    MemoryCandidateDecision, MemoryCandidateEvidence, MemoryDecisionTrace, MemoryFactId,
-    MemoryInjectionEvidence, MemoryObservation, MemoryObserver, MemoryQueryEvidence, MemoryQueryId,
-    MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence, MemoryStoreEvidence,
-    MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState, NullMemoryObserver,
+    ContaminationEvidence, MAX_MEMORY_TRACE_VISIBILITY, MemoryAttributionEvidence,
+    MemoryBudgetEvidence, MemoryCandidateDecision, MemoryCandidateEvidence, MemoryDecisionTrace,
+    MemoryFactId, MemoryInjectionEvidence, MemoryObservation, MemoryObserver, MemoryQueryEvidence,
+    MemoryQueryId, MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence,
+    MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState,
+    NullMemoryObserver,
 };
 pub use outline::{repo_outline, repo_outline_for_task};
+pub use runtime_policy::{
+    ContextBudgetClass, ContextBudgetPolicy, ContextBudgetViolation, ContextComponentUsage,
+    ContextMaterializationPolicy,
+};
+pub use token_estimator::TokenEstimatorProfile;
 
 /// A fast, provider-agnostic token estimate. Real tokenization is the provider's; for policy
 /// decisions this byte heuristic is deterministic and deliberately biased high for ASCII/code.
 /// It is not guaranteed conservative for every language/tokenizer and must be labelled estimated.
 pub fn estimate_tokens(text: &str) -> usize {
-    // ~4 chars/token for English+code is the well-known rule of thumb; we use 3.5 to bias high.
-    ((text.len() as f64) / 3.5).ceil() as usize
+    TokenEstimatorProfile::GenericBytesPerToken35.estimate(text)
 }
 
 #[cfg(test)]

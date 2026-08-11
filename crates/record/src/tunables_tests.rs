@@ -116,7 +116,8 @@ fn genesis_tracker_rejects_late_duplicate_and_unbound_fork_snapshots() {
     root.observe(0, &root_start(None)).unwrap();
     root.observe(1, &snapshot_event(snapshot.clone(), None))
         .unwrap();
-    assert_eq!(root.snapshot(), Some(&snapshot));
+    let checkpoint = TunablesCheckpoint::V1(snapshot.clone());
+    assert_eq!(root.checkpoint(), Some(&checkpoint));
     assert!(matches!(
         root.observe(2, &snapshot_event(snapshot.clone(), None)),
         Err(TunablesSnapshotError::GenesisOrder { .. })

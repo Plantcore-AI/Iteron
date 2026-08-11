@@ -453,6 +453,43 @@ mod gate_integration_tests {
     //! Integration tests for the permission-gate wiring: drive one turn with a scripted provider
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
     use super::*;
+
+    /// The system prompt every agent in this module is constructed with. Named so a fake provider
+    /// can tell the parent's own turn apart from a child it must never see admitted.
+    const PARENT_SYSTEM: &str = "sys";
+
+    /// Pin the registry-driven resolved tunable set onto a test agent.
+    ///
+    /// Production resolves tunables at the composition root and hands them to
+    /// `Agent::new_with_resolved_tunables`. A test that builds an agent through the bare
+    /// `Agent::new` has none, and every path that needs the checkpoint fails closed with
+    /// `TunablesNotResolved` — correctly, since an unpinned run has no audit identity. The
+    /// fixture resolves the compiled registry rather than inventing a snapshot, so it fails the
+    /// moment the registry and its golden digest drift apart.
+    fn pin_test_tunables(agent: &mut Agent) {
+        agent
+            .pin_resolved_tunables(std::sync::Arc::new(
+                iteron_record::resolved_fixture::resolved(),
+            ))
+            .expect(
+                "the registry-driven fixture must resolve into an installable runtime policy; a \
+                 failure here is a real gap between what the registry accepts and what the runtime \
+                 owner will install, not a broken test",
+            );
+    }
+
+    /// Awaiting a `Notify` that never fires hangs the whole suite instead of failing it, and a
+    /// hung test is indistinguishable from a slow one. Every wait here is therefore bounded: a
+    /// signal that never arrives becomes a named failure with the run still terminating.
+    async fn await_signal(signal: &tokio::sync::Notify, what: &str) {
+        if tokio::time::timeout(Duration::from_secs(20), signal.notified())
+            .await
+            .is_err()
+        {
+            panic!("timed out waiting for {what}");
+        }
+    }
+
     use iteron_protocol::{
         Block, ContentSegment, ImageMediaType, Purity, StopReason, ToolSpec, ToolUse, Usage,
     };
@@ -946,6 +983,12 @@ mod gate_integration_tests {
         started: tokio::sync::Notify,
         release: tokio::sync::Notify,
         calls: AtomicUsize,
+        /// The system prompt of the first turn, recorded for the test to assert after joining.
+        ///
+        /// It used to be asserted here. An assertion inside the provider panics in the spawned
+        /// turn, so `started` was never notified and the test's `notified().await` deadlocked
+        /// instead of failing: one stale expectation hung the whole suite.
+        first_system: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait::async_trait]
@@ -956,7 +999,10 @@ mod gate_integration_tests {
             _on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            assert!(req.system.starts_with("You plan a READ-ONLY"));
+            self.first_system
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| req.system.clone());
             self.started.notify_one();
             self.release.notified().await;
             Ok(TurnResult {
@@ -978,6 +1024,10 @@ mod gate_integration_tests {
         released: std::sync::atomic::AtomicBool,
         total_calls: AtomicUsize,
         child_calls: AtomicUsize,
+        /// A turn that is neither the parent's own nor a planner/investigator one: that is a writer
+        /// child, which drain must never admit. Recorded, not panicked — a panic here fires inside
+        /// the provider task and deadlocks the test awaiting `child_started`.
+        writer_admitted: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -1001,8 +1051,14 @@ mod gate_integration_tests {
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
                 "child quiesced".to_string()
+            } else if req.system == PARENT_SYSTEM {
+                // Ultracode planning now runs inside the workflow engine, so the parent issues an
+                // ordinary turn before any planning happens and it reaches this fake provider,
+                // which the previous ordering made impossible.
+                "parent turn".to_string()
             } else {
-                panic!("drain must prevent writer admission")
+                self.writer_admitted.store(true, Ordering::SeqCst);
+                String::new()
             };
             Ok(TurnResult {
                 blocks: vec![Block::Text { text }],
@@ -1970,7 +2026,7 @@ mod gate_integration_tests {
     #[tokio::test]
     async fn preparing_a_workflow_admits_and_records_it_before_anything_starts_it() {
         let ws = temp_ws("workflow-prepare");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
 
         let prepared = agent
             .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
@@ -2061,7 +2117,7 @@ mod gate_integration_tests {
     #[test]
     fn preparing_a_panel_resume_reuses_the_persisted_identity_and_cache_source() {
         let ws = temp_ws("workflow-panel-resume");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         let prepared = agent
             .prepare_workflow(&serde_json::json!({
                 "script": SEAM_SCRIPT,
@@ -2100,7 +2156,7 @@ mod gate_integration_tests {
     #[tokio::test]
     async fn with_no_launcher_installed_a_prepared_run_is_the_engine_run_it_always_was() {
         let ws = temp_ws("workflow-default-launcher");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         assert!(
             agent.workflow_launcher.is_none(),
             "a kernel starts with no workflow owner installed"
@@ -2333,7 +2389,7 @@ mod gate_integration_tests {
     #[test]
     fn preparing_a_workflow_refuses_before_it_records_anything() {
         let unbound_ws = temp_ws("workflow-prepare-unbound");
-        let unbound = agent_for(&unbound_ws);
+        let mut unbound = agent_for(&unbound_ws);
         // No route selected yet: children re-record the parent's exact durable route, so there is
         // nothing to bind.
         assert!(
@@ -2345,7 +2401,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(unbound_ws).unwrap();
 
         let ws = temp_ws("workflow-prepare-refusals");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         assert!(
             agent.prepare_workflow(&serde_json::json!({})).is_err(),
             "neither `script` nor `scriptPath` is not a run"
@@ -2896,6 +2952,116 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).ok();
     }
 
+    #[tokio::test]
+    async fn tool_policy_evidence_is_exactly_once_and_durable_before_pure_dispatch() {
+        fn configured(
+            ws: &std::path::Path,
+            run: &str,
+            calls: std::sync::Arc<AtomicUsize>,
+        ) -> Agent {
+            let mut registry = Registry::coding_agent(ws).unwrap();
+            registry
+                .register_external(
+                    ToolSpec {
+                        name: "slow_read".into(),
+                        description: "test-only counted pure read".into(),
+                        input_schema: serde_json::json!({"type":"object"}),
+                        purity: Purity::Pure,
+                        capability: Capability::ReadOnly,
+                    },
+                    move |call, _root| {
+                        let calls = calls.clone();
+                        iteron_tools::boxfut::box_it(async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            ToolResult {
+                                tool_use_id: call.id,
+                                content: "observed".into(),
+                                is_error: false,
+                                trust: Trust::Workspace,
+                                latency_ms: 0,
+                            }
+                        })
+                    },
+                )
+                .unwrap();
+            let rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
+                &iteron_protocol::RunId(run.into()),
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                std::sync::Arc::new(ScriptedPureBurst::default()),
+                registry,
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_turns: 3,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
+                    max_consecutive_tool_errors: 2,
+                },
+            );
+            agent.workspace = ws.to_path_buf();
+            agent.policy_evidence = Some(
+                policy_evidence_recorder::PolicyEvidenceRecorder::new(
+                    iteron_protocol::RunId(run.into()),
+                    "d".repeat(64),
+                    agent.policy_runtime_bindings().to_vec(),
+                )
+                .unwrap(),
+            );
+            agent
+        }
+
+        let failed_ws = temp_ws("tool-policy-pre-dispatch-fsync");
+        let failed_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut failed = configured(
+            &failed_ws,
+            "tool-policy-pre-dispatch-fsync",
+            failed_calls.clone(),
+        );
+        failed.fail_next_durable_append = Some(DurableAppendFault::ToolPolicyDecision);
+        assert!(matches!(
+            failed.run("read three sources").await,
+            Err(KernelError::Record(_))
+        ));
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            0,
+            "a pure tool executor must not be constructed or polled after its evidence fsync fails"
+        );
+
+        let success_ws = temp_ws("tool-policy-exactly-once");
+        let success_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut success = configured(
+            &success_ws,
+            "tool-policy-exactly-once",
+            success_calls.clone(),
+        );
+        assert_eq!(
+            success.run("read three sources").await.unwrap(),
+            Outcome::Done
+        );
+        let events = iteron_record::replay(success.rollout.path()).unwrap();
+        let tool_policy_decisions = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::PolicyDecision { evidence }
+                        if evidence.slot.as_persisted_str() == policy_evidence::TOOL_POLICY_SLOT
+                )
+            })
+            .count();
+        assert_eq!(tool_policy_decisions, 3);
+        assert_eq!(success_calls.load(Ordering::SeqCst), 3);
+        std::fs::remove_dir_all(failed_ws).ok();
+        std::fs::remove_dir_all(success_ws).ok();
+    }
+
     // ---- concurrent tool dispatch (#I-01, #I-18, #I-61) ----
     //
     // Every test below proves overlap with a RENDEZVOUS rather than a stopwatch. A tool that only
@@ -3116,10 +3282,13 @@ mod gate_integration_tests {
         agent.set_interrupt(interrupt.clone());
 
         let request_interrupt = async {
-            started.notified().await;
+            await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("run the pending effect"), request_interrupt)
         })
         .await
@@ -3179,10 +3348,13 @@ mod gate_integration_tests {
         agent.set_interrupt(interrupt.clone());
 
         let request_interrupt = async {
-            started.notified().await;
+            await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("read until interrupted"), request_interrupt)
         })
         .await
@@ -3254,7 +3426,10 @@ mod gate_integration_tests {
             barrier.wait().await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("run concurrent effects"), request_interrupt)
         })
         .await
@@ -3769,9 +3944,7 @@ mod gate_integration_tests {
         let file_evidence = ledger
             .segments
             .iter()
-            .find(|segment| {
-                segment.source_class == iteron_ctx::ContextSourceClass::FileAttachment
-            })
+            .find(|segment| segment.source_class == iteron_ctx::ContextSourceClass::FileAttachment)
             .expect("file bytes must retain their own source classification");
         assert!(file_evidence.bytes_after > 0);
         assert!(file_evidence.estimated_tokens > 0);
@@ -4308,8 +4481,8 @@ mod gate_integration_tests {
         agent
     }
 
-    #[test]
-    fn adopting_a_run_moves_the_session_onto_that_journal_identity_and_policy() {
+    #[tokio::test]
+    async fn adopting_a_run_moves_the_session_onto_that_journal_identity_and_policy() {
         let ws = temp_ws("adopt-run");
         let runs = ws.join(".iteron/runs");
         // The run to adopt: its own genesis, its own policy transition, its own transcript.
@@ -4395,7 +4568,7 @@ mod gate_integration_tests {
         // adoption real rather than cosmetic: the transcript the next turn continues is read back
         // from the record this session now writes to.
         live.working_set = None;
-        live.stage_follow_up_transcript().unwrap();
+        live.stage_follow_up_transcript().await.unwrap();
         let staged = live.resumed.clone().unwrap();
         assert!(
             staged
@@ -4596,7 +4769,7 @@ mod gate_integration_tests {
         let error = agent.run("must not reach the provider").await.unwrap_err();
         assert!(matches!(error, KernelError::IdentityExhausted("turn")));
         assert!(matches!(
-            agent.advance_turn(),
+            agent.advance_turn().await,
             Err(KernelError::IdentityExhausted("turn"))
         ));
 
@@ -5814,7 +5987,7 @@ ant-api03-SuperSecretModelToken12345"
         let interrupt = std::sync::Arc::new(AtomicBool::new(false));
         interrupt_parent.set_interrupt(interrupt.clone());
         let raise_interrupt = async {
-            interrupt_provider.started.notified().await;
+            await_signal(&interrupt_provider.started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
@@ -5924,7 +6097,7 @@ ant-api03-SuperSecretModelToken12345"
         parent.workspace = ws.clone();
         let drain = parent.drain.clone();
         let request_drain = async {
-            provider.started.notified().await;
+            await_signal(&provider.started, "the provider's first turn").await;
             drain.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
@@ -6081,9 +6254,19 @@ ant-api03-SuperSecretModelToken12345"
             .ledger
             .attributed_phase_ms()
             .expect("live timing is complete");
+        // Two clocks measuring the same phases: the ledger's own counters, and the gaps between
+        // the emitted transition timestamps. They disagree by whatever scheduling slack lands
+        // between a transition being timestamped and the next counter starting, which is per
+        // transition and grows with machine load. A single fixed budget therefore failed on a busy
+        // machine while the accounting was correct. Allow the floor plus a per-transition slice;
+        // a genuine attribution bug is proportional to the phase durations themselves, which are
+        // seconds here, so this still catches it.
+        let reconciliation_tolerance_ms = PHASE_EVENT_TOLERANCE_MS.saturating_add(
+            PHASE_EVENT_TOLERANCE_MS.saturating_mul(transitions.len().saturating_sub(1) as u64),
+        );
         assert!(
-            attributed_phase_ms.abs_diff(event_phase_total_ms) <= PHASE_EVENT_TOLERANCE_MS,
-            "ledger phase total {}ms must reconcile with phase-event spans {event_phase_total_ms}ms within the fixed {PHASE_EVENT_TOLERANCE_MS}ms tolerance",
+            attributed_phase_ms.abs_diff(event_phase_total_ms) <= reconciliation_tolerance_ms,
+            "ledger phase total {}ms must reconcile with phase-event spans {event_phase_total_ms}ms within {reconciliation_tolerance_ms}ms",
             attributed_phase_ms,
         );
 
@@ -6403,7 +6586,7 @@ ant-api03-SuperSecretModelToken12345"
 
         let outcome = tokio::time::timeout(Duration::from_secs(1), async {
             let interrupt_after_start = async {
-                started.notified().await;
+                await_signal(&started, "the provider's first turn").await;
                 interrupted.store(true, Ordering::SeqCst);
             };
             let (outcome, ()) =
@@ -8260,9 +8443,15 @@ ant-api03-SuperSecretModelToken12345"
             .and_then(|(_, tail)| tail.lines().next())
             .map(str::to_string)
             .expect("the receipt names the detached run");
-        while provider.background_started.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        // Bounded like the fan/writer wait below. An unbounded spin turns a background agent that
+        // never starts into a hung suite, which is indistinguishable from a slow one.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while provider.background_started.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the background agent starts");
 
         // Now launch Ultracode. The engine-owned planner/fan detaches; the ordinary parent writer
         // remains the only work this turn owns. Mirror the interactive frontend exactly: it flips
@@ -9357,6 +9546,7 @@ ant-api03-SuperSecretModelToken12345"
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         drop(
@@ -9548,6 +9738,165 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(agent.ledger.provider_attempts, 0);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn typed_pre_stream_retry_has_one_durable_effect_per_physical_attempt() {
+        struct TransientThenDone(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+        #[async_trait::async_trait]
+        impl Provider for TransientThenDone {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return Err(iteron_provider::ProviderError::Api {
+                        status: 429,
+                        body: "typed fixture".into(),
+                    });
+                }
+                Ok(iteron_provider::TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+
+        let ws = temp_ws("durable-provider-retry");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run = iteron_protocol::RunId("durable-provider-retry".into());
+        let runs = ws.join(".iteron/runs");
+        let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(TransientThenDone(calls.clone())),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
+        });
+        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(iteron_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+
+        assert_eq!(
+            agent.run("finish after one retry").await.unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(agent.ledger.provider_retries, 1);
+        let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    &event.kind,
+                    EventKind::EffectIntent { tool, .. } if tool == "provider"
+                ))
+                .count(),
+            2,
+            "each paid dispatch owns a separate durable intent"
+        );
+        let lifecycle = lifecycle.snapshot();
+        assert_eq!(
+            lifecycle
+                .events
+                .iter()
+                .filter(|event| event.event_id.as_str() == "model.retry_scheduled")
+                .count(),
+            1
+        );
+        assert!(
+            lifecycle
+                .events
+                .iter()
+                .all(|event| event.event_id.as_str() != "model.retry_cancelled")
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn interrupt_during_retry_backoff_cancels_before_another_dispatch() {
+        struct InterruptingTransient {
+            calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+            interrupt: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for InterruptingTransient {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.interrupt
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(iteron_provider::ProviderError::Api {
+                    status: 429,
+                    body: "typed fixture".into(),
+                })
+            }
+        }
+
+        let ws = temp_ws("cancel-provider-retry");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("cancel-provider-retry".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(InterruptingTransient {
+                calls: calls.clone(),
+                interrupt: interrupt.clone(),
+            }),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.set_interrupt(interrupt);
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 100,
+            cap_ms: 100,
+            max_attempts: 3,
+        });
+        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(iteron_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+
+        assert_eq!(
+            agent.run("interrupt retry").await.unwrap(),
+            Outcome::Interrupted
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let ids = lifecycle
+            .snapshot()
+            .events
+            .into_iter()
+            .map(|event| event.event_id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        assert!(ids.iter().any(|id| id == "model.retry_scheduled"));
+        assert!(ids.iter().any(|id| id == "model.retry_cancelled"));
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -10653,6 +11002,7 @@ ant-api03-SuperSecretModelToken12345"
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         let attempt = in_flight
             .admit_provider_effect(TurnId(0), &request)
@@ -11582,7 +11932,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_approvals(op_rx);
 
         let running = tokio::spawn(async move { agent.run("first task").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         op_tx
             .send(
                 Op::Steer {
@@ -11796,7 +12146,7 @@ ant-api03-SuperSecretModelToken12345"
             let outcome = agent.run("finish the admitted turn").await;
             (agent, outcome)
         });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         tx.send(
             Op::UserInput {
@@ -11918,7 +12268,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         interrupted.set_approvals(rx);
         let running = tokio::spawn(async move { interrupted.run("interrupt me").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Interrupt.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Interrupted);
@@ -11983,7 +12333,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
@@ -12015,7 +12365,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("provider may fail").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
@@ -12125,7 +12475,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("verify me").await });
-        started.notified().await;
+        await_signal(&started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), running)
@@ -12183,11 +12533,18 @@ ant-api03-SuperSecretModelToken12345"
                 .run("improve error handling across the whole project")
                 .await
         });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        // Ultracode planning moved into the workflow engine, so the turn a drain lands on is the
+        // parent's own, not a planning turn. What the drain must still guarantee is unchanged: it
+        // quiesces after exactly this one turn and never starts another.
+        assert_eq!(
+            provider.first_system.lock().unwrap().as_deref(),
+            Some(PARENT_SYSTEM)
+        );
         let _ = std::fs::remove_dir_all(&ws);
 
         let ws = temp_ws("drain-ultra-child");
@@ -12216,6 +12573,13 @@ ant-api03-SuperSecretModelToken12345"
         agent.workspace = ws.clone();
         agent.effort = Effort::Ultracode;
         bind_unrecorded_test_route(&mut agent);
+        // The ultracode fan runs through the workflow engine, which reports through the UI and
+        // workflow-progress channels. Without them the parent answers its own turn and stops, so
+        // no investigator ever enters one and this test could never observe a drain during a child.
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_ui(ui_tx);
+        let (wf_tx, _wf_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_workflow_progress(wf_tx);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move {
@@ -12227,7 +12591,7 @@ ant-api03-SuperSecretModelToken12345"
         // observed only AFTER admission — the concurrent analogue of "drain during a child". How
         // many children run a turn depends on the machine's concurrency permit count, so the test
         // asserts the drain INVARIANT (writer never admitted), not an exact call count.
-        provider.child_started.notified().await;
+        await_signal(&provider.child_started, "an admitted investigator's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
         provider.released.store(true, Ordering::SeqCst);
@@ -12237,9 +12601,14 @@ ant-api03-SuperSecretModelToken12345"
             child_calls >= 1,
             "at least one admitted investigator runs its turn before drain"
         );
-        // Provider calls are planning (1) + every child that actually entered a turn; the writer
-        // is never admitted after drain.
-        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 1 + child_calls);
+        // The writer is never admitted after drain. This is now recorded by the fake rather than
+        // panicked inside it, so a violation fails the test instead of hanging it.
+        assert!(
+            !provider.writer_admitted.load(Ordering::SeqCst),
+            "drain must prevent writer admission"
+        );
+        // Calls are the parent's own turn, the planning turn, and every child that entered one.
+        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 2 + child_calls);
         let workflows_dir = ws.join(".iteron/runs/subagents/workflows");
         let runs = crate::workflow::list_runs(&workflows_dir);
         assert_eq!(
@@ -12626,7 +12995,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("drain without post hook").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
@@ -12944,8 +13313,8 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    #[test]
-    fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
+    #[tokio::test]
+    async fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
         // `refresh_session_cache` rewrites two sidecars and fsyncs their directory on every turn
         // advance. Outside the meter it was invisible durability cost, so `kernel_tax` understated
         // what a turn actually pays for the record.
@@ -12955,7 +13324,7 @@ ant-api03-SuperSecretModelToken12345"
             .emit_durable(TurnId(0), EventKind::TurnStart)
             .expect("seed a turn so the projection has something to persist");
         let before = agent.ledger.kernel_tax().record_fsync_latency_us;
-        agent.advance_turn().unwrap();
+        agent.advance_turn().await.unwrap();
         assert!(
             agent.ledger.kernel_tax().record_fsync_latency_us > before,
             "the turn-advance cache refresh must appear in the ledger, not beside it"
@@ -13074,6 +13443,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
             );
             agent.workspace = workspace.to_path_buf();
+            pin_test_tunables(&mut agent);
             agent
         }
 

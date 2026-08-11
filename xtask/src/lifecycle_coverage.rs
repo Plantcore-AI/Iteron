@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use syn::visit::Visit as _;
 
 const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -32,6 +33,7 @@ pub(crate) fn check(root: &Path) -> Result<CoverageReport> {
     }
 
     let mut literals = BTreeSet::new();
+    let mut emitted_literals = BTreeSet::new();
     let mut files = Vec::new();
     collect_rust_files(&root.join("crates"), &mut files)?;
     for path in files {
@@ -39,12 +41,25 @@ pub(crate) fn check(root: &Path) -> Result<CoverageReport> {
             continue;
         }
         let source = read_source(&path)?;
-        syn::parse_file(&source).with_context(|| format!("cannot parse {}", path.display()))?;
+        let syntax =
+            syn::parse_file(&source).with_context(|| format!("cannot parse {}", path.display()))?;
+        let mut visitor = LifecycleCallVisitor {
+            emitted: &mut emitted_literals,
+        };
+        visitor.visit_file(&syntax);
         for event in &registered {
             if source.contains(&format!("\"{event}\"")) {
                 literals.insert(event.clone());
             }
         }
+    }
+
+    let unknown_emitted = emitted_literals
+        .difference(&registered.iter().cloned().collect())
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown_emitted.is_empty() {
+        bail!("production lifecycle calls use unregistered identifiers: {unknown_emitted:?}");
     }
 
     let active = registered
@@ -76,6 +91,58 @@ pub(crate) fn check(root: &Path) -> Result<CoverageReport> {
         active: active.len(),
         reserved: reserved.len(),
     })
+}
+
+struct LifecycleCallVisitor<'a> {
+    emitted: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for LifecycleCallVisitor<'_> {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let method = node.method.to_string();
+        if matches!(
+            method.as_str(),
+            "lifecycle_event"
+                | "lifecycle_event_with_correlation"
+                | "child_lifecycle_event"
+                | "tool_lifecycle_event"
+                | "record_lifecycle"
+                | "emit"
+        ) && let Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(event),
+            ..
+        })) = node.args.first()
+            && looks_like_lifecycle_id(&event.value())
+        {
+            self.emitted.insert(event.value());
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn looks_like_lifecycle_id(value: &str) -> bool {
+    const DOMAINS: [&str; 15] = [
+        "context.",
+        "memory.",
+        "submission.",
+        "queue.",
+        "steer.",
+        "cancel.",
+        "drain.",
+        "control.",
+        "tool.",
+        "process.",
+        "background.",
+        "model.",
+        "workflow.",
+        "session.",
+        "verification.",
+    ];
+    DOMAINS.iter().any(|domain| value.starts_with(domain))
+        || value.starts_with("checkpoint.")
+        || value.starts_with("replay.")
+        || value.starts_with("hook.")
+        || value.starts_with("exporter.")
 }
 
 fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

@@ -4,8 +4,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use iteron_protocol::Phase;
 use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome};
 
+use super::worktree::WriterWorktree;
 use super::{KernelSpawner, safe_agent_refusal};
-use crate::runtime::{UiEvent, usage_tokens, workflow_child_activity};
+use crate::runtime::{UiEvent, ui_workflow_label, usage_tokens};
+
+fn workflow_child_activity(event: &UiEvent) -> Option<String> {
+    match event {
+        UiEvent::ToolStart { name, args, .. } => {
+            let detail = ["path", "pattern", "query", "key"]
+                .into_iter()
+                .find_map(|key| args.get(key).and_then(|value| value.as_str()))
+                .map(ui_workflow_label)
+                .filter(|detail| !detail.is_empty());
+            Some(match detail {
+                Some(detail) => format!("{name} · {detail}"),
+                None => name.clone(),
+            })
+        }
+        UiEvent::Phase(Phase::Model) => Some("reasoning over evidence".into()),
+        UiEvent::Phase(Phase::Tools) => Some("reading repository".into()),
+        UiEvent::Phase(Phase::Verify) => Some("checking evidence".into()),
+        UiEvent::TurnEnd { .. } => Some("organizing findings".into()),
+        UiEvent::ToolEnd { .. }
+        | UiEvent::Phase(Phase::Context | Phase::Idle)
+        | UiEvent::Text(_)
+        | UiEvent::Thinking(_)
+        | UiEvent::Workflow(_)
+        | UiEvent::SteerApplied { .. }
+        | UiEvent::Notice(_)
+        | UiEvent::ApprovalRequest { .. }
+        | UiEvent::Done(_) => None,
+    }
+}
 
 impl KernelSpawner {
     pub(super) async fn spawn_reporting(
@@ -15,8 +45,40 @@ impl KernelSpawner {
     ) -> AgentOutcome {
         let ultracode_planner =
             call.agent_type.as_deref() == Some(iteron_agents::ULTRACODE_PLANNER_NAME);
+        let _session_admission = match self.cx.session_spawn_ledger.admit() {
+            Ok(admission) => admission,
+            Err(error) => return AgentOutcome::null(error.to_string()),
+        };
         let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
-        let mut child = match self.build_child(&call, ordinal) {
+        let writer_requested =
+            call.agent_type.as_deref() == Some(iteron_agents::ISOLATED_WRITER_NAME);
+        // Hold one session-wide lane for the complete writer transaction. A second writer cannot
+        // observe or merge across the first one's partially settled state.
+        let _writer_lane = if writer_requested {
+            Some(self.cx.writer_merge_lock.lock().await)
+        } else {
+            None
+        };
+        let mut writer_worktree = if writer_requested {
+            let child_id = self.mint_run_id(ordinal).0;
+            match WriterWorktree::provision(
+                self.cx.workspace.clone(),
+                self.cx.runtime_state_dir.clone(),
+                child_id,
+            )
+            .await
+            {
+                Ok(worktree) => Some(worktree),
+                Err(error) => return AgentOutcome::null(error.public_summary()),
+            }
+        } else {
+            None
+        };
+        let mut child = match self.build_child_in(
+            &call,
+            ordinal,
+            writer_worktree.as_ref().map(WriterWorktree::path),
+        ) {
             Ok(child) => child,
             Err(reason) => {
                 return AgentOutcome::Null {
@@ -65,13 +127,11 @@ impl KernelSpawner {
             live.observe(event, activity.as_ref());
         }
         cancel_bridge.abort();
-        if let Some(collector) = &self.cx.child_outcomes {
-            let terminal = outcome
-                .as_ref()
-                .map(|outcome| (*outcome).clone())
-                .map_err(|error| safe_agent_refusal(&error.public_summary()));
-            collector.lock().unwrap().push((ordinal, terminal));
-        }
+        let terminal = outcome
+            .as_ref()
+            .map(|outcome| (*outcome).clone())
+            .map_err(|error| safe_agent_refusal(&error.public_summary()));
+        let child_done = matches!(&outcome, Ok(iteron_protocol::Outcome::Done));
         let result = match outcome {
             // Any terminal with a non-empty final report becomes the JS string value (real model
             // output). This mirrors the kernel's own investigator distillation, which treats every
@@ -112,23 +172,117 @@ impl KernelSpawner {
                 reason: Some(safe_agent_refusal(&error.public_summary())),
             },
         };
+        let mut result = if ultracode_planner {
+            self.normalize_ultracode_plan(&mut child, result)
+        } else {
+            result
+        };
+        // The planner slot runs on the planner child's normalized output, so it is part of that
+        // child's policy run. Closing before normalization made every production planner decision
+        // an impossible post-terminal append and silently degraded the dynamic plan to `null`.
+        let terminal = match child.finalize_policy_run() {
+            Ok(()) => terminal,
+            Err(error) => {
+                let summary = safe_agent_refusal(&error.public_summary());
+                result = AgentOutcome::null(summary.clone());
+                Err(summary)
+            }
+        };
+        if let Some(worktree) = writer_worktree.as_mut() {
+            self.settle_writer_worktree(worktree, child_done, &mut result)
+                .await;
+        }
+        if let Some(collector) = &self.cx.child_outcomes {
+            collector.lock().unwrap().push((ordinal, terminal));
+        }
         if let Some(collector) = &self.cx.child_ledgers {
             collector
                 .lock()
                 .unwrap()
                 .push((ordinal, std::mem::take(&mut child.ledger)));
         }
-        if ultracode_planner {
-            self.normalize_ultracode_plan(result)
-        } else {
-            result
+        result
+    }
+
+    async fn settle_writer_worktree(
+        &self,
+        worktree: &mut WriterWorktree,
+        child_done: bool,
+        result: &mut AgentOutcome,
+    ) {
+        if !child_done || !matches!(result, AgentOutcome::Text { .. }) {
+            if let Err(error) = worktree.discard().await {
+                *result = AgentOutcome::null(error.public_summary());
+            }
+            return;
+        }
+
+        let receipt = match worktree.prepare_patch().await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = worktree.discard().await;
+                *result = AgentOutcome::null(error.public_summary());
+                return;
+            }
+        };
+        if receipt.patch_bytes == 0 {
+            match worktree.discard().await {
+                Ok(()) => {
+                    if let AgentOutcome::Text {
+                        last_tool_summary, ..
+                    } = result
+                    {
+                        *last_tool_summary = Some("isolated writer produced no patch".into());
+                    }
+                }
+                Err(error) => *result = AgentOutcome::null(error.public_summary()),
+            }
+            return;
+        }
+
+        if let Err(error) = worktree
+            .verify(
+                self.cx.verify_command.as_deref(),
+                &self.cx.sensitive_env_names,
+            )
+            .await
+        {
+            let _ = worktree.discard().await;
+            *result = AgentOutcome::null(error.public_summary());
+            return;
+        }
+        match worktree.merge().await {
+            Ok(()) => {
+                if let AgentOutcome::Text {
+                    last_tool_summary, ..
+                } = result
+                {
+                    let digest = receipt
+                        .patch_digest_sha256
+                        .as_deref()
+                        .and_then(|value| value.get(..19))
+                        .unwrap_or("sha256:unknown");
+                    *last_tool_summary = Some(format!(
+                        "verified + merged isolated patch · {} bytes · {digest}",
+                        receipt.patch_bytes
+                    ));
+                }
+            }
+            Err(error) => {
+                let _ = worktree.discard().await;
+                *result = AgentOutcome::null(error.public_summary());
+            }
         }
     }
 
     /// Convert the planner's untrusted line list into a harness-authored JSON task list. This is
     /// deliberately inside the spawner boundary: QuickJS never gets raw model control-flow data,
     /// and the pinned `core/planner` seat can narrow/reorder but cannot invent a leaf.
-    fn normalize_ultracode_plan(&self, outcome: AgentOutcome) -> AgentOutcome {
+    fn normalize_ultracode_plan(
+        &self,
+        child: &mut super::Agent,
+        outcome: AgentOutcome,
+    ) -> AgentOutcome {
         let Some(config) = self.cx.ultracode_planning else {
             return AgentOutcome::null(
                 "the ultracode planner is available only to the built-in dynamic workflow",
@@ -144,6 +298,13 @@ impl KernelSpawner {
             return outcome;
         };
         let leaves = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let evidence_leaves = leaves.clone();
+        let opportunity = match child
+            .begin_policy_decision(crate::runtime::policy_evidence::PLANNER_SLOT, None)
+        {
+            Ok(opportunity) => opportunity,
+            Err(error) => return AgentOutcome::null(error.public_summary()),
+        };
         let planned = match iteron_agents::Decomposer::plan_within_with(
             self.cx.planner.as_ref(),
             config.class,
@@ -154,8 +315,47 @@ impl KernelSpawner {
             )
             .intersect(self.cx.authority_ceiling),
         ) {
-            Ok(planned) => planned,
+            Ok(planned) => {
+                let action = if planned.is_some() {
+                    "fan_plan"
+                } else {
+                    "direct_plan"
+                };
+                let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::selected(
+                    &["direct_plan", "fan_plan"],
+                    action,
+                    "iteron:planner-features-v1",
+                    &(
+                        config.class,
+                        config.max_leaves,
+                        &evidence_leaves,
+                        planned.is_some(),
+                    ),
+                    &"planner_may_select_only_normalized_gathered_leaves",
+                ) {
+                    Ok(draft) => draft,
+                    Err(error) => return AgentOutcome::null(error.public_summary()),
+                };
+                if let Err(error) = child.append_policy_decision(opportunity, draft) {
+                    return AgentOutcome::null(error.public_summary());
+                }
+                planned
+            }
             Err(error) => {
+                let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::abstained(
+                    &["direct_plan", "fan_plan"],
+                    "iteron:planner-features-v1",
+                    &(config.class, config.max_leaves, &evidence_leaves),
+                    &"invalid_plans_fail_closed",
+                ) {
+                    Ok(draft) => draft,
+                    Err(evidence_error) => {
+                        return AgentOutcome::null(evidence_error.public_summary());
+                    }
+                };
+                if let Err(evidence_error) = child.append_policy_decision(opportunity, draft) {
+                    return AgentOutcome::null(evidence_error.public_summary());
+                }
                 return AgentOutcome::null(format!("planner policy refused the plan: {error}"));
             }
         };

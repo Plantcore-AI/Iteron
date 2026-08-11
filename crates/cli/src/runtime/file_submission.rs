@@ -16,12 +16,11 @@ pub(super) struct InputFileEvidence {
 }
 
 impl InputFileEvidence {
-    fn from_rendered(rendered: &str, count: usize) -> Self {
+    fn from_rendered(rendered: &str, count: usize, estimated_tokens: usize) -> Self {
         Self {
             count: u32::try_from(count).unwrap_or(u32::MAX),
             bytes: u64::try_from(rendered.len()).unwrap_or(u64::MAX),
-            estimated_tokens: u64::try_from(iteron_ctx::estimate_tokens(rendered))
-                .unwrap_or(u64::MAX),
+            estimated_tokens: u64::try_from(estimated_tokens).unwrap_or(u64::MAX),
             digest_sha256: Sha256::digest(rendered.as_bytes()).into(),
         }
     }
@@ -41,8 +40,13 @@ impl Agent {
         iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
         let mut task = crate::file_input::render_attached_files("", files);
-        let evidence =
-            (!files.is_empty()).then(|| InputFileEvidence::from_rendered(&task, files.len()));
+        let evidence = (!files.is_empty()).then(|| {
+            InputFileEvidence::from_rendered(
+                &task,
+                files.len(),
+                self.context_estimator.estimate_text(&task),
+            )
+        });
         task.push_str(text);
         self.run_with_images_mode(&task, images.to_vec(), true, evidence)
             .await
@@ -58,7 +62,7 @@ impl Agent {
         // Refusal happens before transcript staging, leaving the resident session unchanged.
         iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
-        self.stage_follow_up_transcript()?;
+        self.stage_follow_up_transcript().await?;
         self.verify_attempts = 0;
         self.run_files(text, images, files).await
     }

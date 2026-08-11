@@ -77,7 +77,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     scalar_schema!(
         "response_verbosity",
         Enum,
-        finite_enum_domain!("concise", "balanced", "detailed"),
+        finite_enum_domain!("model_default", "concise", "balanced", "detailed"),
         [
             external_rule!("$", ProviderCapability),
             external_domain_rule!("$", ParentTokens)
@@ -130,6 +130,31 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 "verification_reserve_tokens",
                 true,
                 int_domain!(0, 1_000_000, "tokens")
+            ),
+            scalar_field!(
+                "instruction_budget_tokens",
+                false,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "task_context_budget_tokens",
+                false,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "memory_budget_tokens",
+                false,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "attachment_budget_tokens",
+                false,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "tool_schema_budget_tokens",
+                false,
+                int_domain!(0, 10_000_000, "tokens")
             )
         ],
         [
@@ -231,7 +256,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     scalar_schema!(
         "concurrent_background_job_cap",
         Count,
-        int_domain!(0, 1024, "jobs"),
+        int_domain!(0, 16, "jobs"),
         [external_rule!("$", ProcessBudget)]
     ),
     scalar_schema!(

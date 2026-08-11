@@ -80,6 +80,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
     object_schema!(
         "compaction_trigger",
         [
+            scalar_field!("mode", true, finite_enum_domain!("adaptive", "fixed")),
             scalar_field!(
                 "usable_window_ratio",
                 true,

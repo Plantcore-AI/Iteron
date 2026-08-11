@@ -6,12 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 mod report;
 pub use report::*;
 
-pub const RESOLUTION_SCHEMA_VERSION: u16 = 1;
+pub const RESOLUTION_SCHEMA_VERSION: u16 = 2;
 pub const RESOLUTION_INPUT_MAX_BYTES: usize = 1_048_576;
 pub(crate) const MAX_DECLARED_VALUES: usize = 193;
 pub(crate) const MAX_PROFILE_VALUES: usize = crate::EXPECTED_FAMILY_COUNT;
 pub(crate) const MAX_DEFAULT_EVIDENCE: usize = 106;
-pub(crate) const MAX_ACTIVATION_EVIDENCE: usize = 52;
+pub(crate) const MAX_ACTIVATION_EVIDENCE: usize = 53;
 pub(crate) const MAX_CONSTRAINTS: usize = 201;
 pub(crate) const MAX_ROUTES: usize = 16;
 pub(crate) const MAX_CATALOGS: usize = 64;
@@ -227,6 +227,9 @@ pub struct DefaultEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivationEvidence {
+    /// Canonical registry family identity. The seam alone is not an activation identity because
+    /// multiple families may be implemented at the same runtime location.
+    pub family: String,
     pub seam: String,
     pub subject_digest_sha256: String,
     pub evidence_digest_sha256: String,

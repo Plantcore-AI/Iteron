@@ -7,6 +7,7 @@
 //! pure function, unit-tested here without a network.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether a worker produced candidate evidence. Failure diagnostics and skipped coverage are
 /// useful observations, but they are never evidence the writer may adopt.
@@ -70,6 +71,79 @@ pub struct OrderedBundle {
     /// Workers not admitted/run; their diagnostics are not evidence.
     #[serde(default)]
     pub skipped: usize,
+}
+
+/// The complete declaration ledger the fan controller expects to receive back. Keeping this type
+/// separate from [`Summary`] prevents a worker from defining its own coverage target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageExpectation {
+    pub idx: usize,
+    pub assigned_question: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoverageError {
+    DuplicateExpectation(usize),
+    DuplicateSummary(usize),
+    MissingSummary(usize),
+    UnexpectedSummary(usize),
+    AssignmentMismatch(usize),
+}
+
+impl std::fmt::Display for CoverageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (message, index) = match self {
+            Self::DuplicateExpectation(index) => (
+                "fan coverage contract contains duplicate declaration index",
+                index,
+            ),
+            Self::DuplicateSummary(index) => ("fan returned duplicate summary index", index),
+            Self::MissingSummary(index) => ("fan omitted declaration index", index),
+            Self::UnexpectedSummary(index) => ("fan returned unassigned declaration index", index),
+            Self::AssignmentMismatch(index) => (
+                "fan summary assignment does not match declaration index",
+                index,
+            ),
+        };
+        write!(formatter, "{message} {index}")
+    }
+}
+
+impl std::error::Error for CoverageError {}
+
+/// Verify exact declaration coverage before rendering anything the writer can consume. Missing,
+/// duplicate, unassigned, or relabelled summaries fail closed; a diagnostic cannot silently shift
+/// into another investigator's evidence slot.
+pub fn reduce_checked(
+    expected: &[CoverageExpectation],
+    results: Vec<Summary>,
+) -> Result<OrderedBundle, CoverageError> {
+    let mut declarations = BTreeMap::new();
+    for item in expected {
+        if declarations
+            .insert(item.idx, item.assigned_question.as_str())
+            .is_some()
+        {
+            return Err(CoverageError::DuplicateExpectation(item.idx));
+        }
+    }
+
+    let mut returned = BTreeSet::new();
+    for summary in &results {
+        if !returned.insert(summary.idx) {
+            return Err(CoverageError::DuplicateSummary(summary.idx));
+        }
+        let Some(question) = declarations.get(&summary.idx) else {
+            return Err(CoverageError::UnexpectedSummary(summary.idx));
+        };
+        if summary.assigned_question != **question {
+            return Err(CoverageError::AssignmentMismatch(summary.idx));
+        }
+    }
+    if let Some(missing) = declarations.keys().find(|idx| !returned.contains(idx)) {
+        return Err(CoverageError::MissingSummary(*missing));
+    }
+    Ok(reduce(results))
 }
 
 /// Reduce fan results into the ordered bundle. Pure and deterministic: results may arrive in any

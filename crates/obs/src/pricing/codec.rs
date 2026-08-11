@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 pub(super) fn rate_card_content_bytes(rate_card: &RateCard) -> Vec<u8> {
     let mut bytes = Vec::new();
-    push_bytes(&mut bytes, b"iteron/rate-card/content/v1");
+    push_bytes(&mut bytes, b"core/rate-card/content/v1");
     push_u64(&mut bytes, 1);
     push_route(&mut bytes, &rate_card.route);
     push_bytes(&mut bytes, rate_card.provenance.as_bytes());
@@ -30,7 +30,7 @@ pub(super) fn rate_card_content_bytes(rate_card: &RateCard) -> Vec<u8> {
 
 pub(super) fn rate_card_auth_bytes(signed: &SignedRateCard) -> Vec<u8> {
     let mut bytes = Vec::new();
-    push_bytes(&mut bytes, b"iteron/rate-card/auth/v1");
+    push_bytes(&mut bytes, b"core/rate-card/auth/v1");
     push_bytes(&mut bytes, &rate_card_content_bytes(&signed.rate_card));
     push_bytes(&mut bytes, signed.signer_id.as_bytes());
     push_bytes(&mut bytes, signed.rate_card_digest.as_bytes());
@@ -45,9 +45,9 @@ pub(super) fn projection_content_bytes(projection: &CostProjection) -> Vec<u8> {
     push_bytes(
         &mut bytes,
         if projection.identity.is_some() {
-            b"iteron/cost-projection/content/v2"
+            b"core/cost-projection/content/v2"
         } else {
-            b"iteron/cost-projection/content/v1"
+            b"core/cost-projection/content/v1"
         },
     );
     push_u64(&mut bytes, 1);
@@ -102,9 +102,9 @@ pub(super) fn projection_auth_bytes(projection: &CostProjection) -> Vec<u8> {
     push_bytes(
         &mut bytes,
         if projection.identity.is_some() {
-            b"iteron/cost-projection/auth/v2"
+            b"core/cost-projection/auth/v2"
         } else {
-            b"iteron/cost-projection/auth/v1"
+            b"core/cost-projection/auth/v1"
         },
     );
     push_bytes(&mut bytes, &projection_content_bytes(projection));

@@ -26,9 +26,28 @@ pub(super) fn open_tunables_picker(app: &mut App, session: &Session, argument: &
                 return;
             }
         }
+    } else if argument == "registry" {
+        (tunables_view::registry_catalog(), String::new())
     } else {
+        let Some(checkpoint) = session.tunables_checkpoint() else {
+            app.note(
+                block::NoticeLevel::Err,
+                "runtime tunables are not pinned for this session",
+            );
+            return;
+        };
+        let catalog = match tunables_view::checkpoint_catalog(checkpoint) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("runtime tunables unavailable: {error}"),
+                );
+                return;
+            }
+        };
         (
-            tunables_view::registry_catalog(),
+            catalog,
             argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
         )
     };

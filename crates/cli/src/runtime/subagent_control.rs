@@ -67,6 +67,7 @@ impl Agent {
                 Ok(outcome) => {
                     drop(execution);
                     let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                    child.finalize_policy_run()?;
                     return outcome;
                 }
                 Err(_) => {
@@ -99,9 +100,11 @@ impl Agent {
         );
         cx.model_context_window = self.model_context_window;
         cx.model_max_output_tokens = self.model_max_output_tokens;
+        cx.tunables_pin = self.tunables_pin.clone();
         cx.sensitive_env_names = self.sensitive_env_names.clone();
         cx.pricing_port = self.pricing_port.clone();
         cx.usd_budget = self.usd_budget.clone();
+        cx.session_spawn_ledger = self.session_spawn_ledger.clone();
         cx.budget.max_usd = self.effective_max_usd();
         cx.default_effort = self.effort;
         cx.permission_mode = self.permission_mode;
@@ -109,20 +112,34 @@ impl Agent {
         cx.authority_ceiling = self.authority_ceiling;
         cx.policy_capabilities = self.policy_capabilities;
         cx.bypass_permissions = self.bypass_permissions;
-        cx.context_strategy = self.context_strategy.clone();
-        cx.tool_policy = self.tool_policy.clone();
-        cx.memory_strategy = self.memory_strategy.clone();
-        cx.router = self.router.clone();
-        cx.planner = self.planner.clone();
-        cx.collaboration = self.collaboration.clone();
-        cx.scheduler = self.scheduler.clone();
-        cx.verifier = self.verifier.clone();
-        cx.model_router = self.model_router.clone();
+        cx.install_compiled_policy_bundle(self.compiled_policy_bundle.clone());
+        cx.retry_policy = self.retry_policy;
+        cx.verify_command = self.verify_command.clone();
+        cx.provider_controls = self.provider_controls;
+        if let Some(governor) = &self.provider_governor {
+            cx.provider_governor_policy = governor.policy().clone();
+        }
+        let current_route_id = self.governed_route_id();
+        let fallback_start = self
+            .fallback_provider_routes
+            .iter()
+            .position(|route| route.id() == current_route_id)
+            .map_or(0, |index| index.saturating_add(1));
+        cx.fallback_provider_routes = self
+            .fallback_provider_routes
+            .iter()
+            .skip(fallback_start)
+            .filter(|route| route.id() != current_route_id)
+            .cloned()
+            .collect();
         cx.context_port = self.context_port.clone();
+        cx.deferred_tool_eager_limit = self.deferred_tool_eager_limit;
+        cx.context_budget_policy = self.context_budget_policy;
+        cx.context_materialization_policy = self.context_materialization_policy;
+        cx.compaction_policy = self.compaction;
         cx.context_home_dir = self.context_home_dir.clone();
         cx.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         cx.agent_catalog = self.agent_catalog.clone();
-        cx.boot_bundle = self.boot_bundle.clone();
         cx.drain = Some(self.drain.clone());
         cx.lifecycle_emitter = self.lifecycle_emitter.clone();
         cx.lifecycle_telemetry = self.lifecycle_telemetry.clone();

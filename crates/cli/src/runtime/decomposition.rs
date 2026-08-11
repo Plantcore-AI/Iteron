@@ -52,6 +52,7 @@ impl Agent {
             cache_system: true,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         // The draft itself stays private to the planner, but decode progress is real operator
         // evidence. Publish bounded cumulative counts instead of dropping the stream or leaking
@@ -145,12 +146,12 @@ impl Agent {
                     },
                 );
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-                self.advance_turn()?;
+                self.advance_turn().await?;
                 return Ok(Vec::new());
             }
         };
         self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-        self.advance_turn()?;
+        self.advance_turn().await?;
         // Keep raw lines. Decomposer owns legal list-prefix stripping, visibility checks, bounds,
         // deduplication, and FAN_CAP accounting; doing any of that here previously corrupted
         // legitimate assignments beginning with paths such as `.github/workflows/ci.yml`.

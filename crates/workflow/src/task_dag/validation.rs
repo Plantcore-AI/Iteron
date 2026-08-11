@@ -3,9 +3,10 @@ use std::collections::BTreeSet;
 use super::DagError;
 use super::reducer::TaskDag;
 use super::types::{
-    Actor, BudgetReservation, BudgetUsage, Command, Completion, DeliveryState, JoinSpec,
-    MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES, Task, TaskId, TaskMessage, TaskSpec,
-    TaskState, valid_digest, validate_identifier,
+    Actor, AttemptCompletion, AttemptDisposition, AttemptId, AttemptSpec, AttemptState,
+    BudgetReservation, BudgetUsage, Command, Completion, DeliveryState, HARD_MAX_ATTEMPTS,
+    JoinSpec, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES, Task, TaskId, TaskMessage,
+    TaskSpec, TaskState, valid_digest, validate_identifier,
 };
 use super::validation_support::{budget_fits, transition, validate_visible};
 
@@ -32,6 +33,42 @@ impl TaskDag {
                 }
                 Ok(())
             }
+            Command::RegisterAttempt { actor, attempt } => {
+                self.validate_attempt_registration(*actor, attempt)
+            }
+            Command::StartAttempt { actor, attempt } => {
+                if *actor != Actor::Controller {
+                    return Err(DagError::Authority(
+                        "only the controller may dispatch an attempt",
+                    ));
+                }
+                let attempt = self.require_attempt(*attempt)?;
+                if !matches!(attempt.state, AttemptState::Registered) {
+                    return Err(DagError::Invalid("attempt is not registered"));
+                }
+                let task = self.require_task(attempt.spec.task)?;
+                if !matches!(task.state, TaskState::Running) {
+                    return Err(transition(task.spec.id, "attempt task is not running"));
+                }
+                Ok(())
+            }
+            Command::CompleteAttempt {
+                actor,
+                attempt,
+                completion,
+                disposition,
+                result_digest,
+                code,
+                detail,
+            } => self.validate_attempt_completion(
+                *actor,
+                *attempt,
+                *completion,
+                *disposition,
+                result_digest.as_deref(),
+                code.as_deref(),
+                detail.as_deref(),
+            ),
             Command::ChargeBudget { actor, task, delta } => {
                 if *actor != Actor::Controller {
                     return Err(DagError::Authority(
@@ -218,6 +255,123 @@ impl TaskDag {
         Ok(())
     }
 
+    fn validate_attempt_registration(
+        &self,
+        actor: Actor,
+        attempt: &AttemptSpec,
+    ) -> Result<(), DagError> {
+        if actor != Actor::Controller {
+            return Err(DagError::Authority(
+                "only the controller may register an attempt",
+            ));
+        }
+        if attempt.id.0 == 0 {
+            return Err(DagError::Invalid("attempt id must be non-zero"));
+        }
+        if self.attempts.contains_key(&attempt.id) {
+            return Err(DagError::Invalid("attempt already exists"));
+        }
+        if self.attempts.len() >= HARD_MAX_ATTEMPTS {
+            return Err(DagError::Capacity { kind: "attempt" });
+        }
+        let task = self.require_task(attempt.task)?;
+        if !matches!(task.state, TaskState::Running) {
+            return Err(transition(task.spec.id, "attempt task is not running"));
+        }
+        if !valid_digest(&attempt.input_digest) {
+            return Err(DagError::Invalid(
+                "attempt input digest must be exactly 64 hexadecimal bytes",
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_attempt_completion(
+        &self,
+        actor: Actor,
+        attempt_id: AttemptId,
+        completion: AttemptCompletion,
+        disposition: AttemptDisposition,
+        result_digest: Option<&str>,
+        code: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<(), DagError> {
+        if actor != Actor::Controller {
+            return Err(DagError::Authority(
+                "only the controller may settle an attempt",
+            ));
+        }
+        let attempt = self.require_attempt(attempt_id)?;
+        if !matches!(attempt.state, AttemptState::Running) {
+            return Err(DagError::Invalid("attempt is not running"));
+        }
+        match completion {
+            AttemptCompletion::Succeeded => {
+                if !result_digest.is_some_and(valid_digest)
+                    || code.is_some()
+                    || detail.is_some()
+                    || matches!(
+                        disposition,
+                        AttemptDisposition::Negative | AttemptDisposition::UnknownEffect
+                    )
+                {
+                    return Err(DagError::Invalid(
+                        "attempt success requires one digest and a selected/loser disposition",
+                    ));
+                }
+            }
+            AttemptCompletion::Failed => {
+                let code = code.ok_or(DagError::Invalid("attempt failure requires a code"))?;
+                validate_identifier(code, 128, "code").map_err(DagError::Invalid)?;
+                if let Some(detail) = detail {
+                    validate_visible(detail, MAX_REASON_BYTES, "attempt failure detail")?;
+                }
+                if result_digest.is_some()
+                    || !matches!(
+                        disposition,
+                        AttemptDisposition::Negative | AttemptDisposition::Loser
+                    )
+                {
+                    return Err(DagError::Invalid(
+                        "attempt failure requires a negative or loser disposition",
+                    ));
+                }
+            }
+            AttemptCompletion::Cancelled => {
+                validate_visible(
+                    detail.ok_or(DagError::Invalid("attempt cancellation requires a reason"))?,
+                    MAX_REASON_BYTES,
+                    "attempt cancellation reason",
+                )?;
+                if result_digest.is_some()
+                    || code.is_some()
+                    || disposition != AttemptDisposition::Loser
+                {
+                    return Err(DagError::Invalid(
+                        "attempt cancellation must identify an unselected loser",
+                    ));
+                }
+            }
+            AttemptCompletion::UnknownEffect => {
+                validate_visible(
+                    detail.ok_or(DagError::Invalid("unknown effect requires a reason"))?,
+                    MAX_REASON_BYTES,
+                    "unknown-effect reason",
+                )?;
+                if result_digest.is_some()
+                    || code.is_some()
+                    || disposition != AttemptDisposition::UnknownEffect
+                {
+                    return Err(DagError::Invalid(
+                        "unknown-effect terminal requires its exact disposition",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_message(&self, actor: Actor, message: &TaskMessage) -> Result<(), DagError> {
         if message.id.0 == 0 {
             return Err(DagError::Invalid("message id must be non-zero"));
@@ -358,6 +512,16 @@ impl TaskDag {
                 "task cannot complete while a direct child is nonterminal",
             ));
         }
+        if self
+            .attempts
+            .values()
+            .any(|attempt| attempt.spec.task == task && !attempt.state.is_terminal())
+        {
+            return Err(transition(
+                task,
+                "task cannot complete while a physical attempt is nonterminal",
+            ));
+        }
         if let TaskState::Cancelling { reason } = &target.state {
             if completion != Completion::Cancelled {
                 return Err(transition(
@@ -408,6 +572,12 @@ impl TaskDag {
 
     fn require_task(&self, id: TaskId) -> Result<&Task, DagError> {
         self.tasks.get(&id).ok_or(DagError::UnknownTask(id.0))
+    }
+
+    fn require_attempt(&self, id: AttemptId) -> Result<&super::types::Attempt, DagError> {
+        self.attempts
+            .get(&id)
+            .ok_or(DagError::Invalid("attempt does not exist"))
     }
 
     fn authorize_task_or_controller(&self, actor: Actor, task: TaskId) -> Result<(), DagError> {

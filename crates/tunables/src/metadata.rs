@@ -12,7 +12,6 @@ pub(crate) enum OptimizationSeed {
     OfflineSearch,
     RuntimeAdaptive,
     CatalogCurated,
-    Inactive,
 }
 
 pub(crate) const fn aliases(ordinal: u16) -> &'static [&'static str] {
@@ -187,9 +186,7 @@ pub(crate) const fn authority(ordinal: u16, seed: OptimizationSeed) -> Authority
         match optimization_class(ordinal) {
             OptimizationClass::Pin => match seed {
                 OptimizationSeed::CatalogCurated => AuthorityClass::GovernedArtifact,
-                OptimizationSeed::OperatorOnly | OptimizationSeed::Inactive => {
-                    AuthorityClass::Operator
-                }
+                OptimizationSeed::OperatorOnly => AuthorityClass::Operator,
                 _ => AuthorityClass::RuntimeInvariant,
             },
             OptimizationClass::CArtifact | OptimizationClass::CComponent => {

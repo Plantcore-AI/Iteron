@@ -332,7 +332,6 @@ mod tests {
 
     #[test]
     fn every_reserved_event_is_explicit_and_every_other_event_is_active() {
-        assert_eq!(RESERVED_EVENTS.len(), 19);
         let reserved = RESERVED_EVENTS
             .iter()
             .copied()

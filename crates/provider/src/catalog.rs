@@ -782,7 +782,7 @@ impl ProviderInstance {
         let credential = self.credential.resolve()?;
         let mut mac = Hmac::<Sha256>::new_from_slice(local_key)
             .expect("HMAC-SHA256 accepts every key length");
-        update_mac_part(&mut mac, b"iteron/catalog-cache-credential-scope/v1");
+        update_mac_part(&mut mac, b"core/catalog-cache-credential-scope/v1");
         update_mac_part(&mut mac, self.id.as_bytes());
         update_mac_part(&mut mac, self.api_root.as_str().as_bytes());
         update_mac_part(&mut mac, adapter_scope_name(self.adapter).as_bytes());

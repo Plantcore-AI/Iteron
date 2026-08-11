@@ -119,6 +119,18 @@ impl PermissionRules {
     pub fn tool_rule(&self, tool: &str) -> Option<Verdict> {
         self.by_tool.get(tool).copied()
     }
+    /// Deterministic typed projection for trusted composition roots and diagnostics.
+    pub fn capability_rules(&self) -> impl ExactSizeIterator<Item = (Capability, Verdict)> + '_ {
+        self.by_cap
+            .iter()
+            .map(|(capability, verdict)| (*capability, *verdict))
+    }
+    /// Deterministic typed projection for trusted composition roots and diagnostics.
+    pub fn tool_rules(&self) -> impl ExactSizeIterator<Item = (&str, Verdict)> + '_ {
+        self.by_tool
+            .iter()
+            .map(|(tool, verdict)| (tool.as_str(), *verdict))
+    }
     /// Set an operator-facing capability rule only when it can affect the gate truthfully. Reads
     /// are constitutionally automatic, while the two carve-outs can be tightened to Ask/Deny but
     /// never relaxed to Auto.
@@ -432,6 +444,18 @@ mod tests {
         assert_eq!(rules.cap_rule(TrustMutating), Some(Verdict::Deny));
         assert_eq!(rules.cap_rule(CodeExecuting), Some(Verdict::Auto));
         assert_eq!(rules.cap_rule(ReversibleLocal), None);
+        rules.set_tool("bash", Verdict::Ask);
+        assert_eq!(
+            rules.capability_rules().collect::<Vec<_>>(),
+            vec![
+                (CodeExecuting, Verdict::Auto),
+                (TrustMutating, Verdict::Deny)
+            ]
+        );
+        assert_eq!(
+            rules.tool_rules().collect::<Vec<_>>(),
+            vec![("bash", Verdict::Ask)]
+        );
         let description = rules.describe().join("\n");
         assert!(description.contains("code_executing -> allow"));
         assert!(description.contains("trust_mutating -> deny"));

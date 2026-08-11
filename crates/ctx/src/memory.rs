@@ -2,7 +2,7 @@
 //!
 //! Two layers live in this file, one additive on top of the other:
 //!
-//! 1. **The seed (`MemoryStore`).** A flat `.iteron/memory/` directory of one-fact markdown
+//! 1. **The seed (`MemoryStore`).** A flat `.core/memory/` directory of one-fact markdown
 //!    files with `add`/`load`/`remove`/`render`. It injects an inject-all-bounded block into the
 //!    stable system prefix and is still wired by the kernel (`effective_system`) and the TUI
 //!    (`/memory`). It is preserved verbatim so those callers keep working; only its fact type was
@@ -17,8 +17,8 @@
 //!    CHOICE MEM-1; this crate produces the segment, the kernel records it).
 //!
 //! Security (ADR-007 + R5 review Risk 5). Trust is keyed on **provenance AND authorship**, never on
-//! store location alone: the operator's global `~/.iteron/memory` is Trusted because the operator
-//! authored it; a repo's `.iteron/memory` is tree-discovered content that could have been authored
+//! store location alone: the operator's global `~/.core/memory` is Trusted because the operator
+//! authored it; a repo's `.core/memory` is tree-discovered content that could have been authored
 //! by anyone (a malicious contributor), so it enters Untrusted and is only promoted to Workspace by
 //! a recorded trust-on-first-use approval; anything under a vendored dependency path is stripped and
 //! never injected. Every index line and every fact body is scanned for bidi/invisible Unicode
@@ -59,7 +59,7 @@ pub struct StoredFact {
     pub text: String,
 }
 
-/// The flat memory store rooted at `<workspace>/.iteron/memory`.
+/// The flat memory store rooted at `<workspace>/.core/memory`.
 pub struct MemoryStore {
     workspace: PathBuf,
     dir: PathBuf,
@@ -190,6 +190,38 @@ impl MemoryStore {
         fs::remove_file(path).is_ok()
     }
 
+    /// Replace one stored fact with a new content-addressed fact. The old id remains authoritative
+    /// until the replacement is durably written; if removing it then fails, a newly-created
+    /// replacement is rolled back so callers never report an update that left both versions live.
+    pub fn update(&self, id: &str, text: &str) -> std::io::Result<Option<String>> {
+        if !valid_seed_id(id) || self.existing_store_directory().is_err() {
+            return Ok(None);
+        }
+        let old_path = self.dir.join(format!("{id}.md"));
+        match fs::symlink_metadata(&old_path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let replacement_id = format!("m-{}", short_hash(text));
+        if replacement_id == id {
+            return Ok(Some(replacement_id));
+        }
+        let replacement_path = self.dir.join(format!("{replacement_id}.md"));
+        let replacement_existed = fs::symlink_metadata(&replacement_path).is_ok();
+        let written_id = self.add(text)?;
+        if !self.remove(id) {
+            if !replacement_existed {
+                let _ = self.remove(&written_id);
+            }
+            return Err(std::io::Error::other(
+                "memory replacement was written but the superseded fact could not be removed",
+            ));
+        }
+        Ok(Some(written_id))
+    }
+
     fn ensure_store_directory(&self) -> std::io::Result<()> {
         let root = self.workspace.canonicalize()?;
         let iteron = iteron_protocol::home::path(&self.workspace, "");
@@ -298,19 +330,17 @@ const MAX_FACT_BYTES: usize = 8_000;
 const MAX_RECALL: usize = 32;
 // BM25-lite parameters. Standard defaults; fixed constants so the score is a pure function of the
 // inputs (reproducibility, ADR-006).
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
 
 /// The tier of a memory store, set by where the store's directory sits in the filesystem (its
 /// provenance). Each tier maps to a `Trust` via `trust_for` (§1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemTier {
-    /// `~/.iteron/memory` — the operator's own global memory, authored by them.
+    /// `~/.core/memory` — the operator's own global memory, authored by them.
     User,
-    /// `<repo>/.iteron/memory` plus the repo-root instruction files — first-party but
+    /// `<repo>/.core/memory` plus the repo-root instruction files — first-party but
     /// tree-discovered, so authorship is not the operator's until approved.
     Project,
-    /// `<repo>/.iteron/memory.local` — machine-local, uncommitted; still tree content.
+    /// `<repo>/.core/memory.local` — machine-local, uncommitted; still tree content.
     Local,
     /// Any store found under a vendored/cloned dependency path — foreign; stripped, never injected.
     Dependency,
@@ -355,7 +385,7 @@ impl MemStore {
     /// Build a store whose trust is derived from its tier and approval (§1.4, Risk 5).
     pub fn new(root: PathBuf, tier: MemTier, approved: bool) -> Self {
         let trust = trust_for(tier, approved);
-        // Existing kernel/tool callers construct project stores from `<repo>/.iteron/memory`
+        // Existing kernel/tool callers construct project stores from `<repo>/.core/memory`
         // directly. Infer that repository boundary so `.core` or `memory` cannot redirect the
         // read through a symlink; unusual explicit roots remain their own caller-selected anchor.
         let source_root = match tier {
@@ -388,7 +418,7 @@ impl MemStore {
         self
     }
 
-    /// The user store: `<home>/.iteron/memory`, Trusted (operator-authored).
+    /// The user store: `<home>/.core/memory`, Trusted (operator-authored).
     pub fn user(home: &Path) -> Self {
         MemStore::new(
             iteron_protocol::home::path(home, "memory"),
@@ -397,7 +427,7 @@ impl MemStore {
         )
     }
 
-    /// The project store: `<repo>/.iteron/memory` plus repo-root instructions. `approved` reflects
+    /// The project store: `<repo>/.core/memory` plus repo-root instructions. `approved` reflects
     /// a recorded trust-on-first-use decision; unapproved it is Untrusted (framed, still injected).
     pub fn project(repo_root: &Path, approved: bool) -> Self {
         MemStore::new(
@@ -408,7 +438,7 @@ impl MemStore {
         .with_instructions(repo_root.to_path_buf())
     }
 
-    /// The machine-local store: `<repo>/.iteron/memory.local`.
+    /// The machine-local store: `<repo>/.core/memory.local`.
     pub fn local(repo_root: &Path, approved: bool) -> Self {
         let mut store = MemStore::new(
             iteron_protocol::home::path(repo_root, "memory.local"),
@@ -603,6 +633,20 @@ impl MemStore {
             return None;
         }
         Some(iteron_protocol::text::head(raw.trim(), MAX_FACT_BYTES))
+    }
+
+    fn modified_unix_secs(&self, slug: &str) -> Option<u64> {
+        let path = self.fact_path(slug);
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return None;
+        }
+        metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs())
     }
 }
 
@@ -855,6 +899,20 @@ pub trait MemoryStrategy: Send + Sync {
     ) -> MemorySegment {
         self.recall(stores, task, budget)
     }
+    /// Assemble memory with the exact immutable retrieval policy and caller-captured decision
+    /// clock. Implementations that do not support the richer contract remain conservative by
+    /// delegating to their existing pinned-slot behavior.
+    fn recall_with_slot_policy_at(
+        &self,
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+        _reference_unix_secs: u64,
+        _retrieval_policy: crate::MemoryRetrievalPolicy,
+    ) -> MemorySegment {
+        self.recall_with_slot(stores, task, budget, slot)
+    }
     /// Read one fact body by slug (the `read_memory` tool). Highest-precedence store wins.
     fn read_fact(&self, stores: &[MemStore], slug: &str) -> Result<Fact, MemError>;
     /// Add a fact to a store (single-writer path): write `<slug>.md` and append an index line.
@@ -887,7 +945,7 @@ pub trait MemoryStrategy: Send + Sync {
 // third-party policy cannot conjure an injection out of a slug it invented.
 
 /// The version-skew boundary for a `core/memory` observation and decision.
-pub const MEMORY_SLOT_VERSION: u16 = 1;
+pub const MEMORY_SLOT_VERSION: u16 = 2;
 
 /// Upper bound on how many already-gathered candidates one decision may consider. Set above
 /// `MAX_MEMORY_FILES` so a merge across several stores is not silently truncated.
@@ -919,6 +977,9 @@ pub struct MemoryCandidate {
     pub framed_bytes: usize,
     /// Provenance trust of the store the candidate came from.
     pub trust: Trust,
+    /// Caller-observed filesystem modification time. `None` is explicit unknown recency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_unix_secs: Option<u64>,
 }
 
 /// Everything the `core/memory` slot is allowed to see, and every ceiling it must respect.
@@ -936,6 +997,11 @@ pub struct MemorySlotObservation {
     /// The least-trusted provenance the caller will accept. A candidate below this is not
     /// admissible however relevant it scores — relevance never buys authority.
     pub trust_floor: Trust,
+    /// One captured decision clock shared by materialization and audit; never read by the slot.
+    #[serde(default)]
+    pub reference_unix_secs: u64,
+    #[serde(default)]
+    pub retrieval_policy: crate::MemoryRetrievalPolicy,
     /// Operator-authored bytes offered for persistence. A policy may admit these exact bytes or
     /// refuse them; it may never author, edit, or enlarge the fact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -950,13 +1016,33 @@ impl MemorySlotObservation {
         candidates: Vec<MemoryCandidate>,
         budget: &MemBudget,
     ) -> Self {
+        Self::baseline_with_policy(
+            task,
+            candidates,
+            budget,
+            0,
+            crate::MemoryRetrievalPolicy::default(),
+        )
+    }
+
+    pub fn baseline_with_policy(
+        task: impl Into<String>,
+        candidates: Vec<MemoryCandidate>,
+        budget: &MemBudget,
+        reference_unix_secs: u64,
+        retrieval_policy: crate::MemoryRetrievalPolicy,
+    ) -> Self {
         Self {
             version: MEMORY_SLOT_VERSION,
             task: task.into(),
             candidates,
             recall_bytes: budget.recall_bytes,
-            max_recalled: MAX_RECALL,
+            max_recalled: usize::try_from(retrieval_policy.recall_limit)
+                .unwrap_or(MAX_RECALL)
+                .min(MAX_MEMORY_CANDIDATES),
             trust_floor: Trust::Untrusted,
+            reference_unix_secs,
+            retrieval_policy,
             write: None,
         }
     }
@@ -970,6 +1056,8 @@ impl MemorySlotObservation {
             recall_bytes: 0,
             max_recalled: 0,
             trust_floor: Trust::Untrusted,
+            reference_unix_secs: 0,
+            retrieval_policy: crate::MemoryRetrievalPolicy::default(),
             write: Some(text.into()),
         }
     }
@@ -983,6 +1071,9 @@ impl MemorySlotObservation {
                 "memory task exceeds the bounded observation query",
             ));
         }
+        self.retrieval_policy
+            .validate()
+            .map_err(MemorySlotError::InvalidObservation)?;
         if let Some(write) = &self.write {
             if !self.task.is_empty()
                 || !self.candidates.is_empty()
@@ -1087,14 +1178,49 @@ pub struct MemoryRecallProposal {
 #[derive(Debug, Clone)]
 pub struct MemoryRecallAudit {
     pub observation: MemorySlotObservation,
+    /// Exact deterministic query used by both materialization and this audit after whitespace
+    /// normalization. This is ephemeral; durable evidence stores only its digest and dimensions.
+    pub rewritten_query: String,
+    pub rewrite_count: u16,
     pub selected: Vec<String>,
-    /// Baseline BM25 score in deterministic parts-per-million, aligned with `candidates`.
+    /// Runtime policy's final fused score in deterministic parts-per-million, aligned with
+    /// `candidates`.
     pub scores_ppm: Vec<i64>,
+    /// Normalized lexical contribution before policy weighting and recency, aligned with
+    /// `candidates`.
+    pub lexical_scores_ppm: Vec<i64>,
+    /// Deterministic query/document token-overlap contribution, aligned with `candidates`.
+    pub structural_scores_ppm: Vec<i64>,
+    /// Multiplicative recency factor applied to each candidate, aligned with `candidates`.
+    pub recency_multipliers_ppm: Vec<u32>,
+    /// Candidates rejected by the runtime novelty threshold after a more highly ranked candidate
+    /// had already been selected.
+    pub novelty_deduplicated: Vec<String>,
     /// One-based relevance rank; zero means the candidate was below the lexical threshold or the
     /// trust floor, aligned with `candidates`.
     pub ranks: Vec<u32>,
     /// Same-slug candidates removed while higher-precedence stores override lower tiers.
     pub deduplicated_candidates: u32,
+    /// Candidates actually denied by deterministic precedence, integrity, or attempt isolation.
+    pub excluded_candidates: Vec<MemoryRecallExclusion>,
+    pub dropped_exclusions: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRecallExclusionKind {
+    Superseded,
+    Contradiction,
+    Expired,
+    ScopeDenied,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryRecallExclusion {
+    pub slug: String,
+    pub evidence_text: String,
+    pub trust: Trust,
+    pub kind: MemoryRecallExclusionKind,
+    pub related_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1303,51 +1429,170 @@ impl MemoryRecallStrategy {
         }
     }
 
-    /// The pure ranking: score every admissible candidate, then fit greedily.
+    /// The pure ranking: score every admissible candidate, apply novelty, then fit greedily.
     fn plan_for(input: &MemorySlotObservation) -> MemoryRecallPlan {
-        let admissible: Vec<&MemoryCandidate> = input
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.trust >= input.trust_floor)
-            .collect();
-        let query = tokenize(&input.task);
-        let docs: Vec<Vec<String>> = admissible
-            .iter()
-            .map(|candidate| tokenize(&candidate.text))
-            .collect();
-        let doc_refs: Vec<&[String]> = docs.iter().map(|doc| doc.as_slice()).collect();
-        let scores = bm25(&query, &doc_refs);
+        let scores = memory_retrieval_scores(input);
         // Rank by score desc, ties by slug asc — a total order, so the sort is reproducible.
-        let mut ranked: Vec<(usize, f64)> = scores
+        let mut ranked: Vec<(usize, i64)> = scores
+            .combined_ppm
             .iter()
             .copied()
             .enumerate()
-            .filter(|(_, score)| *score > 0.0)
+            .filter(|(index, score)| {
+                *score > 0 && input.candidates[*index].trust >= input.trust_floor
+            })
             .collect();
         ranked.sort_by(|a, b| {
-            b.1.total_cmp(&a.1)
-                .then_with(|| admissible[a.0].slug.cmp(&admissible[b.0].slug))
+            b.1.cmp(&a.1)
+                .then_with(|| input.candidates[a.0].slug.cmp(&input.candidates[b.0].slug))
         });
 
         let mut recalled: Vec<String> = Vec::new();
+        let mut selected_indexes: Vec<usize> = Vec::new();
         let mut recall_bytes_used = 0usize;
         for (index, _score) in ranked {
             if recalled.len() >= input.max_recalled {
                 break;
             }
-            let candidate = admissible[index];
+            let candidate = &input.candidates[index];
+            if selected_indexes.iter().any(|selected| {
+                token_jaccard_ppm(&scores.docs[index], &scores.docs[*selected])
+                    >= input.retrieval_policy.novelty_dedup_threshold_ppm
+            }) {
+                continue;
+            }
             // Skip rather than stop: a smaller lower-ranked fact may still fit after this one.
             if recall_bytes_used.saturating_add(candidate.framed_bytes) > input.recall_bytes {
                 continue;
             }
             recall_bytes_used += candidate.framed_bytes;
             recalled.push(candidate.slug.clone());
+            selected_indexes.push(index);
         }
         MemoryRecallPlan {
             recalled,
             recall_bytes_used,
         }
     }
+}
+
+struct MemoryRetrievalScores {
+    lexical_ppm: Vec<i64>,
+    structural_ppm: Vec<i64>,
+    recency_ppm: Vec<u32>,
+    combined_ppm: Vec<i64>,
+    docs: Vec<Vec<String>>,
+}
+
+fn memory_retrieval_scores(input: &MemorySlotObservation) -> MemoryRetrievalScores {
+    let query = tokenize(&input.task);
+    let docs = input
+        .candidates
+        .iter()
+        .map(|candidate| tokenize(&candidate.text))
+        .collect::<Vec<_>>();
+    let doc_refs = docs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let raw_lexical = bm25(
+        &query,
+        &doc_refs,
+        f64::from(input.retrieval_policy.bm25_k1_milli) / 1_000.0,
+        f64::from(input.retrieval_policy.bm25_b_ppm)
+            / f64::from(crate::memory_runtime::SCORE_SCALE),
+    );
+    let lexical_max = raw_lexical
+        .iter()
+        .copied()
+        .filter(|score| score.is_finite() && *score > 0.0)
+        .fold(0.0_f64, f64::max);
+    let lexical_ppm = raw_lexical
+        .iter()
+        .map(|score| normalized_score_ppm(*score, lexical_max))
+        .collect::<Vec<_>>();
+    let structural_ppm = docs
+        .iter()
+        .map(|doc| i64::from(token_jaccard_ppm(&query, doc)))
+        .collect::<Vec<_>>();
+    let recency_ppm = input
+        .candidates
+        .iter()
+        .map(|candidate| {
+            candidate
+                .modified_unix_secs
+                .map_or(crate::memory_runtime::SCORE_SCALE, |modified| {
+                    input
+                        .retrieval_policy
+                        .recency_multiplier(input.reference_unix_secs.saturating_sub(modified))
+                })
+        })
+        .collect::<Vec<_>>();
+    let total_weight = u64::from(input.retrieval_policy.lexical_weight_ppm)
+        .saturating_add(u64::from(input.retrieval_policy.structural_weight_ppm));
+    let combined_ppm = lexical_ppm
+        .iter()
+        .zip(&structural_ppm)
+        .zip(&recency_ppm)
+        .map(|((lexical, structural), recency)| {
+            if total_weight == 0 {
+                return 0;
+            }
+            let fused = u64::try_from((*lexical).max(0))
+                .unwrap_or(0)
+                .saturating_mul(u64::from(input.retrieval_policy.lexical_weight_ppm))
+                .saturating_add(
+                    u64::try_from((*structural).max(0))
+                        .unwrap_or(0)
+                        .saturating_mul(u64::from(input.retrieval_policy.structural_weight_ppm)),
+                )
+                / total_weight;
+            i64::try_from(
+                fused.saturating_mul(u64::from(*recency))
+                    / u64::from(crate::memory_runtime::SCORE_SCALE),
+            )
+            .unwrap_or(i64::MAX)
+        })
+        .collect();
+    MemoryRetrievalScores {
+        lexical_ppm,
+        structural_ppm,
+        recency_ppm,
+        combined_ppm,
+        docs,
+    }
+}
+
+fn normalized_score_ppm(score: f64, maximum: f64) -> i64 {
+    if !score.is_finite() || score <= 0.0 || maximum <= 0.0 {
+        return 0;
+    }
+    let scaled = (score / maximum * f64::from(crate::memory_runtime::SCORE_SCALE)).round();
+    scaled.clamp(0.0, f64::from(crate::memory_runtime::SCORE_SCALE)) as i64
+}
+
+fn token_jaccard_ppm(left: &[String], right: &[String]) -> u32 {
+    let mut left = left.iter().collect::<Vec<_>>();
+    let mut right = right.iter().collect::<Vec<_>>();
+    left.sort_unstable();
+    left.dedup();
+    right.sort_unstable();
+    right.dedup();
+    let intersection = left
+        .iter()
+        .filter(|token| right.binary_search(token).is_ok())
+        .count();
+    let union = left
+        .len()
+        .saturating_add(right.len())
+        .saturating_sub(intersection);
+    if union == 0 {
+        return 0;
+    }
+    u32::try_from(
+        u64::try_from(intersection)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::from(crate::memory_runtime::SCORE_SCALE))
+            / u64::try_from(union).unwrap_or(u64::MAX),
+    )
+    .unwrap_or(crate::memory_runtime::SCORE_SCALE)
 }
 
 impl StrategySlot for MemoryRecallStrategy {
@@ -1397,36 +1642,118 @@ struct Merged {
     fact_ref: FactRef,
     body: Option<String>,
     trust: Trust,
+    store_id: usize,
+    modified_unix_secs: Option<u64>,
+}
+
+#[derive(Default)]
+struct MergeAudit {
+    merged: Vec<Merged>,
+    excluded: Vec<MemoryRecallExclusion>,
+    dropped_exclusions: u32,
+}
+
+impl MergeAudit {
+    fn exclude(
+        &mut self,
+        candidate: Merged,
+        kind: MemoryRecallExclusionKind,
+        related: Option<&str>,
+    ) {
+        if self.excluded.len() == MAX_MEMORY_CANDIDATES {
+            self.dropped_exclusions = self.dropped_exclusions.saturating_add(1);
+            return;
+        }
+        self.excluded.push(MemoryRecallExclusion {
+            slug: candidate.fact_ref.slug,
+            evidence_text: format!(
+                "{} {} {}",
+                candidate.fact_ref.title,
+                candidate.fact_ref.summary,
+                candidate.body.unwrap_or_default()
+            ),
+            trust: candidate.trust,
+            kind,
+            related_slug: related.map(str::to_owned),
+        });
+    }
 }
 
 impl FileMemory {
     /// Merge every injectable store's index into one slug-keyed map, higher-precedence stores
     /// (later in `stores`) overriding earlier ones on a slug collision, and load each body once.
     /// Stripped dependency stores are excluded entirely (never injected).
-    fn merge(stores: &[MemStore]) -> Vec<Merged> {
+    fn merge_with_audit(stores: &[MemStore]) -> MergeAudit {
         // slug -> Merged, then sorted by slug for a stable, reproducible order.
-        let mut by_slug: Vec<(String, Merged)> = Vec::new();
-        for store in stores {
+        let mut audit = MergeAudit::default();
+        for (store_id, store) in stores.iter().enumerate() {
             if store.is_stripped() {
                 continue;
             }
             for fact_ref in store.index_entries() {
                 let body = store.read_body(&fact_ref.slug);
+                let modified_unix_secs = store.modified_unix_secs(&fact_ref.slug);
                 let slug = fact_ref.slug.clone();
                 let merged = Merged {
                     fact_ref,
                     body,
                     trust: store.trust(),
+                    store_id,
+                    modified_unix_secs,
                 };
-                if let Some(slot) = by_slug.iter_mut().find(|(s, _)| *s == slug) {
-                    slot.1 = merged; // higher precedence overrides
-                } else {
-                    by_slug.push((slug, merged));
+
+                if let Some(index) = audit
+                    .merged
+                    .iter()
+                    .position(|candidate| candidate.fact_ref.slug == slug)
+                {
+                    let superseded = audit.merged.remove(index);
+                    audit.exclude(
+                        superseded,
+                        MemoryRecallExclusionKind::Superseded,
+                        Some(&slug),
+                    );
                 }
+
+                // Equal normalized titles from different provenance stores are structurally
+                // contradictory claims. Store ordering is already the explicit precedence rule,
+                // so deny the lower-precedence claim rather than injecting both into the prompt.
+                let title_key = normalized_memory_title(&merged.fact_ref.title);
+                if let Some(index) = audit.merged.iter().position(|candidate| {
+                    candidate.store_id != store_id
+                        && normalized_memory_title(&candidate.fact_ref.title) == title_key
+                }) {
+                    let contradicted = audit.merged.remove(index);
+                    let exclusion = if contradicted.body == merged.body
+                        && contradicted.fact_ref.summary == merged.fact_ref.summary
+                    {
+                        MemoryRecallExclusionKind::Superseded
+                    } else {
+                        MemoryRecallExclusionKind::Contradiction
+                    };
+                    audit.exclude(contradicted, exclusion, Some(&slug));
+                }
+                audit.merged.push(merged);
             }
         }
-        by_slug.sort_by(|a, b| a.0.cmp(&b.0));
-        by_slug.into_iter().map(|(_, m)| m).collect()
+        audit
+            .merged
+            .sort_by(|a, b| a.fact_ref.slug.cmp(&b.fact_ref.slug));
+
+        let mut index = 0;
+        while index < audit.merged.len() {
+            if audit.merged[index].body.is_none() {
+                let expired = audit.merged.remove(index);
+                audit.exclude(expired, MemoryRecallExclusionKind::Expired, None);
+            } else {
+                index += 1;
+            }
+        }
+        audit
+    }
+
+    fn merge(stores: &[MemStore]) -> Vec<Merged> {
+        Self::merge_with_audit(stores).merged
     }
 
     /// Re-run only the bounded pure recall projection for observability. Materialization remains
@@ -1437,16 +1764,58 @@ impl FileMemory {
         budget: &MemBudget,
         slot: &dyn StrategySlot,
     ) -> MemoryRecallAudit {
-        let discovered_candidates = stores
-            .iter()
-            .filter(|store| !store.is_stripped())
-            .fold(0usize, |count, store| {
-                count.saturating_add(store.index_entries().len())
-            });
-        let merged = FileMemory::merge(stores);
-        let deduplicated_candidates =
-            u32::try_from(discovered_candidates.saturating_sub(merged.len())).unwrap_or(u32::MAX);
-        let candidates: Vec<MemoryCandidate> = merged
+        Self::audit_recall_with_slot_in_scope_and_policy_at(
+            stores,
+            task,
+            budget,
+            slot,
+            false,
+            0,
+            crate::MemoryRetrievalPolicy::default(),
+        )
+    }
+
+    /// Audit and execute the same deterministic recall projection while enforcing an isolated
+    /// benchmark-attempt scope. Parent stores are still scanned to prove they were denied, but no
+    /// parent candidate may be selected or materialized.
+    pub fn audit_recall_with_slot_in_scope(
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+        benchmark_isolated: bool,
+    ) -> MemoryRecallAudit {
+        Self::audit_recall_with_slot_in_scope_and_policy_at(
+            stores,
+            task,
+            budget,
+            slot,
+            benchmark_isolated,
+            0,
+            crate::MemoryRetrievalPolicy::default(),
+        )
+    }
+
+    pub fn audit_recall_with_slot_in_scope_and_policy_at(
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+        benchmark_isolated: bool,
+        reference_unix_secs: u64,
+        retrieval_policy: crate::MemoryRetrievalPolicy,
+    ) -> MemoryRecallAudit {
+        let mut merge = FileMemory::merge_with_audit(stores);
+        let deduplicated_candidates = u32::try_from(
+            merge
+                .excluded
+                .iter()
+                .filter(|candidate| matches!(candidate.kind, MemoryRecallExclusionKind::Superseded))
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        let candidates: Vec<MemoryCandidate> = merge
+            .merged
             .iter()
             .filter_map(|merged| {
                 let body = merged.body.clone()?;
@@ -1465,37 +1834,45 @@ impl FileMemory {
                     ),
                     framed_bytes: fact.framed().len(),
                     trust: fact.trust,
+                    modified_unix_secs: merged.modified_unix_secs,
                 })
             })
             .collect();
-        let observation = MemorySlotObservation::baseline(task, candidates, budget);
-        let selected = MemoryRecallStrategy::select_with(
-            slot,
-            &observation,
-            CapabilitySet::only(Capability::ReadOnly),
-        )
-        .map(|proposal| proposal.plan.recalled)
-        .unwrap_or_default();
-        let query = tokenize(&observation.task);
-        let docs: Vec<Vec<String>> = observation
-            .candidates
-            .iter()
-            .map(|candidate| tokenize(&candidate.text))
-            .collect();
-        let doc_refs: Vec<&[String]> = docs.iter().map(Vec::as_slice).collect();
-        let raw_scores = bm25(&query, &doc_refs);
-        let scores_ppm = raw_scores
-            .iter()
-            .zip(&observation.candidates)
-            .map(|(score, candidate)| {
-                if candidate.trust < observation.trust_floor || !score.is_finite() {
-                    0
+        let rewritten_query = normalize_memory_query(task);
+        let rewrite_count = u16::from(rewritten_query != task);
+        let observation = MemorySlotObservation::baseline_with_policy(
+            &rewritten_query,
+            candidates,
+            budget,
+            reference_unix_secs,
+            retrieval_policy,
+        );
+        let selected = if benchmark_isolated {
+            for candidate in &observation.candidates {
+                if merge.excluded.len() == MAX_MEMORY_CANDIDATES {
+                    merge.dropped_exclusions = merge.dropped_exclusions.saturating_add(1);
                 } else {
-                    let scaled = (*score * 1_000_000.0).round();
-                    scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+                    merge.excluded.push(MemoryRecallExclusion {
+                        slug: candidate.slug.clone(),
+                        evidence_text: candidate.text.clone(),
+                        trust: candidate.trust,
+                        kind: MemoryRecallExclusionKind::ScopeDenied,
+                        related_slug: None,
+                    });
                 }
-            })
-            .collect::<Vec<_>>();
+            }
+            Vec::new()
+        } else {
+            MemoryRecallStrategy::select_with(
+                slot,
+                &observation,
+                CapabilitySet::only(Capability::ReadOnly),
+            )
+            .map(|proposal| proposal.plan.recalled)
+            .unwrap_or_default()
+        };
+        let score_set = memory_retrieval_scores(&observation);
+        let scores_ppm = score_set.combined_ppm.clone();
         let mut ranked = scores_ppm
             .iter()
             .enumerate()
@@ -1513,14 +1890,52 @@ impl FileMemory {
         for (rank, (index, _)) in ranked.into_iter().enumerate() {
             ranks[index] = u32::try_from(rank.saturating_add(1)).unwrap_or(u32::MAX);
         }
+        let selected_indexes = selected
+            .iter()
+            .filter_map(|slug| {
+                observation
+                    .candidates
+                    .iter()
+                    .position(|candidate| &candidate.slug == slug)
+            })
+            .collect::<Vec<_>>();
+        let novelty_deduplicated = observation
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                !selected.contains(&candidate.slug)
+                    && selected_indexes.iter().any(|selected| {
+                        token_jaccard_ppm(&score_set.docs[*index], &score_set.docs[*selected])
+                            >= observation.retrieval_policy.novelty_dedup_threshold_ppm
+                    })
+            })
+            .map(|(_, candidate)| candidate.slug.clone())
+            .collect();
         MemoryRecallAudit {
             observation,
+            rewritten_query,
+            rewrite_count,
             selected,
             scores_ppm,
+            lexical_scores_ppm: score_set.lexical_ppm,
+            structural_scores_ppm: score_set.structural_ppm,
+            recency_multipliers_ppm: score_set.recency_ppm,
+            novelty_deduplicated,
             ranks,
             deduplicated_candidates,
+            excluded_candidates: merge.excluded,
+            dropped_exclusions: merge.dropped_exclusions,
         }
     }
+}
+
+fn normalize_memory_query(task: &str) -> String {
+    task.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalized_memory_title(title: &str) -> String {
+    normalize_memory_query(title).to_lowercase()
 }
 
 impl MemoryStrategy for FileMemory {
@@ -1534,6 +1949,25 @@ impl MemoryStrategy for FileMemory {
         task: &str,
         budget: &MemBudget,
         slot: &dyn StrategySlot,
+    ) -> MemorySegment {
+        self.recall_with_slot_policy_at(
+            stores,
+            task,
+            budget,
+            slot,
+            0,
+            crate::MemoryRetrievalPolicy::default(),
+        )
+    }
+
+    fn recall_with_slot_policy_at(
+        &self,
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+        reference_unix_secs: u64,
+        retrieval_policy: crate::MemoryRetrievalPolicy,
     ) -> MemorySegment {
         let merged = FileMemory::merge(stores);
 
@@ -1590,14 +2024,18 @@ impl MemoryStrategy for FileMemory {
                     text: format!("{} {} {}", m.fact_ref.title, m.fact_ref.summary, fact.body),
                     framed_bytes: fact.framed().len(),
                     trust: fact.trust,
+                    modified_unix_secs: m.modified_unix_secs,
                 };
                 (fact, candidate)
             })
             .collect();
-        let observation = MemorySlotObservation::baseline(
-            task,
+        let query = normalize_memory_query(task);
+        let observation = MemorySlotObservation::baseline_with_policy(
+            &query,
             gathered.iter().map(|(_, c)| c.clone()).collect(),
             budget,
+            reference_unix_secs,
+            retrieval_policy,
         );
         let selected = MemoryRecallStrategy::select_with(
             slot,
@@ -1994,7 +2432,7 @@ fn tokenize(s: &str) -> Vec<String> {
 
 /// BM25-lite score of each doc against `query`. Standard Okapi BM25 with fixed `k1`/`b`, so the
 /// score is a pure, reproducible function of the inputs. Returns a score per doc, aligned to `docs`.
-fn bm25(query: &[String], docs: &[&[String]]) -> Vec<f64> {
+fn bm25(query: &[String], docs: &[&[String]], k1: f64, b: f64) -> Vec<f64> {
     let n = docs.len();
     if n == 0 {
         return Vec::new();
@@ -2021,8 +2459,8 @@ fn bm25(query: &[String], docs: &[&[String]]) -> Vec<f64> {
                 continue;
             }
             let dl = doc.len() as f64;
-            let denom = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl);
-            scores[i] += idf * (tf * (BM25_K1 + 1.0)) / denom;
+            let denom = tf + k1 * (1.0 - b + b * dl / avgdl);
+            scores[i] += idf * (tf * (k1 + 1.0)) / denom;
         }
     }
     scores
@@ -2114,7 +2552,7 @@ mod tests {
         let ws = tmp("seed-write-symlink");
         let outside = tmp("seed-write-outside");
         std::fs::create_dir_all(ws.join(".iteron")).unwrap();
-        std::os::unix::fs::symlink(&outside, ws.join(".iteron/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join(".core/memory")).unwrap();
         let store = MemoryStore::at(&ws);
         assert!(store.add("must stay inside").is_err());
         assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
@@ -2125,7 +2563,7 @@ mod tests {
     #[test]
     fn seed_tampered_memory_is_skipped() {
         let ws = tmp("seed-bad");
-        let dir = ws.join(".iteron/memory");
+        let dir = ws.join(".core/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("evil.md"), "normal \u{202E}reversed injection").unwrap();
         let m = MemoryStore::at(&ws);
@@ -2141,7 +2579,7 @@ mod tests {
     #[test]
     fn seed_oversized_memory_is_skipped() {
         let ws = tmp("seed-large");
-        let dir = ws.join(".iteron/memory");
+        let dir = ws.join(".core/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("large.md"),
@@ -2156,7 +2594,7 @@ mod tests {
     #[test]
     fn seed_memory_does_not_follow_a_repository_symlink() {
         let ws = tmp("seed-link");
-        let dir = ws.join(".iteron/memory");
+        let dir = ws.join(".core/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(ws.join("outside.md"), "must not load").unwrap();
         std::os::unix::fs::symlink(ws.join("outside.md"), dir.join("linked.md")).unwrap();
@@ -2563,8 +3001,8 @@ mod tests {
         std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.md"), "outside project fact").unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
-        let store = MemStore::new(repo.join(".iteron/memory"), MemTier::Project, true);
+        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
+        let store = MemStore::new(repo.join(".core/memory"), MemTier::Project, true);
         assert!(store.index_entries().is_empty());
         assert!(FileMemory.read_fact(&[store], "secret").is_err());
         std::fs::remove_dir_all(base).ok();
@@ -2898,7 +3336,7 @@ mod tests {
         let outside = base.join("outside");
         std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
 
         let store = MemStore::project(&repo, true);
         let error = FileMemory
@@ -2965,6 +3403,75 @@ mod tests {
         assert_eq!(slugs, vec!["alpha", "zeta"], "deduped by slug, sorted");
         assert!(idx.total_bytes() > 0);
     }
+
+    #[test]
+    fn seed_update_replaces_the_old_fact_after_the_new_fact_is_durable() {
+        let workspace = tmp("seed-update");
+        let store = MemoryStore::at(&workspace);
+        let old_id = store.add("old operator fact").unwrap();
+        let new_id = store
+            .update(&old_id, "new operator fact")
+            .unwrap()
+            .expect("old fact exists");
+        assert_ne!(old_id, new_id);
+        let facts = store.load();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].id, new_id);
+        assert_eq!(facts[0].text, "new operator fact");
+        assert_eq!(store.update(&old_id, "another fact").unwrap(), None);
+    }
+
+    #[test]
+    fn recall_audit_explains_rewrite_supersession_contradiction_expiry_and_scope_denial() {
+        let user_root = tmp("audit-user").join("mem");
+        std::fs::create_dir_all(&user_root).unwrap();
+        std::fs::write(
+            user_root.join("MEMORY.md"),
+            "- [Policy](old.md) — old claim\n- [Stable](same.md) — user claim\n",
+        )
+        .unwrap();
+        write_fact(&user_root, "old", "old policy body");
+        write_fact(&user_root, "same", "user stable body");
+
+        let project_root = tmp("audit-project").join("mem");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(
+            project_root.join("MEMORY.md"),
+            "- [Gone](gone.md) — stale index\n- [Policy](new.md) — replacement claim\n- [Stable](same.md) — project claim\n",
+        )
+        .unwrap();
+        write_fact(&project_root, "new", "new policy body");
+        write_fact(&project_root, "same", "project stable body");
+
+        let stores = [
+            MemStore::new(user_root, MemTier::User, true),
+            MemStore::new(project_root, MemTier::Project, true),
+        ];
+        let audit = FileMemory::audit_recall_with_slot_in_scope(
+            &stores,
+            "  policy\n stable  ",
+            &MemBudget::default(),
+            &MemoryRecallStrategy::default(),
+            true,
+        );
+        assert_eq!(audit.rewritten_query, "policy stable");
+        assert_eq!(audit.rewrite_count, 1);
+        for kind in [
+            MemoryRecallExclusionKind::Superseded,
+            MemoryRecallExclusionKind::Contradiction,
+            MemoryRecallExclusionKind::Expired,
+            MemoryRecallExclusionKind::ScopeDenied,
+        ] {
+            assert!(
+                audit
+                    .excluded_candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == kind),
+                "missing {kind:?}"
+            );
+        }
+        assert!(audit.selected.is_empty(), "isolated scope recalls nothing");
+    }
 }
 
 #[cfg(test)]
@@ -2977,6 +3484,7 @@ mod memory_slot_tests {
             text: text.into(),
             framed_bytes,
             trust,
+            modified_unix_secs: None,
         }
     }
 
@@ -3003,6 +3511,8 @@ mod memory_slot_tests {
             recall_bytes: 1_000,
             max_recalled: 8,
             trust_floor: Trust::Untrusted,
+            reference_unix_secs: 0,
+            retrieval_policy: crate::MemoryRetrievalPolicy::default(),
             write: None,
         }
     }
@@ -3088,6 +3598,82 @@ mod memory_slot_tests {
         let first = strategy.select(&input, read_only()).unwrap();
         let second = strategy.select(&input, read_only()).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn recency_decay_changes_tied_candidate_order_without_changing_trust() {
+        const MONTH: u64 = 30 * 24 * 60 * 60;
+        let mut input = observation();
+        input.task = "shared retrieval terms".into();
+        input.reference_unix_secs = 10 * MONTH;
+        input.retrieval_policy.recency_decay_ppm = 500_000;
+        input.candidates = vec![
+            MemoryCandidate {
+                slug: "older".into(),
+                text: "shared retrieval terms historical".into(),
+                framed_bytes: 100,
+                trust: Trust::Trusted,
+                modified_unix_secs: Some(8 * MONTH),
+            },
+            MemoryCandidate {
+                slug: "newer".into(),
+                text: "shared retrieval terms current".into(),
+                framed_bytes: 100,
+                trust: Trust::Trusted,
+                modified_unix_secs: Some(10 * MONTH),
+            },
+        ];
+        let proposal = MemoryRecallStrategy::default()
+            .select(&input, read_only())
+            .unwrap();
+        assert_eq!(proposal.plan.recalled, vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn novelty_threshold_deduplicates_near_identical_facts() {
+        let mut input = observation();
+        input.task = "signing key rotation".into();
+        input.retrieval_policy.novelty_dedup_threshold_ppm = 700_000;
+        input.candidates = vec![
+            candidate(
+                "alpha",
+                "signing key rotation quarterly",
+                100,
+                Trust::Trusted,
+            ),
+            candidate(
+                "beta",
+                "signing key rotation quarterly",
+                100,
+                Trust::Trusted,
+            ),
+            candidate("gamma", "signing key audit evidence", 100, Trust::Trusted),
+        ];
+        let proposal = MemoryRecallStrategy::default()
+            .select(&input, read_only())
+            .unwrap();
+        assert_eq!(proposal.plan.recalled, vec!["alpha", "gamma"]);
+    }
+
+    #[test]
+    fn structural_only_fusion_is_a_real_runtime_policy() {
+        let mut input = observation();
+        input.task = "alpha beta gamma".into();
+        input.retrieval_policy = crate::MemoryRetrievalPolicy {
+            lexical_weight_ppm: 0,
+            structural_weight_ppm: crate::SCORE_SCALE,
+            ..crate::MemoryRetrievalPolicy::default()
+        };
+        input.candidates = vec![
+            candidate("one", "alpha beta gamma delta", 100, Trust::Trusted),
+            candidate("two", "alpha unrelated words", 100, Trust::Trusted),
+        ];
+        let scores = memory_retrieval_scores(&input);
+        assert!(scores.structural_ppm[0] > scores.structural_ppm[1]);
+        let proposal = MemoryRecallStrategy::default()
+            .select(&input, read_only())
+            .unwrap();
+        assert_eq!(proposal.plan.recalled[0], "one");
     }
 
     #[test]
@@ -3401,7 +3987,7 @@ mod memory_slot_tests {
             std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let store_root = dir.join(".iteron/memory");
+        let store_root = dir.join(".core/memory");
         fs::create_dir_all(&store_root).unwrap();
         fs::write(
             store_root.join("signing-key.md"),

@@ -6,11 +6,20 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         [
             scalar_field!("recall_bytes", true, int_domain!(0, 1_048_576, "bytes")),
             scalar_field!("index_bytes", true, int_domain!(0, 1_048_576, "bytes")),
+            scalar_field!(
+                "instruction_bytes",
+                true,
+                int_domain!(0, 1_048_576, "bytes")
+            ),
             scalar_field!("fact_bytes", true, int_domain!(0, 1_048_576, "bytes")),
             scalar_field!("total_bytes", true, int_domain!(1, 4_194_304, "bytes"))
         ],
         [
-            sum_rule!(["recall_bytes", "index_bytes", "fact_bytes"], "total_bytes"),
+            sum_rule!(
+                ["recall_bytes", "index_bytes", "instruction_bytes"],
+                "total_bytes"
+            ),
+            less_equal_rule!("fact_bytes", "total_bytes"),
             external_rule!("total_bytes", ContextWindow)
         ]
     ),

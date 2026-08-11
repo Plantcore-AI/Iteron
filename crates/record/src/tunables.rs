@@ -1,14 +1,25 @@
 //! Immutable run-genesis tunables evidence and exact-compatibility checks.
 
 use iteron_protocol::{
-    EventKind, MAX_RUN_GENESIS_TUNABLE_ENTRIES, MAX_RUN_GENESIS_TUNABLE_ID_BYTES,
+    MAX_RUN_GENESIS_TUNABLE_ENTRIES, MAX_RUN_GENESIS_TUNABLE_ID_BYTES,
     RUN_GENESIS_TUNABLES_CANONICALIZATION, RunGenesisTunableEntry, RunGenesisTunableState,
-    RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, RunGenesisTunablesVersion,
+    RunGenesisTunablesSnapshot, RunGenesisTunablesVersion,
 };
 use iteron_tunables::{EntryState, ResolvedTunableSet};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
+
+#[path = "tunables/snapshot_v2.rs"]
+mod snapshot_v2;
+pub use snapshot_v2::validate_tunables_snapshot_v2;
+#[path = "tunables/checkpoint.rs"]
+mod checkpoint;
+pub use checkpoint::TunablesCheckpoint;
+pub(crate) use checkpoint::{
+    GenesisTunablesState, check_checkpoint_compatibility, check_resolved_compatibility,
+    checkpoint_from_events, inherited_from,
+};
 
 /// A checked legacy decision must be explicit at every resume/replay/fork call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,18 +34,10 @@ pub enum LegacyTunablesPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunablesCompatibility {
     Exact,
+    /// A historical identity-only V1 checkpoint exactly matches the current resolver commitments.
+    /// Effective values cannot be reconstructed from that old journal.
+    LegacyV1Exact,
     LegacyUnpinned,
-}
-
-/// The registry identity written before the product was renamed to Iteron.
-///
-/// Records are immutable, so a run recorded by an older build legitimately carries the old
-/// identity. Decoding accepts it; nothing writes it. Producing a snapshot always uses
-/// [`iteron_tunables::REGISTRY_ID`].
-const LEGACY_REGISTRY_ID: &str = "core-tunables";
-
-fn is_known_registry_id(registry_id: &str) -> bool {
-    registry_id == iteron_tunables::REGISTRY_ID || registry_id == LEGACY_REGISTRY_ID
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -86,7 +89,7 @@ fn payload(snapshot: &RunGenesisTunablesSnapshot) -> SnapshotPayload<'_> {
     }
 }
 
-fn digest_json(value: &impl Serialize) -> Result<String, TunablesSnapshotError> {
+pub(super) fn digest_json(value: &impl Serialize) -> Result<String, TunablesSnapshotError> {
     serde_json::to_vec(value)
         .map(|bytes| hex::encode(Sha256::digest(bytes)))
         .map_err(|_| TunablesSnapshotError::Invalid {
@@ -94,14 +97,14 @@ fn digest_json(value: &impl Serialize) -> Result<String, TunablesSnapshotError> 
         })
 }
 
-fn is_sha256(value: &str) -> bool {
+pub(super) fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn safe_id(value: &str) -> bool {
+pub(super) fn safe_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_RUN_GENESIS_TUNABLE_ID_BYTES
         && !value.chars().any(char::is_control)
@@ -126,7 +129,7 @@ pub fn validate_tunables_snapshot(
         || snapshot.registry_schema_version == 0
         || snapshot.family_schema_version == 0
         || snapshot.registry_revision == 0
-        || !is_known_registry_id(&snapshot.registry_id)
+        || snapshot.registry_id != iteron_tunables::REGISTRY_ID
     {
         return Err(TunablesSnapshotError::Invalid {
             reason: "registry identity or schema version is invalid",
@@ -192,6 +195,13 @@ pub fn snapshot_from_resolved(
     snapshot_from_report(resolved.report())
 }
 
+/// Project an accepted resolver result into the reconstructable V2 durable checkpoint.
+pub fn snapshot_v2_from_resolved(
+    resolved: &ResolvedTunableSet,
+) -> Result<iteron_protocol::RunGenesisTunablesSnapshotV2, TunablesSnapshotError> {
+    snapshot_v2::snapshot_v2_from_report(resolved.report())
+}
+
 fn snapshot_from_report(
     report: &iteron_tunables::ResolutionReport,
 ) -> Result<RunGenesisTunablesSnapshot, TunablesSnapshotError> {
@@ -238,6 +248,7 @@ fn snapshot_from_report(
     Ok(snapshot)
 }
 
+#[cfg(test)]
 pub(crate) fn check_compatibility(
     recorded: Option<&RunGenesisTunablesSnapshot>,
     expected: &RunGenesisTunablesSnapshot,
@@ -260,130 +271,6 @@ pub(crate) fn check_compatibility(
             Ok(TunablesCompatibility::LegacyUnpinned)
         }
         None => Err(TunablesSnapshotError::LegacyUnpinned),
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct GenesisTunablesState {
-    root_parent: Option<Option<String>>,
-    snapshot: Option<RunGenesisTunablesSnapshot>,
-}
-
-impl GenesisTunablesState {
-    pub(crate) fn snapshot(&self) -> Option<&RunGenesisTunablesSnapshot> {
-        self.snapshot.as_ref()
-    }
-
-    pub(crate) fn observe(
-        &mut self,
-        seq: u64,
-        kind: &EventKind,
-    ) -> Result<(), TunablesSnapshotError> {
-        if seq == 0 {
-            self.root_parent = match kind {
-                EventKind::RunStart {
-                    parent_run,
-                    forked_at,
-                    parent_hash_at_seq,
-                    ..
-                } => match (parent_run, forked_at, parent_hash_at_seq) {
-                    (None, None, None) => Some(None),
-                    (Some(parent_run), Some(_), Some(parent_hash))
-                        if crate::validate_run_id(&iteron_protocol::RunId(parent_run.clone()))
-                            .is_ok()
-                            && is_sha256(parent_hash) =>
-                    {
-                        Some(Some(parent_run.clone()))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
-        }
-        let EventKind::TunablesSnapshot {
-            version,
-            snapshot,
-            inherited_from,
-        } = kind
-        else {
-            return Ok(());
-        };
-        if seq != 1 || self.snapshot.is_some() {
-            return Err(TunablesSnapshotError::GenesisOrder {
-                reason: "snapshot is late or duplicated",
-            });
-        }
-        let Some(parent) = &self.root_parent else {
-            return Err(TunablesSnapshotError::GenesisOrder {
-                reason: "physical seq 0 is not run_start",
-            });
-        };
-        if *version != RunGenesisTunablesVersion::V1 || *version != snapshot.version {
-            return Err(TunablesSnapshotError::Invalid {
-                reason: "event and snapshot versions disagree",
-            });
-        }
-        validate_tunables_snapshot(snapshot)?;
-        match (parent, inherited_from) {
-            (None, None) => {}
-            (Some(parent), Some(inherited))
-                if inherited.parent_run == *parent
-                    && inherited.parent_snapshot_digest_sha256
-                        == snapshot.snapshot_digest_sha256 => {}
-            (None, Some(_)) => {
-                return Err(TunablesSnapshotError::GenesisOrder {
-                    reason: "root snapshot claims fork inheritance",
-                });
-            }
-            (Some(_), None) => {
-                return Err(TunablesSnapshotError::GenesisOrder {
-                    reason: "fork snapshot omits parent snapshot binding",
-                });
-            }
-            (Some(_), Some(_)) => {
-                return Err(TunablesSnapshotError::GenesisOrder {
-                    reason: "fork snapshot parent or digest binding mismatches run_start",
-                });
-            }
-        }
-        self.snapshot = Some(snapshot.clone());
-        Ok(())
-    }
-
-    /// Finish one physical journal's genesis projection.
-    ///
-    /// Legacy admission may waive only the absence of the seq-1 snapshot. It never turns an
-    /// empty journal, a non-`RunStart` seq 0, or a partial/invalid fork triple into a historical
-    /// run. Keeping that distinction here makes every checked caller share the same rule.
-    pub(crate) fn finish(
-        &self,
-    ) -> Result<Option<&RunGenesisTunablesSnapshot>, TunablesSnapshotError> {
-        if self.root_parent.is_none() {
-            return Err(TunablesSnapshotError::GenesisOrder {
-                reason: "physical seq 0 is not a structurally valid run_start",
-            });
-        }
-        Ok(self.snapshot())
-    }
-}
-
-pub(crate) fn snapshot_from_events(
-    events: &[iteron_protocol::Event],
-) -> Result<Option<RunGenesisTunablesSnapshot>, TunablesSnapshotError> {
-    let mut state = GenesisTunablesState::default();
-    for event in events {
-        state.observe(event.seq.0, &event.kind)?;
-    }
-    Ok(state.finish()?.cloned())
-}
-
-pub(crate) fn inherited_from(
-    parent_run: &str,
-    snapshot: &RunGenesisTunablesSnapshot,
-) -> RunGenesisTunablesInheritance {
-    RunGenesisTunablesInheritance {
-        parent_run: parent_run.to_owned(),
-        parent_snapshot_digest_sha256: snapshot.snapshot_digest_sha256.clone(),
     }
 }
 
@@ -427,10 +314,18 @@ pub(crate) fn fixture_snapshot_variant(marker: char) -> RunGenesisTunablesSnapsh
     snapshot
 }
 
-#[cfg(test)]
+/// A registry-driven `ResolvedTunableSet`, exposed under a feature so other crates' tests can pin
+/// real tunables instead of inventing a snapshot. It resolves the compiled registry, so it fails
+/// the moment the registry and its golden digest drift apart, which is exactly what a fake would
+/// hide. Never compiled into a release build.
+#[cfg(any(test, feature = "test-fixtures"))]
 #[path = "resolved_fixture.rs"]
-mod resolved_fixture;
+pub mod resolved_fixture;
 
 #[cfg(test)]
 #[path = "tunables_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tunables/v2_tests.rs"]
+mod v2_tests;

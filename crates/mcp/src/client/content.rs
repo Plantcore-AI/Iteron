@@ -1,8 +1,51 @@
-use crate::{MAX_FRAME_BYTES, McpError};
+use crate::{McpError, McpResultPolicy, result_policy::McpSpillStore};
 use serde_json::Value;
 
-pub(crate) fn render_tool_content(result: &Value) -> Result<String, McpError> {
-    render_tool_content_with_limit(result, MAX_FRAME_BYTES)
+pub(crate) fn render_tool_content(
+    result: &Value,
+    policy: McpResultPolicy,
+    spill_store: &McpSpillStore,
+) -> Result<String, McpError> {
+    let output = render_tool_content_with_limit(result, policy.spill_max_bytes())?;
+    cap_and_spill(output, policy, spill_store)
+}
+
+pub(crate) fn render_extension_content(
+    result: &Value,
+    policy: McpResultPolicy,
+    spill_store: &McpSpillStore,
+) -> Result<String, McpError> {
+    let output = serde_json::to_string_pretty(result)?;
+    if output.len() > policy.spill_max_bytes() {
+        return Err(McpError::OutputTooLarge {
+            limit: policy.spill_max_bytes(),
+        });
+    }
+    cap_and_spill(output, policy, spill_store)
+}
+
+fn cap_and_spill(
+    output: String,
+    policy: McpResultPolicy,
+    spill_store: &McpSpillStore,
+) -> Result<String, McpError> {
+    if output.len() <= policy.visible_max_bytes() {
+        return Ok(output);
+    }
+
+    let spill_handle = spill_store.retain(output.as_bytes())?;
+    let marker = format!(
+        "\n[MCP spill {spill_handle} {}/{}B {}]\n",
+        policy.visible_max_bytes(),
+        output.len(),
+        policy.cleanup().label(),
+    );
+    let visible = policy.visible_max_bytes();
+    if marker.len() >= visible {
+        return Ok(utf8_prefix(&marker, visible).to_owned());
+    }
+    let prefix = utf8_prefix(&output, visible - marker.len());
+    Ok(format!("{prefix}{marker}"))
 }
 
 fn render_tool_content_with_limit(result: &Value, limit: usize) -> Result<String, McpError> {
@@ -44,6 +87,17 @@ fn push_line(output: &mut String, text: &str, limit: usize) -> Result<(), McpErr
     Ok(())
 }
 
+fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut end = maximum_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +132,19 @@ mod tests {
             render_tool_content_with_limit(&result, expected.len() - 1),
             Err(McpError::OutputTooLarge { limit }) if limit == expected.len() - 1
         ));
+    }
+
+    #[test]
+    fn oversized_text_is_privately_spilled_and_only_a_bounded_prefix_is_visible() {
+        let result = json!({"content": [{"type":"text", "text":"界".repeat(80)}]});
+        let policy = McpResultPolicy::new(128, 1024, crate::McpSpillCleanup::SessionEnd).unwrap();
+        let store = McpSpillStore::create().unwrap();
+        let rendered = render_tool_content(&result, policy, &store).unwrap();
+        assert!(rendered.len() <= 128);
+        assert!(rendered.contains("[MCP spill sha256:"));
+        assert!(rendered.contains(" session_end]"));
+        assert!(!rendered.contains(std::env::temp_dir().to_string_lossy().as_ref()));
+        assert_eq!(store.retained_count(), 1);
+        assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());
     }
 }

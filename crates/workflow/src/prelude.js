@@ -50,6 +50,8 @@ globalThis.agent = async function (prompt, opts) {
     model: opts.model != null ? String(opts.model) : null,
     effort: opts.effort != null ? String(opts.effort) : null,
     agentType: opts.agentType != null ? String(opts.agentType) : null,
+    speculativeSiblings: opts.speculativeSiblings != null ? Number(opts.speculativeSiblings) : null,
+    quorumGroup: globalThis.__activeQuorumGroup == null ? null : globalThis.__activeQuorumGroup,
     // JSON Schema (draft 2020-12) passed through as-is; the host validates + retries.
     schema: opts.schema != null ? opts.schema : null,
   };
@@ -77,6 +79,36 @@ globalThis.parallel = async function (thunks) {
       return Promise.reject(e);
     }
   }));
+  return settled.map(function (s) { return s.status === "fulfilled" ? s.value : null; });
+};
+
+// parallelQuorum(thunks) — opt-in early-stop fan. The host owns the immutable quorum policy and
+// gives this invocation a child cancellation scope. Evidence members that finish after the policy
+// is satisfied are cancelled and settle to null; declaration order remains intact.
+globalThis.parallelQuorum = async function (thunks) {
+  if (!Array.isArray(thunks)) {
+    throw new Error("parallelQuorum expects an array of thunks");
+  }
+  if (thunks.length > 4096) {
+    throw new Error("parallelQuorum: per-call limit of 4096 exceeded (" + thunks.length + ")");
+  }
+  var group = __quorumBegin(thunks.length);
+  var settled;
+  try {
+    settled = await Promise.allSettled(thunks.map(function (t) {
+      var previous = globalThis.__activeQuorumGroup;
+      globalThis.__activeQuorumGroup = group;
+      try {
+        return Promise.resolve(t());
+      } catch (e) {
+        return Promise.reject(e);
+      } finally {
+        globalThis.__activeQuorumGroup = previous;
+      }
+    }));
+  } finally {
+    __quorumEnd(group);
+  }
   return settled.map(function (s) { return s.status === "fulfilled" ? s.value : null; });
 };
 

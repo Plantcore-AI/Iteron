@@ -17,6 +17,10 @@ use std::time::{Duration, SystemTime};
 
 pub mod anthropic;
 pub mod catalog;
+mod controls;
+mod governor;
+mod governor_policy;
+mod governor_snapshot;
 pub mod openai;
 pub mod responses;
 pub mod sse;
@@ -30,6 +34,22 @@ pub use catalog::{
     CredentialKind, CredentialSource, CredentialStatus, ErrorProfile, FileCredential,
     ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
     ProviderInstance, RawModel, Selectability, discover_catalog, probe_account,
+};
+pub use controls::{
+    CacheBreakpoint, CacheScope, ControlError, PromptCacheControl, ProviderControlCapabilities,
+    ProviderRequestControls, RequestCompression, ResponseVerbosity, ServiceTier,
+};
+pub use governor::{
+    Admission as ProviderAdmission, AdmissionReason, AttemptPermit, CircuitTransition,
+    ProviderGovernor,
+};
+pub use governor_policy::{
+    CircuitPolicy, FailoverClass, FailoverRule, FailurePoint, GovernorPolicy, GovernorPolicyError,
+    HedgePolicy, MAX_GOVERNED_ROUTES, MAX_HEDGE_DUPLICATES, ObjectiveWeights, RateAdmissionPolicy,
+    UnknownQuotaPolicy,
+};
+pub use governor_snapshot::{
+    ProviderGovernorSnapshot, RouteCircuitSnapshot, RouteGovernorSnapshot,
 };
 pub use openai::OpenAiCompat;
 pub use responses::OpenAiResponses;
@@ -1069,6 +1089,8 @@ pub struct TurnRequest {
     /// Semantic model effort, independent of the thinking-token budget and of harness
     /// orchestration. Adapters must not infer this value from `thinking_budget`.
     pub reasoning_effort: iteron_protocol::ReasoningEffort,
+    /// Typed route controls validated against [`Provider::control_capabilities`] before dispatch.
+    pub controls: ProviderRequestControls,
 }
 
 /// Bounded, secret-free strategy notice emitted before a provider request. Notices are
@@ -1187,6 +1209,12 @@ pub trait Provider: Send + Sync {
     /// should forward the inner capability rather than infer it from a model name.
     fn supports_image_input(&self) -> bool {
         false
+    }
+
+    /// Exact request controls this adapter can faithfully serialize for the configured route.
+    /// The conservative default supports only omission/default values and never idempotency.
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        ProviderControlCapabilities::default()
     }
 
     /// Report the adapter's actual control surface before the request is sent. Implementations
@@ -1372,6 +1400,10 @@ impl Provider for HealthReportingProvider {
             .unwrap_or_else(|| self.inner.supports_image_input())
     }
 
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        self.inner.control_capabilities()
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(request)
     }
@@ -1493,6 +1525,7 @@ mod guard_tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         }
     }
 

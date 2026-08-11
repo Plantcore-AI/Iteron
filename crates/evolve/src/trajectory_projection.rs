@@ -6,6 +6,7 @@
 //! recomputes every action digest through [`crate::EvidenceRecorder`] before returning a
 //! [`crate::TrajectoryEnvelope`].
 
+use crate::PolicyEvidenceRunProjector;
 use crate::{
     ContractError, DataGovernance, EvidenceRecorder, MAX_DECISIONS_PER_TRAJECTORY,
     MAX_SHORT_STRING_BYTES, PolicyBundle, PolicyRef, RewardVector, StrategyDecision,
@@ -275,6 +276,12 @@ impl TrajectoryProjection for RecordedRunProjector {
             return Ok(None);
         }
         Ok(Some(envelope))
+    }
+}
+
+impl TrajectoryProjection for PolicyEvidenceRunProjector {
+    fn project(&self, rollout_digest: &str) -> Result<Option<TrajectoryEnvelope>, ContractError> {
+        self.project_by_digest(rollout_digest)
     }
 }
 

@@ -205,27 +205,7 @@ pub const EVENTS: [&str; EVENT_COUNT] = [
 
 /// Vocabulary retained for compatibility whose producing capability is not implemented. Keeping
 /// this list explicit prevents catalog size from being misreported as production trigger coverage.
-pub const RESERVED_EVENTS: [&str; 19] = [
-    "context.source.truncated",
-    "context.tool_catalog.lazy_route",
-    "context.obligation.preserved",
-    "context.obligation.lost",
-    "memory.query.rewritten",
-    "memory.candidate.contradiction",
-    "memory.candidate.superseded",
-    "memory.candidate.expired",
-    "memory.fact.update_requested",
-    "memory.fact.updated",
-    "memory.fact.superseded",
-    "memory.contamination.check_started",
-    "memory.contamination.check_passed",
-    "memory.contamination.check_failed",
-    "memory.benchmark.scope_created",
-    "memory.benchmark.scope_destroyed",
-    "model.retry_scheduled",
-    "model.retry_cancelled",
-    "session.failed",
-];
+pub const RESERVED_EVENTS: [&str; 0] = [];
 
 const GATE_EVENTS: [&str; 12] = [
     "submission.created",

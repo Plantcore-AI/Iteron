@@ -93,6 +93,10 @@ impl Agent {
         if let hooks::HookDecision::Deny(reason) = gate.decision {
             return Err(format!("subagent was not started: {reason}"));
         }
+        let _session_admission = self
+            .session_spawn_ledger
+            .admit()
+            .map_err(|error| format!("subagent was not started: {error}"))?;
         let mut registry = match Registry::read_only(&self.workspace) {
             Ok(r) => r,
             Err(e) => return Err(format!("subagent setup failed: {e}")),
@@ -102,6 +106,10 @@ impl Agent {
             &iteron_agents::ToolFilter::All,
             &self.boot_bundle,
         );
+        let tunables_pin = self
+            .tunables_pin_snapshot()
+            .map_err(|error| error.public_summary())?;
+        let tunables_resolution_digest = tunables_pin.resolution_digest_sha256().to_owned();
         let sub_dir = self.subagent_directory();
         let rollout = match Rollout::open(&sub_dir, &sub_run, self.rollout.tenant().clone()) {
             Ok(r) => r,
@@ -120,51 +128,71 @@ impl Agent {
             return Err("subagent was not started: parent record failed".into());
         }
         let agent_def = iteron_agents::AgentDef::generic();
+        let agent_definition_tag = agent_def.execution_tag();
         let child_deadline = self.child_run_deadline(&budget);
-        let mut sub = Agent::new(
+        let mut sub = Agent::new_with_tunables_pin(
             self.provider.clone(),
             registry,
             rollout,
             self.model.clone(),
             agent_def.system,
             budget,
-        );
+            tunables_pin,
+        )
+        .map_err(|error| error.public_summary())?;
         sub.projection_attribution = Some(CostAttribution::DirectSubagent {
             parent_run_id: self.rollout.run_id().0.clone(),
             sub_run: sub_run.0.clone(),
         });
         sub.runtime_state_dir = self.runtime_state_dir.clone();
+        sub.session_spawn_ledger = self.session_spawn_ledger.clone();
         sub.lifecycle_emitter = self.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = self.lifecycle_telemetry.clone();
         sub.lifecycle_hooks = self.lifecycle_hooks.clone();
         sub.workspace = self.workspace.clone();
-        sub.context_strategy = self.context_strategy.clone();
-        sub.tool_policy = self.tool_policy.clone();
-        sub.memory_strategy = self.memory_strategy.clone();
-        sub.router = self.router.clone();
-        sub.planner = self.planner.clone();
-        sub.collaboration = self.collaboration.clone();
-        sub.scheduler = self.scheduler.clone();
-        sub.verifier = self.verifier.clone();
-        sub.model_router = self.model_router.clone();
+        sub.install_compiled_policy_bundle(self.compiled_policy_bundle.clone())
+            .map_err(|error| error.public_summary())?;
         sub.context_port = self.context_port.clone();
+        sub.deferred_tool_eager_limit = self.deferred_tool_eager_limit;
+        sub.context_budget_policy = self.context_budget_policy;
+        sub.context_materialization_policy = self.context_materialization_policy;
+        sub.compaction = self.compaction;
         sub.context_home_dir = self.context_home_dir.clone();
         sub.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         sub.model_context_window = self.model_context_window;
         sub.model_max_output_tokens = self.model_max_output_tokens;
         sub.sensitive_env_names = self.sensitive_env_names.clone();
-        sub.boot_bundle = self.boot_bundle.clone();
         // Hooks are resolved once from trusted operator configuration at the composition root.
         // Children inherit that exact value; they never re-read ambient or repository config.
         sub.hooks = self.hooks.clone();
         sub.hook_effect_journal = self.hook_effect_journal.clone();
         sub.delegation_depth = self.delegation_depth.saturating_add(1);
-        sub.effort = if self.effort == iteron_protocol::Effort::Ultracode {
+        let child_effort = if self.effort == iteron_protocol::Effort::Ultracode {
             iteron_protocol::Effort::Max
         } else {
             self.effort
         };
+        sub.bypass_permissions = self.bypass_permissions;
+        sub.configure_initial_runtime_policy(
+            child_effort,
+            self.permission_mode,
+            self.permission_rules.clone(),
+        )
+        .map_err(|error| error.public_summary())?;
         sub.run_deadline = Some(child_deadline);
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let parent_run = self.rollout.run_id().clone();
+        sub.record_child_genesis_with_tunables(
+            &parent_run,
+            self.workspace.display().to_string(),
+            created_at,
+            tunables_resolution_digest,
+            Some(agent_definition_tag),
+        )
+        .map_err(|error| error.public_summary())?;
         self.inherit_route_and_pricing(&mut sub)
             .map_err(|error| error.public_summary())?;
         // No interrupt flag is installed here on purpose. `run_child_with_control` below owns the

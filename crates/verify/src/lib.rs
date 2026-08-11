@@ -16,10 +16,17 @@
 //! tracked as the field's most actionable metric — nobody reports it (ADR-005).
 
 pub mod oracle;
+pub mod runtime_policy;
 pub mod select;
 pub mod strategy;
 
 pub use oracle::{Oracle, OracleStrength, TestOracle, Verdict, VerificationOutcome};
+pub use runtime_policy::{
+    FlakyQuarantinePolicy, MAX_PHYSICAL_VERIFIER_RUNS, MAX_VERIFICATION_COMMANDS,
+    VerificationCheckpointPolicy, VerificationConsensus, VerificationPolicyError,
+    VerificationQuorumPolicy, VerificationRestorePolicy, VerificationRollbackMode,
+    VerificationRuntimePolicy, VerificationSelectionMode, verification_consensus,
+};
 pub use select::{Candidate, Selection};
 pub use strategy::{
     GateOutcome, VERIFIER_SLOT_VERSION, VerifierPlan, VerifierScope, VerifierSlotDecision,

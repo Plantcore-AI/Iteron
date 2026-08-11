@@ -189,8 +189,9 @@ fn render_invalid_explain(
     match format {
         ExplainFormat::Text => text_output(
             format!(
-                "SIMULATION ONLY (runtime_bound=false) status=invalid_input exit_code={}\nresolution input failed closed validation",
-                crate::output::EXIT_HARNESS
+                "SIMULATION ONLY (runtime_bound=false) status=invalid_input exit_code={}\n{}",
+                crate::output::EXIT_HARNESS,
+                failure.detail
             ),
             crate::output::EXIT_HARNESS,
         ),

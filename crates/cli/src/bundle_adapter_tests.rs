@@ -7,6 +7,12 @@ fn digest(seed: char) -> String {
 }
 
 fn promoted(policy_id: &str) -> PolicyBundle {
+    let policy_digest = registered_implementations()
+        .expect("fixed implementation registry")
+        .into_iter()
+        .find(|identity| identity.slot == "core/tool_policy" && identity.policy_id == policy_id)
+        .map(|identity| identity.digest)
+        .unwrap_or_else(|| digest('b'));
     PolicyBundle {
         bundle_id: "promoted-1".into(),
         digest: digest('a'),
@@ -14,7 +20,7 @@ fn promoted(policy_id: &str) -> PolicyBundle {
             slot: StrategySlot::new("core/tool_policy").expect("a valid slot"),
             policy_id: policy_id.into(),
             version: "1".into(),
-            digest: digest('b'),
+            digest: policy_digest,
         }],
         rollback_to: None,
     }
@@ -59,7 +65,12 @@ fn a_promoted_bundle_shifts_tool_selection_across_two_boots() {
     // The governed boot can name what governed it, and the ungoverned one cannot claim it was.
     assert_eq!(
         governed_boot.governance_receipt(),
-        Some((digest('a'), digest('b')))
+        Some((
+            digest('a'),
+            promoted("prefer-structural-search").policies[0]
+                .digest
+                .clone()
+        ))
     );
     assert!(baseline_boot.governance_receipt().is_none());
 }
@@ -94,18 +105,11 @@ fn a_slot_the_agents_grammar_refuses_is_refused_by_the_projection() {
     assert!(project(&bundle).is_err());
 }
 
-/// An unknown promoted identity reaches the agents side and is refused there, not here: the
-/// adapter's job is projection, and deciding what a build recognises is the consumer's.
+/// Projection remains identity-only, but the executable compiler refuses an identity this build
+/// cannot bind to content-addressed implementation bytes.
 #[test]
-fn an_unknown_promoted_identity_projects_but_governs_nothing() {
-    let boot = BootBundle::resolve(&ActiveBundleResolver::from_active(Some(promoted(
-        "a-policy-this-build-has-never-heard-of",
-    ))))
-    .expect("an unknown identity is still a well-formed bundle");
-    assert!(boot.active().is_some(), "the projection succeeded");
-    assert_eq!(
-        boot.tool_preference(),
-        ToolPreference::Baseline,
-        "but it governs nothing this build can act on"
-    );
+fn an_unknown_promoted_identity_fails_closed_at_compilation() {
+    let unknown = promoted("a-policy-this-build-has-never-heard-of");
+    let failure = compile_operator_bundle(Some(&unknown)).expect_err("unknown implementation");
+    assert_eq!(failure.code, RejectionCode::UnknownImplementation);
 }

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn exact_registry_identity(input: &ResolutionInput) -> Result<(), String> {
     let compiled_digest = crate::registry_digest()
-        .map_err(|_| "compiled registry identity validation failed".to_owned())?;
+        .map_err(|error| format!("compiled registry identity validation failed: {error:?}"))?;
     if input.schema_version != crate::RESOLUTION_SCHEMA_VERSION
         || input.registry_id != crate::REGISTRY_ID
         || input.registry_revision != crate::REGISTRY_REVISION

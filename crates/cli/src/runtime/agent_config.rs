@@ -1,5 +1,33 @@
 use super::*;
 
+/// Decode the pinned tunables into tooling policy, install it into the registry, and open the
+/// private spill store.
+///
+/// Both ways of pinning must leave the agent in the same state. They did not: the constructor
+/// installed the tooling policy while the post-construction pin only opened the spill store, so an
+/// agent pinned that way failed later with `ToolingPolicy` at its first tool call. One function is
+/// now the only place that answers "what does a pinned agent owe its registry".
+fn apply_pinned_tooling(
+    pin: &tunables_pin::TunablesPin,
+    registry: &Registry,
+) -> Result<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>, KernelError> {
+    let view = crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
+        pin.checkpoint(),
+    )
+    .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    let tooling =
+        crate::runtime_tunables::effective_tooling::EffectiveToolingSettings::decode(&view)
+            .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    let store = std::sync::Arc::new(
+        tool_output_spill::ToolOutputSpillStore::create(tooling.tool_output_spill)
+            .map_err(|_| KernelError::ToolOutputSpill("private store creation failed"))?,
+    );
+    tooling
+        .install(registry)
+        .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    Ok(store)
+}
+
 impl Agent {
     pub fn new(
         provider: std::sync::Arc<dyn Provider>,
@@ -25,9 +53,13 @@ impl Agent {
             Capability::TrustMutating,
             Capability::IrreversibleExternal,
         ]);
+        let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
+        let context_estimator =
+            iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
         Agent {
             provider,
             registry,
+            tool_output_spill: None,
             rollout,
             runtime_state_dir,
             ledger: Ledger::new(),
@@ -36,6 +68,9 @@ impl Agent {
             selected_route: None,
             selected_provider: None,
             last_rate_limit: None,
+            provider_controls: iteron_provider::ProviderRequestControls::default(),
+            provider_governor: None,
+            fallback_provider_routes: Vec::new(),
             pricing_port: None,
             pricing: None,
             usd_budget,
@@ -50,7 +85,11 @@ impl Agent {
             environment_context: None,
             compaction: CompactionPolicy::default(),
             compacted_in_run: false,
-            context_estimator: iteron_ctx::RequestEstimator::new(),
+            last_compaction_turn: None,
+            context_estimator,
+            deferred_tool_eager_limit: None,
+            context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
+            context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),
@@ -62,6 +101,11 @@ impl Agent {
             workspace_file_count: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
+            verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
+            verification_quarantine: std::collections::BTreeMap::new(),
+            latest_workspace_checkpoint: None,
+            last_workspace_checkpoint_turn: None,
+            verification_rollback_point: None,
             bypass_permissions: false,
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
@@ -83,28 +127,36 @@ impl Agent {
             interrupt: None,
             interrupt_requested: false,
             max_tool_concurrency: 16,
+            session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
             workflow_progress_tx: None,
             workflow_launcher: None,
+            mcp_runtime: None,
             effort: iteron_protocol::Effort::default(),
             memory_workspace: None,
-            context_strategy: std::sync::Arc::new(iteron_ctx::ContextStrategy::default()),
-            tool_policy: std::sync::Arc::new(iteron_tools::ToolPolicy::default()),
-            memory_strategy: std::sync::Arc::new(iteron_ctx::MemoryRecallStrategy::default()),
-            router: std::sync::Arc::new(iteron_agents::RouterStrategy::default()),
-            planner: std::sync::Arc::new(iteron_agents::PlannerStrategy::default()),
-            collaboration: std::sync::Arc::new(iteron_workflow::CollaborationStrategy::default()),
-            scheduler: std::sync::Arc::new(iteron_sched::SchedulerStrategy::default()),
-            verifier: std::sync::Arc::new(iteron_verify::VerifierStrategy::default()),
-            model_router: std::sync::Arc::new(
-                iteron_provider::catalog::ModelRouterStrategy::default(),
-            ),
+            memory_benchmark_scope: None,
+            context_strategy: compiled_policy_bundle.slots().context.clone(),
+            tool_policy: compiled_policy_bundle.slots().tool_policy.clone(),
+            memory_strategy: compiled_policy_bundle.slots().memory.clone(),
+            router: compiled_policy_bundle.slots().router.clone(),
+            planner: compiled_policy_bundle.slots().planner.clone(),
+            collaboration: compiled_policy_bundle.slots().collaboration.clone(),
+            scheduler: compiled_policy_bundle.slots().scheduler.clone(),
+            retry_policy: iteron_sched::BackoffPolicy::default(),
+            verifier: compiled_policy_bundle.slots().verifier.clone(),
+            model_router: compiled_policy_bundle.slots().model_router.clone(),
             context_port: std::sync::Arc::new(iteron_ctx::DefaultContextPort),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: std::sync::Arc::new(iteron_agents::AgentCatalog::builtin_only()),
             agent_catalog_pinned: false,
-            boot_bundle: crate::bundle_adapter::resolve_boot_bundle(),
+            boot_bundle: compiled_policy_bundle.boot_bundle(),
+            compiled_policy_bundle,
+            policy_evidence: None,
+            policy_turn_cost_baseline: None,
+            policy_turn_counter_baseline: None,
+            policy_verifier_outcome: iteron_protocol::PolicyVerifierOutcome::NotRun,
+            tunables_pin: None,
             injected: None,
             injected_trust: None,
             observed_trust: Trust::Trusted,
@@ -120,12 +172,82 @@ impl Agent {
             orchestrating: false,
             delegation_depth: 0,
             side_conversations_opened: 0,
-            failed_actions: std::collections::HashMap::new(),
+            failed_actions: super::failed_action_cache::FailedActionCache::default(),
             hooks: Hooks::default(),
             hook_effect_journal: None,
             telemetry: None,
             run_deadline: None,
         }
+    }
+
+    /// Construct a fresh production agent from the composition root's atomic resolver result.
+    ///
+    /// Keeping the unbound constructor above is useful for narrow kernel tests, but no live root or
+    /// child is allowed to rediscover defaults after its rollout has been opened. The result is
+    /// projected once into a V2 checkpoint; children inherit the resulting pin, not this resolver
+    /// input.
+    pub fn new_with_resolved_tunables(
+        provider: std::sync::Arc<dyn Provider>,
+        registry: Registry,
+        rollout: Rollout,
+        model: String,
+        system: String,
+        budget: Budget,
+        resolved_tunables: std::sync::Arc<iteron_tunables::ResolvedTunableSet>,
+    ) -> Result<Self, KernelError> {
+        let pin = tunables_pin::TunablesPin::from_resolved(&resolved_tunables)?;
+        Self::new_with_tunables_pin(provider, registry, rollout, model, system, budget, pin)
+    }
+
+    /// Construct a resumed production agent from the exact V1/V2 checkpoint read while holding
+    /// the rollout writer lock. Current defaults and the resolver are intentionally absent.
+    pub fn new_with_tunables_checkpoint(
+        provider: std::sync::Arc<dyn Provider>,
+        registry: Registry,
+        rollout: Rollout,
+        model: String,
+        system: String,
+        budget: Budget,
+        checkpoint: iteron_record::TunablesCheckpoint,
+    ) -> Result<Self, KernelError> {
+        let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
+        Self::new_with_tunables_pin(provider, registry, rollout, model, system, budget, pin)
+    }
+
+    pub(crate) fn new_with_tunables_pin(
+        provider: std::sync::Arc<dyn Provider>,
+        registry: Registry,
+        rollout: Rollout,
+        model: String,
+        system: String,
+        budget: Budget,
+        pin: tunables_pin::TunablesPin,
+    ) -> Result<Self, KernelError> {
+        let tool_output_spill = apply_pinned_tooling(&pin, &registry)?;
+        let mut agent = Self::new(provider, registry, rollout, model, system, budget);
+        agent.tool_output_spill = Some(tool_output_spill);
+        agent.tunables_pin = Some(pin);
+        Ok(agent)
+    }
+
+    /// Install the session owner resolved before this fresh Agent was created. This is accepted
+    /// only before a child has been admitted, so replacing the Arc cannot refill a live session.
+    pub(crate) fn install_session_spawn_ledger(
+        &mut self,
+        ledger: std::sync::Arc<SessionSpawnLedger>,
+    ) -> Result<(), KernelError> {
+        if self.session_spawn_ledger.admitted() != 0 || ledger.admitted() != 0 {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "session_spawn_ledger",
+                reason: "cannot replace a ledger after child admission",
+            });
+        }
+        self.session_spawn_ledger = ledger;
+        Ok(())
+    }
+
+    pub(crate) fn session_spawn_ledger(&self) -> &SessionSpawnLedger {
+        self.session_spawn_ledger.as_ref()
     }
 
     /// Effective effort projected in memory. Runtime callers should use [`Self::transition_effort`]
@@ -175,6 +297,49 @@ impl Agent {
     /// after execution inputs were resolved.
     pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<iteron_agents::AgentCatalog> {
         self.agent_catalog.clone()
+    }
+
+    /// Pin a fresh composition root's one atomic tunables result as a V2 checkpoint.
+    pub fn pin_resolved_tunables(
+        &mut self,
+        resolved: std::sync::Arc<iteron_tunables::ResolvedTunableSet>,
+    ) -> Result<(), KernelError> {
+        if self.tunables_pin.is_some() {
+            return Err(KernelError::TunablesAlreadyResolved);
+        }
+        let pin = tunables_pin::TunablesPin::from_resolved(&resolved)?;
+        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
+        self.tool_output_spill = Some(tool_output_spill);
+        self.tunables_pin = Some(pin);
+        Ok(())
+    }
+
+    /// Pin the exact historical checkpoint recovered from this rollout. V1 remains V1.
+    pub fn pin_tunables_checkpoint(
+        &mut self,
+        checkpoint: iteron_record::TunablesCheckpoint,
+    ) -> Result<(), KernelError> {
+        if self.tunables_pin.is_some() {
+            return Err(KernelError::TunablesAlreadyResolved);
+        }
+        let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
+        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
+        self.tool_output_spill = Some(tool_output_spill);
+        self.tunables_pin = Some(pin);
+        Ok(())
+    }
+
+    pub fn tunables_checkpoint(&self) -> Result<&iteron_record::TunablesCheckpoint, KernelError> {
+        self.tunables_pin
+            .as_ref()
+            .map(tunables_pin::TunablesPin::checkpoint)
+            .ok_or(KernelError::TunablesNotResolved)
+    }
+
+    pub(crate) fn tunables_pin_snapshot(&self) -> Result<tunables_pin::TunablesPin, KernelError> {
+        self.tunables_pin
+            .clone()
+            .ok_or(KernelError::TunablesNotResolved)
     }
 
     /// The quota the provider last published on its response headers, or `None` when this route

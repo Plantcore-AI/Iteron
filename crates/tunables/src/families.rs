@@ -53,12 +53,6 @@ macro_rules! partial {
     };
 }
 
-macro_rules! missing {
-    ($ordinal:literal, $id:literal, $($rest:tt)*) => {
-        family!(Missing; $ordinal, $id, semantic_key($ordinal, $id), $($rest)*)
-    };
-}
-
 macro_rules! fixed {
     ($ordinal:literal, $id:literal, $($rest:tt)*) => {
         family!(FixedHidden; $ordinal, $id, semantic_key($ordinal, $id), $($rest)*)
@@ -88,7 +82,7 @@ static FAMILIES: &[Family] = &[
     partial!(15, "retry_backoff_base", Runtime, "Set the initial provider retry delay.", Conditional, Conditional, OfflineSearch),
     partial!(16, "retry_backoff_cap", Runtime, "Cap provider retry delay.", Conditional, Conditional, OfflineSearch),
     partial!(17, "retry_max_attempts", Runtime, "Bound staged provider retries.", Direct, Direct, OfflineSearch),
-    missing!(18, "egress_allow", Governance, "Declare an egress allow policy surface.", None, None, Inactive),
+    full!(18, "egress_allow", Governance, "Admit exact hosts for first-party network tools.", Conditional, Direct, OperatorOnly),
 
     // C — internal runtime and harness policy families.
     fixed!(19, "request_output_cap", Provider, "Reserve and cap provider response tokens.", Indirect, Indirect, OfflineSearch),
@@ -99,11 +93,11 @@ static FAMILIES: &[Family] = &[
     fixed!(24, "compaction_adaptive", Context, "Adapt compaction to model and transcript state.", Indirect, Indirect, RuntimeAdaptive),
     fixed!(25, "compaction_keep_recent", Context, "Choose the verbatim recent-turn retention window.", Indirect, Indirect, OfflineSearch),
     fixed!(26, "token_estimator", Context, "Estimate tokens for admission and compaction.", Conditional, Indirect, CatalogCurated),
-    partial!(27, "summary_profile", Context, "Choose the compaction summary shape and budget.", Indirect, Indirect, OfflineSearch),
+    full!(27, "summary_profile", Context, "Choose the compaction summary shape and budget.", Indirect, Indirect, OfflineSearch),
     fixed!(28, "compaction_failure", Context, "Choose bounded behavior when compaction fails.", Conditional, Conditional, FixedInvariant),
     partial!(29, "instruction_discovery_render", Context, "Discover and render repository instruction files.", Conditional, Indirect, OfflineSearch),
     full!(30, "memory_enable", Memory, "Enable durable memory retrieval and writes.", Conditional, Indirect, OperatorOnly),
-    partial!(31, "memory_budgets", Memory, "Bound memory retrieval, render, and write work.", Conditional, Indirect, OfflineSearch),
+    full!(31, "memory_budgets", Memory, "Bound memory retrieval, render, and write work.", Conditional, Indirect, OfflineSearch),
     fixed!(32, "bm25", Context, "Tune lexical retrieval scoring.", Conditional, Indirect, OfflineSearch),
     fixed!(33, "skill_listing_budget", Context, "Bound skill catalog text exposed to the model.", Conditional, Indirect, OfflineSearch),
     fixed!(34, "max_consecutive_tool_errors", Budget, "Stop a run after repeated tool failures.", Direct, Direct, OfflineSearch),
@@ -162,80 +156,80 @@ static FAMILIES: &[Family] = &[
     full!(85, "web_search_backend_catalog", Extensibility, "Available web-search backend definitions.", Conditional, Conditional, CatalogCurated),
 
     // Appendix F.1 — N-RM01..N-RM10, model routing and transport (10).
-    missing!(86, "model_fallback_chain", Provider, "Choose an ordered model fallback chain.", Indirect, Indirect, CatalogCurated),
+    partial!(86, "model_fallback_chain", Provider, "Choose an ordered model fallback chain.", Indirect, Indirect, CatalogCurated),
     partial!(87, "failover_eligible_error_taxonomy", Provider, "Classify provider errors that may admit failover.", Indirect, Indirect, FixedInvariant),
-    missing!(88, "route_quality_cost_latency_objective_weights", Reasoning, "Weight route quality, cost, and latency objectives.", Direct, Direct, OfflineSearch),
+    partial!(88, "route_quality_cost_latency_objective_weights", Reasoning, "Weight route quality, cost, and latency objectives.", Direct, Direct, OfflineSearch),
     partial!(89, "provider_health_circuit_breaker_state_policy", Provider, "Derive route health and circuit-breaker state.", Indirect, Indirect, CatalogCurated),
-    missing!(90, "hedged_request_policy", Provider, "Choose bounded duplicate-request hedging.", Indirect, Indirect, CatalogCurated),
-    missing!(91, "provider_service_tier", Provider, "Select a provider service tier.", Direct, Indirect, CatalogCurated),
-    missing!(92, "response_verbosity", Reasoning, "Select response verbosity independently of effort.", Conditional, Indirect, OfflineSearch),
+    partial!(90, "hedged_request_policy", Provider, "Choose bounded duplicate-request hedging.", Indirect, Indirect, CatalogCurated),
+    partial!(91, "provider_service_tier", Provider, "Select a provider service tier.", Direct, Indirect, CatalogCurated),
+    partial!(92, "response_verbosity", Reasoning, "Select response verbosity independently of effort.", Conditional, Indirect, OfflineSearch),
     partial!(93, "role_specific_model_map", Orchestration, "Map agent roles to admitted model routes.", Indirect, Direct, CatalogCurated),
     fixed!(94, "provider_request_total_deadline", Provider, "Bound the total duration of one provider request.", Direct, Indirect, OfflineSearch),
     fixed!(95, "stream_idle_watchdog", Provider, "Abort a provider stream that stops making progress.", Indirect, Indirect, OfflineSearch),
 
     // Appendix F.2 — N-CX01..N-CX12, context, retrieval, and compaction (12).
-    partial!(96, "context_window_override_reserve", Context, "Resolve the effective context window and output reserve.", Direct, Direct, CatalogCurated),
-    partial!(97, "system_prefix_budget", Context, "Bound the stable system prefix.", Indirect, Direct, OfflineSearch),
-    partial!(98, "conversation_history_budget", Context, "Bound conversation history admitted to a request.", Direct, Direct, OfflineSearch),
-    partial!(99, "tool_result_history_budget", Context, "Bound retained tool-result history.", Direct, Direct, OfflineSearch),
-    partial!(100, "multimodal_token_budget", Context, "Bound multimodal content admitted to model context.", Indirect, Conditional, CatalogCurated),
+    full!(96, "context_window_override_reserve", Context, "Resolve the effective context window and output reserve.", Direct, Direct, CatalogCurated),
+    full!(97, "system_prefix_budget", Context, "Bound the stable system prefix.", Indirect, Direct, OfflineSearch),
+    full!(98, "conversation_history_budget", Context, "Bound conversation history admitted to a request.", Direct, Direct, OfflineSearch),
+    full!(99, "tool_result_history_budget", Context, "Bound retained tool-result history.", Direct, Direct, OfflineSearch),
+    full!(100, "multimodal_token_budget", Context, "Bound multimodal content admitted to model context.", Indirect, Conditional, CatalogCurated),
     fixed!(101, "auto_compaction_enable", Context, "Enable automatic bounded context compaction.", Direct, Direct, OfflineSearch),
-    partial!(102, "compaction_cooldown_hysteresis", Context, "Avoid repeated compaction around the trigger boundary.", Direct, Direct, OfflineSearch),
-    partial!(103, "multi_stage_summary_topology", Context, "Choose a bounded summary-stage topology.", Indirect, Direct, CatalogCurated),
-    missing!(104, "summary_consistency_coverage_check", Verification, "Check summary consistency and evidence coverage.", Indirect, Direct, CatalogCurated),
-    partial!(105, "hybrid_retrieval_fusion_weights", Memory, "Fuse lexical and optional retrieval signals.", Indirect, Direct, OfflineSearch),
-    missing!(106, "retrieval_recency_decay", Memory, "Apply bounded recency decay to retrieval scores.", Indirect, Direct, OfflineSearch),
-    partial!(107, "context_novelty_dedup_threshold", Context, "Suppress duplicate or low-novelty context.", Indirect, Direct, OfflineSearch),
+    full!(102, "compaction_cooldown_hysteresis", Context, "Avoid repeated compaction around the trigger boundary.", Direct, Direct, OfflineSearch),
+    full!(103, "multi_stage_summary_topology", Context, "Choose a bounded summary-stage topology.", Indirect, Direct, CatalogCurated),
+    full!(104, "summary_consistency_coverage_check", Verification, "Check summary consistency and evidence coverage.", Indirect, Direct, CatalogCurated),
+    full!(105, "hybrid_retrieval_fusion_weights", Memory, "Fuse lexical and optional retrieval signals.", Indirect, Direct, OfflineSearch),
+    full!(106, "retrieval_recency_decay", Memory, "Apply bounded recency decay to retrieval scores.", Indirect, Direct, OfflineSearch),
+    full!(107, "context_novelty_dedup_threshold", Context, "Suppress duplicate or low-novelty context.", Indirect, Direct, OfflineSearch),
 
     // Appendix F.3 — N-TP01..N-TP15, tools, processes, and code intelligence (15).
-    missing!(108, "persistent_pty_backend", Tooling, "Select a persistent PTY backend.", Direct, Indirect, CatalogCurated),
-    missing!(109, "concurrent_background_job_cap", Tooling, "Bound concurrent background jobs.", Direct, Conditional, OfflineSearch),
-    missing!(110, "job_idle_stall_timeout", Tooling, "Stop a background job that is idle or stalled.", Direct, Conditional, OfflineSearch),
-    missing!(111, "interactive_stdin_wait_policy", Tooling, "Bound waits for interactive process input.", Direct, Conditional, CatalogCurated),
+    full!(108, "persistent_pty_backend", Tooling, "Select a persistent PTY backend.", Direct, Indirect, CatalogCurated),
+    full!(109, "concurrent_background_job_cap", Tooling, "Bound concurrent background jobs.", Direct, Conditional, OfflineSearch),
+    full!(110, "job_idle_stall_timeout", Tooling, "Stop a background job that is idle or stalled.", Direct, Conditional, OfflineSearch),
+    full!(111, "interactive_stdin_wait_policy", Tooling, "Bound waits for interactive process input.", Direct, Conditional, CatalogCurated),
     fixed!(112, "process_signal_kill_escalation", Tooling, "Escalate process-group termination and reap children.", Direct, Conditional, FixedInvariant),
     partial!(113, "process_cwd_continuity", Tooling, "Preserve process and working-directory continuity.", Direct, Indirect, CatalogCurated),
     partial!(114, "child_process_environment_reuse", Tooling, "Reuse a bounded child-process environment snapshot.", Direct, Indirect, FixedInvariant),
     fixed!(115, "effecting_tool_concurrency", Orchestration, "Bound concurrency among admitted effecting tools.", Direct, Indirect, OfflineSearch),
     fixed!(116, "write_set_conflict_admission", Tooling, "Admit concurrent writes only when declared write sets do not overlap.", Indirect, Direct, CatalogCurated),
-    missing!(117, "tool_output_spill_to_disk_policy", Tooling, "Spill bounded tool output outside model context.", Direct, Indirect, OfflineSearch),
+    full!(117, "tool_output_spill_to_disk_policy", Tooling, "Spill bounded tool output outside model context.", Direct, Indirect, OfflineSearch),
     partial!(118, "binary_media_inspection_routing", Tooling, "Route binary and media inspection by capability.", Indirect, Conditional, CatalogCurated),
-    missing!(119, "lsp_server_language_selection", Tooling, "Select LSP servers for discovered languages.", Indirect, Direct, CatalogCurated),
-    missing!(120, "lsp_timeout_restart_policy", Tooling, "Bound LSP requests and server restarts.", Indirect, Direct, OfflineSearch),
-    missing!(121, "lsp_result_context_budget", Context, "Bound LSP evidence admitted to context.", Indirect, Direct, OfflineSearch),
+    full!(119, "lsp_server_language_selection", Tooling, "Select LSP servers for discovered languages.", Indirect, Direct, CatalogCurated),
+    full!(120, "lsp_timeout_restart_policy", Tooling, "Bound LSP requests and server restarts.", Indirect, Direct, OfflineSearch),
+    full!(121, "lsp_result_context_budget", Context, "Bound LSP evidence admitted to context.", Indirect, Direct, OfflineSearch),
     partial!(122, "tool_result_cache_ttl", Tooling, "Bound deterministic tool-result cache reuse.", Indirect, Indirect, OfflineSearch),
 
     // Appendix F.4 — N-VR01..N-VR10, verification, recovery, and rewind (10).
     fixed!(123, "test_selection_strategy", Verification, "Select the verification command and evidence scope.", Indirect, Direct, CatalogCurated),
-    partial!(124, "incremental_versus_full_verification", Verification, "Choose incremental or full verification by risk.", Indirect, Direct, OfflineSearch),
-    partial!(125, "flaky_test_detection_quarantine", Verification, "Detect disagreement and quarantine flaky evidence.", Indirect, Direct, FixedInvariant),
+    full!(124, "incremental_versus_full_verification", Verification, "Choose incremental or full verification by risk.", Indirect, Direct, OfflineSearch),
+    full!(125, "flaky_test_detection_quarantine", Verification, "Detect disagreement and quarantine flaky evidence.", Indirect, Direct, FixedInvariant),
     fixed!(126, "failure_classification_taxonomy", Verification, "Classify verification failures with a versioned taxonomy.", Direct, Direct, FixedInvariant),
     fixed!(127, "retry_eligibility_policy", Verification, "Retry only verification outcomes that are eligible.", Direct, Direct, OfflineSearch),
-    missing!(128, "rollback_on_verification_failure", Verification, "Rollback selected workspace changes after verification failure.", Indirect, Direct, CatalogCurated),
-    partial!(129, "workspace_checkpoint_cadence", Verification, "Choose durable workspace checkpoint boundaries.", Conditional, Indirect, CatalogCurated),
-    partial!(130, "selective_restore_scope", Verification, "Choose an explicit user-authorized restore scope.", Conditional, Indirect, FixedInvariant),
-    partial!(131, "verification_quorum_consensus", Verification, "Require bounded verifier agreement.", Indirect, Direct, OfflineSearch),
+    full!(128, "rollback_on_verification_failure", Verification, "Rollback selected workspace changes after verification failure.", Indirect, Direct, CatalogCurated),
+    full!(129, "workspace_checkpoint_cadence", Verification, "Choose durable workspace checkpoint boundaries.", Conditional, Indirect, CatalogCurated),
+    full!(130, "selective_restore_scope", Verification, "Choose an explicit user-authorized restore scope.", Conditional, Indirect, FixedInvariant),
+    full!(131, "verification_quorum_consensus", Verification, "Require bounded verifier agreement.", Indirect, Direct, OfflineSearch),
     fixed!(132, "recovery_escalation_policy", Verification, "Escalate verification recovery from retry to replan to stop.", Direct, Direct, OfflineSearch),
 
     // Appendix F.5 — N-AG01..N-AG14, agents, tasks, and collaboration (14).
     full!(133, "per_agent_model", Orchestration, "Choose a model for one admitted agent.", Indirect, Direct, CatalogCurated),
-    full!(134, "per_agent_effort_thinking", Orchestration, "Choose effort and thinking for one admitted agent.", Indirect, Direct, OfflineSearch),
+    partial!(134, "per_agent_effort_thinking", Orchestration, "Choose effort and thinking for one admitted agent.", Indirect, Direct, OfflineSearch),
     full!(135, "per_agent_tool_profile", Orchestration, "Narrow the tool profile for one admitted agent.", Indirect, Direct, CatalogCurated),
     partial!(136, "per_agent_memory_scope", Memory, "Choose isolated or explicitly shared agent memory.", Indirect, Direct, CatalogCurated),
     fixed!(137, "spawn_depth_control", Orchestration, "Bound recursive agent spawning.", Direct, Indirect, OfflineSearch),
     partial!(138, "per_session_spawn_cap", Orchestration, "Bound total agent spawns in one session.", Direct, Indirect, OfflineSearch),
-    partial!(139, "task_priority_scheduling", Orchestration, "Schedule ready tasks by bounded priority.", Direct, Indirect, OfflineSearch),
-    missing!(140, "speculative_sibling_count", Orchestration, "Bound speculative sibling agents.", Indirect, Direct, OfflineSearch),
-    missing!(141, "speculative_sibling_cancellation", Orchestration, "Cancel losing speculative siblings from evidence.", Indirect, Direct, OfflineSearch),
+    fixed!(139, "task_priority_scheduling", Orchestration, "Schedule ready tasks by bounded priority.", Direct, Indirect, OfflineSearch),
+    partial!(140, "speculative_sibling_count", Orchestration, "Bound speculative sibling agents.", Indirect, Direct, OfflineSearch),
+    partial!(141, "speculative_sibling_cancellation", Orchestration, "Cancel losing speculative siblings from evidence.", Indirect, Direct, OfflineSearch),
     partial!(142, "early_stop_quorum_policy", Orchestration, "Stop a fan only after required evidence reaches quorum.", Indirect, Direct, OfflineSearch),
-    missing!(143, "writer_worktree_isolation_mode", Governance, "Isolate write-capable agents in worktrees.", Conditional, Direct, FixedInvariant),
-    missing!(144, "merge_conflict_arbitration", Verification, "Arbitrate verified child merges and conflicts.", Conditional, Direct, CatalogCurated),
+    fixed!(143, "writer_worktree_isolation_mode", Governance, "Isolate write-capable agents in worktrees.", Conditional, Direct, FixedInvariant),
+    fixed!(144, "merge_conflict_arbitration", Verification, "Arbitrate verified child merges and conflicts.", Conditional, Direct, FixedInvariant),
     fixed!(145, "inter_agent_messaging_topology", Orchestration, "Route bounded agent reports through the parent.", Indirect, Direct, CatalogCurated),
-    missing!(146, "task_retry_reassignment_policy", Orchestration, "Retry or reassign a failed agent task.", Direct, Direct, OfflineSearch),
+    partial!(146, "task_retry_reassignment_policy", Orchestration, "Retry or reassign a failed agent task.", Direct, Direct, OfflineSearch),
 
     // Appendix F.6 — N-MP01..N-MP08, MCP and plugin lifecycle (8).
     full!(147, "mcp_transport_selection", Extensibility, "Select an admitted MCP transport.", Indirect, Indirect, CatalogCurated),
-    partial!(148, "deferred_discovery_threshold", Extensibility, "Defer MCP discovery after a bounded threshold.", Indirect, Indirect, OfflineSearch),
-    missing!(149, "mcp_reconnect_backoff", Extensibility, "Bound MCP reconnect attempts and delay.", Indirect, Indirect, OfflineSearch),
+    partial!(148, "deferred_discovery_threshold", Extensibility, "Defer registered tool schemas after a bounded eager threshold.", Indirect, Indirect, OfflineSearch),
+    partial!(149, "mcp_reconnect_backoff", Extensibility, "Bound MCP reconnect attempts and delay.", Indirect, Indirect, OfflineSearch),
     fixed!(150, "per_server_startup_deadline", Extensibility, "Bound MCP server startup and initialization.", Indirect, Indirect, OfflineSearch),
     fixed!(151, "per_tool_mcp_deadline", Extensibility, "Bound one MCP tool exchange.", Direct, Indirect, OfflineSearch),
     partial!(152, "mcp_result_cap_spill_policy", Extensibility, "Cap or spill MCP results before model exposure.", Indirect, Indirect, OfflineSearch),
@@ -243,10 +237,10 @@ static FAMILIES: &[Family] = &[
     partial!(154, "resource_prompt_plugin_capability_exposure", Extensibility, "Expose trusted MCP resources, prompts, and plugin capabilities.", Indirect, Indirect, CatalogCurated),
 
     // Appendix F.7 — N-SR01..N-SR06, session, cache, and reliability (6).
-    missing!(155, "request_compression_policy", Provider, "Select provider request compression.", Indirect, Conditional, OfflineSearch),
+    partial!(155, "request_compression_policy", Provider, "Select provider request compression.", Indirect, Conditional, OfflineSearch),
     fixed!(156, "http_pool_keepalive_idle_policy", Provider, "Bound HTTP pool idle and TCP keepalive behavior.", Indirect, Conditional, OfflineSearch),
-    missing!(157, "rate_limit_aware_admission", Provider, "Gate new provider work from observed rate-limit headroom.", Indirect, Indirect, OfflineSearch),
-    missing!(158, "prompt_cache_ttl_breakpoint_strategy", Context, "Declare prompt-cache lifetime and breakpoint strategy when an independent control is implemented.", Indirect, Indirect, OfflineSearch),
+    partial!(157, "rate_limit_aware_admission", Provider, "Gate new provider work from observed rate-limit headroom.", Indirect, Indirect, OfflineSearch),
+    partial!(158, "prompt_cache_ttl_breakpoint_strategy", Context, "Declare prompt-cache lifetime and breakpoint strategy when an independent control is implemented.", Indirect, Indirect, OfflineSearch),
     partial!(159, "session_isolation_profile", Governance, "Choose an isolation profile for sessions and evaluations.", Direct, Direct, FixedInvariant),
     fixed!(160, "replay_divergence_detection_policy", Verification, "Reject replay state that diverges from durable evidence.", Indirect, Indirect, FixedInvariant),
 ];

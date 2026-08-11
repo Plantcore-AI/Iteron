@@ -19,6 +19,9 @@
 //! GDPR crypto-shred (ADR-008 §1) — the interface is present, the blob store is a TODO.
 
 pub mod checkpoint;
+pub mod content_store;
+pub mod erasure;
+pub mod policy_bundle;
 pub mod redact;
 pub mod session;
 
@@ -26,7 +29,25 @@ mod cache_io;
 
 pub use checkpoint::{
     Snapshot, SnapshotInventory, checkpoint, checkpoint_excluding_runtime_state,
-    checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
+    checkpoint_supported, rewind_workspace, rewind_workspace_paths, rewind_workspace_with_policy,
+    snapshot_inventory,
+};
+pub use content_store::{
+    ContentReferenceSurface, ContentStoreError, MAX_PRIVATE_CONTENT_BYTES,
+    MAX_PRIVATE_CONTENT_PREVIEW_BYTES, PrivateContentClass, PrivateContentDerivativeStore,
+    PrivateContentHandle, PrivateContentOwnerLease, PrivateContentRetention,
+    acquire_private_content_owner, content_revocation_generation, guard_private_content,
+    guard_private_content_for_run, private_content_digest, put_private_content,
+    put_private_content_at_surface, register_private_content_reference,
+    release_private_content_for_run, retain_private_content_references,
+};
+pub use erasure::{
+    ErasureError, LocalErasureAuthority, MAX_ERASURE_RECEIPTS, authorize_local_erasure,
+    execute_erasure, list_erasure_receipts, read_erasure_receipt,
+};
+pub use policy_bundle::{
+    PolicyBundleCheckpointError, policy_bundle_checkpoint_from_events, seal_policy_bundle_snapshot,
+    validate_policy_bundle_snapshot,
 };
 pub use session::{
     DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, delete, fork,
@@ -34,10 +55,17 @@ pub use session::{
     replay_run_timed,
 };
 
+/// A registry-driven resolved tunable set for other crates' tests. Feature-gated, never in a
+/// release build; it resolves the compiled registry rather than inventing a snapshot.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use session::tunables::resolved_fixture;
+
 /// Explicit policy for admitting records created before immutable tunables snapshots.
 pub type LegacyTunablesPolicy = session::tunables::LegacyTunablesPolicy;
 /// Result of comparing a record's immutable genesis identity with the current resolved set.
 pub type TunablesCompatibility = session::tunables::TunablesCompatibility;
+/// Version-neutral immutable checkpoint read from physical sequence one.
+pub type TunablesCheckpoint = session::tunables::TunablesCheckpoint;
 /// Typed fail-closed snapshot/placement/compatibility error.
 pub type TunablesSnapshotError = session::tunables::TunablesSnapshotError;
 
@@ -48,11 +76,32 @@ pub fn snapshot_from_resolved(
     session::tunables::snapshot_from_resolved(resolved)
 }
 
+/// Project an atomically accepted resolver result into the reconstructable V2 checkpoint.
+pub fn snapshot_v2_from_resolved(
+    resolved: &iteron_tunables::ResolvedTunableSet,
+) -> Result<iteron_protocol::RunGenesisTunablesSnapshotV2, TunablesSnapshotError> {
+    session::tunables::snapshot_v2_from_resolved(resolved)
+}
+
 /// Validate bounds, state invariants, and the recomputed canonical self-digest.
 pub fn validate_tunables_snapshot(
     snapshot: &iteron_protocol::RunGenesisTunablesSnapshot,
 ) -> Result<(), TunablesSnapshotError> {
     session::tunables::validate_tunables_snapshot(snapshot)
+}
+
+/// Validate V2 bounds, content-free projections, effective commitment, and self-digest.
+pub fn validate_tunables_snapshot_v2(
+    snapshot: &iteron_protocol::RunGenesisTunablesSnapshotV2,
+) -> Result<(), TunablesSnapshotError> {
+    session::tunables::validate_tunables_snapshot_v2(snapshot)
+}
+
+/// Project the unique physical-seq-1 checkpoint without consulting machine defaults.
+pub fn tunables_checkpoint_from_events(
+    events: &[Event],
+) -> Result<Option<TunablesCheckpoint>, TunablesSnapshotError> {
+    session::tunables::checkpoint_from_events(events)
 }
 
 /// Checked fork convenience retained at the crate root.
@@ -294,6 +343,10 @@ pub enum RecordError {
     },
     #[error(transparent)]
     TunablesSnapshot(#[from] TunablesSnapshotError),
+    #[error(transparent)]
+    PolicyBundleCheckpoint(#[from] PolicyBundleCheckpointError),
+    #[error(transparent)]
+    PrivateContent(#[from] ContentStoreError),
 }
 
 /// One line of the rollout. `prev` chains to the previous line's `hash`; `hash` covers
@@ -470,6 +523,27 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
     }
     if let EventKind::TunablesSnapshot { snapshot, .. } = &event.kind {
         validate_tunables_snapshot(snapshot)?;
+    }
+    if let EventKind::TunablesSnapshotV2 { snapshot, .. } = &event.kind {
+        session::tunables::validate_tunables_snapshot_v2(snapshot)?;
+    }
+    if let EventKind::PolicyBundleSnapshot { snapshot, .. } = &event.kind {
+        policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
+    }
+    match &event.kind {
+        EventKind::PolicyDecision { evidence } => evidence.validate().map_err(|_| {
+            RecordError::InvalidEventSchema {
+                reason: "policy decision evidence is invalid or outside its content-free bounds",
+            }
+        })?,
+        EventKind::PolicyOutcome { evidence } => {
+            evidence
+                .validate()
+                .map_err(|_| RecordError::InvalidEventSchema {
+                    reason: "policy outcome evidence is invalid or outside its content-free bounds",
+                })?
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -799,6 +873,15 @@ pub struct Rollout {
 }
 
 impl Rollout {
+    /// Monotonic time elapsed since this writer descriptor opened.
+    ///
+    /// Evidence constructed immediately before [`Self::append`] uses this clock so its payload
+    /// and the enclosing chain line share one segment origin. A reopened writer deliberately
+    /// starts a new segment; callers must never compare offsets across descriptors as wall time.
+    pub fn segment_elapsed_us(&self) -> u64 {
+        u64::try_from(self.opened_at.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
     /// True only before the first durable event has been appended. Frontends use this narrow
     /// predicate to configure a fresh agent's genesis policy; runtime policy changes must use the
     /// kernel's write-ahead transition APIs instead.
@@ -840,14 +923,7 @@ impl Rollout {
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
         let rollout = Self::open_existing(dir, run, tenant)?;
-        // `open_existing` already performed the mandatory bounded tail scan while acquiring the
-        // writer lock. Its schema-frozen return shape cannot expose a new genesis projection, so
-        // compare through one bounded replay under that same lock rather than duplicating the
-        // durability scanner and letting the two implementations drift.
-        let events = replay(rollout.path())?;
-        let recorded = session::tunables::snapshot_from_events(&events)?;
-        let compatibility =
-            session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+        let compatibility = rollout.validate_tunables_snapshot(expected, legacy)?;
         Ok((rollout, compatibility))
     }
 
@@ -859,8 +935,50 @@ impl Rollout {
         resolved: &iteron_tunables::ResolvedTunableSet,
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
-        let expected = snapshot_from_resolved(resolved)?;
-        Self::open_existing_with_tunables_snapshot(dir, run, tenant, &expected, legacy)
+        let rollout = Self::open_existing(dir, run, tenant)?;
+        let compatibility = rollout.validate_resolved_tunables(resolved, legacy)?;
+        Ok((rollout, compatibility))
+    }
+
+    /// Validate the immutable tunables identity while retaining this already-held writer lock.
+    /// Composition roots use this after route resolution when they acquired the lock earlier to
+    /// prevent resume state from changing underneath provider/model selection.
+    pub fn validate_tunables_snapshot(
+        &self,
+        expected: &iteron_protocol::RunGenesisTunablesSnapshot,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<TunablesCompatibility, RecordError> {
+        let events = replay(self.path())?;
+        let recorded = session::tunables::checkpoint_from_events(&events)?;
+        let expected = TunablesCheckpoint::V1(expected.clone());
+        session::tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)
+            .map_err(RecordError::from)
+    }
+
+    /// Resolver-typed convenience for [`Self::validate_tunables_snapshot`].
+    pub fn validate_resolved_tunables(
+        &self,
+        resolved: &iteron_tunables::ResolvedTunableSet,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<TunablesCompatibility, RecordError> {
+        let events = replay(self.path())?;
+        let recorded = session::tunables::checkpoint_from_events(&events)?;
+        session::tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)
+            .map_err(RecordError::from)
+    }
+
+    /// Read and validate this rollout's immutable checkpoint while retaining the writer lock.
+    pub fn tunables_checkpoint(&self) -> Result<Option<TunablesCheckpoint>, RecordError> {
+        let events = replay(self.path())?;
+        session::tunables::checkpoint_from_events(&events).map_err(RecordError::from)
+    }
+
+    /// Read the exact physical run-genesis policy receipt while retaining this writer lock.
+    pub fn policy_bundle_checkpoint(
+        &self,
+    ) -> Result<Option<iteron_protocol::RunGenesisPolicyBundleSnapshot>, RecordError> {
+        let events = replay(self.path())?;
+        policy_bundle::policy_bundle_checkpoint_from_events(&events).map_err(RecordError::from)
     }
 
     /// Durably append a fresh root `RunStart` and its immutable resolved-set companion without an
@@ -886,14 +1004,51 @@ impl Rollout {
             }
             .into());
         }
-        let snapshot = snapshot_from_resolved(resolved)?;
-        self.append_genesis_snapshot(run_start, snapshot, None)
+        let snapshot = snapshot_v2_from_resolved(resolved)?;
+        self.append_genesis_checkpoint(run_start, TunablesCheckpoint::V2(snapshot), None)
     }
 
+    /// Durably append a child `RunStart` and the same resolved V2 checkpoint, bound to its parent.
+    pub fn append_child_genesis_with_tunables(
+        &mut self,
+        run_start: &Event,
+        parent_run: &RunId,
+        resolved: &iteron_tunables::ResolvedTunableSet,
+    ) -> Result<(Seq, Seq), RecordError> {
+        if !matches!(
+            &run_start.kind,
+            EventKind::RunStart {
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                ..
+            }
+        ) {
+            return Err(TunablesSnapshotError::GenesisOrder {
+                reason: "spawned child tunables genesis requires an independent root run_start",
+            }
+            .into());
+        }
+        crate::validate_run_id(parent_run)?;
+        let checkpoint = TunablesCheckpoint::V2(snapshot_v2_from_resolved(resolved)?);
+        let inherited = session::tunables::inherited_from(&parent_run.0, &checkpoint);
+        self.append_genesis_checkpoint(run_start, checkpoint, Some(inherited))
+    }
+
+    #[cfg(test)]
     pub(crate) fn append_genesis_snapshot(
         &mut self,
         run_start: &Event,
         snapshot: iteron_protocol::RunGenesisTunablesSnapshot,
+        inherited_from: Option<iteron_protocol::RunGenesisTunablesInheritance>,
+    ) -> Result<(Seq, Seq), RecordError> {
+        self.append_genesis_checkpoint(run_start, TunablesCheckpoint::V1(snapshot), inherited_from)
+    }
+
+    pub(crate) fn append_genesis_checkpoint(
+        &mut self,
+        run_start: &Event,
+        checkpoint: TunablesCheckpoint,
         inherited_from: Option<iteron_protocol::RunGenesisTunablesInheritance>,
     ) -> Result<(Seq, Seq), RecordError> {
         if !self.is_empty() || !matches!(&run_start.kind, EventKind::RunStart { .. }) {
@@ -902,16 +1057,29 @@ impl Rollout {
             }
             .into());
         }
-        validate_tunables_snapshot(&snapshot)?;
+        let kind = match checkpoint {
+            TunablesCheckpoint::V1(snapshot) => {
+                validate_tunables_snapshot(&snapshot)?;
+                EventKind::TunablesSnapshot {
+                    version: iteron_protocol::RunGenesisTunablesVersion::V1,
+                    snapshot,
+                    inherited_from,
+                }
+            }
+            TunablesCheckpoint::V2(snapshot) => {
+                validate_tunables_snapshot_v2(&snapshot)?;
+                EventKind::TunablesSnapshotV2 {
+                    version: iteron_protocol::RunGenesisTunablesVersion::V2,
+                    snapshot,
+                    inherited_from,
+                }
+            }
+        };
         let snapshot_event = Event {
             // `append` owns the authoritative physical sequence and stamps this placeholder.
             seq: Seq::ZERO,
             turn: run_start.turn,
-            kind: EventKind::TunablesSnapshot {
-                version: iteron_protocol::RunGenesisTunablesVersion::V1,
-                snapshot,
-                inherited_from,
-            },
+            kind,
         };
         let mut genesis = session::tunables::GenesisTunablesState::default();
         genesis.observe(0, &run_start.kind)?;
@@ -957,6 +1125,12 @@ impl Rollout {
                     return Err(error);
                 }
             };
+        if seq != Seq::ZERO {
+            // Opening a writer is also the resume admission boundary. Hash-valid marker strings
+            // are not sufficient: every private handle must still resolve under the tenant's
+            // current revocation generation before this process may continue the run.
+            replay(&path)?;
+        }
         let durable_bytes = file.metadata()?.len();
         Ok(Rollout {
             path,
@@ -1086,6 +1260,12 @@ impl Rollout {
                 max: MAX_ROLLOUT_PHYSICAL_LINES,
             });
         }
+        if matches!(&event.kind, EventKind::PolicyBundleSnapshot { .. }) && self.seq != Seq(2) {
+            return Err(policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
+                "policy checkpoint must be physical sequence two",
+            )
+            .into());
+        }
         event
             .kind
             .validate_compatibility_tag()
@@ -1103,7 +1283,20 @@ impl Rollout {
         // rollouts written before this fix remain correct.
         event.seq = self.seq;
         let event = &event;
-        let payload = serde_json::to_value(event)?;
+        let mut payload = serde_json::to_value(event)?;
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::externalize_event_payload(
+            runs_dir,
+            &self.tenant,
+            &self.run,
+            self.seq,
+            &mut payload,
+        )?;
         let seq = self.seq;
         let hash = hash_line(&self.last_hash, seq.0, &payload);
         let cl = ChainLine {
@@ -1311,12 +1504,21 @@ pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
         prev = cl.hash;
         expected_seq = expected_seq.saturating_add(1);
         let ts_us = cl.ts_us;
-        let mut event: Event = serde_json::from_value(cl.payload)?;
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::hydrate_event_payload(runs_dir, &TenantId(cl.tenant.clone()), &mut payload)?;
+        let mut event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         event.seq = Seq(cl.seq);
         events.push(TimedEvent { ts_us, event });
         Ok(())
     })?;
+    guard_replay_lineage(path, tenant.as_ref())?;
     Ok(events)
 }
 
@@ -1367,13 +1569,44 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
         // deserialized event's seq with it. Without this, every replay consumer (`--fork`, `/fork`,
         // `/rewind`) saw seq 0 and branched at genesis, silently discarding the entire parent
         // transcript (review CRITICAL/HIGH). Handles legacy rollouts (payload seq 0) too.
-        let mut event: Event = serde_json::from_value(cl.payload)?;
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::hydrate_event_payload(runs_dir, &TenantId(cl.tenant.clone()), &mut payload)?;
+        let mut event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         event.seq = Seq(cl.seq);
         events.push(event);
         Ok(())
     })?;
+    guard_replay_lineage(path, tenant.as_ref())?;
     Ok(events)
+}
+
+fn guard_replay_lineage(path: &Path, tenant: Option<&TenantId>) -> Result<(), RecordError> {
+    let Some(tenant) = tenant else {
+        return Ok(());
+    };
+    let runs_dir = path.parent().ok_or_else(|| {
+        RecordError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "rollout path has no runs directory",
+        ))
+    })?;
+    let run = RunId(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(RecordError::InvalidRunId {
+                reason: "rollout filename is not valid UTF-8",
+            })?
+            .to_owned(),
+    );
+    content_store::guard_private_content_for_run(runs_dir, tenant, &run)?;
+    Ok(())
 }
 
 /// Hash-verified replay plus an exact immutable tunables compatibility check.
@@ -1387,9 +1620,10 @@ pub fn replay_with_tunables_snapshot(
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
     let events = replay(path)?;
-    let recorded = session::tunables::snapshot_from_events(&events)?;
+    let recorded = session::tunables::checkpoint_from_events(&events)?;
+    let expected = TunablesCheckpoint::V1(expected.clone());
     let compatibility =
-        session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+        session::tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)?;
     Ok((events, compatibility))
 }
 
@@ -1399,8 +1633,11 @@ pub fn replay_with_resolved_tunables(
     resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
-    let expected = snapshot_from_resolved(resolved)?;
-    replay_with_tunables_snapshot(path, &expected, legacy)
+    let events = replay(path)?;
+    let recorded = session::tunables::checkpoint_from_events(&events)?;
+    let compatibility =
+        session::tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)?;
+    Ok((events, compatibility))
 }
 
 #[cfg(test)]
@@ -2521,15 +2758,42 @@ ant-api03-SuperSecretTokenValue12345 in config";
             .unwrap();
         }
         let path = dir.join("t5.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
+        // Content fields are externalized into the content store, so the rollout line holds a
+        // digest marker rather than the text. Reading only the `.jsonl` would therefore report
+        // success while the plaintext sat in a sibling file: check every byte the run wrote, and
+        // check the mask on the hydrated event that replay actually reconstructs.
+        assert_no_plaintext_under(&dir, "SuperSecretTokenValue");
+        let replayed = replay(&path).unwrap();
+        assert_eq!(replayed.len(), 1);
+        let EventKind::Message { message } = &replayed[0].kind else {
+            panic!("expected the appended message event back");
+        };
+        let Block::ToolResult(result) = &message.content[0] else {
+            panic!("expected the appended tool result back");
+        };
         assert!(
-            !raw.contains("SuperSecretTokenValue"),
-            "the secret must not be in the durable record"
+            result.content.contains("[REDACTED"),
+            "the secret must be masked, got {}",
+            result.content
         );
-        assert!(raw.contains("[REDACTED"), "the secret must be masked");
-        // and the chain still verifies (replay works over the redacted content)
-        assert_eq!(replay(&path).unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every byte the run wrote, not just the rollout line. Externalized content lives beside the
+    /// `.jsonl`, so a needle search restricted to that one file proves nothing about secrecy.
+    fn assert_no_plaintext_under(dir: &std::path::Path, needle: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                assert_no_plaintext_under(&path, needle);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                assert!(
+                    !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                    "`{needle}` leaked as plaintext into {}",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2551,12 +2815,7 @@ ant-api03-SuperSecretTokenValue12345 in config";
         }
 
         let path = dir.join("notice-redact.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !raw.contains(secret),
-            "notice leaked into the durable record"
-        );
-        assert!(raw.contains("[REDACTED"), "notice secret must be masked");
+        assert_no_plaintext_under(&dir, secret);
         let replayed = replay(&path).unwrap();
         assert!(matches!(
             &replayed[0].kind,

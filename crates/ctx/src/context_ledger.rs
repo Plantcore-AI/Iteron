@@ -25,6 +25,7 @@ pub enum ContextSourceClass {
     SkillIndex,
     SkillReference,
     ToolSchema,
+    TaskPrompt,
     TranscriptUser,
     TranscriptAssistant,
     TranscriptTool,

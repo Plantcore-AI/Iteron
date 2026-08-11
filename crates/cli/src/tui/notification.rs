@@ -1033,6 +1033,9 @@ mod tests {
             context: iteron_ctx::ContextEstimate {
                 system_tokens: 0,
                 tool_tokens: 0,
+                conversation_tokens: 0,
+                tool_result_tokens: 0,
+                lsp_result_tokens: 0,
                 transcript_tokens: 0,
                 framing_tokens: 0,
                 total_tokens: 0,

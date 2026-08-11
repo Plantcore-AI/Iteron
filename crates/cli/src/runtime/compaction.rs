@@ -19,17 +19,25 @@ impl Agent {
             ),
             _ => CompactionPolicy::summary_prompt().to_string(),
         };
+        let prompt = if self.compaction.summary_profile.preserve_tool_evidence {
+            format!(
+                "{prompt}\n\nPreserve tool names, effect/result identities, exit status, and verification evidence whenever they affect what remains to do."
+            )
+        } else {
+            prompt
+        };
         msgs.push(Message::user_text(prompt));
         let req = TurnRequest {
             model: self.model.clone(),
+            controls: iteron_provider::ProviderRequestControls::default(),
             system: "You compress a coding-agent transcript into a terse hand-off note.".into(),
             messages: msgs,
             input_images: Vec::new(),
             tools: vec![],
-            max_tokens: 2048,
+            max_tokens: self.compaction.summary_profile.max_output_tokens,
             cache_system: false,
-            thinking_budget: 0,
-            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            thinking_budget: self.compaction.summary_profile.effort.thinking_budget(),
+            reasoning_effort: self.compaction.summary_profile.effort.reasoning_effort(),
         };
         // The hand-off note must not appear as assistant prose, but its provider stream is still
         // live work. Publish only cumulative decode counts through the internal-activity seam.
@@ -87,16 +95,66 @@ impl Agent {
                 let text = res.text();
                 progress.complete_output(&text);
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-                self.advance_turn()?;
+                self.advance_turn().await?;
                 Ok(text)
             }
             Err(error) => {
                 self.mark_usd_unknown();
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-                self.advance_turn()?;
+                self.advance_turn().await?;
                 Err(error)
             }
         }
+    }
+
+    /// Execute the resolved summary topology. Every stage is bounded and goes through the same
+    /// provider-attempt accounting as an ordinary single-stage summary.
+    pub(super) async fn summarize_compaction(
+        &mut self,
+        middle: &[Message],
+        focus: Option<&str>,
+    ) -> Result<String, KernelError> {
+        let (max_chunks, reduce_focus) = match self.compaction.summary_topology {
+            iteron_ctx::SummaryTopology::SingleStage => return self.summarize(middle, focus).await,
+            iteron_ctx::SummaryTopology::Hierarchical => (
+                4usize,
+                "Merge the bounded child summaries into one chronological hand-off without dropping conflicts or unresolved obligations.",
+            ),
+            iteron_ctx::SummaryTopology::MapReduce => (
+                8usize,
+                "Reduce the independent map summaries into one deduplicated hand-off; preserve disagreements explicitly rather than voting them away.",
+            ),
+        };
+        if middle.is_empty() {
+            return Ok(String::new());
+        }
+        let chunk_size = middle.len().div_ceil(max_chunks).max(1);
+        let mut partials = Vec::with_capacity(middle.len().div_ceil(chunk_size));
+        for (index, chunk) in middle.chunks(chunk_size).enumerate() {
+            let stage_focus = format!(
+                "Topology stage {} of at most {max_chunks}. Summarize only this contiguous transcript range and retain its unresolved obligations.",
+                index.saturating_add(1)
+            );
+            partials.push(self.summarize(chunk, Some(&stage_focus)).await?);
+        }
+        if partials.len() == 1 {
+            return Ok(partials.pop().unwrap_or_default());
+        }
+        let reduction = partials
+            .into_iter()
+            .enumerate()
+            .map(|(index, summary)| {
+                Message::user_text(format!(
+                    "Bounded partial summary {}:\n{summary}",
+                    index.saturating_add(1)
+                ))
+            })
+            .collect::<Vec<_>>();
+        let final_focus = match focus {
+            Some(focus) if !focus.trim().is_empty() => format!("{reduce_focus}\n{focus}"),
+            _ => reduce_focus.to_owned(),
+        };
+        self.summarize(&reduction, Some(&final_focus)).await
     }
 
     /// Record one compaction. What lands on the record is the summary and its plan range, NOT the
@@ -106,21 +164,87 @@ impl Agent {
     /// back together and `messages_from_rollout` proves the result is identical.
     pub(super) fn record_compaction(
         &mut self,
-        before: usize,
+        turn: TurnId,
+        before_messages: &[Message],
         plan: &iteron_ctx::CompactionPlan,
         summary: &str,
-        after: usize,
+        reason_code: &'static str,
+        coverage_verified: bool,
     ) {
+        let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
+        let before = before_messages.len();
+        let after = rebuilt.len();
+        let tools = self.registry.specs();
+        let system = self.effective_system();
+        let before_estimate =
+            self.context_estimator
+                .estimate_uncached(&system, before_messages, &tools);
+        let after_estimate = self
+            .context_estimator
+            .estimate_uncached(&system, &rebuilt, &tools);
+        let trigger = self.compaction.effective_trigger_tokens(
+            self.model_context_window,
+            self.model_max_output_tokens.unwrap_or(8192),
+        );
+        let compaction = iteron_ctx::CompactionEvidence {
+            trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
+            before_tokens: u64::try_from(before_estimate.total_tokens).unwrap_or(u64::MAX),
+            after_tokens: u64::try_from(after_estimate.total_tokens).unwrap_or(u64::MAX),
+            obligations_preserved: plan.obligations_preserved().saturating_add(
+                if coverage_verified {
+                    plan.obligations_lost()
+                } else {
+                    0
+                },
+            ),
+            obligations_lost: if coverage_verified {
+                0
+            } else {
+                plan.obligations_lost()
+            },
+            reason_code: reason_code.into(),
+        };
+        let mut ledger =
+            iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
+        ledger.model_context_window = self.model_context_window;
+        ledger.usable_window = self.model_context_window.map(|window| {
+            window.saturating_sub(u64::from(self.model_max_output_tokens.unwrap_or(8192)))
+        });
+        ledger.output_reserved_tokens = u64::from(self.model_max_output_tokens.unwrap_or(8192));
+        ledger.record_transform(iteron_ctx::ContextTransformEvidence {
+            kind: iteron_ctx::ContextTransformKind::Compact,
+            policy_id: "core/compaction@1".into(),
+            input_segments: u32::try_from(before).unwrap_or(u32::MAX),
+            output_segments: u32::try_from(after).unwrap_or(u32::MAX),
+            input_bytes: before_messages.iter().fold(0u64, |total, message| {
+                total.saturating_add(
+                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
+                        .unwrap_or(u64::MAX),
+                )
+            }),
+            output_bytes: rebuilt.iter().fold(0u64, |total, message| {
+                total.saturating_add(
+                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
+                        .unwrap_or(u64::MAX),
+                )
+            }),
+            input_tokens: compaction.before_tokens,
+            output_tokens: compaction.after_tokens,
+            elapsed_us: 0,
+        });
+        ledger.compaction = Some(compaction.clone());
+        self.context_ledgers.publish(ledger);
         self.compacted_in_run = true;
+        self.last_compaction_turn = Some(u64::from(turn.0));
         self.emit(
-            TurnId(self.seq_turn),
+            turn,
             EventKind::Compaction {
                 messages: iteron_ctx::compaction_seed(plan, summary),
             },
         );
         self.lifecycle_event(
             "context.compaction.completed",
-            Some(TurnId(self.seq_turn)),
+            Some(turn),
             LifecyclePayload {
                 count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
                 magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
@@ -129,7 +253,7 @@ impl Agent {
         );
         self.lifecycle_event(
             "context.segment.removed",
-            Some(TurnId(self.seq_turn)),
+            Some(turn),
             LifecyclePayload {
                 count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
                 reason_code: Some("compaction_range".into()),
@@ -138,7 +262,7 @@ impl Agent {
         );
         self.lifecycle_event(
             "context.segment.updated",
-            Some(TurnId(self.seq_turn)),
+            Some(turn),
             LifecyclePayload {
                 count: Some(1),
                 magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
@@ -146,8 +270,30 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
+        if compaction.obligations_preserved > 0 {
+            self.lifecycle_event(
+                "context.obligation.preserved",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(compaction.obligations_preserved)),
+                    reason_code: Some(reason_code.into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        if compaction.obligations_lost > 0 {
+            self.lifecycle_event(
+                "context.obligation.lost",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(compaction.obligations_lost)),
+                    reason_code: Some("obligation_preservation_bound".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
         self.emit(
-            TurnId(self.seq_turn),
+            turn,
             EventKind::Notice {
                 text: format!("compacted {before} messages -> {after}"),
             },
@@ -163,7 +309,14 @@ impl Agent {
     /// did not ask for, and the emergency valve inside the turn loop still guarantees that
     /// whatever comes next can be admitted.
     pub(super) async fn settle_compaction(&mut self) {
-        if self.compacted_in_run || self.record_failed || self.delegation_depth > 0 {
+        if self.compacted_in_run
+            || self.record_failed
+            || self.delegation_depth > 0
+            || !self
+                .compaction
+                .hysteresis
+                .cooldown_allows(u64::from(self.seq_turn), self.last_compaction_turn)
+        {
             return;
         }
         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
@@ -207,16 +360,44 @@ impl Agent {
         if matches!(report.decision, HookDecision::Deny(_)) {
             return;
         }
-        let before = messages.len();
-        let after = 2 + plan.keep_verbatim.len();
+        let compaction_turn = TurnId(self.seq_turn);
         self.lifecycle_event(
             "context.compaction.started",
-            Some(TurnId(self.seq_turn)),
+            Some(compaction_turn),
             LifecyclePayload::default(),
         );
-        match self.summarize(&plan.to_summarize, None).await {
+        match self.summarize_compaction(&plan.to_summarize, None).await {
             Ok(summary) => {
-                self.record_compaction(before, &plan, &summary, after);
+                let covered = if self.compaction.coverage_check {
+                    self.verify_compaction_summary(&plan.to_summarize, &summary)
+                        .await
+                        .unwrap_or(false)
+                } else {
+                    true
+                };
+                if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
+                    self.lifecycle_event(
+                        "context.compaction.failed",
+                        Some(compaction_turn),
+                        LifecyclePayload {
+                            reason_code: Some(if covered {
+                                "hysteresis_exit_not_reached".into()
+                            } else {
+                                "summary_coverage_missing".into()
+                            }),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    return;
+                }
+                self.record_compaction(
+                    compaction_turn,
+                    &messages,
+                    &plan,
+                    &summary,
+                    "turn_end",
+                    self.compaction.coverage_check && covered,
+                );
                 // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
                 // still holds the pre-compaction transcript. Dropping it makes the next follow-up
                 // replay from the rollout, which now carries the compaction — the one case where the
@@ -226,7 +407,7 @@ impl Agent {
             }
             Err(_) => self.lifecycle_event(
                 "context.compaction.failed",
-                Some(TurnId(self.seq_turn)),
+                Some(compaction_turn),
                 LifecyclePayload::default(),
             ),
         }
@@ -262,13 +443,57 @@ impl Agent {
         if let HookDecision::Deny(reason) = report.decision {
             return Err(KernelError::ContextResolution(reason));
         }
-        let summary = self.summarize(&plan.to_summarize, focus.as_deref()).await?;
-        let after = 2 + plan.keep_verbatim.len();
-        self.emit(
-            TurnId(self.seq_turn),
-            EventKind::Compaction {
-                messages: iteron_ctx::compaction_seed(&plan, &summary),
+        let compaction_turn = TurnId(self.seq_turn);
+        self.lifecycle_event(
+            "context.compaction.started",
+            Some(compaction_turn),
+            LifecyclePayload {
+                reason_code: Some("operator_forced".into()),
+                ..LifecyclePayload::default()
             },
+        );
+        let summary = match self
+            .summarize_compaction(&plan.to_summarize, focus.as_deref())
+            .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.lifecycle_event(
+                    "context.compaction.failed",
+                    Some(compaction_turn),
+                    LifecyclePayload {
+                        reason_code: Some("operator_forced".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                return Err(error);
+            }
+        };
+        if self.compaction.coverage_check
+            && !self
+                .verify_compaction_summary(&plan.to_summarize, &summary)
+                .await?
+        {
+            self.lifecycle_event(
+                "context.compaction.failed",
+                Some(compaction_turn),
+                LifecyclePayload {
+                    reason_code: Some("summary_coverage_missing".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            return Err(KernelError::ContextResolution(
+                "compaction summary failed the resolved coverage check".into(),
+            ));
+        }
+        let after = 2 + plan.keep_verbatim.len();
+        self.record_compaction(
+            compaction_turn,
+            &messages,
+            &plan,
+            &summary,
+            "operator_forced",
+            self.compaction.coverage_check,
         );
         self.emit(
             TurnId(self.seq_turn),

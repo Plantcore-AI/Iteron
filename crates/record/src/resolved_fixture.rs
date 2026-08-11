@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 const DIGEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DIGEST_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-pub(super) fn resolved() -> ResolvedTunableSet {
+pub fn resolved() -> ResolvedTunableSet {
     resolve(complete_input()).expect("registry-driven public resolver fixture must remain accepted")
 }
 
@@ -71,6 +71,14 @@ fn complete_input() -> ResolutionInput {
                 "model" => ResolutionValue::Enum {
                     value: route.model_id.clone(),
                 },
+                // `ProcessRuntimePolicy` rejects a disabled backend that still admits background
+                // jobs. That pairing spans two families, which a per-family value schema cannot
+                // express, so the registry accepts a combination the runtime owner refuses. Pick
+                // the backend that admits the sampled capacity rather than emit a set that is
+                // valid on paper and unusable in practice.
+                "persistent_pty_backend" => ResolutionValue::Enum {
+                    value: "persistent".to_owned(),
+                },
                 _ => sample_schema(family.value_schema, family.ordinal),
             };
             DeclaredValue {
@@ -85,14 +93,13 @@ fn complete_input() -> ResolutionInput {
     let activation_evidence = families()
         .iter()
         .filter_map(|family| match family.activation.predicate {
-            ActivationPredicate::RuntimeDerived { seam } => Some(seam),
+            ActivationPredicate::RuntimeDerived { seam } => Some((family.id, seam)),
             ActivationPredicate::Always
             | ActivationPredicate::Configured { .. }
             | ActivationPredicate::Unavailable => None,
         })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|seam| ActivationEvidence {
+        .map(|(family, seam)| ActivationEvidence {
+            family: family.to_owned(),
             seam: seam.to_owned(),
             subject_digest_sha256: DIGEST_A.to_owned(),
             evidence_digest_sha256: DIGEST_B.to_owned(),
@@ -201,9 +208,18 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
     for rule in schema.rules {
         match *rule {
             CrossFieldRule::LessOrEqual { left, right } => {
-                if let (Some(replacement), Some(_)) =
-                    (value_at(&value, left).cloned(), value_at(&value, right))
-                {
+                // Repair only an actual violation. Copying `left` over `right` unconditionally
+                // would undo a `SumLessOrEqual` that already raised `right`, which makes the
+                // generated sample depend on the order the rules happen to be declared in.
+                let violated = match (value_at(&value, left), value_at(&value, right)) {
+                    (
+                        Some(ResolutionValue::Integer { value: left_value }),
+                        Some(ResolutionValue::Integer { value: right_value }),
+                    ) => left_value > right_value,
+                    (Some(_), Some(_)) => true,
+                    _ => false,
+                };
+                if violated && let Some(replacement) = value_at(&value, left).cloned() {
                     replace_at(&mut value, right, replacement);
                 }
             }

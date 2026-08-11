@@ -221,6 +221,31 @@ impl Agent {
         Ok(())
     }
 
+    /// Activate strict memory isolation for one benchmark attempt. Only the digest crosses into
+    /// runtime evidence; the corpus identifier itself is not retained in session state.
+    pub fn set_memory_benchmark_scope(&mut self, scope: &str) -> Result<(), KernelError> {
+        if self.injected.is_some() {
+            return Err(KernelError::ContextAlreadyResolved);
+        }
+        if scope.is_empty() || scope.len() > 1_024 {
+            return Err(KernelError::ContextResolution(
+                "benchmark memory scope must contain 1..=1024 bytes".into(),
+            ));
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(scope.as_bytes());
+        self.memory_benchmark_scope = Some(hasher.finalize().into());
+        Ok(())
+    }
+
+    pub(crate) fn has_memory_benchmark_scope(&self) -> bool {
+        self.memory_benchmark_scope.is_some()
+    }
+
+    pub fn set_retry_policy(&mut self, policy: iteron_sched::BackoffPolicy) {
+        self.retry_policy = policy;
+    }
+
     pub fn set_dependency_skill_dirs(
         &mut self,
         directories: Vec<(std::path::PathBuf, std::path::PathBuf)>,
@@ -236,16 +261,52 @@ impl Agent {
         &self.dependency_skill_dirs
     }
 
-    /// Install the operator-selected active bundle before any child registry is constructed.
-    pub fn set_boot_bundle(
+    /// Atomically install one compiler-validated nine-slot policy generation before turn zero.
+    /// Validation happens before the first assignment, so an invalid checkpoint or a late caller
+    /// cannot leave a mixture of old and new strategy Arcs on the agent.
+    pub(crate) fn install_compiled_policy_bundle(
         &mut self,
-        bundle: std::sync::Arc<iteron_agents::BootBundle>,
+        compiled: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        self.boot_bundle = bundle;
+        let slots = compiled.slots();
+        for (strategy, expected) in [
+            (&slots.context, "core/context"),
+            (&slots.tool_policy, "core/tool_policy"),
+            (&slots.memory, "core/memory"),
+            (&slots.router, "core/router"),
+            (&slots.planner, "core/planner"),
+            (&slots.collaboration, "core/collaboration"),
+            (&slots.scheduler, "core/scheduler"),
+            (&slots.verifier, "core/verifier"),
+            (&slots.model_router, "core/model_router"),
+        ] {
+            if strategy.slot().as_persisted_str() != expected {
+                return Err(KernelError::ContextResolution(format!(
+                    "compiled policy strategy has the wrong slot identity: expected {expected}"
+                )));
+            }
+        }
+        self.context_strategy = slots.context.clone();
+        self.tool_policy = slots.tool_policy.clone();
+        self.memory_strategy = slots.memory.clone();
+        self.router = slots.router.clone();
+        self.planner = slots.planner.clone();
+        self.collaboration = slots.collaboration.clone();
+        self.scheduler = slots.scheduler.clone();
+        self.verifier = slots.verifier.clone();
+        self.model_router = slots.model_router.clone();
+        self.boot_bundle = compiled.boot_bundle();
+        self.compiled_policy_bundle = compiled;
         Ok(())
+    }
+
+    pub(crate) fn policy_runtime_bindings(
+        &self,
+    ) -> &[super::policy_evidence_recorder::FrozenSlotPolicyBinding] {
+        self.compiled_policy_bundle.policy_runtime_bindings()
     }
 
     /// Install the already-discovered, already-framed instruction bytes proposed by the context

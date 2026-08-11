@@ -28,6 +28,7 @@ mod dataset_registry;
 mod evidence;
 pub mod gate;
 mod held_out;
+mod policy_evidence_projection;
 mod producer;
 mod promotion;
 mod promotion_auth;
@@ -85,6 +86,11 @@ pub use held_out::{
 /// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
 /// `iteron-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
 pub use iteron_protocol::{RunId, TenantId};
+pub use policy_evidence_projection::{
+    MAX_POLICY_EVIDENCE_RUN_JSON_BYTES, MAX_POLICY_EVIDENCE_RUNS,
+    POLICY_EVIDENCE_RUN_SCHEMA_VERSION, PolicyEvidenceRunFixture, PolicyEvidenceRunProjector,
+    PolicyEvidenceRunProjectorError, PolicyProjectionRewardContext,
+};
 pub use producer::{
     MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,
     OfflineRuleCandidate, OfflineRuleSearchProducer, OfflineRuleSearchSpec,

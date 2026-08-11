@@ -3,9 +3,9 @@ use iteron_tunables::{
     CoreStrategySlot, CrossFieldRule, DefaultKind, DefaultResolver, DefaultValueRequirement,
     EXPECTED_FAMILY_COUNT, ExternalCeiling, ImplementationStatus, InactiveReason,
     ProviderRequirement, REGISTRY_DIGEST_SHA256, RelevanceLevel, SCALAR_CATALOGS, ScalarDomain,
-    SourceKind, SourceTrust, StructuredValueDomain, TunableValue, TunableValueField, ValueKind,
-    canonical_artifact, canonical_artifact_json, canonical_payload_json, families,
-    family_semantic_digest, registry_digest, validate_registry,
+    SourceKind, SourceMergePolicy, SourceTrust, StructuredValueDomain, TunableValue,
+    TunableValueField, ValueKind, canonical_artifact, canonical_artifact_json,
+    canonical_payload_json, families, family_semantic_digest, registry_digest, validate_registry,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -836,8 +836,27 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         Some(TunableValue::Enum { value: "glm-5.2" })
     );
 
-    assert_eq!(integer_default("max_turns"), 40);
-    assert_eq!(integer_default("max_wall_secs"), 1_800);
+    assert_eq!(integer_default("max_turns"), 600);
+    assert_eq!(integer_default("max_wall_secs"), 14_400);
+    assert_eq!(integer_default("max_consecutive_tool_errors"), 25);
+    assert_eq!(integer_default("deferred_discovery_threshold"), 12);
+    assert_eq!(
+        family("allow_code").default.value,
+        Some(TunableValue::Boolean { value: true })
+    );
+    assert_eq!(
+        family("bypass_permissions").default.value,
+        Some(TunableValue::Boolean { value: true })
+    );
+    assert_eq!(
+        family("memory_enable").default.value,
+        Some(TunableValue::Boolean { value: true })
+    );
+    assert_eq!(
+        object_integer("compaction_trigger", "fallback_trigger_tokens"),
+        120_000
+    );
+    assert_eq!(integer_default("compaction_keep_recent"), 6);
     for (id, expected, environment) in [
         ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
         ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
@@ -947,18 +966,28 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert!(!prompt_cache_schema.contains("breakpoint"));
 
     let prompt_cache_strategy = family("prompt_cache_ttl_breakpoint_strategy");
+    // The runtime-binding work gave this family a real provider-side seam, so it is no longer
+    // `Missing`, and `Unavailable` is reserved for `Missing` entries.
     assert_eq!(
         prompt_cache_strategy.implementation_status,
-        ImplementationStatus::Missing
+        ImplementationStatus::Partial
     );
     assert!(matches!(
         prompt_cache_strategy.activation.predicate,
-        ActivationPredicate::Unavailable
+        ActivationPredicate::RuntimeDerived {
+            seam: "crates/provider/src/controls.rs"
+        }
     ));
-    assert_eq!(prompt_cache_strategy.source.bindings.len(), 1);
+    // It stopped being registry-only: an operator source now exists, bounded above by a
+    // provider-attested ceiling rather than by the operator's own claim.
+    assert_eq!(prompt_cache_strategy.source.bindings.len(), 2);
     assert_eq!(
         prompt_cache_strategy.source.bindings[0].kind,
-        SourceKind::Registry
+        SourceKind::UserConfig
+    );
+    assert_eq!(
+        prompt_cache_strategy.source.bindings[1].kind,
+        SourceKind::ExternalProvider
     );
     assert_eq!(prompt_cache_strategy.default.kind, DefaultKind::Dynamic);
     assert_eq!(
@@ -1019,10 +1048,22 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         family("oauth_auth_lifecycle_policy").default.resolver,
         DefaultResolver::Transport { .. }
     ));
+    // This family used to be forbidden from claiming provider attestation, because it had no
+    // implementation to attest anything. `crates/provider/src/controls.rs` now validates a
+    // requested TTL/breakpoint against a capability set that a real adapter populates
+    // (`crates/provider/src/anthropic.rs` attests the 300s and 3600s tiers), so the claim is
+    // grounded. What must hold instead is the shape that makes it safe: the operator may ask,
+    // and a provider-attested binding bounds what the operator may receive.
+    let prompt_cache_bindings = &family("prompt_cache_ttl_breakpoint_strategy")
+        .source
+        .bindings;
     assert!(
-        !family("prompt_cache_ttl_breakpoint_strategy")
-            .source
-            .bindings
+        prompt_cache_bindings
+            .iter()
+            .any(|binding| binding.trust == SourceTrust::Operator)
+    );
+    assert!(
+        prompt_cache_bindings
             .iter()
             .any(|binding| binding.trust == SourceTrust::ProviderAttested)
     );
@@ -1050,6 +1091,11 @@ fn activation_source_and_default_invariants_hold_for_every_entry() {
                 SourceKind::Registry => SourceTrust::RegistryDeclaration,
             };
             assert_eq!(binding.trust, expected, "{}", family.id);
+            if binding.kind == SourceKind::ProjectConfig {
+                assert_ne!(binding.merge, SourceMergePolicy::Override, "{}", family.id);
+            } else {
+                assert_eq!(binding.merge, SourceMergePolicy::Override, "{}", family.id);
+            }
         }
         match family.implementation_status {
             ImplementationStatus::Missing => {
@@ -1097,6 +1143,96 @@ fn activation_source_and_default_invariants_hold_for_every_entry() {
                 ));
             }
         }
+    }
+}
+
+#[test]
+fn repository_sources_have_typed_non_widening_merge_semantics() {
+    for (id, expected) in [
+        ("model", SourceMergePolicy::RouteSuggestion),
+        ("max_turns", SourceMergePolicy::TightenMaximum),
+        ("max_usd", SourceMergePolicy::TightenMaximum),
+        ("max_wall_secs", SourceMergePolicy::TightenMaximum),
+        ("allow_code", SourceMergePolicy::TightenBooleanGrant),
+        ("egress_allow", SourceMergePolicy::IntersectAllowSet),
+        ("instruction_bundle", SourceMergePolicy::RepositoryScoped),
+    ] {
+        let binding = family(id)
+            .source
+            .bindings
+            .iter()
+            .find(|binding| binding.kind == SourceKind::ProjectConfig)
+            .unwrap();
+        assert_eq!(binding.merge, expected, "{id}");
+    }
+}
+
+#[test]
+fn primary_runtime_source_metadata_matches_the_production_composition_root() {
+    for (id, expected) in [
+        (
+            "max_turns",
+            vec![
+                SourceKind::Cli,
+                SourceKind::Environment,
+                SourceKind::UserConfig,
+                SourceKind::ProjectConfig,
+                SourceKind::Builtin,
+            ],
+        ),
+        (
+            "max_usd",
+            vec![
+                SourceKind::Cli,
+                SourceKind::Environment,
+                SourceKind::UserConfig,
+                SourceKind::ProjectConfig,
+            ],
+        ),
+        ("max_tokens", vec![SourceKind::Cli]),
+        (
+            "max_wall_secs",
+            vec![
+                SourceKind::Cli,
+                SourceKind::UserConfig,
+                SourceKind::ProjectConfig,
+                SourceKind::Builtin,
+            ],
+        ),
+        (
+            "allow_code",
+            vec![
+                SourceKind::Cli,
+                SourceKind::UserConfig,
+                SourceKind::ProjectConfig,
+                SourceKind::Builtin,
+            ],
+        ),
+        (
+            "permission_mode",
+            vec![SourceKind::Cli, SourceKind::Builtin],
+        ),
+        (
+            "bypass_permissions",
+            vec![SourceKind::Cli, SourceKind::Builtin],
+        ),
+        ("verify_command", vec![SourceKind::Cli]),
+        ("memory_enable", vec![SourceKind::Builtin]),
+        (
+            "max_consecutive_tool_errors",
+            vec![SourceKind::Cli, SourceKind::Builtin],
+        ),
+    ] {
+        assert_eq!(
+            family(id)
+                .source
+                .bindings
+                .iter()
+                .map(|binding| binding.kind)
+                .collect::<Vec<_>>(),
+            expected,
+            "{id}"
+        );
     }
 }
 
@@ -1331,11 +1467,11 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         observed_nonnumeric_budget_domains,
         nonnumeric_budget_domains
     );
-    assert_eq!(keys.len(), 201);
-    assert_eq!(whole_value_count, 186);
+    assert_eq!(keys.len(), 198);
+    assert_eq!(whole_value_count, 183);
     assert_eq!(whole_catalog.len(), 15);
-    assert_eq!(relation_counts, [100, 95, 6]);
-    assert_eq!(action_counts, [100, 23, 78]);
+    assert_eq!(relation_counts, [99, 93, 6]);
+    assert_eq!(action_counts, [99, 23, 76]);
     assert_eq!(
         whole_catalog,
         BTreeSet::from([
@@ -1430,12 +1566,12 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         counts,
         BTreeMap::from([
             (ExternalCeiling::BenchmarkProtocol, 6),
-            (ExternalCeiling::ContextWindow, 33),
-            (ExternalCeiling::OperatorAuthority, 35),
+            (ExternalCeiling::ContextWindow, 30),
+            (ExternalCeiling::OperatorAuthority, 33),
             (ExternalCeiling::ParentCost, 6),
             (ExternalCeiling::ParentTokens, 10),
             (ExternalCeiling::ParentTurns, 8),
-            (ExternalCeiling::ParentWall, 29),
+            (ExternalCeiling::ParentWall, 31),
             (ExternalCeiling::ProcessBudget, 6),
             (ExternalCeiling::ProviderCapability, 23),
             (ExternalCeiling::RunBudget, 19),
@@ -1448,11 +1584,13 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
 
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
+    // Revision 7 is what the runtime-binding work bought: every family that previously had no
+    // production seam now has one, so `Missing` is empty and 27 families moved up into `Full`.
     for (status, expected) in [
-        (ImplementationStatus::Full, 30),
-        (ImplementationStatus::Partial, 51),
-        (ImplementationStatus::Missing, 26),
-        (ImplementationStatus::FixedHidden, 53),
+        (ImplementationStatus::Full, 57),
+        (ImplementationStatus::Partial, 47),
+        (ImplementationStatus::Missing, 0),
+        (ImplementationStatus::FixedHidden, 56),
     ] {
         assert_eq!(
             families()

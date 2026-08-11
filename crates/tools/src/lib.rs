@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod edit;
+mod egress;
 mod fs_tools;
 mod git;
 mod git_changes;
@@ -30,17 +31,28 @@ mod schema_error;
 mod shell;
 mod skill;
 mod tool_policy;
+mod tool_search;
 mod web;
 mod workflow_tool;
+mod workspace_boundary;
 mod write_file;
 
+pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
+
 pub use edit::apply_unique_edit;
-pub use lsp::LanguageServerRoute;
+pub use egress::{EgressAllowPolicy, EgressPolicyError, MAX_EGRESS_HOST_BYTES, MAX_EGRESS_HOSTS};
+pub use lsp::{
+    LanguageServerRoute, LspControl, LspControlError, LspHealth, LspLanguageRoute, LspPolicyError,
+    LspRecoveryPolicy, LspRuntimePolicy, MAX_LSP_BACKOFF_MILLISECONDS, MAX_LSP_POOL_SERVERS,
+    MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS, MAX_LSP_RESTARTS,
+};
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 use memo::{Lookup, Memo};
 pub use process::{
-    ProcessControl, ProcessControlError, ProcessLifecycleKind, ProcessLifecycleNotice,
-    ProcessLifecycleObserver,
+    InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS, MAX_IDLE_STALL_MILLISECONDS,
+    MAX_STDIN_POLL_MILLISECONDS, PersistentBackendSelection, ProcessControl, ProcessControlError,
+    ProcessHealth, ProcessLifecycleKind, ProcessLifecycleNotice, ProcessLifecycleObserver,
+    ProcessPolicyError, ProcessRuntimePolicy,
 };
 pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
@@ -166,6 +178,13 @@ mod registeredfut {
 pub struct Tool {
     pub spec: ToolSpec,
     run: Box<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
+    output_owner: ToolOutputOwner,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolOutputOwner {
+    Runtime,
+    Mcp,
 }
 
 /// The tool registry. Enforces the purity/capability coupling at registration and memoizes PURE
@@ -182,7 +201,14 @@ pub struct Registry {
     /// Shared exactly like `sensitive_env_names`, so it can be answered after the specs are built
     /// without rebuilding them and invalidating prompt-cache identity.
     confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    egress_allow_policy: std::sync::Arc<std::sync::OnceLock<Option<EgressAllowPolicy>>>,
+    /// Fail-closed path scope used only by a host-provisioned isolated writer. Ordinary operator
+    /// registries intentionally retain the owner-directed host-wide path behavior documented by
+    /// [`resolve_in_root`].
+    workspace_boundary: bool,
     process_control: Option<ProcessControl>,
+    lsp_control: Option<LspControl>,
+    deferred_tool_catalog: Option<tool_search::DeferredToolCatalog>,
 }
 
 impl Registry {
@@ -203,7 +229,11 @@ impl Registry {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            egress_allow_policy: Default::default(),
+            workspace_boundary: false,
             process_control: None,
+            lsp_control: None,
+            deferred_tool_catalog: None,
         };
         fs_tools::register(&mut r)?;
         git::register(&mut r)?;
@@ -214,7 +244,7 @@ impl Registry {
         write_file::register(&mut r)?;
         shell::register(&mut r)?;
         r.process_control = Some(process::register(&mut r)?);
-        lsp::register(&mut r, lsp_routes)?;
+        r.lsp_control = lsp::register(&mut r, lsp_routes)?;
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;
@@ -222,7 +252,39 @@ impl Registry {
         // The Workflow launch tool is a WRITER-only surface: it fans out real sub-agents, so it is
         // registered here and deliberately absent from `read_only` (design §4.1).
         workflow_tool::register(&mut r)?;
+        r.deferred_tool_catalog = Some(tool_search::register(&mut r)?);
         Ok(r)
+    }
+
+    /// Build the fixed registry for a host-provisioned isolated writer.
+    ///
+    /// No shell, process, LSP, web, MCP, dispatch, or workflow executor is registered. Every
+    /// remaining caller-supplied `path` is checked at dispatch against the canonical worktree
+    /// boundary before the ordinary executor can resolve or open it.
+    pub fn isolated_writer(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
+        let root = root.into();
+        workspace_boundary::validate_root(&root).map_err(ToolError::Registration)?;
+        let mut registry = Registry {
+            tools: Vec::new(),
+            root,
+            memo: Default::default(),
+            sensitive_env_names: Default::default(),
+            confine_execution: Default::default(),
+            egress_allow_policy: Default::default(),
+            workspace_boundary: true,
+            process_control: None,
+            lsp_control: None,
+            deferred_tool_catalog: None,
+        };
+        fs_tools::register(&mut registry)?;
+        git::register(&mut registry)?;
+        mem::register(&mut registry)?;
+        skill::register(&mut registry)?;
+        edit::register(&mut registry)?;
+        multi_file_patch::register(&mut registry)?;
+        write_file::register(&mut registry)?;
+        registry.deferred_tool_catalog = Some(tool_search::register(&mut registry)?);
+        Ok(registry)
     }
 
     /// Build a READ-ONLY tool set (read_file, list_dir, grep, repo_map). This is what a
@@ -236,12 +298,17 @@ impl Registry {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            egress_allow_policy: Default::default(),
+            workspace_boundary: false,
             process_control: None,
+            lsp_control: None,
+            deferred_tool_catalog: None,
         };
         fs_tools::register(&mut r)?; // read_file, list_dir, grep, repo_map only
         git::register(&mut r)?; // confined Git observations (Effecting/ReadOnly)
         mem::register(&mut r)?; // read_memory (Pure/ReadOnly) — progressive-disclosure recall
         skill::register(&mut r)?; // use_skill (Pure/ReadOnly) — on-demand skill load
+        r.deferred_tool_catalog = Some(tool_search::register(&mut r)?);
         Ok(r)
     }
 
@@ -268,6 +335,9 @@ impl Registry {
                 s.name
             )));
         }
+        if let Some(catalog) = &self.deferred_tool_catalog {
+            catalog.insert(tool.spec.clone());
+        }
         self.tools.push(tool);
         Ok(())
     }
@@ -276,9 +346,57 @@ impl Registry {
         self.tools.iter().map(|t| t.spec.clone()).collect()
     }
 
+    /// Whether this result is already governed by the MCP transport's private cap/spill owner.
+    /// Ordinary runtime output policy must not re-own or re-spill those bytes.
+    pub fn is_mcp_effect(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .any(|tool| tool.spec.name == name && tool.output_owner == ToolOutputOwner::Mcp)
+    }
+
+    /// Return a bounded task-relevant prefix while preserving a `tool_search` path to every
+    /// authority-admitted registered schema. `None` keeps eager compatibility behavior.
+    pub fn specs_for_task(
+        &self,
+        admitted_names: &std::collections::BTreeSet<String>,
+        task: &str,
+        eager_limit: Option<usize>,
+    ) -> Vec<ToolSpec> {
+        let Some(limit) = eager_limit
+            .filter(|limit| *limit > 0)
+            .filter(|_| admitted_names.contains(tool_search::TOOL_SEARCH))
+        else {
+            return self
+                .tools
+                .iter()
+                .filter(|tool| admitted_names.contains(&tool.spec.name))
+                .map(|tool| tool.spec.clone())
+                .collect();
+        };
+        let Some(catalog) = &self.deferred_tool_catalog else {
+            return self
+                .tools
+                .iter()
+                .filter(|tool| admitted_names.contains(&tool.spec.name))
+                .map(|tool| tool.spec.clone())
+                .collect();
+        };
+        let visible = catalog.visible(admitted_names, task, limit);
+        self.tools
+            .iter()
+            .filter(|tool| visible.contains(&tool.spec.name))
+            .map(|tool| tool.spec.clone())
+            .collect()
+    }
+
     /// Session-owned job-control view over the exact supervisor backing the process tools.
     pub fn process_control(&self) -> Option<ProcessControl> {
         self.process_control.clone()
+    }
+
+    /// Session-owned language-server pool control over the exact launcher backing `lsp_query`.
+    pub fn lsp_control(&self) -> Option<LspControl> {
+        self.lsp_control.clone()
     }
 
     /// Retain only the named tools and return the canonical names that remain.
@@ -290,6 +408,15 @@ impl Registry {
     pub fn narrow_to(&mut self, allowed: &[String]) -> Vec<String> {
         self.tools
             .retain(|tool| allowed.iter().any(|name| name == &tool.spec.name));
+        if let Some(catalog) = &self.deferred_tool_catalog {
+            catalog.retain(
+                &self
+                    .tools
+                    .iter()
+                    .map(|tool| tool.spec.name.clone())
+                    .collect(),
+            );
+        }
         self.tools
             .iter()
             .map(|tool| tool.spec.name.clone())
@@ -437,6 +564,29 @@ impl Registry {
         self.confine_execution.clone()
     }
 
+    /// Install the immutable first-party egress policy before tool activation.
+    ///
+    /// `None` is the explicit legacy/unconfined posture. `Some(empty)` is materially different: it
+    /// denies every destination. Installation is one-shot so a resumed run cannot silently adopt
+    /// current config after its tunables checkpoint was pinned.
+    pub fn install_egress_allow_policy(
+        &self,
+        policy: Option<EgressAllowPolicy>,
+    ) -> Result<(), EgressPolicyError> {
+        self.egress_allow_policy
+            .set(policy)
+            .map_err(|_| EgressPolicyError::InvalidDestination {
+                value: "egress_allow".to_owned(),
+                reason: "policy was already installed for this registry",
+            })
+    }
+
+    pub(crate) fn egress_allow_policy_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::OnceLock<Option<EgressAllowPolicy>>> {
+        self.egress_allow_policy.clone()
+    }
+
     /// Execute a tool call. `latency_ms` is measured here (tau_wall contribution for obs). An
     /// EFFECTING tool bumps the memo generation on completion, invalidating every cached pure
     /// read (a write must never leave a stale read servable).
@@ -454,6 +604,11 @@ impl Registry {
         };
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)));
+        }
+        if self.workspace_boundary
+            && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
+        {
+            return ToolExecution::Definite(err_result(id, reason));
         }
 
         let is_effecting = tool.spec.purity == Purity::Effecting;
@@ -579,6 +734,7 @@ impl Registry {
         self.register(Tool {
             spec,
             run: Box::new(adapted),
+            output_owner: ToolOutputOwner::Runtime,
         })
     }
 
@@ -619,6 +775,7 @@ impl Registry {
         self.register(Tool {
             spec,
             run: Box::new(adapted),
+            output_owner: ToolOutputOwner::Runtime,
         })
     }
 
@@ -657,6 +814,7 @@ impl Registry {
         self.register(Tool {
             spec,
             run: Box::new(adapted),
+            output_owner: ToolOutputOwner::Mcp,
         })
     }
 }
@@ -819,7 +977,11 @@ mod tests {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            egress_allow_policy: Default::default(),
             process_control: None,
+            lsp_control: None,
+            deferred_tool_catalog: None,
+            workspace_boundary: false,
         };
         let bad = ToolSpec {
             name: "leaky".into(),
@@ -1043,6 +1205,26 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("server__different"));
         assert!(error.to_string().contains("server__actual"));
+
+        registry
+            .register_mcp_effect(
+                ToolSpec {
+                    name: "server__actual".into(),
+                    description: "test".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::IrreversibleExternal,
+                },
+                McpEffectAttribution::new("server", "actual"),
+                |_, _, _| {
+                    effectfut::box_it(async {
+                        unreachable!("classification does not execute the MCP tool")
+                    })
+                },
+            )
+            .unwrap();
+        assert!(registry.is_mcp_effect("server__actual"));
+        assert!(!registry.is_mcp_effect("read_file"));
     }
 
     #[cfg(unix)]

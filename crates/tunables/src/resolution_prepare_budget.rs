@@ -60,6 +60,7 @@ pub(super) fn preflight(input: &ResolutionInput) -> Result<(), String> {
         }
     }
     for evidence in &input.activation_evidence {
+        budget.add_machine_id(&evidence.family)?;
         budget.add_machine_id(&evidence.seam)?;
         budget.add_digest(&evidence.subject_digest_sha256)?;
         budget.add_digest(&evidence.evidence_digest_sha256)?;

@@ -1176,7 +1176,7 @@ fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
     match std::fs::symlink_metadata(workspace.join(".iteron")) {
         Ok(_) => {
             return Err(
-                "benchmark workspace contains .iteron project state; refusing a confounded arm"
+                "benchmark workspace contains .core project state; refusing a confounded arm"
                     .into(),
             );
         }
@@ -1256,6 +1256,8 @@ fn core_process_spec(
         "--dangerously-bypass-permissions".into(),
         "--runs-dir".into(),
         runtime.runs.as_os_str().to_owned(),
+        "--benchmark-attempt-scope".into(),
+        task.id.clone().into(),
     ];
     if options.max_turns != 0 {
         args.push("--max-turns".into());
@@ -1547,7 +1549,7 @@ fn timeout_cell(
         config,
         seed,
         "iteron_timeout",
-        "core process exceeded the configured wall-clock timeout",
+        "iteron process exceeded the configured wall-clock timeout",
     );
     cell.run_status = RunStatus::TimedOut;
     cell.elapsed_ms = millis(elapsed);
@@ -1938,6 +1940,10 @@ mod tests {
         };
         assert_eq!(arg_after("-C"), ".");
         assert_eq!(arg_after("--max-wall-secs"), "1");
+        assert_eq!(
+            arg_after("--benchmark-attempt-scope"),
+            fixture_task.id.as_str()
+        );
         let runs = PathBuf::from(arg_after("--runs-dir"));
         assert!(runs.is_absolute());
         assert_eq!(runs, runs.canonicalize().unwrap());
