@@ -58,11 +58,35 @@ fn assert_detail_bound(detail: &Detail) {
     }
 }
 
+/// A request that is *valid* but resolves nothing.
+///
+/// Input validation requires activation evidence for every runtime-derived family, so an empty
+/// `activation_evidence` is rejected before resolution runs at all. This test is about what the
+/// view shows for an *active resolution* failure, so the evidence is complete while the declared
+/// values stay empty.
 fn minimal_request() -> String {
+    let activation: Vec<_> = core_tunables::families()
+        .iter()
+        .filter_map(|family| match family.activation.predicate {
+            core_tunables::ActivationPredicate::RuntimeDerived { seam } => {
+                Some(serde_json::json!({
+                    "family": family.id,
+                    "seam": seam,
+                    "subject_digest_sha256": "a".repeat(64),
+                    "evidence_digest_sha256": "b".repeat(64),
+                    "active": true,
+                }))
+            }
+            _ => None,
+        })
+        .collect();
     format!(
-        r#"{{"schema_version":1,"registry_id":"iteron-tunables","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":[],"constraint_evidence":[],"runtime":{{}}}}"#,
+        r#"{{"schema_version":{},"registry_id":"{}","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":{},"constraint_evidence":[],"runtime":{{}}}}"#,
+        iteron_tunables::RESOLUTION_SCHEMA_VERSION,
+        iteron_tunables::REGISTRY_ID,
         iteron_tunables::REGISTRY_REVISION,
         iteron_tunables::REGISTRY_DIGEST_SHA256,
+        serde_json::to_string(&activation).unwrap(),
     )
 }
 

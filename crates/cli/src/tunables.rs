@@ -350,12 +350,35 @@ mod tests {
         json_output, read_bounded, render_explain, render_resolve,
     };
 
+    /// A request that is *valid* but resolves nothing.
+    ///
+    /// Input validation now requires activation evidence for every runtime-derived family, so a
+    /// request that omits it is rejected as `invalid_input` and never reaches the stage this test
+    /// is about. The evidence is therefore complete while the declared values stay empty: the
+    /// request gets past the door and then fails closed on the families themselves, which is the
+    /// distinction between `invalid_input` and `active_resolution_failed` that these tests pin.
     fn unresolved_request_json() -> Vec<u8> {
+        let activation: Vec<_> = core_tunables::families()
+            .iter()
+            .filter_map(|family| match family.activation.predicate {
+                core_tunables::ActivationPredicate::RuntimeDerived { seam } => {
+                    Some(serde_json::json!({
+                        "family": family.id,
+                        "seam": seam,
+                        "subject_digest_sha256": "a".repeat(64),
+                        "evidence_digest_sha256": "b".repeat(64),
+                        "active": true,
+                    }))
+                }
+                _ => None,
+            })
+            .collect();
         serde_json::to_vec(&serde_json::json!({
             "schema_version": iteron_tunables::RESOLUTION_SCHEMA_VERSION,
             "registry_id": iteron_tunables::REGISTRY_ID,
             "registry_revision": iteron_tunables::REGISTRY_REVISION,
             "registry_digest": iteron_tunables::REGISTRY_DIGEST_SHA256,
+            "activation_evidence": activation,
         }))
         .unwrap()
     }
