@@ -16,10 +16,10 @@ use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
     ProviderError, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
+use futures_util::StreamExt;
 use iteron_protocol::{
     Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
 };
-use futures_util::StreamExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

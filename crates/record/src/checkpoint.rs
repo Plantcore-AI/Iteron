@@ -1065,7 +1065,9 @@ mod tests {
         assert!(listing.lines().any(|path| path == "kept.txt"));
         assert!(listing.lines().any(|path| path == ".iteron/config.json"));
         assert!(
-            !listing.lines().any(|path| path.starts_with(".iteron/runs/")),
+            !listing
+                .lines()
+                .any(|path| path.starts_with(".iteron/runs/")),
             "runtime journals and projections must never enter a workspace checkpoint"
         );
         std::fs::remove_dir_all(&ws).ok();

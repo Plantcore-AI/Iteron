@@ -302,7 +302,10 @@ impl Agent {
         }
     }
 
-    pub(crate) fn set_lifecycle_emitter(&mut self, emitter: iteron_obs::lifecycle::LifecycleEmitter) {
+    pub(crate) fn set_lifecycle_emitter(
+        &mut self,
+        emitter: iteron_obs::lifecycle::LifecycleEmitter,
+    ) {
         self.lifecycle_emitter = Some(emitter);
     }
 
@@ -1463,7 +1466,8 @@ impl Agent {
                 granted_bytes: requested_bytes,
                 requested_tokens,
                 granted_tokens: requested_tokens,
-                candidate_limit: u32::try_from(iteron_ctx::MAX_MEMORY_CANDIDATES).unwrap_or(u32::MAX),
+                candidate_limit: u32::try_from(iteron_ctx::MAX_MEMORY_CANDIDATES)
+                    .unwrap_or(u32::MAX),
                 selected_count: u32::try_from(memory_segments.len()).unwrap_or(u32::MAX),
             };
             self.lifecycle_event(

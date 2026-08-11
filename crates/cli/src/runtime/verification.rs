@@ -181,7 +181,8 @@ impl Agent {
                     .checked_add(quarantine_for)
                     .unwrap_or_else(Instant::now);
                 for command in &configured {
-                    if self.verification_quarantine.len() >= iteron_verify::MAX_VERIFICATION_COMMANDS
+                    if self.verification_quarantine.len()
+                        >= iteron_verify::MAX_VERIFICATION_COMMANDS
                     {
                         break;
                     }
@@ -218,7 +219,9 @@ impl Agent {
             &representative_outcomes,
         );
         let outcome = match consensus {
-            iteron_verify::VerificationConsensus::Accepted => iteron_verify::VerificationOutcome::Pass,
+            iteron_verify::VerificationConsensus::Accepted => {
+                iteron_verify::VerificationOutcome::Pass
+            }
             iteron_verify::VerificationConsensus::Rejected => {
                 iteron_verify::VerificationOutcome::TestFailure
             }
@@ -342,12 +345,13 @@ impl Agent {
             // The oracle answered. Every graded outcome is a proven terminal, including its own
             // timeout and infrastructure failure — those are observations, not lost dispatches.
             VerifyDispatch::Observed(verdict) => {
-                let terminal =
-                    if verdict.outcome == iteron_verify::VerificationOutcome::InfrastructureFailure {
-                        effect_failed_terminal(turn, class, ordinal, &verdict.detail)
-                    } else {
-                        effect_done_terminal(turn, class, ordinal)
-                    };
+                let terminal = if verdict.outcome
+                    == iteron_verify::VerificationOutcome::InfrastructureFailure
+                {
+                    effect_failed_terminal(turn, class, ordinal, &verdict.detail)
+                } else {
+                    effect_done_terminal(turn, class, ordinal)
+                };
                 (effects::Settlement::Definite(terminal), verdict)
             }
         };

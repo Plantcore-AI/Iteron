@@ -179,7 +179,9 @@ fn snapshot_from_receipt(
         version: RunGenesisPolicyBundleVersion::V1,
         canonicalization: RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION.to_owned(),
         bundle_id: receipt.bundle_id.clone().ok_or(
-            iteron_record::PolicyBundleCheckpointError::Invalid("compiled receipt has no bundle id"),
+            iteron_record::PolicyBundleCheckpointError::Invalid(
+                "compiled receipt has no bundle id",
+            ),
         )?,
         bundle_digest_sha256: receipt.bundle_digest.clone().ok_or(
             iteron_record::PolicyBundleCheckpointError::Invalid(

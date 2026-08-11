@@ -112,8 +112,9 @@ fn compare(app: &mut App, workspace: &Path, input: &str) -> Result<(), LabError>
     if words.next().is_some() || !safe_component(bundle_id) {
         return Err(LabError::Usage);
     }
-    let evidence_root = secure_subdir(workspace, &[".iteron", "experiments", "evidence"], false)?
-        .ok_or_else(|| LabError::Evidence("no local evidence directory exists".into()))?;
+    let evidence_root =
+        secure_subdir(workspace, &[".iteron", "experiments", "evidence"], false)?
+            .ok_or_else(|| LabError::Evidence("no local evidence directory exists".into()))?;
     let bundle = evidence_root.join(bundle_id);
     let metadata = std::fs::symlink_metadata(&bundle)
         .map_err(|error| LabError::Evidence(error.to_string()))?;

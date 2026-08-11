@@ -31,7 +31,8 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         UiEvent::Phase(p) => {
             // Entering the model phase starts the first-token clock; every other phase stops it,
             // because only a model request can be waiting on a provider's first byte (I-64).
-            app.awaiting_first_token_since = (p == iteron_protocol::Phase::Model).then(Instant::now);
+            app.awaiting_first_token_since =
+                (p == iteron_protocol::Phase::Model).then(Instant::now);
             app.status = p.label().into();
         }
         UiEvent::TurnEnd {

@@ -30,7 +30,9 @@ pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 /// Same rule the `--resume` startup path applies: the last durable `ModelSelected` is authoritative;
 /// a legacy journal that predates provider identity offers only `RunStart.model`, and its model is
 /// never used to guess a provider.
-pub(super) fn recorded_route(events: &[iteron_protocol::Event]) -> Option<(Option<String>, String)> {
+pub(super) fn recorded_route(
+    events: &[iteron_protocol::Event],
+) -> Option<(Option<String>, String)> {
     if let Some(route) = events.iter().rev().find_map(|event| match &event.kind {
         iteron_protocol::EventKind::ModelSelected {
             provider_id,

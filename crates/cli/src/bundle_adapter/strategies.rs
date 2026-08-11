@@ -160,9 +160,9 @@ impl MinimalContext {
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(mut input) =
-            serde_json::from_value::<iteron_ctx::ContextSlotObservation>(observation.payload.clone())
-        else {
+        let Ok(mut input) = serde_json::from_value::<iteron_ctx::ContextSlotObservation>(
+            observation.payload.clone(),
+        ) else {
             return first;
         };
         input.memory_keys.clear();
@@ -200,9 +200,9 @@ impl SingleRecallMemory {
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(mut input) =
-            serde_json::from_value::<iteron_ctx::MemorySlotObservation>(observation.payload.clone())
-        else {
+        let Ok(mut input) = serde_json::from_value::<iteron_ctx::MemorySlotObservation>(
+            observation.payload.clone(),
+        ) else {
             return first;
         };
         if input.write.is_none() {
@@ -237,9 +237,9 @@ impl SingleLeafPlanner {
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(mut input) =
-            serde_json::from_value::<iteron_agents::PlannerObservation>(observation.payload.clone())
-        else {
+        let Ok(mut input) = serde_json::from_value::<iteron_agents::PlannerObservation>(
+            observation.payload.clone(),
+        ) else {
             return first;
         };
         input.max_leaves = input.max_leaves.min(1);

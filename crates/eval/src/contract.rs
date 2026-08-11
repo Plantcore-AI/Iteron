@@ -796,7 +796,8 @@ mod tests {
                     "frozen fixture {relative} has no real eval consumer"
                 );
                 assert!(
-                    SUPPORTED_ITERON_CLI_TYPE_VERSIONS.contains(&(selector_value, expected_version)),
+                    SUPPORTED_ITERON_CLI_TYPE_VERSIONS
+                        .contains(&(selector_value, expected_version)),
                     "frozen fixture {relative} has no `{selector_value}` schema {expected_version} consumer"
                 );
                 observed_versions.insert(expected_version);

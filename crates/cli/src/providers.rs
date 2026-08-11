@@ -5,6 +5,7 @@
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
 use crate::config::{ProviderConfig, ProviderCredential};
+use futures_util::future::join_all;
 use iteron_provider::catalog::glm_standard_schema_catalog;
 use iteron_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
@@ -13,7 +14,6 @@ use iteron_provider::{
     ProviderHealth, ProviderHealthStore, ProviderInstance, RawModel, Selectability,
     StaticProviderMetadata, StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
 };
-use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

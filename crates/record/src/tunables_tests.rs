@@ -202,7 +202,10 @@ fn accepted_report_projection_covers_every_family_and_aggregate_commitment() {
         entries,
     };
     let snapshot = snapshot_from_report(&report).unwrap();
-    assert_eq!(snapshot.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(
+        snapshot.entries.len(),
+        iteron_tunables::EXPECTED_FAMILY_COUNT
+    );
     assert_eq!(snapshot.entries[0].state, RunGenesisTunableState::Effective);
     assert_eq!(snapshot.effective_digest_sha256, "a".repeat(64));
     assert_eq!(

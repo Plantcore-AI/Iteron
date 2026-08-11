@@ -289,7 +289,10 @@ fn alternatives_make_only_narrower_typed_decisions() {
     let ceiling = CapabilitySet::only(Capability::ReadOnly);
     let context = iteron_ctx::ContextStrategy::select_with(
         compiled.slots().context.as_ref(),
-        &iteron_ctx::ContextSlotObservation::baseline(iteron_protocol::context::RequestId(1), "task"),
+        &iteron_ctx::ContextSlotObservation::baseline(
+            iteron_protocol::context::RequestId(1),
+            "task",
+        ),
         ceiling,
     )
     .unwrap();

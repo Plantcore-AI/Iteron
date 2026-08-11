@@ -197,7 +197,10 @@ pub fn write_atomic(attestation: &RunAttestation, path: &Path) -> Result<(), Att
             reason: "refusing to replace an existing attestation".into(),
         });
     }
-    let temporary = parent.join(format!(".iteron-eval-attestation-{}.tmp", attestation.run_id));
+    let temporary = parent.join(format!(
+        ".iteron-eval-attestation-{}.tmp",
+        attestation.run_id
+    ));
     let bytes = serde_json::to_vec_pretty(attestation)
         .map_err(|error| AttestationError::Json(error.to_string()))?;
     if bytes.len() as u64 > MAX_ATTESTATION_BYTES {

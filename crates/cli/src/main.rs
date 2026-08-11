@@ -84,7 +84,8 @@ impl StderrDiagnosticDrain {
         use std::io::Write as _;
 
         for diagnostic in self.receiver.try_iter() {
-            let envelope = iteron_kernel::diagnostics::KernelDiagnosticEnvelope::current(diagnostic);
+            let envelope =
+                iteron_kernel::diagnostics::KernelDiagnosticEnvelope::current(diagnostic);
             // Serialization is infallible for the closed, string-free vocabulary. Presentation
             // happens only after the kernel call returns; stderr failure cannot enter its control
             // flow and never redirects a byte onto machine stdout.
@@ -2492,7 +2493,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             )?;
         }
         if mode_runtime_override {
-            agent.transition_permission_mode(mode, iteron_protocol::RuntimePolicySource::Operator)?;
+            agent
+                .transition_permission_mode(mode, iteron_protocol::RuntimePolicySource::Operator)?;
         }
         if cli.allow_code {
             agent.transition_permission_capability_rule(
@@ -3416,11 +3418,12 @@ async fn run_workflow_command(
         user_file.effort.clone(),
         iteron_protocol::Effort::default().label().to_owned(),
     );
-    let workflow_effort = iteron_protocol::Effort::parse(&workflow_effort_text).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unknown effort `{workflow_effort_text}` (low|medium|high|xhigh|max|ultracode)"
-        )
-    })?;
+    let workflow_effort =
+        iteron_protocol::Effort::parse(&workflow_effort_text).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown effort `{workflow_effort_text}` (low|medium|high|xhigh|max|ultracode)"
+            )
+        })?;
     let retry_environment = config::load_retry_environment().map_err(anyhow::Error::msg)?;
     let retry_resolution =
         config::resolve_retry_policy(retry_environment, user_file.retry.as_ref(), None)
@@ -3943,8 +3946,9 @@ mod tests {
         );
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let client = app_server::AppServerClient::connect(iteron_protocol::PROTOCOL_VERSION, sender)
-            .expect("matching protocol");
+        let client =
+            app_server::AppServerClient::connect(iteron_protocol::PROTOCOL_VERSION, sender)
+                .expect("matching protocol");
         let oversized = "x".repeat(iteron_protocol::task::MAX_TASK_TEXT_BYTES + 1);
         assert!(
             submit_one_shot(&client, oversized, images.clone()).is_err(),
@@ -4056,7 +4060,10 @@ mod tests {
         std::fs::write(active.join("AGENTS.md"), "nested guidance").unwrap();
 
         let assembly = assemble_system_prompt(Some(&home_core), &repo, &active);
-        assert_eq!(assembly.instruction_trust, iteron_protocol::Trust::Untrusted);
+        assert_eq!(
+            assembly.instruction_trust,
+            iteron_protocol::Trust::Untrusted
+        );
         assert_eq!(assembly.base_system, SYSTEM_PROMPT);
         assert!(assembly.base_system.contains("Iteron by Plantcore"));
         assert!(assembly.base_system.contains("You are not Claude"));

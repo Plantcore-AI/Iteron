@@ -73,13 +73,6 @@ use block::SPINNER;
 use command_surfaces::*;
 use composer_images::*;
 use control_submission::*;
-use iteron_ctx::ContextEstimate;
-use iteron_obs::CostState;
-use iteron_protocol::{
-    Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
-    Verdict,
-};
-use iteron_provider::EffortApplication;
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -87,6 +80,13 @@ pub(crate) use driver_support::char_width;
 use driver_support::*;
 use event_actions::*;
 use event_projection::*;
+use iteron_ctx::ContextEstimate;
+use iteron_obs::CostState;
+use iteron_protocol::{
+    Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
+    Verdict,
+};
+use iteron_provider::EffortApplication;
 use picker_catalog::*;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

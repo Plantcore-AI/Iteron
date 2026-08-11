@@ -443,11 +443,12 @@ impl KernelSpawner {
         // Gather the complete bounded observation now, but evaluate it only after the child owns
         // a durable rollout. A refusal is still a real trainable-policy decision and must not
         // disappear merely because no provider turn will follow it.
-        let model_router_observation = iteron_provider::catalog::ModelRouterObservation::single_route(
-            cx.model.clone(),
-            agent_def.model.clone(),
-            call.model.clone(),
-        );
+        let model_router_observation =
+            iteron_provider::catalog::ModelRouterObservation::single_route(
+                cx.model.clone(),
+                agent_def.model.clone(),
+                call.model.clone(),
+            );
 
         let mut registry = if is_writer {
             let mut registry = Registry::isolated_writer(child_workspace.clone())

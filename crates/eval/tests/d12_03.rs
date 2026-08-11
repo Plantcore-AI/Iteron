@@ -99,8 +99,10 @@ mod pipeline {
                 .duration_since(UNIX_EPOCH)
                 .expect("clock after epoch")
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("iteron-eval-d12-03-{}-{nonce:x}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "iteron-eval-d12-03-{}-{nonce:x}",
+                std::process::id()
+            ));
             std::fs::create_dir(&path).expect("create isolated D12-03 root");
             Self(path)
         }

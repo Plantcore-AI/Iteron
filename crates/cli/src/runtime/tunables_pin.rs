@@ -89,9 +89,11 @@ impl TunablesPin {
         validation_start.seq = Seq::ZERO;
         let mut validation_snapshot = snapshot_event.clone();
         validation_snapshot.seq = Seq(1);
-        let projected =
-            iteron_record::tunables_checkpoint_from_events(&[validation_start, validation_snapshot])
-                .map_err(iteron_record::RecordError::from)?;
+        let projected = iteron_record::tunables_checkpoint_from_events(&[
+            validation_start,
+            validation_snapshot,
+        ])
+        .map_err(iteron_record::RecordError::from)?;
         if projected.as_ref() != Some(self.checkpoint()) {
             return Err(snapshot_error(
                 "validated genesis did not preserve the pinned checkpoint",

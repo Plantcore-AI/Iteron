@@ -213,7 +213,8 @@ impl Agent {
         let ceiling = CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling);
         let opportunity =
             self.begin_policy_decision(policy_evidence::ROUTER_SLOT, Some(TurnId(self.seq_turn)))?;
-        match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling) {
+        match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling)
+        {
             Ok(proposal) => {
                 let action = if proposal.route.fans_out() {
                     "fan_out"

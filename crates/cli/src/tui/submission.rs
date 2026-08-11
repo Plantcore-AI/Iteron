@@ -156,7 +156,8 @@ pub(super) fn submit_staged_input(
             .map(|attachment| attachment.content().clone())
             .collect::<Vec<_>>();
         let files = staged_files.to_file_contents();
-        if let Err(reason) = iteron_protocol::input::validate_file_submission(&text, &images, &files)
+        if let Err(reason) =
+            iteron_protocol::input::validate_file_submission(&text, &images, &files)
         {
             app.note(
                 block::NoticeLevel::Warn,

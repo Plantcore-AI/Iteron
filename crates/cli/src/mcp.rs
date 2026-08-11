@@ -344,13 +344,15 @@ fn register_mcp_extension(
                 let arguments = match serde_json::from_str::<serde_json::Value>(encoded) {
                     Ok(value) if value.is_object() => value,
                     _ => {
-                        return iteron_tools::ToolExecution::Definite(iteron_protocol::ToolResult {
-                            tool_use_id: call.id,
-                            content: "arguments_json must encode one JSON object".into(),
-                            is_error: true,
-                            trust: iteron_protocol::Trust::Untrusted,
-                            latency_ms: 0,
-                        });
+                        return iteron_tools::ToolExecution::Definite(
+                            iteron_protocol::ToolResult {
+                                tool_use_id: call.id,
+                                content: "arguments_json must encode one JSON object".into(),
+                                is_error: true,
+                                trust: iteron_protocol::Trust::Untrusted,
+                                latency_ms: 0,
+                            },
+                        );
                     }
                 };
                 if let Some(object) = params.as_object_mut() {
@@ -396,13 +398,14 @@ async fn connect_configured_server_with_policies(
 ) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
     match server.transport {
         McpTransportConfig::Stdio => {
-            let command = server
-                .command
-                .as_deref()
-                .ok_or(iteron_mcp::McpError::InvalidEndpoint {
-                    field: "command",
-                    limit: 4096,
-                })?;
+            let command =
+                server
+                    .command
+                    .as_deref()
+                    .ok_or(iteron_mcp::McpError::InvalidEndpoint {
+                        field: "command",
+                        limit: 4096,
+                    })?;
             iteron_mcp::McpClient::connect_with_sensitive_env_names(
                 command,
                 &server.args,
@@ -464,7 +467,9 @@ async fn connect_configured_server_with_policies(
                         .zip(oauth.refresh_token_env.as_ref())
                         .map(|(refresh_url, refresh_token_env)| {
                             let refresh_token = std::env::var(refresh_token_env).map_err(|_| {
-                                iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
+                                iteron_mcp::McpError::Credential(
+                                    iteron_mcp::token::TokenError::Absent,
+                                )
                             })?;
                             let client_secret = oauth
                                 .client_secret_env

@@ -30,7 +30,9 @@
 //!      from the stderr text.
 
 use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use iteron_eval::{CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus};
+use iteron_eval::{
+    CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus,
+};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;

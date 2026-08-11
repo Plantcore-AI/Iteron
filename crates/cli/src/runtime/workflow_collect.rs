@@ -257,7 +257,12 @@ impl Agent {
                         Some("direct investigator completed without a report".into()),
                     )
                 } else {
-                    (Ok(s), iteron_protocol::WorkflowChildOutcome::Done, None, None)
+                    (
+                        Ok(s),
+                        iteron_protocol::WorkflowChildOutcome::Done,
+                        None,
+                        None,
+                    )
                 }
             }
             Ok(Outcome::Interrupted) => (

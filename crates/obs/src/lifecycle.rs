@@ -243,7 +243,9 @@ impl Default for LifecycleBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iteron_protocol::lifecycle::{LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload};
+    use iteron_protocol::lifecycle::{
+        LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload,
+    };
 
     fn event(ordinal: u64) -> LifecycleEventEnvelope {
         LifecycleEventEnvelope {

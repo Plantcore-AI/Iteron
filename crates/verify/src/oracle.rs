@@ -345,7 +345,9 @@ mod tests {
             _conf: &Confinement,
         ) -> Result<iteron_sandbox::RunOutput, iteron_sandbox::SandboxError> {
             Err(match &self.0 {
-                iteron_sandbox::SandboxError::Unsupported => iteron_sandbox::SandboxError::Unsupported,
+                iteron_sandbox::SandboxError::Unsupported => {
+                    iteron_sandbox::SandboxError::Unsupported
+                }
                 iteron_sandbox::SandboxError::Spawn(detail) => {
                     iteron_sandbox::SandboxError::Spawn(detail.clone())
                 }

@@ -76,7 +76,9 @@ pub(super) fn checkpoint_catalog(
     ))
 }
 
-fn checkpoint_detail(entry: &iteron_protocol::RunGenesisTunableEntryV2) -> Result<Detail, LoadError> {
+fn checkpoint_detail(
+    entry: &iteron_protocol::RunGenesisTunableEntryV2,
+) -> Result<Detail, LoadError> {
     let family = iteron_tunables::families()
         .iter()
         .find(|family| family.id == entry.family_id)

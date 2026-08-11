@@ -14,13 +14,13 @@ mod types;
 
 pub(crate) use types::*;
 
+use digest::{OrderedOpportunityDigest, opportunity_id};
 use iteron_protocol::{
     EventKind, MAX_POLICY_ACTIONS, POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
     POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION, PolicyDecisionDisposition, PolicyDecisionEvidence,
     PolicyEvidenceError, PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope,
     PolicyRuntimeIdentity, RunId, Seq, TurnId,
 };
-use digest::{OrderedOpportunityDigest, opportunity_id};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 

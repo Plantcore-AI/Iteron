@@ -78,6 +78,9 @@ mod workflow_prepare;
 mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+use deferred_tools::{AutoApprovedCall, declared_write_paths};
+use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
+use hooks::{HookDecision, HookEvent, Hooks};
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
 use iteron_obs::{
@@ -99,9 +102,6 @@ use iteron_provider::{
 };
 use iteron_record::Rollout;
 use iteron_tools::Registry;
-use deferred_tools::{AutoApprovedCall, declared_write_paths};
-use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
-use hooks::{HookDecision, HookEvent, Hooks};
 pub use kernel_error::KernelError;
 pub(crate) use operator_status::{
     CollaborationRuntimeHealth, RuntimeOperatorStatusSnapshot, RuntimeOperatorStatusSources,
@@ -558,7 +558,9 @@ fn edit_diff_from(tu: &ToolUse, r: &ToolResult) -> Option<iteron_protocol::FileD
     };
     let old = iteron_record::redact::scrub(old);
     let new = iteron_record::redact::scrub(new);
-    Some(iteron_protocol::FileDiff::from_replacement(path, &old, &new))
+    Some(iteron_protocol::FileDiff::from_replacement(
+        path, &old, &new,
+    ))
 }
 
 /// The bash tool embeds `[exit N]` as the FIRST line of its (non-error) result (shell.rs) without
@@ -2910,14 +2912,15 @@ impl Agent {
                                     // the record already masks the committed Block::Text, but the live UI / /export
                                     // are the same exfiltration surfaces as tool output, which we scrub here too.
                                     // The frontend adds a stateful cross-delta scrubber before rendering.
-                                    let _ = tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
+                                    let _ =
+                                        tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
                                 streamed_thinking.push_str(&t);
                                 if let Some(tx) = &ui_tx {
-                                    let _ =
-                                        tx.send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
+                                    let _ = tx
+                                        .send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
                                 }
                             }
                             StreamItem::ToolUseComplete(tu) => {
@@ -4015,16 +4018,20 @@ impl Agent {
                     self.authority_ceiling.intersect(self.policy_capabilities);
                 let ceiling_blocks_capability = !admitted_capabilities.contains(cap);
                 let taint_blocks_egress = cap.is_egress() && governing_trust != Trust::Trusted;
-                let gate_verdict = if self.bypass_permissions
-                    && self.permission_mode != PermissionMode::Plan
-                {
-                    // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
-                    // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
-                    // exact tool or its capability is still honored.
-                    bypass_verdict(&self.permission_rules, &tu.name, cap)
-                } else {
-                    iteron_protocol::gate(self.permission_mode, &self.permission_rules, &tu.name, cap)
-                };
+                let gate_verdict =
+                    if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+                        // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
+                        // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
+                        // exact tool or its capability is still honored.
+                        bypass_verdict(&self.permission_rules, &tu.name, cap)
+                    } else {
+                        iteron_protocol::gate(
+                            self.permission_mode,
+                            &self.permission_rules,
+                            &tu.name,
+                            cap,
+                        )
+                    };
                 // Task, immutable-policy and trust constraints remain in force even when a
                 // separately recorded operator bypass replaces the final permission-mode gate.
                 let verdict = iteron_kernel::admission::constrain_under_authority(
@@ -4351,10 +4358,12 @@ impl Agent {
                         .await
                         {
                             Ok(execution) => execution,
-                            Err(()) => iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
-                                tool_use_id,
-                                started.elapsed().as_millis() as u64,
-                            )),
+                            Err(()) => {
+                                iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
+                                    tool_use_id,
+                                    started.elapsed().as_millis() as u64,
+                                ))
+                            }
                         };
                         let managed = tool_output_spill::manage_execution(
                             spill_store_for_execution.as_deref(),
@@ -4550,7 +4559,8 @@ impl Agent {
         for (index, call, proposal) in deferred {
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
-            if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL {
+            if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
+            {
                 break;
             }
             // A repeat of an already-failed action is answered from the record, not re-run. That
@@ -5285,7 +5295,10 @@ impl Agent {
                 iteron_protocol::PolicyTerminalOutcome::Interrupted,
                 Some("interrupted"),
             ),
-            Outcome::Stuck => (iteron_protocol::PolicyTerminalOutcome::Failed, Some("stuck")),
+            Outcome::Stuck => (
+                iteron_protocol::PolicyTerminalOutcome::Failed,
+                Some("stuck"),
+            ),
             Outcome::HarnessError => (
                 iteron_protocol::PolicyTerminalOutcome::Failed,
                 Some("harness_error"),

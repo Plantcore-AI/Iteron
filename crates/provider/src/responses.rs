@@ -10,10 +10,10 @@ use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
     ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
+use futures_util::StreamExt;
 use iteron_protocol::{
     Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
 };
-use futures_util::StreamExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};

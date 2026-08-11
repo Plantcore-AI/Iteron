@@ -9,8 +9,8 @@ pub use crate::static_metadata::{
     GLM_STANDARD_CHAT_MANIFEST, GLM_STANDARD_CHAT_MODELS, StaticCatalogManifest,
 };
 use crate::{AvailabilityTransition, ProviderError, api_error_from_response};
-use iteron_protocol::{TokenRateCard, Usage};
 use futures_util::StreamExt;
+use iteron_protocol::{TokenRateCard, Usage};
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

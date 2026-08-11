@@ -1045,7 +1045,9 @@ pub(crate) fn update_user_config(
     mutate: impl FnOnce(&mut FileConfig) -> Result<(), String>,
 ) -> anyhow::Result<std::path::PathBuf> {
     let path = user_config_path().ok_or_else(|| {
-        anyhow::anyhow!("no config root: set HOME or ITERON_CONFIG_HOME before writing configuration")
+        anyhow::anyhow!(
+            "no config root: set HOME or ITERON_CONFIG_HOME before writing configuration"
+        )
     })?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

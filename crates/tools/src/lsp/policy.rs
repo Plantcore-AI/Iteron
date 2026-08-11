@@ -179,7 +179,12 @@ impl Default for LspRuntimePolicy {
                     "typescript-language-server",
                     &["--stdio"],
                 ),
-                route("python", "iteron:pyright", "pyright-langserver", &["--stdio"]),
+                route(
+                    "python",
+                    "iteron:pyright",
+                    "pyright-langserver",
+                    &["--stdio"],
+                ),
             ],
             LspRecoveryPolicy::default(),
         )

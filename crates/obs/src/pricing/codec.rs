@@ -4,8 +4,8 @@
 //! typed artifacts and the pricing port rather than reimplementing the signature format.
 
 use super::PricingError;
-use iteron_protocol::{CostAttribution, CostProjection, PricingRoute, RateCard, SignedRateCard};
 use hmac::{Hmac, Mac};
+use iteron_protocol::{CostAttribution, CostProjection, PricingRoute, RateCard, SignedRateCard};
 use sha2::{Digest, Sha256};
 
 pub(super) fn rate_card_content_bytes(rate_card: &RateCard) -> Vec<u8> {

@@ -554,7 +554,8 @@ async fn physical_retry_uses_fresh_workspaces_and_emits_verifiable_sidecars() {
     );
 
     let attempt_path = iteron_eval::attempts::sidecar_path(&options.output_path);
-    let ledger = iteron_eval::AttemptLedger::open(&attempt_path).expect("verify attempt hash chain");
+    let ledger =
+        iteron_eval::AttemptLedger::open(&attempt_path).expect("verify attempt hash chain");
     assert_eq!(
         ledger.record_count(),
         9,

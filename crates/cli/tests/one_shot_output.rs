@@ -1082,7 +1082,8 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
             "continuing most recent session in this repo: {run_id}"
         ))
     );
-    let meta = iteron_record::meta(&scratch.runs(), &iteron_protocol::RunId(run_id.clone())).unwrap();
+    let meta =
+        iteron_record::meta(&scratch.runs(), &iteron_protocol::RunId(run_id.clone())).unwrap();
     assert_eq!(meta.turns, 2);
     let index = fs::read_to_string(scratch.runs().join("sessions.index")).unwrap();
     let indexed: Vec<iteron_record::SessionMeta> = index

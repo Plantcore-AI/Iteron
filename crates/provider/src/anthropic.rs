@@ -7,8 +7,8 @@ use crate::{
     AdapterKind, ApiRoot, CacheBreakpoint, CacheScope, EffortApplication, ErrorProfile, Provider,
     ProviderControlCapabilities, ProviderError, TurnRequest, TurnResult,
 };
-use iteron_protocol::{Block, Message, ProviderState, Role};
 use futures_util::StreamExt;
+use iteron_protocol::{Block, Message, ProviderState, Role};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

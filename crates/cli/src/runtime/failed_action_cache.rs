@@ -115,7 +115,8 @@ mod tests {
             cache.get("tool::input").map(String::len),
             Some(MAX_PRIOR_ERROR_BYTES)
         );
-        let iteron_tunables::ResolutionValue::Object { fields } = FailedActionCache::tunable_value()
+        let iteron_tunables::ResolutionValue::Object { fields } =
+            FailedActionCache::tunable_value()
         else {
             panic!("policy must be an object");
         };

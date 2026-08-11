@@ -184,8 +184,9 @@ pub(crate) fn preview_restore(
     scope: Scope,
     unrecorded: Unrecorded,
 ) -> Result<Preview, String> {
-    let paths = iteron_record::snapshot_inventory(snapshot, workspace, iteron_changeset::MAX_ENTRIES)
-        .map_err(|error| format!("checkpoint inventory failed: {error}"))?;
+    let paths =
+        iteron_record::snapshot_inventory(snapshot, workspace, iteron_changeset::MAX_ENTRIES)
+            .map_err(|error| format!("checkpoint inventory failed: {error}"))?;
     let inventory = if paths.complete {
         Inventory::complete(paths.paths)
     } else {

@@ -66,10 +66,6 @@ pub use checkpoint_algebra::{
     SlotDelta, diff, merge, restrict, retire,
 };
 pub use checkpoint_transfer::{TransferMetric, TransferResult, TransferSlotMetric, transfer};
-/// Re-exported so an outside implementor of [`TrajectoryProjection`] can construct the
-/// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
-/// `iteron-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
-pub use iteron_protocol::{RunId, TenantId};
 pub use dataset::{
     GovernedDatasetError, GovernedTrainingDataset, MAX_GOVERNED_DATASET_BYTES,
     MAX_GOVERNED_DATASET_TRAJECTORIES,
@@ -86,6 +82,10 @@ pub use held_out::{
     HeldOutTaskPair, HeldOutTrainingCorpus, MAX_HELD_OUT_EVIDENCE_RECORDS,
     MAX_HELD_OUT_REPORT_JSON_BYTES, MAX_HELD_OUT_REPORT_TASKS,
 };
+/// Re-exported so an outside implementor of [`TrajectoryProjection`] can construct the
+/// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
+/// `iteron-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
+pub use iteron_protocol::{RunId, TenantId};
 pub use policy_evidence_projection::{
     MAX_POLICY_EVIDENCE_RUN_JSON_BYTES, MAX_POLICY_EVIDENCE_RUNS,
     POLICY_EVIDENCE_RUN_SCHEMA_VERSION, PolicyEvidenceRunFixture, PolicyEvidenceRunProjector,

@@ -1017,7 +1017,10 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         label: Some(label.clone()),
         phase: raw.phase.clone(),
         model: raw.model.clone(),
-        effort: raw.effort.as_deref().and_then(iteron_protocol::Effort::parse),
+        effort: raw
+            .effort
+            .as_deref()
+            .and_then(iteron_protocol::Effort::parse),
         agent_type: raw.agent_type.clone(),
         schema: raw.schema.clone(),
         cancel: env

@@ -81,7 +81,10 @@ const BANNED: &[(&str, &str)] = &[
         "Instant::now",
         "a monotonic clock reading must arrive as a command field",
     ),
-    ("iteron_provider", "the reducer must not name a world module"),
+    (
+        "iteron_provider",
+        "the reducer must not name a world module",
+    ),
     ("iteron_sandbox", "the reducer must not name a world module"),
     ("iteron_ctx", "the reducer must not name a world module"),
     (

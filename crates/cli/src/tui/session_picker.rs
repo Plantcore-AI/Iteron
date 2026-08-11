@@ -367,17 +367,17 @@ pub(super) async fn create_fresh_session(
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-    let rollout = match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default())
-    {
-        Ok(rollout) => rollout,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot create session: {error}"),
-            );
-            return;
-        }
-    };
+    let rollout =
+        match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
+            Ok(rollout) => rollout,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("cannot create session: {error}"),
+                );
+                return;
+            }
+        };
     let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
     let capabilities = directory.selection_capabilities(&selection);
     let reply = session

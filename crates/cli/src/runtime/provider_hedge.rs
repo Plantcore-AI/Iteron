@@ -6,8 +6,8 @@
 //! a proven-unbilled request.
 
 use super::*;
-use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;

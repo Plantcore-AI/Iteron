@@ -751,8 +751,11 @@ mod tests {
             "---\nname: linked\ndescription: linked user skill\n---\nbody\n",
         )
         .unwrap();
-        std::os::unix::fs::symlink(outside.join("external"), repo.join(".iteron/skills/escaped"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("external"),
+            repo.join(".iteron/skills/escaped"),
+        )
+        .unwrap();
         std::os::unix::fs::symlink(outside.join("external"), user.join("linked")).unwrap();
 
         let cat = SkillCatalog::discover(&user, &repo);

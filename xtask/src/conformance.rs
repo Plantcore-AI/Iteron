@@ -20,7 +20,8 @@ const MAX_POLICY_TOOLS: usize = 256;
 const MAX_W1_PLACEMENT_ROWS: usize = 16;
 const SPAWN_SIGNATURE: &str = "    pub(super) async fn spawn_subagent(";
 const BUDGET_BINDING: &str = "let Some(budget) = iteron_agents::subagent_budget(";
-const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] = ["iteron-obs", "iteron-protocol", "iteron-record"];
+const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] =
+    ["iteron-obs", "iteron-protocol", "iteron-record"];
 const FORBIDDEN_WORLD_CRATES: [&str; 8] = [
     "iteron_agents",
     "iteron_ctx",
@@ -476,13 +477,15 @@ fn w1_context_contract_enabled(root: &Path) -> Result<bool> {
         2 * 1024 * 1024,
     )?)
     .context("governance/boundaries.json is not valid JSON")?;
-    Ok(registry["cargo_policy"]["packages"]["iteron-xtask"]["normal"]
-        .as_array()
-        .is_some_and(|dependencies| {
-            dependencies
-                .iter()
-                .any(|dependency| dependency.as_str() == Some("iteron-ctx"))
-        }))
+    Ok(
+        registry["cargo_policy"]["packages"]["iteron-xtask"]["normal"]
+            .as_array()
+            .is_some_and(|dependencies| {
+                dependencies
+                    .iter()
+                    .any(|dependency| dependency.as_str() == Some("iteron-ctx"))
+            }),
+    )
 }
 
 struct PlacementRow {

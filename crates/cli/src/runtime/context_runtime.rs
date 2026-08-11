@@ -324,8 +324,11 @@ impl Agent {
         let recorded = self.recorded_context_history()?;
         if let Some((context_text, context_trust, durable_instructions)) = recorded.injection {
             if let Some(instructions) = durable_instructions {
-                let (text, trust) =
-                    iteron_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    &instructions,
+                    context_text,
+                    context_trust,
+                );
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -343,8 +346,11 @@ impl Agent {
                         instructions: Some(instructions.clone()),
                     },
                 )?;
-                let (text, trust) =
-                    iteron_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    &instructions,
+                    context_text,
+                    context_trust,
+                );
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -465,8 +471,11 @@ impl Agent {
         }
         let (text, trust) = match &durable_instructions {
             Some(instructions) => {
-                let (text, trust) =
-                    iteron_ctx::assemble_recorded_context(instructions, context_text, context_trust);
+                let (text, trust) = iteron_ctx::assemble_recorded_context(
+                    instructions,
+                    context_text,
+                    context_trust,
+                );
                 (text, Some(trust))
             }
             None => (context_text, should_record.then_some(context_trust)),

@@ -69,7 +69,10 @@ fn minimal_request() -> String {
 #[test]
 fn catalog_exposes_all_families_and_all_truthful_detail_fields() {
     let catalog = registry_catalog();
-    assert_eq!(catalog.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(
+        catalog.entries.len(),
+        iteron_tunables::EXPECTED_FAMILY_COUNT
+    );
     assert!(catalog.title.contains("simulation only"));
     assert_text_bound(
         &catalog.title,
@@ -159,7 +162,10 @@ fn frozen_request_failure_still_yields_a_redacted_atomic_report() {
     let request = minimal_request();
     let catalog = catalog_from_bytes(request.as_bytes()).expect("valid frozen request");
     assert!(catalog.title.contains("active resolution failed"));
-    assert_eq!(catalog.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(
+        catalog.entries.len(),
+        iteron_tunables::EXPECTED_FAMILY_COUNT
+    );
     assert!(
         catalog
             .entries

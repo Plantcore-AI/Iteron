@@ -3,8 +3,8 @@
 use crate::{
     Registry, ToolError, boxfut, edit::suspicious_unicode, err_result, ok_result, resolve_in_root,
 };
-use iteron_protocol::{Capability, Purity, ToolSpec};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use regex::{Regex, RegexBuilder};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;

@@ -217,7 +217,14 @@ mod tests {
                 "{good} should parse"
             );
         }
-        for bad in ["", "iteron", "core/", "/role", "core/a/b", "core/tool policy"] {
+        for bad in [
+            "",
+            "iteron",
+            "core/",
+            "/role",
+            "core/a/b",
+            "core/tool policy",
+        ] {
             assert!(
                 SlotId(bad.into()).validate().is_err(),
                 "{bad:?} should be rejected"

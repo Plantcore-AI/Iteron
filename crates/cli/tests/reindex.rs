@@ -14,8 +14,10 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         let serial = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("iteron-cli-reindex-{}-{serial}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "iteron-cli-reindex-{}-{serial}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(root.join("repo")).unwrap();
         std::fs::create_dir_all(root.join("runs")).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();

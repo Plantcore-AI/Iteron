@@ -88,7 +88,7 @@ struct NormalizedLine {
 }
 
 impl NormalizedLine {
-    fn iteron<'a>(&self, text: &'a str) -> &'a str {
+    fn core<'a>(&self, text: &'a str) -> &'a str {
         &text[self.core_start..self.core_end]
     }
 
@@ -334,7 +334,7 @@ fn nearest_normalized_line(
     let target = old_lines
         .iter()
         .map(|line| line.core(old).as_bytes())
-        .find(|iteron| !iteron.is_empty())?;
+        .find(|core| !core.is_empty())?;
     let mut best: Option<(usize, usize, usize)> = None;
     for (index, line) in content_lines.iter().enumerate() {
         let candidate = line.core(content).as_bytes();

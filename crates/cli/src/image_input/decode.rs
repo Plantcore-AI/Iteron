@@ -1,7 +1,7 @@
 use super::ImageInputErrorKind;
-use iteron_protocol::ImageMediaType;
 use gif::{ColorOutput, DecodeOptions, MemoryLimit};
 use image_webp::WebPDecoder;
+use iteron_protocol::ImageMediaType;
 use std::io::{BufReader, Cursor};
 use std::num::NonZeroU64;
 use zune_jpeg::JpegDecoder;

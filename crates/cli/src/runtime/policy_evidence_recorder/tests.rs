@@ -333,7 +333,8 @@ fn turn_and_run_outcomes_commit_exact_order_once() {
         Err(PolicyEvidenceRecorderError::RunAlreadyTerminal)
     ));
 
-    let serialized = serde_json::to_string(&iteron_record::replay(rollout.path()).unwrap()).unwrap();
+    let serialized =
+        serde_json::to_string(&iteron_record::replay(rollout.path()).unwrap()).unwrap();
     for forbidden in ["prompt", "path", "arguments", "tool_args", "source_text"] {
         assert!(!serialized.contains(forbidden));
     }

@@ -10,7 +10,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use iteron_workflow::events::{ProgressEvent, ProgressSink};
-use iteron_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunSpec, WorkflowEngine, extract_meta};
+use iteron_workflow::{
+    AgentCall, AgentOutcome, AgentSpawner, RunSpec, WorkflowEngine, extract_meta,
+};
 
 const EXAMPLE: &str = include_str!("../examples/repo-audit.js");
 

@@ -718,7 +718,9 @@ fn state_root_of(runs_dir: &Path) -> Option<PathBuf> {
         walked.push(component);
         if root.is_none()
             && let Component::Normal(name) = component
-            && name.to_str().is_some_and(iteron_protocol::home::is_home_dir)
+            && name
+                .to_str()
+                .is_some_and(iteron_protocol::home::is_home_dir)
         {
             // The OUTERMOST `.core` is the one sitting in the repository, which is the directory
             // git would otherwise stage.

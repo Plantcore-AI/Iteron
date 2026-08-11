@@ -67,7 +67,9 @@ impl Agent {
                     && self.requested_control().interrupts();
                 let outcome = match state {
                     iteron_workflow::WorkflowState::Done => WorkflowAgentOutcomeUi::Done,
-                    iteron_workflow::WorkflowState::Skipped => WorkflowAgentOutcomeUi::SkippedBudget,
+                    iteron_workflow::WorkflowState::Skipped => {
+                        WorkflowAgentOutcomeUi::SkippedBudget
+                    }
                     iteron_workflow::WorkflowState::Queued
                     | iteron_workflow::WorkflowState::Running => WorkflowAgentOutcomeUi::NotStarted,
                     iteron_workflow::WorkflowState::Error if interrupted => {

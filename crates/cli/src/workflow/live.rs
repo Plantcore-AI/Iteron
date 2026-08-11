@@ -1,9 +1,9 @@
 //! Terminal adapter for live workflow runs.
 
 use super::ui_safe_progress;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use iteron_workflow::events::{ProgressEvent, ProgressSink};
 use iteron_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::sync::Arc;
 
 /// A [`ProgressSink`] that folds every engine event into a shared live [`crate::block::WorkflowRunCard`]

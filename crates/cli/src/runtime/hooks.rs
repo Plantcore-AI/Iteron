@@ -407,11 +407,12 @@ impl Hooks {
                     } else if spec.hook_capability == iteron_protocol::HookCapability::Augment
                         && !output.stdout.trim().is_empty()
                     {
-                        let augmentation = serde_json::from_str::<iteron_protocol::LifecyclePayload>(
-                            output.stdout.trim(),
-                        )
-                        .ok()
-                        .filter(|payload| payload.validate().is_ok());
+                        let augmentation =
+                            serde_json::from_str::<iteron_protocol::LifecyclePayload>(
+                                output.stdout.trim(),
+                            )
+                            .ok()
+                            .filter(|payload| payload.validate().is_ok());
                         if let Some(augmentation) = augmentation {
                             if report.augmentations.len() < MAX_LIFECYCLE_HOOK_AUGMENTATIONS {
                                 report.augmentations.push(augmentation);

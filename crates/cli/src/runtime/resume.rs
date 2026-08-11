@@ -563,10 +563,12 @@ impl Agent {
     ) -> Result<(), KernelError> {
         let snapshot = self.compiled_policy_bundle.genesis_snapshot().clone();
         let inherited_from =
-            parent_run.map(|parent| iteron_protocol::RunGenesisPolicyBundleInheritance {
-                parent_run: parent.0.clone(),
-                parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
-            });
+            parent_run.map(
+                |parent| iteron_protocol::RunGenesisPolicyBundleInheritance {
+                    parent_run: parent.0.clone(),
+                    parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
+                },
+            );
         self.emit_durable(
             TurnId(0),
             EventKind::PolicyBundleSnapshot {

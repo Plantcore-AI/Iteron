@@ -325,7 +325,8 @@ impl Agent {
                 && retry_index.saturating_add(1) < self.retry_policy.max_attempts
             {
                 let random = jitter.next01();
-                let jitter_delay = iteron_sched::full_jitter(&self.retry_policy, retry_index, random);
+                let jitter_delay =
+                    iteron_sched::full_jitter(&self.retry_policy, retry_index, random);
                 let delay = error
                     .retry_after()
                     .map(|hint| {

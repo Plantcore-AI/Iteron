@@ -1474,8 +1474,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         for format in [OutputFormat::Text, OutputFormat::Json] {
             assert_eq!(
-                input_attachment_record(format, usize::MAX, iteron_protocol::ImageMediaType::Png, 1)
-                    .unwrap(),
+                input_attachment_record(
+                    format,
+                    usize::MAX,
+                    iteron_protocol::ImageMediaType::Png,
+                    1
+                )
+                .unwrap(),
                 None,
                 "{format:?} must retain its existing bytes"
             );

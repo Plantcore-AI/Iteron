@@ -16,9 +16,9 @@ mod supervisor;
 mod wire;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
+use input::SourceDocument;
 use iteron_lsp::intel::Position;
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
-use input::SourceDocument;
 use pool::Launcher;
 use serde_json::{Value, json};
 use std::path::PathBuf;

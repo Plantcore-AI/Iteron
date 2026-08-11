@@ -310,8 +310,10 @@ impl KernelSpawner {
             config.class,
             leaves,
             config.max_leaves,
-            iteron_protocol::capability_set::CapabilitySet::only(iteron_protocol::Capability::ReadOnly)
-                .intersect(self.cx.authority_ceiling),
+            iteron_protocol::capability_set::CapabilitySet::only(
+                iteron_protocol::Capability::ReadOnly,
+            )
+            .intersect(self.cx.authority_ceiling),
         ) {
             Ok(planned) => {
                 let action = if planned.is_some() {

@@ -674,7 +674,9 @@ impl AppServerClient {
         Self::connect_to(
             server_version,
             SubmissionSender::Bare(submissions),
-            iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         )
     }
 
@@ -3288,7 +3290,9 @@ mod tests {
         let mut events = EventPublisher::new(
             eq_tx,
             true,
-            iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         let notification = publish_settled(
             &mut events,
@@ -3492,17 +3496,16 @@ mod tests {
         // process dies. This one refuses, and the refusal is what the operator sees.
         let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
         let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
-        let client =
-            AppServerClient::connect_weighted(
-                PROTOCOL_VERSION,
-                tx,
-                priority_tx,
-                Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
-                iteron_obs::lifecycle::LifecycleEmitter::new(
-                    iteron_obs::lifecycle::LifecycleBus::default(),
-                ),
-            )
-            .expect("handshake");
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .expect("handshake");
         let mut accepted = 0usize;
         for _ in 0..(SQ_CAPACITY * 4) {
             match client.submit(Op::UserInput {
@@ -3588,17 +3591,16 @@ mod tests {
         let budget = Arc::new(Semaphore::new(weight));
         let (tx, mut rx) = mpsc::channel::<QueuedSubmission>(4);
         let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(1);
-        let client =
-            AppServerClient::connect_weighted(
-                PROTOCOL_VERSION,
-                tx,
-                priority_tx,
-                budget.clone(),
-                iteron_obs::lifecycle::LifecycleEmitter::new(
-                    iteron_obs::lifecycle::LifecycleBus::default(),
-                ),
-            )
-            .unwrap();
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            budget.clone(),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .unwrap();
 
         client
             .submit(op.clone())
@@ -3632,7 +3634,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             false,
-            iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         for i in 0..64 {
             publisher
@@ -3685,7 +3689,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             false,
-            iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
 
         let flood = tokio::spawn(async move {
@@ -3762,7 +3768,9 @@ mod tests {
         let mut publisher = EventPublisher::new(
             tx,
             true,
-            iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
         );
         let publish = tokio::spawn(async move {
             publisher

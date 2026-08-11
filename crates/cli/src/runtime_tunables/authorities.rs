@@ -8,7 +8,9 @@
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Budget, PermissionMode, PermissionRules, TenantId};
 use iteron_tools::Registry;
-use iteron_tunables::{ExternalCeiling, RuntimeAuthoritySet, RuntimeProfile, RuntimeResolutionError};
+use iteron_tunables::{
+    ExternalCeiling, RuntimeAuthoritySet, RuntimeProfile, RuntimeResolutionError,
+};
 use iteron_verify::{VerifierPlan, VerifierSlotObservation};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};

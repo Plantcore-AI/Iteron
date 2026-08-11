@@ -304,7 +304,10 @@ pub(super) async fn handle_registered_command(
             let mut rows = vec![
                 kv(
                     "catalog",
-                    &format!("{} lifecycle events", iteron_protocol::lifecycle::EVENT_COUNT),
+                    &format!(
+                        "{} lifecycle events",
+                        iteron_protocol::lifecycle::EVENT_COUNT
+                    ),
                 ),
                 kv("recorded", &snapshot.events.len().to_string()),
                 kv("next ordinal", &snapshot.next_ordinal.to_string()),
@@ -1078,12 +1081,14 @@ pub(super) async fn handle_registered_command(
                         })
                         .take(30)
                     {
-                        let kind =
-                            if matches!(event.kind, iteron_protocol::EventKind::Checkpoint { .. }) {
-                                "files + conversation"
-                            } else {
-                                "conversation"
-                            };
+                        let kind = if matches!(
+                            event.kind,
+                            iteron_protocol::EventKind::Checkpoint { .. }
+                        ) {
+                            "files + conversation"
+                        } else {
+                            "conversation"
+                        };
                         rows.push(item(
                             "•",
                             &format!("seq {}", event.seq.0),

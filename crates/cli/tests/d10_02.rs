@@ -242,12 +242,16 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
     // Startup: the semantic status row carries the `plan` mode and resolved model. Without Plan
     // mode the whole premise of the test is void, so we require it here rather than trusting the
     // flag; the quiet composer deliberately has no redundant titled perimeter.
-    pty.wait_until("the iteron TUI ready in plan mode", READY_TIMEOUT, |screen| {
-        screen.contains("plan")
-            && screen.contains("ask about this codebase")
-            && screen.contains("glm-5.2")
-            && !screen.contains('\u{fffd}')
-    });
+    pty.wait_until(
+        "the iteron TUI ready in plan mode",
+        READY_TIMEOUT,
+        |screen| {
+            screen.contains("plan")
+                && screen.contains("ask about this codebase")
+                && screen.contains("glm-5.2")
+                && !screen.contains('\u{fffd}')
+        },
+    );
 
     // Type the operator escape hatch. The arithmetic-evaluated `BROKER-42` can only appear if a
     // real process ran; the literal command text carries `BROKER-$((21+21))` instead.
