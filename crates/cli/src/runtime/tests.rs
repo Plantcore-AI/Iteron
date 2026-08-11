@@ -48,7 +48,7 @@ mod capability_tests {
         // The Core home `.iteron/**` is elevated case-insensitively.
         assert!(is_trust_mutating_path(".iteron/config.json"));
         assert!(is_trust_mutating_path(".ITERON/config.json"));
-        assert!(is_trust_mutating_path(".core/memory/m-1.md"));
+        assert!(is_trust_mutating_path(".iteron/memory/m-1.md"));
         assert!(!is_trust_mutating_path("src/main.rs"));
         assert!(!is_trust_mutating_path("README.md"));
         // an `edit` to .git/config is elevated ReversibleLocal -> TrustMutating (gate never auto's it)
@@ -8013,7 +8013,7 @@ ant-api03-SuperSecretModelToken12345"
 
         // Now CHANGE the fact on disk, then resume: the injected context must be the ORIGINAL
         // recorded segment, not the new disk content (reproducibility — R5-review item 1).
-        std::fs::remove_dir_all(ws.join(".core/memory")).ok();
+        std::fs::remove_dir_all(ws.join(".iteron/memory")).ok();
         iteron_ctx::MemoryStore::at(&ws)
             .add("Completely different content now.")
             .unwrap();
