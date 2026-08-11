@@ -99,8 +99,7 @@ pub(super) fn validate_domain(
     match ceiling {
         ExternalCeiling::ProviderCapability => {}
         ExternalCeiling::VerificationFloor
-            if ((structured_target && allowed_nonempty)
-                || (!structured_target && (minimum.is_some() || allowed_nonempty)))
+            if (allowed_nonempty || (!structured_target && minimum.is_some()))
                 && preferred.is_none() => {}
         ExternalCeiling::TenantScope
             if minimum.is_none()

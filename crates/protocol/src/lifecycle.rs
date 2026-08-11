@@ -138,6 +138,9 @@ pub enum PrivacyClass {
 /// Construction is private and [`content_free_telemetry_schema_proof`] scans the live registry on
 /// every request. A future event classified as `Content` or `SensitiveMetadata` therefore removes
 /// the proof instead of inheriting an obsolete boolean from an erasure coverage table.
+// The private field seals construction to this module. `#[non_exhaustive]` would still permit
+// other modules in this crate to forge the proof, so the superficially similar lint fix is weaker.
+#[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentFreeTelemetrySchemaProof {
     pub catalog_version: LifecycleCatalogVersion,

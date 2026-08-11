@@ -31,6 +31,14 @@ use authority::validate_digest;
 pub use effective::EffectiveValueError;
 use evidence::{constraint_subject, default_subject, evidence_digest, resolver_id};
 
+type InternalResolution = (
+    ResolvedTunableSet,
+    BTreeMap<String, ProductionOwnerId>,
+    BTreeMap<String, ProductionOwnerSymbolId>,
+    BTreeSet<String>,
+    BTreeMap<String, (FixedAuthorityId, ResolutionValue)>,
+);
+
 /// Named production profiles. A profile is provenance and a bounded group of ordinary declared
 /// values; it is never a new authority layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -880,18 +888,7 @@ impl RuntimeResolutionBuilder {
         Ok(())
     }
 
-    fn resolve_internal(
-        self,
-    ) -> Result<
-        (
-            ResolvedTunableSet,
-            BTreeMap<String, ProductionOwnerId>,
-            BTreeMap<String, ProductionOwnerSymbolId>,
-            BTreeSet<String>,
-            BTreeMap<String, (FixedAuthorityId, ResolutionValue)>,
-        ),
-        RuntimeResolutionError,
-    > {
+    fn resolve_internal(self) -> Result<InternalResolution, RuntimeResolutionError> {
         activation::require_complete(&self.activations)?;
         let observations = self.owner_observations;
         let symbol_observations = self.owner_symbol_observations;
