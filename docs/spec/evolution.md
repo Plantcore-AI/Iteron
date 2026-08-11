@@ -220,7 +220,7 @@ Iteron 在开放性上做一条**刻意的拆分**:
 
 本节描述的是**目标架构**与已落地的**契约层**;定位是前瞻性的(prospective),须诚实标注现状:
 
-- Iteron 处于 **pre-alpha**:一个能跑但仍是模块化的 monolith;kernel 的硬依赖已收敛到 **3 个 crate**(`iteron-protocol`/`iteron-record`/`iteron-obs`,见 `crates/kernel/Cargo.toml`);此前本节所记的「约 10 个」已不再成立。收敛到最小 TCB 的工作因此是**在收尾而非未开始**,但尚未完成:`iteron-record` 与 `iteron-obs` 是否都必须留在 TCB 内,仍待裁定。
+- Iteron 处于 **pre-alpha**:一个能跑但仍是模块化的 monolith;kernel 的硬依赖已收敛到 **2 个 crate**(`iteron-protocol`/`iteron-record`,见 `crates/kernel/Cargo.toml`)。`iteron-obs` 曾在其中却**从未被使用**——kernel 源码里只剩一句提到它的注释,已移除。收敛到最小 TCB 的工作因此是**在收尾而非未开始**,但尚未完成:`iteron-record` 的耦合恰是三处,且没有一处是内核固有的——`DurableEffectLog for Rollout` 这个具体实现、错误枚举里的 `RecordError`,以及两个 `redact::scrub*` 纯字符串谓词。把它们移出去是一件有界的工作,不是一个开放问题。
 - **live self-evolution activation 是 NO-GO**:`crates/evolve` 明确在 runtime TCB 之外,无 loader、无 runtime registry handle,不能载入、授予、执行或热插一条 policy。它当前只支持**记录、离线校验与评估**。
 - **尚无 first-party benchmark 数字**:本节不含任何 tier 内部数字;能力结论(如"训练出的 harness 击败手搭基线")是一个**待验证**的实验设计,其成立与否 gate 在尚未运行的 held-out 结果上。
 - escape-hatch 的 blob 到 typed 晋升路径目前是**设计承诺**,尚无 ADAS 式 artifact 真正 round-trip 进空间。
