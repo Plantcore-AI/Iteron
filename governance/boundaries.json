@@ -1259,7 +1259,6 @@
       },
       "iteron-kernel": {
         "normal": [
-          "iteron-obs",
           "iteron-protocol",
           "iteron-record"
         ],

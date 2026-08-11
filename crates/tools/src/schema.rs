@@ -67,6 +67,13 @@ fn validate_schema_at(
         .as_object()
         .ok_or_else(|| SchemaError::new(path, "schema must be an object"))?;
 
+    // This allowlist and `validate_arguments_at` are two halves of one contract: every keyword
+    // admitted here is enforced there, and each of the eight below appears in both. Do not add a
+    // keyword to this list alone. `enum` in particular looks harmless because it only narrows what
+    // is valid, so it cannot widen what a server may ask for; but nothing checks it at call time,
+    // so admitting it would make it the first keyword advertised to the model and not enforced.
+    // A constraint that is announced and unchecked is worse than one that is refused. If `enum`
+    // is wanted, add the check to `validate_arguments_at` in the same change.
     for keyword in object.keys() {
         if !matches!(
             keyword.as_str(),

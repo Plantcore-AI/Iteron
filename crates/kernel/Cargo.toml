@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 iteron-protocol = { path = "../protocol" }
 iteron-record = { path = "../record" }
-iteron-obs = { path = "../obs" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

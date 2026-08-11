@@ -20,8 +20,9 @@ const MAX_POLICY_TOOLS: usize = 256;
 const MAX_W1_PLACEMENT_ROWS: usize = 16;
 const SPAWN_SIGNATURE: &str = "    pub(super) async fn spawn_subagent(";
 const BUDGET_BINDING: &str = "let Some(budget) = iteron_agents::subagent_budget(";
-const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] =
-    ["iteron-obs", "iteron-protocol", "iteron-record"];
+/// The kernel's trusted computing base, stated as an exact set so a new dependency cannot arrive
+/// unnoticed. `iteron-obs` was in it and unused: the only mention left in the kernel was a comment.
+const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 2] = ["iteron-protocol", "iteron-record"];
 const FORBIDDEN_WORLD_CRATES: [&str; 8] = [
     "iteron_agents",
     "iteron_ctx",
@@ -1092,7 +1093,6 @@ mod tests {
             [dependencies]
             iteron-protocol = { path = "../protocol" }
             iteron-record = { path = "../record" }
-            iteron-obs = { path = "../obs" }
             serde = "1"
         "#;
         assert!(validate_kernel_dependencies(exact).is_ok());
