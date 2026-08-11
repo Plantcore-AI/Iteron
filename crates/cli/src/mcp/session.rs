@@ -1278,11 +1278,17 @@ fn register_server_tools(
         ToolSpec {
             name: format!("{name}__lifecycle"),
             description: format!(
-                "Inspect or control the session-owned lifecycle of the `{name}` MCP server."
+                "Inspect or control the session-owned lifecycle of the `{name}` MCP server. \
+                 `action` is one of `status`, `cancel`, `restart`, `stop`."
             ),
+            // The registry's schema validator admits a deliberately narrow keyword set, and `enum`
+            // is not in it. This tool is registered for every configured server, so declaring one
+            // here failed the registration of every server rather than just this tool. The choices
+            // move into the description; the handler already refuses anything outside them, so the
+            // constraint was never being enforced by the schema in the first place.
             input_schema: json!({
                 "type":"object",
-                "properties":{"action":{"type":"string","enum":["status","cancel","restart","stop"]}},
+                "properties":{"action":{"type":"string","description":"status | cancel | restart | stop"}},
                 "required":["action"]
             }),
             purity: Purity::Effecting,
