@@ -285,10 +285,9 @@ pub(super) fn effective_digest_from_report(
     })
 }
 
-fn validated_report_fixed_attestations<'a>(
-    report: &'a ResolutionReport,
-) -> Result<std::collections::BTreeMap<&'a str, &'a FixedAuthorityAttestation>, TunablesSnapshotError>
-{
+fn validated_report_fixed_attestations(
+    report: &ResolutionReport,
+) -> Result<std::collections::BTreeMap<&str, &FixedAuthorityAttestation>, TunablesSnapshotError> {
     if report.fixed_authority_attestations.len() > iteron_tunables::EXPECTED_FAMILY_COUNT {
         return invalid("resolver report fixed-authority inventory exceeds its family bound");
     }

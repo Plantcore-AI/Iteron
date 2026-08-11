@@ -313,9 +313,9 @@ fn read_private_content_at_reference_locked(
     // A derivative is available only while every durable source edge is available. This is the
     // crash-safe half of propagation: a root tombstone immediately closes reads even if a process
     // died before it could tombstone or unlink the derivative itself.
-    for source in lineage::sources_for_reference(&layout, owner, &handle.digest, seq, surface)? {
-        references::verify_source_owner_locked(&layout, &source)?;
-        load_bytes(&layout, &source.digest)?;
+    for source in lineage::sources_for_reference(layout, owner, &handle.digest, seq, surface)? {
+        references::verify_source_owner_locked(layout, &source)?;
+        load_bytes(layout, &source.digest)?;
     }
     load_bytes(layout, &handle.digest)
 }

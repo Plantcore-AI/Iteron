@@ -190,10 +190,10 @@ fn collect_live_adapters(
         let mut writer_count = 0usize;
         for writer in writers.into_iter().flatten() {
             let Some(gate) = super::registered_read_gate(writer) else {
-                return Err(unresolved(&affected, "content_adapter_read_gate_missing"));
+                return Err(unresolved(affected, "content_adapter_read_gate_missing"));
             };
             if writer.namespace != namespace || !gate.matches(writer) {
-                return Err(unresolved(&affected, "content_adapter_registry_invalid"));
+                return Err(unresolved(affected, "content_adapter_registry_invalid"));
             }
             adapters.push(LiveAdapter { writer, gate });
             writer_count = writer_count.saturating_add(1);
