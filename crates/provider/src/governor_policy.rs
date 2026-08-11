@@ -3,6 +3,55 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+/// Route-scoped, provenance-bearing objective facts used by the fallback ranker.
+///
+/// Every component is normalized to millionths and uses the same direction: larger is better.
+/// These are facts supplied by the provider capability catalog (or an operator declaration in
+/// that catalog), not values inferred from model names. A route without the complete triple is
+/// therefore ineligible for objective-ranked fallback instead of receiving an optimistic default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteObjectiveScores {
+    pub quality_millionths: u32,
+    pub cost_efficiency_millionths: u32,
+    pub latency_millionths: u32,
+}
+
+impl RouteObjectiveScores {
+    pub fn validate(self) -> Result<Self, GovernorPolicyError> {
+        if [
+            self.quality_millionths,
+            self.cost_efficiency_millionths,
+            self.latency_millionths,
+        ]
+        .into_iter()
+        .any(|score| score > 1_000_000)
+        {
+            return Err(GovernorPolicyError::ObjectiveScoreRange);
+        }
+        Ok(self)
+    }
+
+    /// Fixed-point weighted score in millionths. Validation makes the intermediate sum at most
+    /// 1e12 and the returned score at most 1e6, so this is deterministic on every target.
+    pub fn weighted_score(self, weights: ObjectiveWeights) -> Result<u32, GovernorPolicyError> {
+        let scores = self.validate()?;
+        let weights = weights.validate()?;
+        let weighted = u64::from(scores.quality_millionths)
+            .saturating_mul(u64::from(weights.quality_millionths))
+            .saturating_add(
+                u64::from(scores.cost_efficiency_millionths)
+                    .saturating_mul(u64::from(weights.cost_millionths)),
+            )
+            .saturating_add(
+                u64::from(scores.latency_millionths)
+                    .saturating_mul(u64::from(weights.latency_millionths)),
+            )
+            / 1_000_000;
+        u32::try_from(weighted).map_err(|_| GovernorPolicyError::ObjectiveScoreRange)
+    }
+}
+
 pub const MAX_GOVERNED_ROUTES: usize = 32;
 pub const MAX_HEDGE_DUPLICATES: u8 = 8;
 
@@ -110,12 +159,25 @@ impl Default for RateAdmissionPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HedgePolicy {
     pub enabled: bool,
     pub delay: Duration,
     pub max_duplicates: u8,
     pub idempotent_only: bool,
+}
+
+impl Default for HedgePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            delay: Duration::ZERO,
+            max_duplicates: 0,
+            // This is the canonical fail-closed baseline even while hedging is disabled. A
+            // future enabling override must never inherit a duplicate-unsafe owner default.
+            idempotent_only: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +232,8 @@ pub enum GovernorPolicyError {
     Concurrency,
     #[error("quality/cost/latency weights must sum to exactly 1.0")]
     ObjectiveWeightSum,
+    #[error("route quality/cost-efficiency/latency scores must each be in 0..=1.0")]
+    ObjectiveScoreRange,
     #[error("circuit thresholds and open duration must be non-zero")]
     Circuit,
     #[error("hedging must be bounded, enabled with duplicates, and idempotent-only")]

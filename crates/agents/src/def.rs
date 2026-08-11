@@ -93,6 +93,30 @@ pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation suba
 /// harness still normalizes, narrows, and caps those leaves before the workflow may fan out.
 pub const ULTRACODE_PLANNER_NAME: &str = "ultracode-planner";
 
+/// Exact non-trainable owner for the built-in planner's model envelope. The agent definition
+/// consumes these ceilings directly; runtime tunables attest this same typed value rather than
+/// copying the planner's old 4096/low/zero literals into a second owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecompositionProfile {
+    pub max_output_tokens: u64,
+    pub effort: iteron_protocol::Effort,
+    pub thinking_tokens: u32,
+    pub max_wall_secs: u64,
+    pub max_turns: u32,
+}
+
+impl DecompositionProfile {
+    pub const fn owner() -> Self {
+        Self {
+            max_output_tokens: 4_096,
+            effort: iteron_protocol::Effort::Low,
+            thinking_tokens: 0,
+            max_wall_secs: 60,
+            max_turns: 1,
+        }
+    }
+}
+
 /// Harness-reserved writer identity. The catalog installs this definition before reading any
 /// filesystem source, so repository/user definitions cannot shadow its authority contract.
 pub const ISOLATED_WRITER_NAME: &str = "isolated-writer";
@@ -191,6 +215,11 @@ pub fn subagent_budget_ceiling() -> Budget {
     }
 }
 
+/// Minimum provider turns for an admitted investigator. The allocator and the checkpointed
+/// `worker_min_turns` family read this same constant, so resume cannot reconstruct a different
+/// worker floor from a copied literal.
+pub const MIN_SUBAGENT_TURNS: u32 = 2;
+
 /// Allocate one direct-investigator budget while reserving about half of the remaining turns for
 /// the single writer (rebalanced from two thirds: the writer still keeps the dominant share, but a
 /// bounded-concurrent fan no longer needs to starve investigators down a serial chain). This is the
@@ -209,7 +238,7 @@ pub fn subagent_budget(
     let child_turns = remaining_turns
         .saturating_sub(writer_reserve)
         .min(ceiling.max_turns);
-    if child_turns < 2
+    if child_turns < MIN_SUBAGENT_TURNS
         || remaining_wall_secs < 3
         || remaining_tokens.is_some_and(|tokens| tokens < 2)
     {
@@ -247,6 +276,7 @@ impl AgentDef {
     /// The built-in dynamic-workflow planner. It is visible to the engine's pinned catalog but has
     /// no tools and exactly one provider turn, so planning cannot quietly become a second explorer.
     pub fn ultracode_planner() -> AgentDef {
+        let profile = DecompositionProfile::owner();
         AgentDef {
             name: ULTRACODE_PLANNER_NAME.into(),
             description: "Internal one-turn planner for the built-in Ultracode workflow.".into(),
@@ -254,10 +284,10 @@ impl AgentDef {
             tools: ToolFilter::Allow(Vec::new()),
             model: None,
             budget: Budget {
-                max_turns: 1,
+                max_turns: profile.max_turns,
                 max_usd: None,
-                max_tokens: Some(4_096),
-                max_wall_secs: 60,
+                max_tokens: Some(profile.max_output_tokens),
+                max_wall_secs: profile.max_wall_secs,
                 max_consecutive_tool_errors: 1,
             },
             trust: Trust::Trusted,

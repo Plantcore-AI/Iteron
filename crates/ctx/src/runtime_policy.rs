@@ -228,6 +228,8 @@ pub struct ContextMaterializationPolicy {
     pub memory: MemBudget,
     pub memory_retrieval: crate::MemoryRetrievalPolicy,
     pub skill_listing_bytes: usize,
+    /// Filesystem traversal and rendering limits pinned by family 29 at run genesis.
+    pub instruction_discovery: crate::InstructionDiscoveryPolicy,
 }
 
 impl Default for ContextMaterializationPolicy {
@@ -237,6 +239,7 @@ impl Default for ContextMaterializationPolicy {
             memory: MemBudget::default(),
             memory_retrieval: crate::MemoryRetrievalPolicy::default(),
             skill_listing_bytes: 2_000,
+            instruction_discovery: crate::InstructionDiscoveryPolicy::owner(),
         }
     }
 }
@@ -255,6 +258,12 @@ impl ContextMaterializationPolicy {
         if usize::try_from(self.max_bytes).unwrap_or(usize::MAX) < self.memory.total {
             return Err("memory total exceeds the injected context byte ceiling");
         }
+        crate::InstructionDiscoveryPolicy::try_new(
+            self.instruction_discovery.max_depth,
+            self.instruction_discovery.max_files,
+            self.instruction_discovery.per_file_bytes,
+            self.instruction_discovery.total_bytes,
+        )?;
         Ok(self)
     }
 }
@@ -274,5 +283,18 @@ mod tests {
             policy.admit_components(&usage).unwrap_err().class,
             ContextBudgetClass::StablePrefix
         );
+    }
+
+    #[test]
+    fn lsp_evidence_has_a_non_transferable_attributed_budget() {
+        let policy = ContextBudgetPolicy::for_usable_window(100_000, 8_000, 2_000);
+        let usage = ContextComponentUsage {
+            lsp_result_tokens: policy.lsp_result_tokens + 1,
+            tool_result_tokens: 0,
+            ..ContextComponentUsage::default()
+        };
+        let violation = policy.admit_components(&usage).unwrap_err();
+        assert_eq!(violation.class, ContextBudgetClass::LspResults);
+        assert_eq!(violation.ceiling, policy.lsp_result_tokens);
     }
 }

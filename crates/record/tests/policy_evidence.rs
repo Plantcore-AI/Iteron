@@ -1,7 +1,8 @@
 use iteron_protocol::{
-    Event, EventKind, PolicyActionId, PolicyDecisionDisposition, PolicyDecisionEvidence,
-    PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyRuntimeIdentity,
-    PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, Seq, TenantId, TurnId,
+    Event, EventKind, PolicyActionId, PolicyActionV1, PolicyDecisionDisposition,
+    PolicyDecisionEvidence, PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope,
+    PolicyRuntimeIdentity, PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, Seq, TenantId,
+    TurnId,
     policy_evidence::{
         POLICY_DECISION_EVIDENCE_SCHEMA_VERSION, POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     },
@@ -32,15 +33,20 @@ fn identity() -> PolicyRuntimeIdentity {
 }
 
 fn decision() -> PolicyDecisionEvidence {
+    let slot = SlotId("core/router".into());
     PolicyDecisionEvidence {
         schema_version: POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
         opportunity_id: PolicyOpportunityId("route:0".into()),
         run_id: RunId("run-policy".into()),
         turn_id: Some(TurnId(1)),
-        slot: SlotId("core/router".into()),
+        slot: slot.clone(),
         policy: identity(),
-        eligible_actions: vec![PolicyActionId("direct".into())],
-        selected_action: Some(PolicyActionId("direct".into())),
+        eligible_actions: vec![
+            PolicyActionId::for_slot(&slot, PolicyActionV1::RouterDirect).unwrap(),
+        ],
+        selected_action: Some(
+            PolicyActionId::for_slot(&slot, PolicyActionV1::RouterDirect).unwrap(),
+        ),
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: None,
         propensity_ppm: Some(1_000_000),
@@ -99,7 +105,8 @@ fn valid_policy_evidence_roundtrips_and_invalid_selection_never_enters_record() 
         .unwrap();
 
     let mut invalid = decision();
-    invalid.selected_action = Some(PolicyActionId("not-eligible".into()));
+    invalid.selected_action =
+        Some(PolicyActionId::for_slot(&invalid.slot, PolicyActionV1::RouterFanOut).unwrap());
     assert!(
         rollout
             .append(&Event {

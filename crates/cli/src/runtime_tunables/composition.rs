@@ -7,11 +7,10 @@
 use super::authorities::{AuthorityFactsInput, VerificationAuthority, collect_runtime_authorities};
 use super::catalogs::{CatalogObservation, ScalarCatalogInput, collect_scalar_catalogs};
 use super::core_facts::{
-    BudgetOrigins, CompactionOwner, CoreFactsInput, PromptCacheOwner, RetryOrigins, Sourced,
-    apply_core_facts,
+    BudgetOrigins, CompactionOwner, CoreFactGap, CoreFactsInput, PromptCacheOwner, RetryOrigins,
+    Sourced, apply_core_facts,
 };
 use super::effective_core::EffectiveCoreSettings;
-use super::effective_view::EffectiveTunablesView;
 use super::execution_facts::{ExecutionFactsInput, apply_execution_facts};
 use super::extension_facts::{
     AgentMemoryMode, AgentMemoryScopeObservation, ChildOverlayObservation, ChildToolDisposition,
@@ -31,7 +30,10 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Budget, DurableEnvironmentContext, Effort, PermissionMode, PermissionRules};
 use iteron_sched::BackoffPolicy;
 use iteron_tools::Registry;
-use iteron_tunables::{ResolvedTunableSet, RuntimeProfile, RuntimeResolutionBuilder};
+use iteron_tunables::{
+    ProductionOwnerId, ResolvedTunableSet, RuntimeOwnerReceipt, RuntimeProfile,
+    RuntimeResolutionBuilder,
+};
 use iteron_verify::{VerifierSlotObservation, VerifierStrategy};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,7 +55,7 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub workspace: &'a Path,
     pub environment: Option<&'a str>,
     pub operator_prompt: Option<&'a str>,
-    pub hooks_configured: bool,
+    pub hooks_catalog: Option<crate::runtime::hooks::HookCatalogIdentity>,
     pub app_server_active: bool,
     pub provider_origin: ConfigOrigin,
     pub model_origin: ConfigOrigin,
@@ -73,7 +75,10 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub retry: &'a BackoffPolicy,
     pub retry_origins: RetryOrigins,
     pub verify_command: Option<&'a str>,
-    pub memory_enabled: bool,
+    /// Trusted user configuration only. Repository configuration is deliberately excluded by the
+    /// composition caller and cannot grant verifier or rollback authority.
+    pub verification_config: Option<&'a crate::config::VerificationConfig>,
+    pub memory_enabled: Sourced<bool>,
     pub tenant_allows_memory: bool,
     pub prompt_cache_enabled: bool,
     pub provider_governor: &'a ResolvedProviderGovernorConfig,
@@ -89,10 +94,16 @@ pub(crate) struct FreshComposition {
     pub route_capabilities: iteron_tunables::RouteCapabilities,
     pub session_spawn_ledger: Arc<crate::runtime::SessionSpawnLedger>,
     pub fact_summary: FreshFactSummary,
+    pub owner_receipt: RuntimeOwnerReceipt,
+    pub binding_receipt: super::effective_view::RuntimeBindingReceipt,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FreshFactSummary {
+    /// Canonical Full-family gaps are rejected before resolution; a returned composition must
+    /// therefore always report zero here. FixedHidden and inactive capability gaps remain visible
+    /// in the per-adapter counts below instead of being erased from the audit inventory.
+    pub active_full_gaps: usize,
     pub core_gaps: usize,
     pub execution_gaps: usize,
     pub provider_process_gaps: usize,
@@ -112,13 +123,16 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
 
     let token_estimators = CatalogObservation::observed(
         "iteron-ctx:request-estimator-v2",
-        [
-            iteron_ctx::TokenEstimatorProfile::GenericBytesPerToken35,
-            iteron_ctx::TokenEstimatorProfile::OpenAiBpeApprox,
-            iteron_ctx::TokenEstimatorProfile::AnthropicBpeApprox,
-            iteron_ctx::TokenEstimatorProfile::SentencePieceApprox,
-        ]
-        .map(|profile| profile.identity().catalog_id),
+        std::iter::once(iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID.to_owned()).chain(
+            [
+                iteron_ctx::TokenEstimatorProfile::GenericBytesPerToken35,
+                iteron_ctx::TokenEstimatorProfile::OpenAiBpeApprox,
+                iteron_ctx::TokenEstimatorProfile::AnthropicBpeApprox,
+                iteron_ctx::TokenEstimatorProfile::SentencePieceApprox,
+            ]
+            .into_iter()
+            .map(|profile| profile.identity().catalog_id),
+        ),
     );
     let service_tiers = CatalogObservation::observed(
         format!(
@@ -131,7 +145,11 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
             .iter()
             .map(|tier| tier.label().to_owned()),
     );
-    let binary_inspectors = CatalogObservation::observed_empty("iteron-tools:binary-inspectors-v1");
+    let binary_media_policy = crate::image_input::BinaryMediaInspectionPolicy::owner();
+    let binary_inspectors = CatalogObservation::observed(
+        "iteron-cli:binary-inspectors-v1",
+        binary_media_policy.inspector_ids(),
+    );
     let catalogs = collect_scalar_catalogs(ScalarCatalogInput {
         directory: input.directory,
         selection: input.selection,
@@ -151,6 +169,17 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         .map(|floor| VerifierStrategy::default().plan(floor, input.authority_ceiling))
         .transpose()?
         .map(|proposal| proposal.plan);
+    let default_verification_config = crate::config::VerificationConfig::default();
+    let verification_config = input
+        .verification_config
+        .unwrap_or(&default_verification_config);
+    let verification_policy = verification_config
+        .resolve(
+            input.workspace,
+            input.verify_command,
+            verifier_plan.as_ref(),
+        )
+        .map_err(anyhow::Error::msg)?;
     let verification_authority = match (&verifier_floor, &verifier_plan) {
         (Some(floor), Some(plan)) => VerificationAuthority::Configured { floor, plan },
         _ => VerificationAuthority::Disabled,
@@ -168,6 +197,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         tenant_allows_memory: input.tenant_allows_memory,
         profile: input.profile,
         benchmark_scope_digest_sha256: benchmark_scope_digest.as_deref(),
+        binary_media_policy: &binary_media_policy,
     })?;
 
     let mut builder = RuntimeResolutionBuilder::new(
@@ -176,60 +206,66 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         input.profile,
         authorities,
     )?;
-    let iteron = apply_core_facts(
-        &mut builder,
-        CoreFactsInput {
-            selection: input.selection,
-            provider_origin: input.provider_origin,
-            model_origin: input.model_origin,
-            base_url: input.base_url,
-            effort: input.effort,
-            budget: input.budget,
-            budget_origins: input.budget_origins,
-            allow_code: input.allow_code,
-            permission_mode: input.permission_mode,
-            permission_rules_origin: input.permission_rules_origin,
-            permission_rules: input.permission_rules,
-            bypass_permissions: input.bypass_permissions,
-            operator_egress_allow: input.operator_egress_allow,
-            project_egress_allow: input.project_egress_allow,
-            compaction: input.compaction,
-            compaction_owner: input.compaction_owner,
-            retry: input.retry,
-            retry_origins: input.retry_origins,
-            verify_command: input.verify_command,
-            verifier_plan_command: input.verify_command.filter(|_| verifier_plan.is_some()),
-            memory_enabled: input.memory_enabled,
-            tenant_allows_memory: input.tenant_allows_memory,
-            model_capabilities: input.model_capabilities,
-            route: &route_capabilities,
-            prompt_cache_enabled: input.prompt_cache_enabled,
-            prompt_cache_owner: PromptCacheOwner::RustBuilder,
-        },
-    )?;
+    let iteron = builder.with_owner(ProductionOwnerId::CoreFacts, |builder| {
+        apply_core_facts(
+            builder,
+            CoreFactsInput {
+                selection: input.selection,
+                provider_origin: input.provider_origin,
+                model_origin: input.model_origin,
+                base_url: input.base_url,
+                effort: input.effort,
+                budget: input.budget,
+                budget_origins: input.budget_origins,
+                allow_code: input.allow_code,
+                permission_mode: input.permission_mode,
+                permission_rules_origin: input.permission_rules_origin,
+                permission_rules: input.permission_rules,
+                bypass_permissions: input.bypass_permissions,
+                operator_egress_allow: input.operator_egress_allow,
+                project_egress_allow: input.project_egress_allow,
+                compaction: input.compaction,
+                compaction_owner: input.compaction_owner,
+                retry: input.retry,
+                retry_origins: input.retry_origins,
+                verify_command: input.verify_command,
+                verifier_plan_command: input.verify_command.filter(|_| verifier_plan.is_some()),
+                memory_enabled: input.memory_enabled,
+                tenant_allows_memory: input.tenant_allows_memory,
+                model_capabilities: input.model_capabilities,
+                route: &route_capabilities,
+                prompt_cache_enabled: input.prompt_cache_enabled,
+                prompt_cache_owner: PromptCacheOwner::RustBuilder,
+            },
+        )
+    })?;
 
     let durable_environment = input.environment.map(|text| DurableEnvironmentContext {
         text: text.to_owned(),
         trust: iteron_protocol::Trust::Workspace,
     });
-    let execution = apply_execution_facts(
-        &mut builder,
-        ExecutionFactsInput {
-            registry: input.registry,
-            agent_catalog: input.agent_catalog,
-            budget: input.budget,
-            effort: input.effort.value,
-            verify_command: input.verify_command,
-            hooks_configured: input.hooks_configured,
-            model_capabilities: input.model_capabilities,
-            directory: input.directory,
-            configured_mcp: input.configured_mcp,
-            authority_ceiling: input.authority_ceiling,
-            operator_prompt: input.operator_prompt,
-            environment: durable_environment.as_ref(),
-            app_server_active: input.app_server_active,
-        },
-    )?;
+    let execution = builder.with_owner(ProductionOwnerId::ExecutionFacts, |builder| {
+        apply_execution_facts(
+            builder,
+            ExecutionFactsInput {
+                route: &route_capabilities,
+                registry: input.registry,
+                agent_catalog: input.agent_catalog,
+                budget: input.budget,
+                run_limits: input.run_limits,
+                effort: input.effort.value,
+                verify_command: input.verify_command,
+                hooks_catalog: input.hooks_catalog.clone(),
+                model_capabilities: input.model_capabilities,
+                directory: input.directory,
+                configured_mcp: input.configured_mcp,
+                authority_ceiling: input.authority_ceiling,
+                operator_prompt: input.operator_prompt,
+                environment: durable_environment.as_ref(),
+                app_server_active: input.app_server_active,
+            },
+        )
+    })?;
 
     let verification_owner = match (&verifier_floor, &verifier_plan, input.verify_command) {
         (Some(floor), Some(plan), Some(command)) => VerificationOwnerFacts::Configured {
@@ -239,23 +275,30 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         },
         _ => VerificationOwnerFacts::Disabled,
     };
-    let provider_process = apply_provider_process_facts(
-        &mut builder,
-        ProviderProcessFactsInput {
-            directory: input.directory,
-            selection: input.selection,
-            model_capabilities: input.model_capabilities,
-            route: &route_capabilities,
-            budget: input.budget,
-            compaction: input.compaction,
-            registry: input.registry,
-            workspace: input.workspace,
-            verification: verification_owner,
-            provider_governor: input.provider_governor,
-            provider_governor_configured: input.provider_governor_configured,
-            provider_control_capabilities: input.provider_control_capabilities,
-        },
-    )?;
+    let provider_process =
+        builder.with_owner(ProductionOwnerId::ProviderProcessFacts, |builder| {
+            apply_provider_process_facts(
+                builder,
+                ProviderProcessFactsInput {
+                    agent_catalog: input.agent_catalog,
+                    directory: input.directory,
+                    selection: input.selection,
+                    model_capabilities: input.model_capabilities,
+                    route: &route_capabilities,
+                    budget: input.budget,
+                    compaction: input.compaction,
+                    registry: input.registry,
+                    workspace: input.workspace,
+                    verification: verification_owner,
+                    verification_policy: &verification_policy,
+                    verification_config: input.verification_config,
+                    provider_governor: input.provider_governor,
+                    provider_governor_configured: input.provider_governor_configured,
+                    provider_control_capabilities: input.provider_control_capabilities,
+                    binary_media_policy: &binary_media_policy,
+                },
+            )
+        })?;
 
     let extension_authorities = extension_authorities(&input);
     // The default workflow leaf is not an aspirational catalog entry: `KernelSpawner::build_child`
@@ -287,67 +330,95 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
             .map_err(anyhow::Error::msg)?,
     );
     let session_profile = session_profile(input.profile);
+    let replay_policy = iteron_record::replay_divergence_detection_policy();
     let replay_owner = ReplayOwnerObservation {
-        verify_hash_chain: true,
-        verify_identity_scope: true,
-        verify_effect_terminals: true,
-        fail_closed: true,
+        verify_hash_chain: replay_policy.verify_hash_chain(),
+        verify_identity_scope: replay_policy.verify_identity_scope(),
+        verify_effect_terminals: replay_policy.verify_effect_terminals(),
+        fail_closed: replay_policy.fail_closed(),
     };
-    let extension = apply_extension_facts(
-        &mut builder,
-        ExtensionFactsInput {
-            route: &route_capabilities,
-            model_capabilities: input.model_capabilities,
-            budget: input.budget,
-            registry: input.registry,
-            run_limits: input.run_limits,
-            session_spawn_ledger: &session_spawn_ledger,
-            child_overlay: Some(&child_overlay),
-            configured_mcp: input.configured_mcp,
-            mcp_reconnect: iteron_mcp::reconnect::ReconnectPolicy::default(),
-            mcp_deadlines: iteron_mcp::McpDeadlinePolicy::default(),
-            mcp_result_policy: iteron_mcp::McpResultPolicy::default(),
-            early_stop_quorum: iteron_workflow::EarlyStopQuorumPolicy::default(),
-            speculative_siblings: iteron_workflow::SpeculativeSiblingPolicy::default(),
-            task_retry: iteron_workflow::TaskRetryPolicy::default(),
-            writer_merge: iteron_workflow::WriterMergePolicy::default(),
-            session_profile,
-            replay_owner,
-            provider_governor: input.provider_governor,
-            provider_governor_configured: input.provider_governor_configured,
-            provider_control_capabilities: input.provider_control_capabilities,
-            authorities: ExtensionAuthorityFacts {
-                run_session_spawn_cap: Some(extension_authorities.session_spawn_cap),
-                verification_minimum_evidence: Some(1),
-                parent_cost_model_routes: Some(&extension_authorities.routes),
-                operator_tool_profiles: Some(&extension_authorities.tool_profiles),
-                tenant_memory_scope_ids: Some(&extension_authorities.memory_scopes),
-                operator_messaging_topologies: Some(&extension_authorities.topologies),
-                operator_mcp_transports: Some(&extension_authorities.transports),
-                operator_oauth_modes: Some(&extension_authorities.oauth_modes),
-                operator_session_profiles: Some(&extension_authorities.session_profiles),
-                tenant_session_profiles: Some(&extension_authorities.session_profiles),
-                // Hash-chain/identity/effect-terminal replay validation is a record invariant,
-                // not a benchmark-only feature. Every profile is governed by the same fail-closed
-                // owner; benchmark merely consumes the resulting replay evidence more often.
-                benchmark_replay_policy: Some(replay_owner),
+    let extension = builder.with_owner(ProductionOwnerId::ExtensionFacts, |builder| {
+        apply_extension_facts(
+            builder,
+            ExtensionFactsInput {
+                route: &route_capabilities,
+                model_capabilities: input.model_capabilities,
+                budget: input.budget,
+                registry: input.registry,
+                run_limits: input.run_limits,
+                session_spawn_ledger: &session_spawn_ledger,
+                child_overlay: Some(&child_overlay),
+                configured_mcp: input.configured_mcp,
+                mcp_reconnect: iteron_mcp::reconnect::ReconnectPolicy::default(),
+                mcp_deadlines: iteron_mcp::McpDeadlinePolicy::default(),
+                mcp_result_policy: iteron_mcp::McpResultPolicy::default(),
+                early_stop_quorum: iteron_workflow::EarlyStopQuorumPolicy::default(),
+                speculative_siblings: iteron_workflow::SpeculativeSiblingPolicy::default(),
+                task_retry: iteron_workflow::TaskRetryPolicy::default(),
+                writer_merge: iteron_workflow::WriterMergePolicy::default(),
+                session_profile,
+                replay_owner,
+                provider_governor: input.provider_governor,
+                provider_governor_configured: input.provider_governor_configured,
+                provider_control_capabilities: input.provider_control_capabilities,
+                authorities: ExtensionAuthorityFacts {
+                    run_session_spawn_cap: Some(extension_authorities.session_spawn_cap),
+                    verification_minimum_evidence: Some(1),
+                    parent_cost_model_routes: Some(&extension_authorities.routes),
+                    operator_tool_profiles: Some(&extension_authorities.tool_profiles),
+                    tenant_memory_scope_ids: Some(&extension_authorities.memory_scopes),
+                    operator_messaging_topologies: Some(&extension_authorities.topologies),
+                    operator_mcp_transports: Some(&extension_authorities.transports),
+                    operator_oauth_modes: Some(&extension_authorities.oauth_modes),
+                    operator_session_profiles: Some(&extension_authorities.session_profiles),
+                    tenant_session_profiles: Some(&extension_authorities.session_profiles),
+                    // Hash-chain/identity/effect-terminal replay validation is a record invariant,
+                    // not a benchmark-only feature. Every profile is governed by the same fail-closed
+                    // owner; benchmark merely consumes the resulting replay evidence more often.
+                    benchmark_replay_policy: Some(replay_owner),
+                },
             },
-        },
-    )?;
-    if extension.is_resolution_blocked() {
-        let ids = extension
-            .blocking_gaps()
+        )
+    })?;
+    let mut active_gap_ids = BTreeSet::new();
+    active_gap_ids.extend(
+        iteron
+            .gaps
+            .iter()
+            .filter_map(core_gap_family)
+            .filter(|family| canonical_full_family(family)),
+    );
+    active_gap_ids.extend(
+        execution
+            .gaps
+            .iter()
+            .map(|gap| gap.family)
+            .filter(|family| canonical_full_family(family)),
+    );
+    active_gap_ids.extend(
+        provider_process
+            .gaps
+            .iter()
             .map(|gap| gap.family_id)
-            .collect::<BTreeSet<_>>();
+            .filter(|family| canonical_full_family(family)),
+    );
+    active_gap_ids.extend(extension.blocking_gaps().map(|gap| gap.family_id));
+    if !active_gap_ids.is_empty() {
         anyhow::bail!(
             "runtime tunables owner facts are incomplete for active families: {}",
-            ids.into_iter().collect::<Vec<_>>().join(", ")
+            active_gap_ids.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
 
-    let resolved = Arc::new(builder.resolve()?);
-    let view = EffectiveTunablesView::from_resolved(&resolved)?;
-    let settings = EffectiveCoreSettings::decode(&view)?;
+    let (resolved, owner_receipt) = builder.resolve_with_owner_receipt()?;
+    let resolved = Arc::new(resolved);
+    // A fresh owner receipt is pending until the resolver report has been projected through the
+    // same validated V2 envelope used by resume. Only the complete executable getter gate may
+    // turn the pair into an accepted runtime binding receipt.
+    let checkpoint =
+        iteron_record::TunablesCheckpoint::V2(iteron_record::snapshot_v2_from_resolved(&resolved)?);
+    let effective = super::effective_runtime::decode_checkpoint(&checkpoint, Some(&owner_receipt))?;
+    let settings = effective.core;
     settings.verify_route(
         &input.selection.provider_id,
         &input.selection.model_id,
@@ -359,12 +430,35 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         route_capabilities,
         session_spawn_ledger,
         fact_summary: FreshFactSummary {
+            active_full_gaps: 0,
             core_gaps: iteron.gaps.len(),
             execution_gaps: execution.gaps.len(),
             provider_process_gaps: provider_process.gaps.len(),
             extension_gaps: extension.gaps.len(),
         },
+        owner_receipt,
+        binding_receipt: effective.binding,
     })
+}
+
+fn canonical_full_family(family_id: &str) -> bool {
+    iteron_tunables::families().iter().any(|family| {
+        family.id == family_id
+            && family.implementation_status == iteron_tunables::ImplementationStatus::Full
+    })
+}
+
+fn core_gap_family(gap: &CoreFactGap) -> Option<&'static str> {
+    match gap {
+        // No aggregate parent token ceiling means configured family 7 is honestly inactive.
+        CoreFactGap::ParentTokenCeilingAbsent => None,
+        CoreFactGap::ParentTokenCeilingBelowThinkingMap => Some("thinking_map"),
+        CoreFactGap::MemoryInstructionBudgetNotRepresentable => Some("memory_budgets"),
+        CoreFactGap::ContextWindowUnknown => Some("context_window_override_reserve"),
+        // This variant is emitted only after a verify command was configured, so family 14 is
+        // active even though its canonical predicate is Configured rather than Always.
+        CoreFactGap::VerificationPlanAbsent => Some("verify_command"),
+    }
 }
 
 struct ExtensionAuthorities {
@@ -445,4 +539,243 @@ fn scope_digest(value: &str) -> String {
     hex::encode(Sha256::digest(
         [b"core-runtime-scope-v1\0".as_slice(), value.as_bytes()].concat(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ProviderConfig, ProviderGovernorConfig, ProviderModelCapabilities};
+    use iteron_protocol::{Capability, TenantId};
+
+    fn fixture_provider() -> ProviderConfig {
+        ProviderConfig {
+            id: "composition-fixture".into(),
+            display_name: Some("composition fixture".into()),
+            adapter: "openai_chat".into(),
+            error_profile: Some("openai".into()),
+            api_root: "https://composition.invalid/v1".into(),
+            // The local directory only records the credential source. This test never dispatches
+            // a provider request and therefore never reads a credential value.
+            key_env: Some("ITERON_COMPOSITION_TEST_KEY".into()),
+            credential: None,
+            enabled: true,
+            catalog: false,
+            models: vec!["fixture-model".into()],
+            model_capabilities: BTreeMap::from([(
+                "fixture-model".into(),
+                ProviderModelCapabilities {
+                    context_window_tokens: Some(128_000),
+                    image_input: Some(false),
+                    routing_objectives: None,
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn all_runtime_profiles_project_the_exact_physical_session_isolation_owner() {
+        for (profile, projected) in [
+            (
+                RuntimeProfile::Interactive,
+                SessionIsolationProfile::Interactive,
+            ),
+            (RuntimeProfile::Benchmark, SessionIsolationProfile::Hermetic),
+            (RuntimeProfile::Research, SessionIsolationProfile::Durable),
+        ] {
+            assert_eq!(session_profile(profile), projected);
+            let label = match projected {
+                SessionIsolationProfile::Hermetic => "hermetic",
+                SessionIsolationProfile::Durable => "durable",
+                SessionIsolationProfile::Interactive => "interactive",
+            };
+            let installed = crate::session_isolation::SessionIsolationPolicy::from_label(label)
+                .expect("the resolved profile label is physically installable");
+            assert_eq!(
+                installed,
+                crate::session_isolation::SessionIsolationPolicy::from_runtime_profile(profile)
+            );
+            installed
+                .validate_profile(profile)
+                .expect("resolver owner and physical continuation gate must agree");
+        }
+    }
+
+    #[test]
+    fn fresh_composition_executes_owner_and_getter_seals_before_returning() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let directory = ProviderDirectory::inspect_local(&[fixture_provider()]).unwrap();
+        let selection = directory
+            .resolve_model("composition-fixture:fixture-model", None)
+            .unwrap();
+        let model_capabilities = directory.selection_capabilities(&selection);
+        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+        let entry = directory.entry(&selection.provider_id).unwrap();
+        let api_root = entry.instance.api_root().as_str().to_owned();
+        // This fixture uses the conservative custom-gateway adapter surface. No provider is
+        // constructed (which would read the intentionally absent test credential), and no turn
+        // is dispatched.
+        let provider_controls = iteron_provider::ProviderControlCapabilities::default();
+        let registry = Registry::coding_agent(workspace).unwrap();
+        let agent_catalog = AgentCatalog::builtin_only();
+        let budget = Budget::default();
+        let compaction = iteron_ctx::CompactionPolicy::default();
+        let retry = BackoffPolicy::default();
+        let rules = PermissionRules::default();
+        let run_limits = iteron_workflow::RunLimits::new(1, 8).unwrap();
+        let governor = ProviderGovernorConfig::default()
+            .resolve(run_limits.max_concurrency(), false)
+            .unwrap();
+        let tenant = TenantId::default();
+
+        let fresh = resolve_fresh(FreshCompositionInput {
+            directory: &directory,
+            selection: &selection,
+            model_capabilities: &model_capabilities,
+            catalog_digest: &catalog_digest,
+            capability_digest: &capability_digest,
+            registry: &registry,
+            configured_mcp: &[],
+            agent_catalog: &agent_catalog,
+            profile: RuntimeProfile::Interactive,
+            tenant: &tenant,
+            benchmark_scope: None,
+            workspace,
+            environment: None,
+            operator_prompt: None,
+            hooks_catalog: None,
+            app_server_active: false,
+            provider_origin: ConfigOrigin::UserConfig,
+            model_origin: ConfigOrigin::UserConfig,
+            base_url: Sourced {
+                value: &api_root,
+                origin: ConfigOrigin::UserConfig,
+            },
+            effort: Sourced {
+                value: Effort::Medium,
+                origin: ConfigOrigin::Builtin,
+            },
+            budget: &budget,
+            budget_origins: BudgetOrigins {
+                max_turns: ConfigOrigin::Builtin,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: ConfigOrigin::Builtin,
+                max_consecutive_tool_errors: ConfigOrigin::Builtin,
+            },
+            allow_code: Sourced {
+                value: false,
+                // This fixture models the operator-selected read-only CLI posture. A Builtin
+                // declaration may only attest the embedded literal `true`.
+                origin: ConfigOrigin::Cli,
+            },
+            permission_mode: Sourced {
+                value: PermissionMode::Plan,
+                origin: ConfigOrigin::Cli,
+            },
+            permission_rules_origin: None,
+            permission_rules: &rules,
+            bypass_permissions: Sourced {
+                value: false,
+                origin: ConfigOrigin::Cli,
+            },
+            operator_egress_allow: None,
+            project_egress_allow: None,
+            compaction: &compaction,
+            compaction_owner: CompactionOwner::AdaptiveDefault,
+            retry: &retry,
+            retry_origins: RetryOrigins {
+                base_ms: ConfigOrigin::Builtin,
+                cap_ms: ConfigOrigin::Builtin,
+                max_attempts: ConfigOrigin::Builtin,
+            },
+            verify_command: None,
+            verification_config: None,
+            memory_enabled: Sourced {
+                value: false,
+                origin: ConfigOrigin::Cli,
+            },
+            tenant_allows_memory: true,
+            prompt_cache_enabled: false,
+            provider_governor: &governor,
+            provider_governor_configured: false,
+            provider_control_capabilities: &provider_controls,
+            authority_ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
+            run_limits,
+        })
+        .unwrap_or_else(|error| {
+            panic!("fresh production composition must resolve and seal: {error:#?}")
+        });
+
+        assert_eq!(
+            fresh.binding_receipt.effective_family_count, fresh.binding_receipt.getter_count,
+            "every effective Full family was read by its registered production getter"
+        );
+        assert_eq!(
+            fresh.owner_receipt.family_count(),
+            fresh.binding_receipt.effective_family_count,
+            "every effective Full family was observed by its exact production owner"
+        );
+        assert_eq!(fresh.fact_summary.active_full_gaps, 0);
+        for family_id in [
+            "effort",
+            "model_fallback_chain",
+            "route_quality_cost_latency_objective_weights",
+            "provider_health_circuit_breaker_state_policy",
+            "provider_service_tier",
+            "response_verbosity",
+            "request_compression_policy",
+            "prompt_cache_ttl_breakpoint_strategy",
+            "prompt_cache",
+            "allow_code",
+            "permission_mode",
+            "bypass_permissions",
+            "memory_enable",
+            "summary_profile",
+            "memory_budgets",
+            "multimodal_input_admission_decode_envelope",
+            "multimodal_token_budget",
+            "binary_media_inspection_routing",
+            "per_agent_effort_thinking",
+        ] {
+            assert!(
+                fresh.resolved.report().entries.iter().any(|entry| {
+                    entry.family_id == family_id
+                        && matches!(entry.outcome, iteron_tunables::EntryOutcome::Effective)
+                }),
+                "{family_id} must remain an effective, owner-attested Full family"
+            );
+        }
+        assert!(fresh.resolved.report().entries.iter().any(|entry| {
+            entry.family_id == "effort_reasoning_map"
+                && matches!(
+                    entry.outcome,
+                    iteron_tunables::EntryOutcome::Inactive { .. }
+                )
+        }));
+
+        // A successful fresh resolution is only a pending owner receipt until the exact V2
+        // projection has passed every registered getter.  Exercise that same production decoder,
+        // then remove one observed access: owner metadata and a valid snapshot alone must not be
+        // enough to admit the run.
+        let checkpoint = iteron_record::TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&fresh.resolved).unwrap(),
+        );
+        let view =
+            super::super::effective_view::EffectiveTunablesView::from_checkpoint(&checkpoint)
+                .unwrap();
+        super::super::effective_runtime::consume_registered_getters(&view)
+            .expect("the real fresh decoders execute");
+        view.remove_getter_receipt("provider");
+        assert_eq!(
+            view.seal_runtime_binding_receipt(
+                Some(&fresh.owner_receipt),
+                &super::super::fixed_artifacts::FixedArtifactReceipts::default(),
+                &super::super::fixed_artifacts::FixedAuthorityReceipts::default(),
+            )
+            .unwrap_err(),
+            super::super::effective_view::EffectiveViewError::MissingGetterReceipt(
+                "provider".into()
+            )
+        );
+    }
 }

@@ -11,6 +11,7 @@
 mod provider_governor;
 mod retry;
 mod schema;
+mod verification;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,9 +26,12 @@ const MAX_MCP_SERVER_ARGS: usize = 128;
 /// window-relative compaction arithmetic never saturates. It bounds absurd input; it is not a
 /// claim that any model this large exists.
 pub(crate) const MAX_DECLARED_CONTEXT_WINDOW: u64 = 1_000_000_000;
-pub(crate) use provider_governor::{ProviderGovernorConfig, ResolvedProviderGovernorConfig};
+pub(crate) use provider_governor::{
+    ProviderGovernorConfig, ResolvedProviderGovernorConfig, builtin_failover_rules,
+};
 pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
+pub(crate) use verification::VerificationConfig;
 
 #[derive(Debug, Serialize, Deserialize)]
 // The TOP level is deliberately NOT `deny_unknown_fields`. One config is explicitly shared across
@@ -57,6 +61,10 @@ pub struct FileConfig {
     pub retry: Option<RetryConfig>,
     /// Bounded provider routing/admission controls. Consumed only from operator-owned config.
     pub provider_governor: Option<ProviderGovernorConfig>,
+    /// Bounded policy around the operator-owned `--verify` command. Trusted user config may add
+    /// narrower feedback commands, but `--verify` remains the mandatory full completion gate.
+    /// Repository config is never consumed for command, rollback, or verifier-spawn authority.
+    pub verification: Option<VerificationConfig>,
     /// Bounded out-of-band attention notifications for completed runs, approval requests, and
     /// long-idle periods. This preference is consumed only from operator-owned user configuration.
     pub completion_notifications: Option<bool>,
@@ -129,6 +137,7 @@ impl Default for FileConfig {
             compaction_trigger_tokens: None,
             retry: None,
             provider_governor: None,
+            verification: None,
             completion_notifications: None,
             prompt_history: None,
             tui_keymap: None,
@@ -146,8 +155,18 @@ impl Default for FileConfig {
     }
 }
 
+/// Select the only verification-policy configuration that may grant verifier concurrency or ask
+/// for a rollback. Repository configuration is accepted by the shared parser for portability but
+/// is never an authority source for these fields.
+pub(crate) fn trusted_verification_config<'a>(
+    user: &'a FileConfig,
+    _project: &FileConfig,
+) -> Option<&'a VerificationConfig> {
+    user.verification.as_ref()
+}
+
 /// Where the interactive frontend persists scrubbed prompt history and its last text-only draft.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptHistoryMode {
     /// One file per canonical workspace identity. This is the safe default.
@@ -173,12 +192,262 @@ pub(crate) fn starter_project_config() -> String {
     )
 }
 
-/// One MCP server the operator configured. Configuring it is the consent to run its tools;
-/// its tool descriptions are still treated as untrusted (scanned) per ADR-007.
+/// Runtime provenance for one MCP server declaration.
+///
+/// The field is never deserialized from operator configuration. Only the verified plugin
+/// composition root can mint plugin provenance, so a config document cannot impersonate a signed
+/// plugin or satisfy a resumed checkpoint's plugin identity by adding another JSON field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpServerOrigin(McpServerOriginKind);
+
+/// Canonical checkpoint identity for one verified plugin-owned MCP server slot.
+///
+/// The server namespace remains reversibly encoded so an operator-owned server cannot replace a
+/// plugin slot on resume. Plugin id and full SemVer (including prerelease/build metadata) are
+/// length-framed into the digest, avoiding delimiter ambiguity while staying inside the tunables
+/// `NamespacedId` alphabet and byte ceiling.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PluginMcpBindingId(String);
+
+impl PluginMcpBindingId {
+    const PREFIX: &'static str = "plugin-mcp-v1:";
+    const MAX_SERVER_BYTES: usize = 64;
+
+    fn new(plugin_id: &str, version: &str, server_name: &str) -> Result<Self, &'static str> {
+        if plugin_id.is_empty()
+            || plugin_id.len() > 128
+            || version.is_empty()
+            || version.len() > 128
+            || server_name.is_empty()
+            || server_name.len() > Self::MAX_SERVER_BYTES
+            || [plugin_id, version, server_name]
+                .into_iter()
+                .any(|value| value.chars().any(char::is_control))
+        {
+            return Err("plugin MCP identity is outside the checkpoint identity domain");
+        }
+        use sha2::{Digest as _, Sha256};
+        let mut digest = Sha256::new();
+        digest.update(b"core-plugin-mcp-binding-v1\0");
+        for part in [
+            plugin_id.as_bytes(),
+            version.as_bytes(),
+            server_name.as_bytes(),
+        ] {
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part);
+        }
+        let encoded = format!(
+            "{}{}:{}",
+            Self::PREFIX,
+            hex::encode(server_name.as_bytes()),
+            hex::encode(digest.finalize())
+        );
+        if encoded.len() > 256 {
+            return Err("plugin MCP identity is outside the checkpoint identity domain");
+        }
+        Ok(Self(encoded))
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, &'static str> {
+        let body = value
+            .strip_prefix(Self::PREFIX)
+            .ok_or("plugin MCP identity has an unknown version")?;
+        let (server_hex, digest) = body
+            .split_once(':')
+            .ok_or("plugin MCP identity is malformed")?;
+        if server_hex.is_empty()
+            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
+            || server_hex.len() % 2 != 0
+            || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || value.len() > 256
+        {
+            return Err("plugin MCP identity is malformed");
+        }
+        let server = hex::decode(server_hex).map_err(|_| "plugin MCP identity is malformed")?;
+        let server = std::str::from_utf8(&server)
+            .map_err(|_| "plugin MCP identity server namespace is not UTF-8")?;
+        if server.is_empty() || server.chars().any(char::is_control) {
+            return Err("plugin MCP identity server namespace is invalid");
+        }
+        // Canonical lower-case hex prevents two strings from naming one identity.
+        if hex::encode(server.as_bytes()) != server_hex || digest.to_ascii_lowercase() != digest {
+            return Err("plugin MCP identity is not canonically encoded");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn owns_server(&self, server_name: &str) -> bool {
+        self.0
+            .strip_prefix(Self::PREFIX)
+            .and_then(|body| body.split_once(':'))
+            .is_some_and(|(server_hex, _)| hex::encode(server_name.as_bytes()) == server_hex)
+    }
+}
+
+/// Content-free checkpoint identity for one complete validated MCP server binding.
+///
+/// The reversible server namespace prevents one slot from replacing another. The digest covers
+/// the complete serialized operator/plugin server declaration (transport, executable/endpoint,
+/// environment-variable names, OAuth lifecycle, filters, and authority policy) plus trusted
+/// runtime origin. Credential values never enter `McpServerConfig`, so they cannot enter this ID.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct McpServerBindingId(String);
+
+impl McpServerBindingId {
+    const PREFIX: &'static str = "mcp-server-v1:";
+    const MAX_SERVER_BYTES: usize = 64;
+
+    fn new(config: &McpServerConfig) -> Result<Self, &'static str> {
+        if config.name.is_empty()
+            || config.name.len() > Self::MAX_SERVER_BYTES
+            || config.name.chars().any(char::is_control)
+        {
+            return Err("MCP server binding namespace is outside its checkpoint domain");
+        }
+        let encoded_config = serde_json::to_vec(config)
+            .map_err(|_| "MCP server binding could not encode validated configuration")?;
+        let origin = config
+            .origin
+            .plugin_binding_id(&config.name)?
+            .map_or_else(|| "operator".to_owned(), |binding| binding.0);
+        use sha2::{Digest as _, Sha256};
+        let mut digest = Sha256::new();
+        digest.update(b"core-mcp-server-binding-v1\0");
+        for part in [encoded_config.as_slice(), origin.as_bytes()] {
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part);
+        }
+        let encoded = format!(
+            "{}{}:{}",
+            Self::PREFIX,
+            hex::encode(config.name.as_bytes()),
+            hex::encode(digest.finalize())
+        );
+        if encoded.len() > 256 {
+            return Err("MCP server binding is outside the checkpoint identity domain");
+        }
+        Ok(Self(encoded))
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, &'static str> {
+        let body = value
+            .strip_prefix(Self::PREFIX)
+            .ok_or("MCP server binding has an unknown version")?;
+        let (server_hex, digest) = body
+            .split_once(':')
+            .ok_or("MCP server binding is malformed")?;
+        if server_hex.is_empty()
+            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
+            || server_hex.len() % 2 != 0
+            || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || value.len() > 256
+        {
+            return Err("MCP server binding is malformed");
+        }
+        let server = hex::decode(server_hex).map_err(|_| "MCP server binding is malformed")?;
+        let server = std::str::from_utf8(&server)
+            .map_err(|_| "MCP server binding namespace is not UTF-8")?;
+        if server.is_empty() || server.chars().any(char::is_control) {
+            return Err("MCP server binding namespace is invalid");
+        }
+        if hex::encode(server.as_bytes()) != server_hex || digest.to_ascii_lowercase() != digest {
+            return Err("MCP server binding is not canonically encoded");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn owns_server(&self, server_name: &str) -> bool {
+        self.0
+            .strip_prefix(Self::PREFIX)
+            .and_then(|body| body.split_once(':'))
+            .is_some_and(|(server_hex, _)| hex::encode(server_name.as_bytes()) == server_hex)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum McpServerOriginKind {
+    Operator,
+    Plugin { plugin_id: String, version: String },
+}
+
+impl Default for McpServerOrigin {
+    fn default() -> Self {
+        Self(McpServerOriginKind::Operator)
+    }
+}
+
+impl McpServerOrigin {
+    /// The argument is an unforgeable production token: its constructor is private to the
+    /// verified plugin materializer. Other runtime/config code can carry an origin but cannot mint
+    /// plugin provenance from user strings.
+    pub(crate) fn from_verified_plugin(
+        verified: crate::plugin_runtime::VerifiedMcpPluginOrigin<'_>,
+    ) -> Self {
+        Self(McpServerOriginKind::Plugin {
+            plugin_id: verified.plugin_id().to_owned(),
+            version: verified.version(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn plugin_fixture(plugin_id: &str, version: &str) -> Self {
+        Self(McpServerOriginKind::Plugin {
+            plugin_id: plugin_id.to_owned(),
+            version: version.to_owned(),
+        })
+    }
+
+    /// Exact, content-free identity persisted in the tunables checkpoint for a plugin-owned
+    /// server slot. The server name is part of the identity because one plugin may own several
+    /// independently dispatched MCP servers.
+    pub(crate) fn plugin_binding_id(
+        &self,
+        server_name: &str,
+    ) -> Result<Option<PluginMcpBindingId>, &'static str> {
+        match &self.0 {
+            McpServerOriginKind::Operator => Ok(None),
+            McpServerOriginKind::Plugin { plugin_id, version } => {
+                PluginMcpBindingId::new(plugin_id, version, server_name).map(Some)
+            }
+        }
+    }
+
+    pub(crate) const fn label(&self) -> &'static str {
+        match &self.0 {
+            McpServerOriginKind::Operator => "operator",
+            McpServerOriginKind::Plugin { .. } => "plugin",
+        }
+    }
+
+    pub(crate) fn validate_for_server(&self, server_name: &str) -> Result<(), &'static str> {
+        self.plugin_binding_id(server_name).map(|_| ())
+    }
+}
+
+/// One MCP server the operator configured or the verified plugin composition root admitted.
+/// Configuring it is the consent to run its tools; its tool descriptions are still treated as
+/// untrusted (scanned) per ADR-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
+    /// Runtime-only origin. `serde(skip)` is load-bearing: untrusted JSON can never claim plugin
+    /// provenance, while plugin materialization installs the verified identity after parsing.
+    #[serde(skip)]
+    pub(crate) origin: McpServerOrigin,
     /// Omitted for legacy documents and therefore defaults to stdio.
     #[serde(default, skip_serializing_if = "McpTransportConfig::is_stdio")]
     pub transport: McpTransportConfig,
@@ -209,6 +478,12 @@ pub struct McpServerConfig {
     /// Absent means inherit: it never widens what the host already allows.
     #[serde(default, skip_serializing_if = "iteron_mcp::McpServerPolicy::is_empty")]
     pub policy: iteron_mcp::McpServerPolicy,
+}
+
+impl McpServerConfig {
+    pub(crate) fn runtime_binding_id(&self) -> Result<McpServerBindingId, &'static str> {
+        McpServerBindingId::new(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +642,11 @@ pub struct ProviderModelCapabilities {
     /// Whether this exact route/model accepts image content on its configured adapter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
+    /// Complete normalized route-ranking evidence. Larger is better for every component;
+    /// `cost_efficiency` is deliberately inverted so the ranker never mixes score directions.
+    /// Partial triples are unrepresentable and absence means objective routing is unsupported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_objectives: Option<iteron_provider::RouteObjectiveScores>,
 }
 
 fn default_true() -> bool {
@@ -473,19 +753,7 @@ impl FileConfig {
             }
             let mut ids = std::collections::BTreeSet::new();
             for provider in providers {
-                let valid_id = !provider.id.is_empty()
-                    && provider.id.len() <= 64
-                    && provider.id.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || matches!(byte, b'-' | b'_')
-                    });
-                if !valid_id {
-                    return Err(format!(
-                        "provider id `{}` must be a lowercase ASCII slug up to 64 bytes",
-                        provider.id
-                    ));
-                }
+                validate_provider_id_slug(&provider.id)?;
                 if !ids.insert(provider.id.as_str()) {
                     return Err(format!("duplicate provider id `{}`", provider.id));
                 }
@@ -577,6 +845,15 @@ impl FileConfig {
                     {
                         return Err(format!(
                             "provider `{}` model `{model_id}` context_window_tokens must be 1..={MAX_DECLARED_CONTEXT_WINDOW}",
+                            provider.id
+                        ));
+                    }
+                    if capabilities
+                        .routing_objectives
+                        .is_some_and(|scores| scores.validate().is_err())
+                    {
+                        return Err(format!(
+                            "provider `{}` model `{model_id}` routing objective scores must each be in 0..=1000000",
                             provider.id
                         ));
                     }
@@ -761,15 +1038,27 @@ pub(crate) fn credentials_dir() -> Option<std::path::PathBuf> {
 /// turns operator text into a filesystem path, so it refuses anything that is not that alphabet
 /// rather than trusting a caller to have validated first.
 pub(crate) fn credential_file_path(provider_id: &str) -> Option<std::path::PathBuf> {
-    if provider_id.is_empty()
-        || provider_id.len() > 64
-        || !provider_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
+    if validate_provider_id_slug(provider_id).is_err() {
         return None;
     }
     credentials_dir().map(|directory| directory.join(provider_id))
+}
+
+/// Validate the provider-instance identity used by config, credential storage, and durable setup
+/// evidence. Keeping one closed alphabet prevents a setup record from becoming an arbitrary
+/// content or path persistence surface.
+pub(crate) fn validate_provider_id_slug(provider_id: &str) -> Result<(), String> {
+    if provider_id.is_empty()
+        || provider_id.len() > 64
+        || !provider_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return Err(format!(
+            "provider id `{provider_id}` must be a lowercase ASCII slug up to 64 bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// Every key `iteron config set` accepts, with the parser that turns operator text into the typed
@@ -2198,6 +2487,25 @@ mod tests {
                 "{rejected} should be rejected by the strict schema"
             );
         }
+    }
+
+    #[test]
+    fn declared_routing_objectives_are_complete_normalized_route_facts() {
+        let valid = provider_with_capabilities(
+            r#"{"k3":{"routing_objectives":{"quality_millionths":800000,"cost_efficiency_millionths":700000,"latency_millionths":600000}}}"#,
+        );
+        assert!(valid.validate().is_ok());
+        let invalid = provider_with_capabilities(
+            r#"{"k3":{"routing_objectives":{"quality_millionths":1000001,"cost_efficiency_millionths":700000,"latency_millionths":600000}}}"#,
+        );
+        assert!(invalid.validate().is_err());
+        assert!(
+            serde_json::from_str::<FileConfig>(
+                r#"{"providers":[{"id":"gateway","adapter":"openai_chat","api_root":"https://gateway.example/v1","key_env":"GATEWAY_KEY","model_capabilities":{"k3":{"routing_objectives":{"quality_millionths":800000,"latency_millionths":600000}}}}]}"#,
+            )
+            .is_err(),
+            "a partial objective triple must be unrepresentable"
+        );
     }
 
     #[test]

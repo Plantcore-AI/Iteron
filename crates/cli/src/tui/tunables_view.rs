@@ -42,6 +42,7 @@ pub(super) fn registry_catalog() -> Catalog {
 /// and loaded request files, this surface is runtime-bound and never invokes the current resolver.
 pub(super) fn checkpoint_catalog(
     checkpoint: &iteron_record::TunablesCheckpoint,
+    runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
 ) -> Result<Catalog, LoadError> {
     let iteron_record::TunablesCheckpoint::V2(snapshot) = checkpoint else {
         return Err(LoadError(
@@ -53,7 +54,7 @@ pub(super) fn checkpoint_catalog(
     let entries = snapshot
         .entries
         .iter()
-        .map(checkpoint_detail)
+        .map(|entry| checkpoint_detail(entry, runtime_policy))
         .collect::<Result<Vec<_>, _>>()?;
     let profile = iteron_tunables::RuntimeProfile::ALL
         .into_iter()
@@ -67,9 +68,9 @@ pub(super) fn checkpoint_catalog(
         .unwrap_or("unrecognized");
     Ok(Catalog::new(
         format_args!(
-            "tunables · live runtime · {} families · profile={} · digest {}",
-            entries.len(),
+            "tunables · runtime · immutable genesis · profile={} · ordered current overlay · {} families · digest {}",
             profile,
+            entries.len(),
             short_digest(&snapshot.effective_digest_sha256),
         ),
         entries,
@@ -78,6 +79,7 @@ pub(super) fn checkpoint_catalog(
 
 fn checkpoint_detail(
     entry: &iteron_protocol::RunGenesisTunableEntryV2,
+    runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
 ) -> Result<Detail, LoadError> {
     let family = iteron_tunables::families()
         .iter()
@@ -95,23 +97,26 @@ fn checkpoint_detail(
         iteron_protocol::RunGenesisTunableState::Inactive => "inactive",
         iteron_protocol::RunGenesisTunableState::Unavailable => "unavailable",
     };
+    let current = current_runtime_projection(entry, runtime_policy);
     let mut detail = metadata_detail(family, state);
     detail.prepend_rows([
         row(
             "surface",
-            "live immutable runtime · simulation=false · runtime_bound=true",
+            "runtime identity · genesis immutable · current overlay ordered · simulation=false",
         ),
-        row("state", state),
+        row("genesis state", state),
         row(
-            "effective",
+            "genesis effective",
             entry
                 .effective_value
                 .as_ref()
                 .map(compact_json)
                 .unwrap_or_else(|| bounded_field("none")),
         ),
+        row("current effective", current.value),
+        row("current provenance", current.provenance),
         row(
-            "provenance",
+            "genesis provenance",
             entry
                 .provenance
                 .as_ref()
@@ -130,9 +135,130 @@ fn checkpoint_detail(
         ),
     ]);
     detail.push_note(
-        "This is the exact V2 checkpoint used by the runtime and inherited by its children; it is not re-resolved from current defaults.",
+        "Genesis rows are the exact immutable V2 checkpoint inherited by children. Current rows are a separate ordered runtime-policy overlay and never mutate the checkpoint or its digest.",
     );
     Ok(detail)
+}
+
+struct CurrentRuntimeProjection {
+    value: String,
+    provenance: String,
+}
+
+fn current_runtime_projection(
+    entry: &iteron_protocol::RunGenesisTunableEntryV2,
+    runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
+) -> CurrentRuntimeProjection {
+    use crate::runtime::RuntimePolicyValue;
+
+    fn projected<T: std::fmt::Display>(value: &RuntimePolicyValue<T>) -> CurrentRuntimeProjection {
+        CurrentRuntimeProjection {
+            value: bounded_field(&value.value),
+            provenance: bounded_field(format_args!(
+                "source={} · seq={} · observed={}",
+                runtime_policy_source_label(value.source),
+                value.sequence,
+                runtime_policy_observation_label(value.observed_via),
+            )),
+        }
+    }
+
+    let Some(runtime_policy) = runtime_policy else {
+        return if matches!(entry.ordinal, 4 | 5 | 6 | 10 | 11) {
+            CurrentRuntimeProjection {
+                value: bounded_field("unavailable (legacy or unsealed runtime overlay)"),
+                provenance: bounded_field("unavailable · genesis is not claimed as current"),
+            }
+        } else {
+            immutable_projection(entry)
+        };
+    };
+
+    match entry.ordinal {
+        4 => CurrentRuntimeProjection {
+            value: bounded_field(runtime_policy.effort.value.label()),
+            provenance: policy_provenance(&runtime_policy.effort),
+        },
+        5 => projected(&runtime_policy.max_turns),
+        6 => runtime_policy.max_usd_microusd.as_ref().map_or_else(
+            || CurrentRuntimeProjection {
+                value: bounded_field("no monetary ceiling"),
+                provenance: bounded_field(format_args!(
+                    "overlay seq={} · no monetary transition",
+                    runtime_policy.sequence
+                )),
+            },
+            |value| CurrentRuntimeProjection {
+                value: bounded_field(format_microusd(value.value)),
+                provenance: policy_provenance(value),
+            },
+        ),
+        10 => CurrentRuntimeProjection {
+            value: bounded_field(runtime_policy.permission_mode.value.label()),
+            provenance: policy_provenance(&runtime_policy.permission_mode),
+        },
+        11 => CurrentRuntimeProjection {
+            value: bounded_field(format_args!(
+                "{} rules · digest {}",
+                runtime_policy.permission_rule_count,
+                short_digest(&runtime_policy.permission_rules_digest_sha256),
+            )),
+            provenance: policy_provenance(&runtime_policy.permission_mode),
+        },
+        _ => immutable_projection(entry),
+    }
+}
+
+fn immutable_projection(
+    entry: &iteron_protocol::RunGenesisTunableEntryV2,
+) -> CurrentRuntimeProjection {
+    CurrentRuntimeProjection {
+        value: bounded_field(match entry.state {
+            iteron_protocol::RunGenesisTunableState::Effective => {
+                "same as genesis · immutable after run genesis"
+            }
+            iteron_protocol::RunGenesisTunableState::Inactive => {
+                "inactive · immutable after run genesis"
+            }
+            iteron_protocol::RunGenesisTunableState::Unavailable => {
+                "unavailable · immutable after run genesis"
+            }
+        }),
+        provenance: bounded_field("immutable checkpoint · no live transition surface"),
+    }
+}
+
+fn policy_provenance<T>(value: &crate::runtime::RuntimePolicyValue<T>) -> String {
+    bounded_field(format_args!(
+        "source={} · seq={} · observed={}",
+        runtime_policy_source_label(value.source),
+        value.sequence,
+        runtime_policy_observation_label(value.observed_via),
+    ))
+}
+
+fn runtime_policy_source_label(source: iteron_protocol::RuntimePolicySource) -> &'static str {
+    match source {
+        iteron_protocol::RuntimePolicySource::Startup => "startup",
+        iteron_protocol::RuntimePolicySource::Operator => "operator",
+        iteron_protocol::RuntimePolicySource::ApprovalRemember => "approval-remember",
+        iteron_protocol::RuntimePolicySource::Harness => "harness",
+        iteron_protocol::RuntimePolicySource::Fork => "fork",
+    }
+}
+
+fn runtime_policy_observation_label(
+    observation: crate::runtime::RuntimePolicyObservation,
+) -> &'static str {
+    match observation {
+        crate::runtime::RuntimePolicyObservation::Genesis => "genesis",
+        crate::runtime::RuntimePolicyObservation::LiveCommit => "live-commit",
+        crate::runtime::RuntimePolicyObservation::ResumeReplay => "resume-replay",
+    }
+}
+
+fn format_microusd(value: u64) -> String {
+    format!("${}.{:06}", value / 1_000_000, value % 1_000_000)
 }
 
 fn short_digest(value: &str) -> &str {
@@ -441,6 +567,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
                     code(&family.risk_class)
                 ),
             ),
+            row("runtime binding", compact_json(&family.runtime_binding)),
             row(
                 "default",
                 format_args!(

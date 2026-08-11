@@ -23,8 +23,11 @@ use iteron_protocol::{Block, Message, Role, ToolSpec};
 /// a fast, deterministic admission estimate used before a request exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenEstimateProvenance {
-    /// UTF-8 bytes divided by 3.5, rounded up, plus explicit message/tool framing allowances.
+    /// Legacy pre-v2 estimate retained so historical UI/test events remain representable.
     HeuristicBytesPerToken35,
+    /// One token per UTF-8 byte: an explicitly identified upper-bound fallback for an unknown
+    /// provider/model route. Provider-reported usage remains authoritative after the request.
+    ConservativeByteUpperBound,
     /// Route-selected, content-aware approximation for OpenAI-compatible BPE tokenizers.
     OpenAiBpeApproximation,
     /// Route-selected, content-aware approximation for Anthropic tokenizers.
@@ -143,6 +146,7 @@ fn assemble_estimate(
 #[derive(Debug, Clone, Default)]
 pub struct RequestEstimator {
     profile: crate::TokenEstimatorProfile,
+    policy: crate::TokenEstimatorPolicy,
     per_message: Vec<TranscriptComponents>,
     transcript: TranscriptComponents,
     lsp_tool_ids: std::collections::BTreeSet<String>,
@@ -170,12 +174,22 @@ impl RequestEstimator {
     }
 
     pub fn set_route(&mut self, provider_id: Option<&str>, model_id: &str) {
-        let profile = crate::TokenEstimatorProfile::for_route(provider_id, model_id);
+        let profile = match self.policy {
+            crate::TokenEstimatorPolicy::RouteAwareV2 => {
+                crate::TokenEstimatorProfile::for_route(provider_id, model_id)
+            }
+        };
         if self.profile != profile {
             self.profile = profile;
             self.invalidate_transcript();
             self.tools = None;
         }
+    }
+
+    /// Pin the exact selector policy recovered from the immutable tunables checkpoint. Concrete
+    /// profiles remain route-aware and every selected identity is exposed to ContextLedger.
+    pub fn pin_policy(&mut self, policy: crate::TokenEstimatorPolicy) {
+        self.policy = policy;
     }
 
     pub fn tokenizer_identity(&self) -> crate::TokenizerIdentity {
@@ -793,6 +807,26 @@ mod tests {
     }
 
     #[test]
+    fn route_aware_checkpointed_selector_tracks_cross_provider_changes() {
+        let mut estimator = RequestEstimator::for_route(Some("openai"), "gpt-5");
+        estimator.pin_policy(crate::TokenEstimatorPolicy::RouteAwareV2);
+        assert_eq!(
+            estimator.tokenizer_identity().catalog_id,
+            "iteron.openai-bpe-approx"
+        );
+
+        estimator.set_route(Some("anthropic"), "claude-opus");
+        assert_eq!(
+            estimator.tokenizer_identity().catalog_id,
+            "iteron.anthropic-bpe-approx"
+        );
+        assert_eq!(
+            crate::TokenEstimatorPolicy::RouteAwareV2.id(),
+            crate::ROUTE_AWARE_ESTIMATOR_POLICY_ID
+        );
+    }
+
+    #[test]
     fn cached_accounting_matches_the_one_shot_estimate_through_append_and_rewrite() {
         // I-60: the estimate re-serialised the whole transcript and every tool schema two or three
         // times per turn. The cache must stay byte-for-byte equal to the uncached projection.
@@ -944,7 +978,7 @@ mod tests {
     #[test]
     fn small_window_compacts_before_input_admission_boundary() {
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        let messages = vec![big_user(2_200); policy.keep_recent + 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         let usable = 32_768usize - 8_192;
         assert!(estimate.total_tokens < usable);
@@ -962,7 +996,9 @@ mod tests {
         // window bought an extra synchronous summary round before the operator's own request.
         // The emergency valve declines it; only the end-of-turn path takes it.
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        // The unidentified-route fallback is one token per UTF-8 byte. Keep this projection
+        // between the 60% trigger and the 75% admission boundary under that conservative owner.
+        let messages = vec![big_user(2_200); policy.keep_recent + 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         assert!(estimate.total_tokens.saturating_add(8_192) < 32_768);
         assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));

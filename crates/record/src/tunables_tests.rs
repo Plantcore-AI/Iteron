@@ -199,6 +199,7 @@ fn accepted_report_projection_covers_every_family_and_aggregate_commitment() {
         effective_digest_sha256: digest.clone(),
         resolution_digest_sha256: digest,
         profile_digest_sha256: None,
+        fixed_authority_attestations: Vec::new(),
         entries,
     };
     let snapshot = snapshot_from_report(&report).unwrap();

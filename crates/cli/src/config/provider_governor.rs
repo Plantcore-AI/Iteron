@@ -70,22 +70,7 @@ impl ProviderGovernorConfig {
             .failover
             .as_ref()
             .map(|rules| rules.iter().map(FailoverRuleConfig::runtime).collect())
-            .unwrap_or_else(|| {
-                BTreeSet::from([
-                    FailoverRule {
-                        class: FailoverClass::RateLimited,
-                        point: FailurePoint::ProvenTerminal,
-                    },
-                    FailoverRule {
-                        class: FailoverClass::Overloaded,
-                        point: FailurePoint::ProvenTerminal,
-                    },
-                    FailoverRule {
-                        class: FailoverClass::ModelUnavailable,
-                        point: FailurePoint::PreDispatch,
-                    },
-                ])
-            });
+            .unwrap_or_else(builtin_failover_rules);
         let objectives = self.objectives.unwrap_or_default().runtime()?;
         let circuit = self.circuit.unwrap_or_default().runtime()?;
         let hedge = self.hedge.unwrap_or_default().runtime()?;
@@ -98,6 +83,7 @@ impl ProviderGovernorConfig {
             verbosity: self.response_verbosity.unwrap_or_default().runtime(),
             compression: self.request_compression.unwrap_or_default().runtime(),
             prompt_cache: cache.runtime()?,
+            transport: iteron_provider::provider_transport_timeout_policy(),
             // Enabling hedging is the operator's request to duplicate a provider-only inference.
             // Composition still fails closed unless every admitted adapter independently attests
             // that such requests are duplicate-safe.
@@ -119,6 +105,26 @@ impl ProviderGovernorConfig {
             controls,
         })
     }
+}
+
+/// The immutable provider-governor failover baseline. The tunables literal owner attests this
+/// exact set before any trusted user override, so changing physical behavior without changing the
+/// checkpoint schema fails fresh composition atomically.
+pub(crate) fn builtin_failover_rules() -> BTreeSet<FailoverRule> {
+    BTreeSet::from([
+        FailoverRule {
+            class: FailoverClass::RateLimited,
+            point: FailurePoint::ProvenTerminal,
+        },
+        FailoverRule {
+            class: FailoverClass::Overloaded,
+            point: FailurePoint::ProvenTerminal,
+        },
+        FailoverRule {
+            class: FailoverClass::ModelUnavailable,
+            point: FailurePoint::PreDispatch,
+        },
+    ])
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -242,13 +248,25 @@ impl CircuitConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HedgeConfig {
     pub enabled: bool,
     pub delay_milliseconds: u64,
     pub max_duplicates: u8,
     pub idempotent_only: bool,
+}
+
+impl Default for HedgeConfig {
+    fn default() -> Self {
+        let policy = HedgePolicy::default();
+        Self {
+            enabled: policy.enabled,
+            delay_milliseconds: u64::try_from(policy.delay.as_millis()).unwrap_or(u64::MAX),
+            max_duplicates: policy.max_duplicates,
+            idempotent_only: policy.idempotent_only,
+        }
+    }
 }
 
 impl HedgeConfig {

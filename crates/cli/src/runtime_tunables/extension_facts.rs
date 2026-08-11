@@ -10,8 +10,6 @@
     reason = "the adapter is compiled before the composition root starts consuming its report"
 )]
 
-#[path = "extension_facts/activation.rs"]
-mod activation;
 #[path = "extension_facts/constraints.rs"]
 mod constraints;
 #[path = "extension_facts/owner.rs"]
@@ -23,13 +21,15 @@ mod value;
 #[path = "extension_facts/values.rs"]
 mod values;
 
+pub(crate) use values::live_fixed_authority_samples;
+
 pub(crate) use types::*;
 
 use crate::config::McpServerConfig;
 use crate::providers::ModelCapabilities;
 use iteron_protocol::Budget;
 use iteron_tools::Registry;
-use iteron_tunables::{RouteCapabilities, RuntimeResolutionBuilder};
+use iteron_tunables::{ProductionOwnerSymbolId, RouteCapabilities, RuntimeResolutionBuilder};
 use iteron_workflow::RunLimits;
 use owner::OwnerSnapshot;
 
@@ -77,9 +77,63 @@ pub(crate) fn apply_extension_facts(
     record_unavailable_families(&owner, &mut report);
     values::apply(builder, &input, &mut report)?;
     constraints::apply(builder, &input, &mut report)?;
-    activation::apply(builder, &input, &owner, &mut report)?;
+    submit_owner_symbols(builder)?;
     report.finish();
     Ok(report)
+}
+
+fn submit_owner_symbols(builder: &mut RuntimeResolutionBuilder) -> Result<(), ExtensionFactError> {
+    use ProductionOwnerSymbolId as Owner;
+    for (owner, families) in [
+        (
+            Owner::AgentOverlayPolicy,
+            &[
+                "per_agent_model",
+                "per_agent_effort_thinking",
+                "per_agent_tool_profile",
+                "per_agent_memory_scope",
+            ][..],
+        ),
+        (Owner::SessionSpawnLedger, &["per_session_spawn_cap"][..]),
+        (
+            Owner::WorkflowExecutionPolicy,
+            &[
+                "speculative_sibling_count",
+                "speculative_sibling_cancellation",
+                "early_stop_quorum_policy",
+                "task_retry_reassignment_policy",
+            ][..],
+        ),
+        (
+            Owner::McpRuntimePolicy,
+            &[
+                "mcp_transport_selection",
+                "mcp_reconnect_backoff",
+                "mcp_result_cap_spill_policy",
+                "oauth_auth_lifecycle_policy",
+                "resource_prompt_plugin_capability_exposure",
+            ][..],
+        ),
+        (
+            Owner::ContextMaterializationPolicy,
+            &["deferred_discovery_threshold"][..],
+        ),
+        (
+            Owner::ProviderGovernor,
+            &[
+                "request_compression_policy",
+                "rate_limit_aware_admission",
+                "prompt_cache_ttl_breakpoint_strategy",
+            ][..],
+        ),
+        (
+            Owner::SessionIsolationPolicy,
+            &["session_isolation_profile"][..],
+        ),
+    ] {
+        builder.submit_owner_symbol(owner, families)?;
+    }
+    Ok(())
 }
 
 fn validate_input(input: &ExtensionFactsInput<'_>) -> Result<(), ExtensionFactError> {

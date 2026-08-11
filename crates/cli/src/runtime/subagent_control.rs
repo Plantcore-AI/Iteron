@@ -106,7 +106,8 @@ impl Agent {
         cx.usd_budget = self.usd_budget.clone();
         cx.session_spawn_ledger = self.session_spawn_ledger.clone();
         cx.budget.max_usd = self.effective_max_usd();
-        cx.default_effort = self.effort;
+        cx.default_effort = self.execution_policy.per_agent_effort;
+        cx.execution_policy = self.execution_policy;
         cx.permission_mode = self.permission_mode;
         cx.permission_rules = self.permission_rules.clone();
         cx.authority_ceiling = self.authority_ceiling;
@@ -115,9 +116,11 @@ impl Agent {
         cx.install_compiled_policy_bundle(self.compiled_policy_bundle.clone());
         cx.retry_policy = self.retry_policy;
         cx.verify_command = self.verify_command.clone();
+        cx.verification_feedback = self.verification_policy.feedback;
         cx.provider_controls = self.provider_controls;
         if let Some(governor) = &self.provider_governor {
             cx.provider_governor_policy = governor.policy().clone();
+            cx.provider_governor = Some(governor.clone());
         }
         let current_route_id = self.governed_route_id();
         let fallback_start = self
@@ -146,6 +149,7 @@ impl Agent {
         cx.lifecycle_hooks = self.lifecycle_hooks.clone();
         cx.hooks = self.hooks.clone();
         cx.hook_effect_journal = self.hook_effect_journal.clone();
+        cx.environment_context = self.composition_environment_context.clone();
         cx
     }
 }

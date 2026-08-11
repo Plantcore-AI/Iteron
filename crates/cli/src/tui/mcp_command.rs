@@ -80,6 +80,7 @@ pub(super) fn render_reply(app: &mut App, mut reply: app_server::McpControlReply
 }
 
 pub(super) fn server_runtime_hint(server: &crate::mcp::McpServerHealth) -> String {
+    let origin = server.plugin_identity.as_deref().unwrap_or(server.origin);
     let generation = server
         .generation
         .map_or_else(|| "unknown".into(), |value| value.to_string());
@@ -95,12 +96,16 @@ pub(super) fn server_runtime_hint(server: &crate::mcp::McpServerHealth) -> Strin
     } else {
         "catalog deferred".into()
     };
-    let failure = server.last_failure.as_deref().map_or_else(
-        || "no retained failure".into(),
-        |reason| format!("last failure {reason}"),
-    );
+    // Provider/process failures may contain command arguments, paths, remote payload fragments,
+    // or credential-shaped text.  Diagnostics expose the typed presence of a retained failure;
+    // the private runtime log remains the detail authority.
+    let failure = if server.last_failure.is_some() {
+        "last failure retained (details withheld)"
+    } else {
+        "no retained failure"
+    };
     format!(
-        "protocol {protocol} · generation {generation} · reconnect {}/{} · {retry} · {failure} · {catalog} · {}",
+        "origin {origin} · protocol {protocol} · generation {generation} · reconnect {}/{} · {retry} · {failure} · {catalog} · {}",
         server.reconnect_attempts,
         server.reconnect_limit,
         if server.busy { "busy" } else { "idle" }

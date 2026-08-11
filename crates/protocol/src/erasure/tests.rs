@@ -84,8 +84,26 @@ fn receipt_state_machine_is_typed_and_terminal_is_immutable() {
     );
 }
 
+fn complete_coverage() -> ErasurePropagationCoverage {
+    ErasurePropagationCoverage {
+        session_projections: true,
+        indexes: true,
+        prompt_history: true,
+        attachments: true,
+        tool_artifacts: true,
+        checkpoints: true,
+        memory_context: true,
+        exports: true,
+        telemetry_debug: true,
+        trajectories: true,
+        datasets: true,
+        evaluator_inputs: true,
+        candidate_stores: true,
+    }
+}
+
 #[test]
-fn content_revocation_carries_honest_partial_propagation_verification() {
+fn content_revocation_requires_complete_propagation_verification() {
     let mut receipt = ErasureReceipt::requested(
         request(ErasureTarget::ContentRevocation {
             scope_id: scope(),
@@ -105,26 +123,25 @@ fn content_revocation_carries_honest_partial_propagation_verification() {
                 reference_count: 1,
                 affected_sessions: 1,
                 revocation_generation: 2,
-                coverage: ErasurePropagationCoverage {
-                    session_projections: true,
-                    indexes: true,
-                    prompt_history: true,
-                    attachments: false,
-                    tool_artifacts: false,
-                    checkpoints: false,
-                    memory_context: false,
-                    exports: false,
-                    telemetry_debug: false,
-                    trajectories: false,
-                    datasets: false,
-                    evaluator_inputs: false,
-                    candidate_stores: false,
-                },
+                coverage: complete_coverage(),
             },
             16,
         )
         .unwrap();
     receipt.validate().unwrap();
+
+    let mut incomplete = receipt.clone();
+    let Some(ErasureVerification::ContentRevoked { coverage, .. }) =
+        incomplete.verification.as_mut()
+    else {
+        unreachable!("the fixture is a content-revocation receipt")
+    };
+    coverage.prompt_history = false;
+    assert_eq!(
+        incomplete.validate(),
+        Err(ErasureValidationError::Receipt),
+        "a missing namespace gate must make a Verified receipt unpersistable"
+    );
 
     let mut wrong = ErasureReceipt::requested(
         request(ErasureTarget::ContentRevocation {
@@ -137,8 +154,9 @@ fn content_revocation_carries_honest_partial_propagation_verification() {
     .unwrap();
     wrong.advance(ErasureState::Quiescing, 21).unwrap();
     wrong.advance(ErasureState::Tombstoned, 22).unwrap();
-    wrong
-        .mark_verified(ErasureVerification::ExactSessionAbsent, 23)
-        .unwrap();
-    assert_eq!(wrong.validate(), Err(ErasureValidationError::Receipt));
+    assert_eq!(
+        wrong.mark_verified(ErasureVerification::ExactSessionAbsent, 23),
+        Err(ErasureValidationError::Transition),
+        "content revocation cannot skip shred and propagation or borrow exact-delete proof"
+    );
 }

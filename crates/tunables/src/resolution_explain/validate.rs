@@ -65,6 +65,8 @@ pub(super) fn checked_entries(
             return Err(ExplainError::InvalidReportStructure);
         }
     }
+    crate::resolved_set_rules::validate_report(&report.entries)
+        .map_err(|_| ExplainError::InvalidReportStructure)?;
     Ok(entries)
 }
 

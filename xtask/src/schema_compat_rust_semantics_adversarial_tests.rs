@@ -99,6 +99,31 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
     std::fs::write(&lib_path, &lib).unwrap();
     std::fs::remove_file(&probe_path).unwrap();
 
+    // An additive import whose bound name is absent from every trusted reachable type cannot
+    // redirect an established wire binding and must not block an additive protocol release.
+    std::fs::write(&lib_path, format!("{lib}\nuse std::marker::PhantomData;\n")).unwrap();
+    compare(&temp, "HEAD", &contract, &contract)
+        .expect("an unrelated additive import must not fail the trusted-base gate");
+    std::fs::write(&lib_path, &lib).unwrap();
+
+    // Repointing an import used by the published derives changes their resolution even when the
+    // surface tokens themselves are unchanged. Reachability-filtered additions must not weaken
+    // that original redirect check.
+    let redirected_serde = lib.replacen(
+        "use serde::{Deserialize, Serialize};",
+        "use attacker::{Deserialize, Serialize};",
+        1,
+    );
+    assert_ne!(lib, redirected_serde);
+    std::fs::write(&lib_path, redirected_serde).unwrap();
+    assert!(
+        compare(&temp, "HEAD", &contract, &contract)
+            .unwrap_err()
+            .to_string()
+            .contains("changed its import/re-export bindings")
+    );
+    std::fs::write(&lib_path, &lib).unwrap();
+
     // Narrowing an existing declaration still moves the binding: `wire` stops being reachable from
     // outside the crate, so the subset check must stay fatal in that direction.
     let narrowed = lib.replacen("pub mod wire;", "pub(crate) mod wire;", 1);

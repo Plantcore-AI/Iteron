@@ -374,6 +374,7 @@ fn effect_proposal() -> EffectProposal {
         admitted: CapabilitySet::only(Capability::ReversibleLocal),
         arguments: json!({ "path": "crates/parser/src/lib.rs" }),
         workspace: "/repo".into(),
+        provider_route_attempt: None,
     }
 }
 

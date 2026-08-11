@@ -68,6 +68,35 @@ fn d2_16_generation_token_rejects_a_read_completed_after_invalidation() {
     assert_eq!(memo.len(), 0);
 }
 
+#[test]
+fn pinned_ttl_changes_real_memo_reuse_and_zero_disables_it() {
+    let memo = Memo::with_capacity(2);
+    memo.install_ttl_seconds(2).unwrap();
+    let key = Memo::key("read", &serde_json::json!({"path":"a"})).unwrap();
+    let base = std::time::Instant::now();
+    let pending = match memo.lookup_at(key, base) {
+        Lookup::Miss(pending) => pending,
+        Lookup::Hit(_) => panic!("empty memo cannot hit"),
+    };
+    assert!(memo.complete_at(pending, &result("a", false), base));
+    assert!(matches!(
+        memo.lookup_at(key, base + Duration::from_millis(1_999)),
+        Lookup::Hit(_)
+    ));
+    assert!(matches!(
+        memo.lookup_at(key, base + Duration::from_secs(2)),
+        Lookup::Miss(_)
+    ));
+
+    let disabled = Memo::with_capacity(2);
+    disabled.install_ttl_seconds(0).unwrap();
+    let pending = match disabled.lookup_at(key, base) {
+        Lookup::Miss(pending) => pending,
+        Lookup::Hit(_) => panic!("disabled memo cannot hit"),
+    };
+    assert!(!disabled.complete_at(pending, &result("a", false), base));
+}
+
 #[tokio::test]
 async fn d2_16_concurrent_read_cannot_repopulate_after_effect_and_fresh_value_is_cached() {
     let mut registry = Registry::read_only(".").unwrap();

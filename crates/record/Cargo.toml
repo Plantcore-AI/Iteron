@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 # Exposes `resolved_fixture` so other crates' tests can pin a registry-driven resolved set.
-test-fixtures = []
+test-fixtures = ["iteron-tunables/test-fixtures"]
 
 [dependencies]
 iteron-protocol = { path = "../protocol" }
@@ -21,6 +21,9 @@ thiserror = { workspace = true }
 getrandom = { workspace = true }
 ring = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+iteron-tunables = { path = "../tunables", features = ["test-fixtures"] }
 
 # Tiered durability (I-16): `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms, and std
 # offers no way to ask for a plain `fsync(2)`. Per-event appends need the cheap barrier; only the

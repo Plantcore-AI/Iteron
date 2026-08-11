@@ -9,6 +9,52 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Fixed, replay-safe owner of the fan join/reduce boundary.
+///
+/// This is deliberately not caller-configurable: a fan waits for one terminal summary per
+/// declaration, orders by declaration identity, and exposes failed/skipped text only as labelled
+/// diagnostics. The tunables checkpoint attests these exact physical semantics as FixedHidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinReducePolicy {
+    pub join: JoinMode,
+    pub order: ReduceOrder,
+    pub include_failed_evidence: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinMode {
+    WaitAll,
+}
+
+impl JoinMode {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::WaitAll => "wait_all",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduceOrder {
+    Declaration,
+}
+
+impl ReduceOrder {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Declaration => "declaration",
+        }
+    }
+}
+
+pub const fn join_reduce_policy() -> JoinReducePolicy {
+    JoinReducePolicy {
+        join: JoinMode::WaitAll,
+        order: ReduceOrder::Declaration,
+        include_failed_evidence: false,
+    }
+}
+
 /// Whether a worker produced candidate evidence. Failure diagnostics and skipped coverage are
 /// useful observations, but they are never evidence the writer may adopt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,9 +70,11 @@ pub enum SummaryOutcome {
 }
 
 impl SummaryOutcome {
-    fn label(self) -> &'static str {
+    fn label(self, policy: JoinReducePolicy) -> &'static str {
         match self {
             Self::Done => "DONE",
+            Self::Failed if policy.include_failed_evidence => "FAILED",
+            Self::Skipped if policy.include_failed_evidence => "SKIPPED",
             Self::Failed => "FAILED — NOT EVIDENCE",
             Self::Skipped => "SKIPPED — NOT EVIDENCE",
         }
@@ -118,6 +166,7 @@ pub fn reduce_checked(
     expected: &[CoverageExpectation],
     results: Vec<Summary>,
 ) -> Result<OrderedBundle, CoverageError> {
+    let policy = join_reduce_policy();
     let mut declarations = BTreeMap::new();
     for item in expected {
         if declarations
@@ -140,7 +189,9 @@ pub fn reduce_checked(
             return Err(CoverageError::AssignmentMismatch(summary.idx));
         }
     }
-    if let Some(missing) = declarations.keys().find(|idx| !returned.contains(idx)) {
+    if policy.join == JoinMode::WaitAll
+        && let Some(missing) = declarations.keys().find(|idx| !returned.contains(idx))
+    {
         return Err(CoverageError::MissingSummary(*missing));
     }
     Ok(reduce(results))
@@ -150,15 +201,18 @@ pub fn reduce_checked(
 /// order, but the output is always ordered by `idx`. The trailing line names the single-writer
 /// contract explicitly (ADR-001) so the writer knows it is synthesizing, not delegating further.
 pub fn reduce(mut results: Vec<Summary>) -> OrderedBundle {
+    let policy = join_reduce_policy();
     // Declaration order, never completion order. Secondary keys make malformed duplicate indices
     // deterministic across input permutations instead of inheriting arrival order.
-    results.sort_by(|a, b| {
-        a.idx
-            .cmp(&b.idx)
-            .then_with(|| a.assigned_question.cmp(&b.assigned_question))
-            .then_with(|| a.outcome.sort_rank().cmp(&b.outcome.sort_rank()))
-            .then_with(|| a.text.cmp(&b.text))
-    });
+    if policy.order == ReduceOrder::Declaration {
+        results.sort_by(|a, b| {
+            a.idx
+                .cmp(&b.idx)
+                .then_with(|| a.assigned_question.cmp(&b.assigned_question))
+                .then_with(|| a.outcome.sort_rank().cmp(&b.outcome.sort_rank()))
+                .then_with(|| a.text.cmp(&b.text))
+        });
+    }
 
     let n = results.len();
     let done = results
@@ -187,7 +241,7 @@ pub fn reduce(mut results: Vec<Summary>) -> OrderedBundle {
         text.push_str(&format!(
             "\n## {}. {} — {}\n{}\n",
             s.idx + 1,
-            s.outcome.label(),
+            s.outcome.label(policy),
             question,
             s.text.trim()
         ));
@@ -372,5 +426,73 @@ mod tests {
         let json = serde_json::to_string(&bundle).unwrap();
         let back: OrderedBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(bundle, back);
+    }
+
+    #[test]
+    fn exact_coverage_gate_refuses_missing_or_relabelled_summaries_before_reduction() {
+        let expected = vec![
+            CoverageExpectation {
+                idx: 0,
+                assigned_question: "inspect runtime".into(),
+            },
+            CoverageExpectation {
+                idx: 1,
+                assigned_question: "inspect verifier".into(),
+            },
+        ];
+        let exact = vec![
+            Summary {
+                idx: 1,
+                assigned_question: "inspect verifier".into(),
+                outcome: SummaryOutcome::Done,
+                text: "verifier evidence".into(),
+            },
+            Summary {
+                idx: 0,
+                assigned_question: "inspect runtime".into(),
+                outcome: SummaryOutcome::Done,
+                text: "runtime evidence".into(),
+            },
+        ];
+        let bundle = reduce_checked(&expected, exact.clone()).expect("exact coverage reduces");
+        assert!(
+            bundle.text.find("runtime evidence").unwrap()
+                < bundle.text.find("verifier evidence").unwrap()
+        );
+
+        assert_eq!(
+            reduce_checked(&expected, exact[..1].to_vec()),
+            Err(CoverageError::MissingSummary(0))
+        );
+        let mut relabelled = exact;
+        relabelled[0].assigned_question = "different assignment".into();
+        assert_eq!(
+            reduce_checked(&expected, relabelled),
+            Err(CoverageError::AssignmentMismatch(1))
+        );
+    }
+
+    #[test]
+    fn fixed_join_reduce_owner_is_the_physical_wait_order_and_evidence_gate() {
+        let policy = join_reduce_policy();
+        assert_eq!(policy.join.id(), "wait_all");
+        assert_eq!(policy.order.id(), "declaration");
+        assert!(!policy.include_failed_evidence);
+
+        let expected = [CoverageExpectation {
+            idx: 0,
+            assigned_question: "one".into(),
+        }];
+        assert_eq!(
+            reduce_checked(&expected, Vec::new()),
+            Err(CoverageError::MissingSummary(0))
+        );
+        let failed = reduce(vec![Summary {
+            idx: 0,
+            assigned_question: "one".into(),
+            outcome: SummaryOutcome::Failed,
+            text: "diagnostic".into(),
+        }]);
+        assert!(failed.text.contains("FAILED — NOT EVIDENCE"));
     }
 }

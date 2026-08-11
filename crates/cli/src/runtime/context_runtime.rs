@@ -102,6 +102,32 @@ impl Agent {
         &self,
         input_images: &'a [iteron_protocol::ImageContent],
     ) -> Result<&'a [iteron_protocol::ImageContent], KernelError> {
+        let reject = || {
+            self.lifecycle_event(
+                "context.source.rejected",
+                Some(TurnId(self.seq_turn)),
+                LifecyclePayload {
+                    count: Some(u64::try_from(input_images.len()).unwrap_or(u64::MAX)),
+                    reason_code: Some("multimodal_decode_envelope_rejected".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            KernelError::InvalidSubmission(IMAGE_INPUT_INSPECTION_FAILED_REASON)
+        };
+        if input_images.len() > self.multimodal_decode_envelope.max_images {
+            return Err(reject());
+        }
+        let mut aggregate_raw_bytes = 0usize;
+        for image in input_images {
+            let raw_bytes = self
+                .binary_media_policy
+                .inspect_content_with_envelope(image, self.multimodal_decode_envelope)
+                .map_err(|_| reject())?;
+            aggregate_raw_bytes = aggregate_raw_bytes
+                .checked_add(raw_bytes)
+                .filter(|total| *total <= self.multimodal_decode_envelope.aggregate_raw_bytes)
+                .ok_or_else(|| reject())?;
+        }
         let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
             total.saturating_add(
                 self.context_estimator
@@ -393,8 +419,9 @@ impl Agent {
                     self.append_policy_decision(
                         context_opportunity,
                         policy_evidence::PolicyDecisionDraft::selected(
-                            &["materialize"],
-                            "materialize",
+                            policy_evidence::CONTEXT_SLOT,
+                            &[iteron_protocol::PolicyActionV1::ContextMaterialize],
+                            iteron_protocol::PolicyActionV1::ContextMaterialize,
                             "iteron:context-features-v1",
                             &(&resolved.policy_observation, &resolved.policy_plan),
                             &"world_reads_remain_in_context_port",
@@ -406,7 +433,8 @@ impl Agent {
                     self.append_policy_decision(
                         context_opportunity,
                         policy_evidence::PolicyDecisionDraft::abstained(
-                            &["materialize"],
+                            policy_evidence::CONTEXT_SLOT,
+                            &[iteron_protocol::PolicyActionV1::ContextMaterialize],
                             "iteron:context-features-v1",
                             &(turn.0, task.len()),
                             &"context_failure_is_fail_closed",
@@ -416,23 +444,45 @@ impl Agent {
                 }
             };
             if let Some(audit) = &resolved.memory_audit {
-                let memory_opportunity =
-                    self.begin_policy_decision(policy_evidence::MEMORY_SLOT, Some(turn))?;
-                let action = if audit.selected.is_empty() {
-                    "no_recall"
-                } else {
-                    "recall"
-                };
-                self.append_policy_decision(
-                    memory_opportunity,
-                    policy_evidence::PolicyDecisionDraft::selected(
-                        &["no_recall", "recall"],
-                        action,
-                        "iteron:memory-features-v1",
-                        &(&audit.observation, &audit.selected, &audit.scores_ppm),
-                        &"selection_is_bounded_to_gathered_candidates",
-                    )?,
-                )?;
+                use iteron_ctx::MemoryRecallDisposition;
+                if audit.disposition != MemoryRecallDisposition::NotInvokedScopeDenied {
+                    let memory_opportunity =
+                        self.begin_policy_decision(policy_evidence::MEMORY_SLOT, Some(turn))?;
+                    let eligible = [
+                        iteron_protocol::PolicyActionV1::MemoryNoRecall,
+                        iteron_protocol::PolicyActionV1::MemoryRecall,
+                    ];
+                    let features = (&audit.observation, &audit.selected, &audit.scores_ppm);
+                    let draft = match audit.disposition {
+                        MemoryRecallDisposition::Selected => {
+                            policy_evidence::PolicyDecisionDraft::selected(
+                                policy_evidence::MEMORY_SLOT,
+                                &eligible,
+                                if audit.selected.is_empty() {
+                                    iteron_protocol::PolicyActionV1::MemoryNoRecall
+                                } else {
+                                    iteron_protocol::PolicyActionV1::MemoryRecall
+                                },
+                                "iteron:memory-features-v1",
+                                &features,
+                                &"selection_is_bounded_to_gathered_candidates",
+                            )?
+                        }
+                        MemoryRecallDisposition::Abstained => {
+                            policy_evidence::PolicyDecisionDraft::abstained(
+                                policy_evidence::MEMORY_SLOT,
+                                &eligible,
+                                "iteron:memory-features-v1",
+                                &features,
+                                &"invalid_or_refused_memory_plans_inject_no_bodies",
+                            )?
+                        }
+                        MemoryRecallDisposition::NotInvokedScopeDenied => unreachable!(
+                            "outer scope denial is filtered before opening an opportunity"
+                        ),
+                    };
+                    self.append_policy_decision(memory_opportunity, draft)?;
+                }
             }
             let memory_benchmark_scope = self.memory_benchmark_scope;
             self.observe_resolved_context(decision_observability::ResolvedContextObservation {

@@ -122,6 +122,14 @@ pub enum AgentOutcome {
     Null { reason: Option<String> },
 }
 
+/// Host classification used before the workflow engine creates speculative physical attempts.
+/// Only read-only children may be duplicated; write authority remains a single isolated lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentExecutionClass {
+    ReadOnly,
+    IsolatedWriter,
+}
+
 /// Latest live metrics for one running child. The engine keeps this on a single-slot watch channel
 /// and samples it for [`crate::ProgressEvent::AgentActivity`], so a chatty child can only replace
 /// one pending value rather than queue unbounded frontend work.
@@ -192,6 +200,12 @@ impl AgentOutcome {
 pub trait AgentSpawner: Send + Sync {
     fn port_version(&self) -> u32 {
         AGENT_SPAWNER_PORT_VERSION
+    }
+
+    /// Classify the exact pinned child definition without starting a rollout or external effect.
+    /// Simple/test spawners are read-only by contract; production catalog spawners override this.
+    fn execution_class(&self, _call: &AgentCall) -> AgentExecutionClass {
+        AgentExecutionClass::ReadOnly
     }
 
     async fn spawn(&self, call: AgentCall) -> AgentOutcome;

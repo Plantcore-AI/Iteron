@@ -58,17 +58,18 @@ pub use decision_store::{
     ContextLedgerSnapshot, ContextLedgerStore, MemoryTraceSnapshot, MemoryTraceStore,
 };
 pub use instructions::{
-    InstructionBundle, InstructionRejection, InstructionSource, Instructions,
-    MAX_INSTRUCTION_CONTENT_BYTES, MAX_MERGED_INSTRUCTION_BYTES, discover, discover_hierarchy,
-    framed,
+    InstructionBundle, InstructionDiscoveryPolicy, InstructionRejection, InstructionSource,
+    Instructions, MAX_INSTRUCTION_CONTENT_BYTES, MAX_MERGED_INSTRUCTION_BYTES, discover,
+    discover_hierarchy, discover_hierarchy_with_policy, framed,
 };
 pub use memory::{
     Fact, FactRef, FileMemory, Framed, MAX_MEMORY_CANDIDATE_TEXT_BYTES, MAX_MEMORY_CANDIDATES,
     MAX_MEMORY_SLUG_BYTES, MAX_MEMORY_TASK_BYTES, MEMORY_SLOT_VERSION, MemBudget, MemError,
-    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallAudit, MemoryRecallExclusion,
-    MemoryRecallExclusionKind, MemoryRecallPlan, MemoryRecallProposal, MemoryRecallStrategy,
-    MemorySegment, MemorySlotDecision, MemorySlotError, MemorySlotObservation, MemoryStore,
-    MemoryStrategy, MemoryWriteProposal, StoredFact, merged_index,
+    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallAudit, MemoryRecallDisposition,
+    MemoryRecallExclusion, MemoryRecallExclusionKind, MemoryRecallPlan, MemoryRecallProposal,
+    MemoryRecallStrategy, MemorySegment, MemorySlotDecision, MemorySlotError,
+    MemorySlotObservation, MemoryStore, MemoryStrategy, MemoryWriteProposal, StoredFact,
+    merged_index,
 };
 pub use memory_runtime::{MemoryRetrievalPolicy, SCORE_SCALE};
 pub use memory_trace::{
@@ -79,16 +80,18 @@ pub use memory_trace::{
     MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState,
     NullMemoryObserver,
 };
-pub use outline::{repo_outline, repo_outline_for_task};
+pub use outline::{repo_outline, repo_outline_for_task, repo_outline_for_task_with_limits};
 pub use runtime_policy::{
     ContextBudgetClass, ContextBudgetPolicy, ContextBudgetViolation, ContextComponentUsage,
     ContextMaterializationPolicy,
 };
-pub use token_estimator::TokenEstimatorProfile;
+pub use token_estimator::{
+    ROUTE_AWARE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
+};
 
-/// A fast, provider-agnostic token estimate. Real tokenization is the provider's; for policy
-/// decisions this byte heuristic is deterministic and deliberately biased high for ASCII/code.
-/// It is not guaranteed conservative for every language/tokenizer and must be labelled estimated.
+/// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; until a route
+/// is known this deliberately charges one token per UTF-8 byte and is labelled as an inexact,
+/// conservative fallback.
 pub fn estimate_tokens(text: &str) -> usize {
     TokenEstimatorProfile::GenericBytesPerToken35.estimate(text)
 }
@@ -98,8 +101,9 @@ mod tests {
     use super::*;
     #[test]
     fn token_estimate_biases_high() {
-        // 3.5 chars/token over-estimates vs the ~4 reality, so we never compact too late.
+        // The unidentified-route fallback is an explicit byte-level upper bound.
         let n = estimate_tokens(&"x".repeat(3500));
-        assert!(n >= 1000, "estimate should be conservative (>= chars/3.5)");
+        assert_eq!(n, 3500);
+        assert_eq!(estimate_tokens("上下文"), "上下文".len());
     }
 }

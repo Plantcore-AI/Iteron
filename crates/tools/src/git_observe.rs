@@ -1,11 +1,11 @@
 //! Bounded `git_status` and `git_log` observations over the shared confined Git harness.
 
-use crate::git_filters::discover_filter_drivers;
+use crate::git_filters::discover_filter_drivers_bounded;
 use crate::git_harness::{
-    GIT_TIMEOUT, STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
+    STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
     resolve_repository_layout, run_command_bounded,
 };
-use crate::{Registry, ToolError, boxfut, err_result, ok_result};
+use crate::{GitPolicy, Registry, ToolError, boxfut, err_result, ok_result};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
 use std::ffi::OsString;
@@ -13,11 +13,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::time::Duration;
 
-const SOURCE_OUTPUT_LIMIT: usize = 64 * 1024;
-const RENDERED_OUTPUT_LIMIT: usize = 64 * 1024;
-const MAX_STATUS_RECORDS: usize = 2_048;
 const DEFAULT_LOG_COUNT: usize = 20;
-const MAX_LOG_COUNT: usize = 100;
 #[cfg(unix)]
 const ENVIRONMENT_GIT_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(any(unix, test))]
@@ -84,6 +80,7 @@ async fn capture_observation_inner(
     root: &Path,
     args_for: impl FnOnce(&[String]) -> Vec<OsString>,
     label: &str,
+    policy: GitPolicy,
 ) -> Result<Vec<u8>, String> {
     let root = root
         .canonicalize()
@@ -91,13 +88,20 @@ async fn capture_observation_inner(
     let repository = resolve_repository_layout(&root)?;
     let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &root)
         .map_err(|error| format!("could not resolve trusted Git: {error}"))?;
-    let filter_drivers = discover_filter_drivers(&git, &repository).await?;
+    let timeout = Duration::from_secs(policy.timeout_seconds);
+    let filter_drivers =
+        discover_filter_drivers_bounded(&git, &repository, timeout, policy.output_max_bytes)
+            .await?;
     let args = args_for(&filter_drivers);
     let mut command = hardened_git_command(&git, &repository, &args);
-    let captured =
-        run_command_bounded(&mut command, GIT_TIMEOUT, SOURCE_OUTPUT_LIMIT, STDERR_LIMIT)
-            .await
-            .map_err(|error| format!("could not run bounded {label}: {error}"))?;
+    let captured = run_command_bounded(
+        &mut command,
+        timeout,
+        policy.output_max_bytes,
+        policy.output_max_bytes.min(STDERR_LIMIT),
+    )
+    .await
+    .map_err(|error| format!("could not run bounded {label}: {error}"))?;
 
     if !captured.status.success() {
         return Err(format!(
@@ -108,8 +112,9 @@ async fn capture_observation_inner(
     }
     if captured.stdout.truncated() {
         return Err(format!(
-            "{label} output exceeded the {SOURCE_OUTPUT_LIMIT}-byte source limit; no partial \
-             observation was returned"
+            "{label} output exceeded the {}-byte source limit; no partial \
+             observation was returned",
+            policy.output_max_bytes
         ));
     }
     Ok(captured.stdout.retained_bytes())
@@ -119,13 +124,15 @@ async fn capture_observation(
     root: &Path,
     args_for: impl FnOnce(&[String]) -> Vec<OsString>,
     label: &str,
+    policy: GitPolicy,
 ) -> Result<Vec<u8>, String> {
+    let timeout = Duration::from_secs(policy.timeout_seconds);
     tokio::time::timeout(
-        GIT_TIMEOUT,
-        capture_observation_inner(root, args_for, label),
+        timeout,
+        capture_observation_inner(root, args_for, label, policy),
     )
     .await
-    .map_err(|_| format!("{label} exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
+    .map_err(|_| format!("{label} exceeded {} seconds", policy.timeout_seconds))?
 }
 
 fn is_suspicious_unicode(ch: char) -> bool {
@@ -205,14 +212,19 @@ fn render_field(bytes: &[u8], disclosure: &mut Disclosure) -> String {
     }
 }
 
-fn push_bounded(output: &mut String, value: &str, label: &str) -> Result<(), String> {
+fn push_bounded(
+    output: &mut String,
+    value: &str,
+    label: &str,
+    output_max_bytes: usize,
+) -> Result<(), String> {
     let next = output
         .len()
         .checked_add(value.len())
         .ok_or_else(|| format!("{label} rendered output size overflowed"))?;
-    if next > RENDERED_OUTPUT_LIMIT {
+    if next > output_max_bytes {
         return Err(format!(
-            "{label} rendered output exceeded the {RENDERED_OUTPUT_LIMIT}-byte limit; no partial \
+            "{label} rendered output exceeded the {output_max_bytes}-byte limit; no partial \
              observation was returned"
         ));
     }
@@ -224,6 +236,7 @@ fn append_disclosure(
     output: &mut String,
     disclosure: &Disclosure,
     label: &str,
+    output_max_bytes: usize,
 ) -> Result<(), String> {
     if disclosure.escaped_fields == 0 {
         return Ok(());
@@ -236,10 +249,11 @@ fn append_disclosure(
             disclosure.escaped_fields, disclosure.non_utf8_fields
         ),
         label,
+        output_max_bytes,
     )
 }
 
-fn render_status(bytes: &[u8]) -> Result<String, String> {
+fn render_status_with_policy(bytes: &[u8], policy: GitPolicy) -> Result<String, String> {
     if bytes.is_empty() {
         return Ok("(working tree clean)".to_owned());
     }
@@ -255,10 +269,11 @@ fn render_status(bytes: &[u8]) -> Result<String, String> {
         .filter(|record| !record.is_empty())
     {
         records += 1;
-        if records > MAX_STATUS_RECORDS {
+        if records > policy.status_max_entries {
             return Err(format!(
-                "Git status exceeded the {MAX_STATUS_RECORDS}-record limit; no partial observation \
-                 was returned"
+                "Git status exceeded the {}-record limit; no partial observation \
+                 was returned",
+                policy.status_max_entries
             ));
         }
         if record.len() < 4 || record[2] != b' ' || !record[..2].is_ascii() {
@@ -273,13 +288,24 @@ fn render_status(bytes: &[u8]) -> Result<String, String> {
                 char::from(record[1])
             ),
             "Git status",
+            policy.output_max_bytes,
         )?;
     }
-    append_disclosure(&mut output, &disclosure, "Git status")?;
+    append_disclosure(
+        &mut output,
+        &disclosure,
+        "Git status",
+        policy.output_max_bytes,
+    )?;
     if output.ends_with('\n') {
         output.pop();
     }
     Ok(output)
+}
+
+#[cfg(test)]
+fn render_status(bytes: &[u8]) -> Result<String, String> {
+    render_status_with_policy(bytes, crate::ObservationToolPolicy::default().git)
 }
 
 #[cfg(any(unix, test))]
@@ -335,11 +361,14 @@ fn render_environment_status(bytes: &[u8]) -> Result<String, String> {
     let mut conflicts = 0usize;
     let mut count = 0usize;
 
+    let max_records = crate::ObservationToolPolicy::default()
+        .git
+        .status_max_entries;
     for record in records {
         count = count.saturating_add(1);
-        if count > MAX_STATUS_RECORDS {
+        if count > max_records {
             return Err(format!(
-                "Git status exceeded the {MAX_STATUS_RECORDS}-record environment bound"
+                "Git status exceeded the {max_records}-record environment bound"
             ));
         }
         if record.len() < 4 || record[2] != b' ' || !record[..2].is_ascii() {
@@ -406,7 +435,11 @@ fn valid_iso_date(bytes: &[u8]) -> bool {
             .all(|byte| byte.is_ascii_digit() || b"-T:+.Z".contains(byte))
 }
 
-fn render_log(bytes: &[u8], max_count: usize) -> Result<String, String> {
+fn render_log_with_policy(
+    bytes: &[u8],
+    max_count: usize,
+    policy: GitPolicy,
+) -> Result<String, String> {
     if bytes.is_empty() {
         return Ok("(no commits)".to_owned());
     }
@@ -449,6 +482,7 @@ fn render_log(bytes: &[u8], max_count: usize) -> Result<String, String> {
                 String::from_utf8_lossy(date)
             ),
             "Git log",
+            policy.output_max_bytes,
         )?;
         records += 1;
     }
@@ -459,29 +493,40 @@ fn render_log(bytes: &[u8], max_count: usize) -> Result<String, String> {
              was returned"
         ));
     }
-    append_disclosure(&mut output, &disclosure, "Git log")?;
+    append_disclosure(&mut output, &disclosure, "Git log", policy.output_max_bytes)?;
     if output.ends_with('\n') {
         output.pop();
     }
     Ok(output)
 }
 
-async fn run_git_status(root: &Path) -> Result<String, String> {
-    let bytes = capture_observation(root, status_args, "Git status").await?;
-    render_status(&bytes)
+async fn run_git_status(root: &Path, policy: GitPolicy) -> Result<String, String> {
+    let bytes = capture_observation(root, status_args, "Git status", policy).await?;
+    render_status_with_policy(&bytes, policy)
 }
 
-async fn run_git_log(root: &Path, max_count: usize) -> Result<String, String> {
-    let bytes =
-        capture_observation(root, |drivers| log_args(drivers, max_count), "Git log").await?;
-    render_log(&bytes, max_count)
+async fn run_git_log(root: &Path, max_count: usize, policy: GitPolicy) -> Result<String, String> {
+    let bytes = capture_observation(
+        root,
+        |drivers| log_args(drivers, max_count),
+        "Git log",
+        policy,
+    )
+    .await?;
+    render_log_with_policy(&bytes, max_count, policy)
 }
 
 #[cfg(unix)]
 pub(crate) async fn run_git_environment(root: &Path) -> Result<String, String> {
+    let policy = crate::ObservationToolPolicy::default().git;
     let bytes = tokio::time::timeout(
         ENVIRONMENT_GIT_TIMEOUT,
-        capture_observation_inner(root, environment_status_args, "Git environment status"),
+        capture_observation_inner(
+            root,
+            environment_status_args,
+            "Git environment status",
+            policy,
+        ),
     )
     .await
     .map_err(|_| {
@@ -502,7 +547,7 @@ pub(crate) async fn run_git_environment(_root: &Path) -> Result<String, String> 
     Err("Git environment observation is unavailable on this platform".to_owned())
 }
 
-fn parse_log_count(input: &Value) -> Result<usize, String> {
+fn parse_log_count_with_policy(input: &Value, policy: GitPolicy) -> Result<usize, String> {
     let object = input
         .as_object()
         .ok_or_else(|| "git_log input must be an object".to_owned())?;
@@ -510,26 +555,37 @@ fn parse_log_count(input: &Value) -> Result<usize, String> {
         return Err("git_log accepts only the `max_count` field".to_owned());
     }
     let Some(value) = object.get("max_count") else {
-        return Ok(DEFAULT_LOG_COUNT);
+        return Ok(DEFAULT_LOG_COUNT.min(policy.log_max_entries));
     };
     let count = value.as_u64().ok_or_else(|| {
-        format!("git_log max_count must be an integer from 1 through {MAX_LOG_COUNT}")
+        format!(
+            "git_log max_count must be an integer from 1 through {}",
+            policy.log_max_entries
+        )
     })?;
-    if !(1..=MAX_LOG_COUNT as u64).contains(&count) {
+    if !(1..=policy.log_max_entries as u64).contains(&count) {
         return Err(format!(
-            "git_log max_count must be an integer from 1 through {MAX_LOG_COUNT}"
+            "git_log max_count must be an integer from 1 through {}",
+            policy.log_max_entries
         ));
     }
     usize::try_from(count).map_err(|_| "git_log max_count is not representable".to_owned())
 }
 
+#[cfg(test)]
+fn parse_log_count(input: &Value) -> Result<usize, String> {
+    parse_log_count_with_policy(input, crate::ObservationToolPolicy::default().git)
+}
+
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+    let status_policy_cell = registry.observation_tool_policy_handle();
     registry.push_tool(
         ToolSpec {
             name: "git_status".into(),
             description: "Show bounded porcelain status for the confined repository. Runs the \
                           fixed read-only Git harness directly (never through a shell), ignores \
-                          submodule worktrees, and escapes deceptive path bytes."
+                          submodule worktrees, escapes deceptive path bytes, and uses the pinned \
+                          runtime timeout/output/record ceilings."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -538,25 +594,35 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let status_policy_cell = status_policy_cell.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = status_policy_cell.get().copied().map(|p| p.git) else {
+                    return err_result(
+                        id,
+                        "git_status refused: immutable observation-tool policy was not installed"
+                            .to_owned(),
+                    );
+                };
                 if !matches!(call.input.as_object(), Some(object) if object.is_empty()) {
                     return err_result(id, "git_status input must be an empty object".to_owned());
                 }
-                match run_git_status(&root).await {
+                match run_git_status(&root, policy).await {
                     Ok(output) => ok_result(id, output),
                     Err(error) => err_result(id, error),
                 }
             })
         },
     )?;
+    let log_policy_cell = registry.observation_tool_policy_handle();
     registry.push_tool(
         ToolSpec {
             name: "git_log".into(),
             description: "Show a bounded recent commit log from the confined repository. Uses a \
                           fixed machine-readable format and executes Git directly with hooks, \
-                          filters, ambient config, paging, signatures, and lazy fetch disabled."
+                          filters, ambient config, paging, signatures, and lazy fetch disabled; \
+                          timeout, output, and count use the pinned runtime policy."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -564,21 +630,29 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     "max_count":{
                         "type":"integer",
                         "minimum":1,
-                        "description":"recent commits to return (default 20, maximum 100)"
+                        "description":"recent commits to return (default 20, capped by the pinned runtime policy)"
                     }
                 }
             }),
             purity: Purity::Effecting,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let log_policy_cell = log_policy_cell.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
-                let max_count = match parse_log_count(&call.input) {
+                let Some(policy) = log_policy_cell.get().copied().map(|p| p.git) else {
+                    return err_result(
+                        id,
+                        "git_log refused: immutable observation-tool policy was not installed"
+                            .to_owned(),
+                    );
+                };
+                let max_count = match parse_log_count_with_policy(&call.input, policy) {
                     Ok(count) => count,
                     Err(error) => return err_result(id, error),
                 };
-                match run_git_log(&root, max_count).await {
+                match run_git_log(&root, max_count, policy).await {
                     Ok(output) => ok_result(id, output),
                     Err(error) => err_result(id, error),
                 }

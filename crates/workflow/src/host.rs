@@ -13,7 +13,7 @@ use crate::journal::Journal;
 use crate::spawner::AgentSpawner;
 use crate::task_dag::runtime::ExecutionLedger;
 use crate::{AGENT_SPAWNER_PORT_VERSION, PROGRESS_SINK_PORT_VERSION, RunId, RunLimits, RunReport};
-use crate::{EarlyStopQuorumPolicy, SpeculativeSiblingPolicy, TaskRetryPolicy};
+use crate::{EarlyStopQuorumPolicy, SchemaRetryPolicy, SpeculativeSiblingPolicy, TaskRetryPolicy};
 
 const PRELUDE: &str = include_str!("prelude.js");
 
@@ -40,6 +40,7 @@ pub struct RunCoreRequest<'a> {
     pub early_stop_quorum: EarlyStopQuorumPolicy,
     pub speculative_siblings: SpeculativeSiblingPolicy,
     pub task_retry: TaskRetryPolicy,
+    pub schema_retry: SchemaRetryPolicy,
     pub cancel: CancellationToken,
     pub journal: Arc<Journal>,
     pub task_dag: Arc<ExecutionLedger>,
@@ -56,6 +57,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         early_stop_quorum,
         speculative_siblings,
         task_retry,
+        schema_retry,
         cancel,
         journal,
         task_dag,
@@ -102,6 +104,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         task_dag,
         speculative_siblings,
         task_retry,
+        schema_retry,
     });
 
     // A LocalSet lets the `!Send` QuickJS runtime run on the current thread while `tokio::spawn`

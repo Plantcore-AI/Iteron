@@ -36,6 +36,7 @@ pub(super) fn exercise_safety_refusal<'a>(
         base_model,
         "unsafe",
     )?;
+    datasets.persist_candidate(&candidate)?;
     push_produced("unsafe-rule", &candidate, events);
     let verified = verifier.verify_candidate_inputs(
         candidate.manifest(),

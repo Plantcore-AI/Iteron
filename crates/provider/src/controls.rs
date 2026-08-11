@@ -117,6 +117,9 @@ pub struct ProviderRequestControls {
     pub verbosity: ResponseVerbosity,
     pub compression: RequestCompression,
     pub prompt_cache: PromptCacheControl,
+    /// Checkpoint-derived physical transport bounds. Every adapter installs this exact policy
+    /// before opening the request, including clients constructed before resume decoding.
+    pub transport: crate::ProviderTransportTimeoutPolicy,
     /// A governor may duplicate a request only when both this bit and the provider capability are
     /// true. It is deliberately semantic rather than inferred from an empty tool list.
     pub idempotent: bool,

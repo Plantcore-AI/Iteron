@@ -32,6 +32,7 @@ fn config() -> Config {
 fn spec(value: u64, parent: Option<u64>, dependencies: &[u64], turns: u32) -> TaskSpec {
     TaskSpec {
         id: id(value),
+        declaration_index: None,
         parent: parent.map(id),
         dependencies: dependencies.iter().copied().map(id).collect(),
         label: format!("task-{value}"),
@@ -69,6 +70,28 @@ fn fail(task: u64) -> Command {
         result_digest: None,
         code: Some("worker_failed".into()),
         detail: Some("bounded failure evidence".into()),
+    }
+}
+
+fn attempt_spec(
+    id: u64,
+    retry_ordinal: u32,
+    assignment: AttemptAssignment,
+    retry_of: Option<u64>,
+    retry_cause: Option<AttemptRetryCause>,
+    prior_evidence_digest: Option<String>,
+) -> AttemptSpec {
+    AttemptSpec {
+        id: AttemptId(id),
+        task: TaskId(1),
+        retry_ordinal,
+        sibling_ordinal: 0,
+        lineage_version: 1,
+        retry_of: retry_of.map(AttemptId),
+        assignment,
+        retry_cause,
+        prior_evidence_digest,
+        input_digest: "a".repeat(64),
     }
 }
 
@@ -139,6 +162,99 @@ fn replay_rejects_a_zero_command_id_even_with_valid_hashes() {
     ));
     assert_eq!(dag.sequence(), 0);
     assert!(dag.task(id(1)).is_none());
+}
+
+#[test]
+fn retry_lineage_is_derived_from_and_revalidated_against_the_durable_terminal() {
+    let mut dag = TaskDag::new(config()).unwrap();
+    dag.apply(cid(1), create(Actor::Controller, spec(1, None, &[], 30)))
+        .unwrap();
+    dag.apply(cid(2), start(1)).unwrap();
+    dag.apply(
+        cid(3),
+        Command::RegisterAttempt {
+            actor: Actor::Controller,
+            attempt: attempt_spec(1, 0, AttemptAssignment::Initial, None, None, None),
+        },
+    )
+    .unwrap();
+    dag.apply(
+        cid(4),
+        Command::StartAttempt {
+            actor: Actor::Controller,
+            attempt: AttemptId(1),
+        },
+    )
+    .unwrap();
+    dag.apply(
+        cid(5),
+        Command::CompleteAttempt {
+            actor: Actor::Controller,
+            attempt: AttemptId(1),
+            completion: AttemptCompletion::Failed,
+            disposition: AttemptDisposition::Negative,
+            result_digest: None,
+            code: Some("negative_terminal".into()),
+            detail: Some("bounded durable predecessor evidence".into()),
+        },
+    )
+    .unwrap();
+    let terminal_digest = super::hash::digest_json(&dag.attempt(AttemptId(1)).unwrap().state)
+        .expect("durable terminal is canonical JSON");
+
+    let forged = dag.apply(
+        cid(6),
+        Command::RegisterAttempt {
+            actor: Actor::Controller,
+            attempt: attempt_spec(
+                2,
+                1,
+                AttemptAssignment::Reassigned,
+                Some(1),
+                Some(AttemptRetryCause::NegativeTerminal),
+                Some("b".repeat(64)),
+            ),
+        },
+    );
+    assert!(matches!(
+        forged,
+        Err(DagError::Invalid(reason)) if reason.contains("does not match")
+    ));
+
+    let wrong_cause = dag.apply(
+        cid(7),
+        Command::RegisterAttempt {
+            actor: Actor::Controller,
+            attempt: attempt_spec(
+                2,
+                1,
+                AttemptAssignment::Reassigned,
+                Some(1),
+                Some(AttemptRetryCause::SchemaValidation),
+                Some(terminal_digest.clone()),
+            ),
+        },
+    );
+    assert!(matches!(
+        wrong_cause,
+        Err(DagError::Invalid(reason)) if reason.contains("retry cause")
+    ));
+
+    dag.apply(
+        cid(8),
+        Command::RegisterAttempt {
+            actor: Actor::Controller,
+            attempt: attempt_spec(
+                2,
+                1,
+                AttemptAssignment::Reassigned,
+                Some(1),
+                Some(AttemptRetryCause::NegativeTerminal),
+                Some(terminal_digest),
+            ),
+        },
+    )
+    .expect("canonical predecessor terminal and typed cause admit the retry");
 }
 
 #[test]

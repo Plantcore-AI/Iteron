@@ -73,6 +73,33 @@ pub struct RunGenesisTunablesSnapshot {
     pub snapshot_digest_sha256: String,
 }
 
+/// Closed protocol projection of the fixed authorities registered by the tunables runtime. This
+/// enum is duplicated at the protocol boundary intentionally: protocol cannot depend on the
+/// higher-level registry crate, while a free-form string would let a forged authority survive
+/// deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunGenesisFixedAuthorityIdV2 {
+    StrategyInvariant,
+    OperatorBoundary,
+    GovernedArtifactBoundary,
+    RuntimeInvariant,
+    KernelInvariant,
+    ProviderDiscoveryBootstrap,
+    OperatorPromptInput,
+    GovernedCatalogMaterialization,
+    ChildOverlayMaterialization,
+    McpConfigurationMaterialization,
+}
+
+/// Durable, content-free equality proof for one effective FixedHidden family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunGenesisFixedAuthorityBindingV2 {
+    pub authority: RunGenesisFixedAuthorityIdV2,
+    pub owner_value_digest_sha256: String,
+}
+
 /// Reconstructable V2 projection of one family.
 ///
 /// The JSON sub-values are sealed by the outer schema, bounded and secret-shape checked at the
@@ -99,6 +126,10 @@ pub struct RunGenesisTunableEntryV2 {
     /// Exact inactive cause. Present if and only if `state == inactive`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inactive_reason: Option<serde_json::Value>,
+    /// Present if and only if this is an effective FixedHidden family. The outer checkpoint
+    /// digest commits this binding, and admission recomputes the digest from the effective value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_authority_binding: Option<RunGenesisFixedAuthorityBindingV2>,
 }
 
 /// Immutable V2 checkpoint from which all runtime-effective family values and operator-facing

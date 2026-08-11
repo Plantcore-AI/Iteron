@@ -2,8 +2,8 @@
 
 use super::*;
 use iteron_protocol::{
-    PolicyActionId, PolicyDecisionDisposition, PolicyTerminalOutcome, PolicyVerifierOutcome, Usage,
-    slot::SlotId,
+    PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyHarnessErrorCode,
+    PolicyHarnessOutcomeId, PolicyTerminalOutcome, PolicyVerifierOutcome, Usage, slot::SlotId,
 };
 use serde::Serialize;
 
@@ -47,13 +47,15 @@ pub(super) struct PolicyDecisionDraft {
 
 impl PolicyDecisionDraft {
     pub(super) fn selected<F: Serialize, I: Serialize>(
-        eligible: &[&str],
-        selected: &str,
+        slot: &'static str,
+        eligible: &[PolicyActionV1],
+        selected: PolicyActionV1,
         feature_schema_id: &str,
         features: &F,
         fixed_invariants: &I,
     ) -> Result<Self, KernelError> {
         Self::new(
+            slot,
             eligible,
             Some(selected),
             PolicyDecisionDisposition::Selected,
@@ -64,12 +66,14 @@ impl PolicyDecisionDraft {
     }
 
     pub(super) fn baseline_fallback<F: Serialize, I: Serialize>(
-        eligible: &[&str],
+        slot: &'static str,
+        eligible: &[PolicyActionV1],
         feature_schema_id: &str,
         features: &F,
         fixed_invariants: &I,
     ) -> Result<Self, KernelError> {
         Self::new(
+            slot,
             eligible,
             None,
             PolicyDecisionDisposition::BaselineFallback,
@@ -80,12 +84,14 @@ impl PolicyDecisionDraft {
     }
 
     pub(super) fn abstained<F: Serialize, I: Serialize>(
-        eligible: &[&str],
+        slot: &'static str,
+        eligible: &[PolicyActionV1],
         feature_schema_id: &str,
         features: &F,
         fixed_invariants: &I,
     ) -> Result<Self, KernelError> {
         Self::new(
+            slot,
             eligible,
             None,
             PolicyDecisionDisposition::Abstained,
@@ -96,19 +102,26 @@ impl PolicyDecisionDraft {
     }
 
     fn new<F: Serialize, I: Serialize>(
-        eligible: &[&str],
-        selected: Option<&str>,
+        slot: &'static str,
+        eligible: &[PolicyActionV1],
+        selected: Option<PolicyActionV1>,
         disposition: PolicyDecisionDisposition,
         feature_schema_id: &str,
         features: &F,
         fixed_invariants: &I,
     ) -> Result<Self, KernelError> {
+        let slot = SlotId(slot.to_owned());
         Ok(Self {
             eligible_actions: eligible
                 .iter()
-                .map(|action| PolicyActionId((*action).to_owned()))
-                .collect(),
-            selected_action: selected.map(|action| PolicyActionId(action.to_owned())),
+                .copied()
+                .map(|action| PolicyActionId::for_slot(&slot, action))
+                .collect::<Result<_, _>>()
+                .map_err(|error| KernelError::PolicyEvidence(error.to_string()))?,
+            selected_action: selected
+                .map(|action| PolicyActionId::for_slot(&slot, action))
+                .transpose()
+                .map_err(|error| KernelError::PolicyEvidence(error.to_string()))?,
             disposition,
             selected_score_micros: None,
             propensity_ppm: (disposition == PolicyDecisionDisposition::Selected)
@@ -231,7 +244,7 @@ impl Agent {
         turn: TurnId,
         terminal: PolicyTerminalOutcome,
         verifier: PolicyVerifierOutcome,
-        harness_error_code: Option<&str>,
+        harness_error_code: Option<PolicyHarnessErrorCode>,
     ) -> Result<(), KernelError> {
         if !self.ensure_policy_evidence()? {
             return Ok(());
@@ -268,7 +281,7 @@ impl Agent {
             output_tokens,
             latency_us,
             verifier,
-            harness_error_code: harness_error_code.map(str::to_owned),
+            harness_error_code: harness_error_code.map(PolicyHarnessOutcomeId::single),
         };
         let mut recorder = self.policy_evidence.take().expect("ensured above");
         let started = Instant::now();
@@ -299,33 +312,14 @@ impl Agent {
         {
             return Ok(());
         }
-        let aggregate = self
-            .policy_evidence
-            .as_ref()
-            .expect("ensured above")
-            .run_aggregate();
         let join = self
             .policy_evidence
             .as_ref()
             .expect("ensured above")
             .run_join();
-        let complete_usage = self.ledger.provider_attempts == self.ledger.turns;
-        let input = policy_evidence_recorder::PolicyOutcomeInput {
-            terminal: aggregate.terminal,
-            quality_micros: aggregate.quality_micros,
-            cost_microusd: policy_cost_microusd(&self.ledger.cost_state()),
-            input_tokens: complete_usage.then_some(self.ledger.usage.input),
-            output_tokens: complete_usage.then_some(self.ledger.usage.output),
-            latency_us: aggregate.latency_us,
-            verifier: aggregate.verifier,
-            harness_error_code: aggregate
-                .has_harness_error
-                .then(|| "turn_failure".to_owned()),
-        };
         let mut recorder = self.policy_evidence.take().expect("ensured above");
         let started = Instant::now();
-        let result =
-            recorder.append_run_outcome(&mut self.rollout, TurnId(self.seq_turn), &join, input);
+        let result = recorder.append_run_outcome(&mut self.rollout, TurnId(self.seq_turn), &join);
         self.ledger.record_fsync_latency_us(elapsed_us(started));
         self.policy_evidence = Some(recorder);
         result
@@ -359,23 +353,28 @@ fn digest_json<T: Serialize>(domain: &str, value: &T) -> Result<String, KernelEr
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub(super) fn policy_harness_error_code(error: &KernelError) -> &'static str {
+pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErrorCode {
     match error {
-        KernelError::Provider(_) => "provider_error",
-        KernelError::Record(_) => "record_error",
-        KernelError::InvalidRouteMetadata { .. } | KernelError::InvalidRoute(_) => "route_error",
-        KernelError::ProviderRunNoticeLimit => "provider_notice_limit",
-        KernelError::InvalidBudget(_) | KernelError::InferenceBudgetExhausted(_) => "budget_error",
-        KernelError::InvalidSubmission(_) => "submission_error",
+        KernelError::Provider(_) => PolicyHarnessErrorCode::ProviderError,
+        KernelError::Record(_) => PolicyHarnessErrorCode::RecordError,
+        KernelError::InvalidRouteMetadata { .. } | KernelError::InvalidRoute(_) => {
+            PolicyHarnessErrorCode::RouteError
+        }
+        KernelError::ProviderRunNoticeLimit => PolicyHarnessErrorCode::ProviderNoticeLimit,
+        KernelError::InvalidBudget(_) => PolicyHarnessErrorCode::BudgetError,
+        KernelError::InferenceBudgetExhausted(reason) => policy_budget_harness_error_code(reason),
+        KernelError::InvalidSubmission(_) => PolicyHarnessErrorCode::SubmissionError,
         KernelError::UnpricedUsdCeiling
         | KernelError::Pricing(_)
-        | KernelError::PricingLedger(_) => "pricing_error",
-        KernelError::InvalidPermissionPolicy(_) => "permission_error",
-        KernelError::RuntimePolicyAlreadyRecorded => "runtime_policy_error",
-        KernelError::UnknownEffects { .. } | KernelError::EffectJournal(_) => "effect_unknown",
-        KernelError::EffectBoundary(_) => "effect_error",
-        KernelError::IdentityExhausted(_) => "identity_exhausted",
-        KernelError::OpaqueProviderRetries => "opaque_provider_retries",
+        | KernelError::PricingLedger(_) => PolicyHarnessErrorCode::PricingError,
+        KernelError::InvalidPermissionPolicy(_) => PolicyHarnessErrorCode::PermissionError,
+        KernelError::RuntimePolicyAlreadyRecorded => PolicyHarnessErrorCode::RuntimePolicyError,
+        KernelError::UnknownEffects { .. } | KernelError::EffectJournal(_) => {
+            PolicyHarnessErrorCode::EffectUnknown
+        }
+        KernelError::EffectBoundary(_) => PolicyHarnessErrorCode::EffectError,
+        KernelError::IdentityExhausted(_) => PolicyHarnessErrorCode::IdentityExhausted,
+        KernelError::OpaqueProviderRetries => PolicyHarnessErrorCode::OpaqueProviderRetries,
         KernelError::ContextWindowExceeded { .. }
         | KernelError::ContextBudget(_)
         | KernelError::InstructionContextTooLarge { .. }
@@ -383,16 +382,30 @@ pub(super) fn policy_harness_error_code(error: &KernelError) -> &'static str {
         | KernelError::EnvironmentContextTooLarge { .. }
         | KernelError::EnvironmentContextAlreadyResolved
         | KernelError::ContextResolution(_)
-        | KernelError::ContextAlreadyResolved => "context_error",
-        KernelError::AgentCatalogAlreadyResolved => "agent_catalog_error",
-        KernelError::TunablesAlreadyResolved | KernelError::TunablesNotResolved => "tunables_error",
-        KernelError::ToolingPolicy(_) => "tooling_policy_error",
-        KernelError::ToolOutputSpill(_) => "tool_output_spill_error",
-        KernelError::McpLifecycle(_) => "mcp_lifecycle_error",
-        KernelError::PolicyEvidence(_) => "policy_evidence_error",
-        KernelError::DelegationDepthExceeded => "delegation_error",
+        | KernelError::ContextAlreadyResolved => PolicyHarnessErrorCode::ContextError,
+        KernelError::AgentCatalogAlreadyResolved => PolicyHarnessErrorCode::AgentCatalogError,
+        KernelError::TunablesAlreadyResolved | KernelError::TunablesNotResolved => {
+            PolicyHarnessErrorCode::TunablesError
+        }
+        KernelError::ToolingPolicy(_) => PolicyHarnessErrorCode::ToolingPolicyError,
+        KernelError::ExecutionPolicy(_) => PolicyHarnessErrorCode::ExecutionPolicyError,
+        KernelError::ToolOutputSpill(_) => PolicyHarnessErrorCode::ToolOutputSpillError,
+        KernelError::McpLifecycle(_) => PolicyHarnessErrorCode::McpLifecycleError,
+        KernelError::PolicyEvidence(_) => PolicyHarnessErrorCode::PolicyEvidenceError,
+        KernelError::DelegationDepthExceeded => PolicyHarnessErrorCode::DelegationError,
         #[cfg(test)]
-        KernelError::WorkflowEngine(_) => "workflow_error",
+        KernelError::WorkflowEngine(_) => PolicyHarnessErrorCode::WorkflowError,
+    }
+}
+
+pub(super) fn policy_budget_harness_error_code(reason: &str) -> PolicyHarnessErrorCode {
+    match reason {
+        "max_turns" => PolicyHarnessErrorCode::BudgetMaxTurns,
+        "max_tokens" => PolicyHarnessErrorCode::BudgetMaxTokens,
+        "max_usd" => PolicyHarnessErrorCode::BudgetMaxUsd,
+        "max_wall_secs" => PolicyHarnessErrorCode::BudgetMaxWallSecs,
+        "verify_attempts" => PolicyHarnessErrorCode::BudgetVerifyAttempts,
+        _ => PolicyHarnessErrorCode::BudgetError,
     }
 }
 

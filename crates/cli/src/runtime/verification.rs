@@ -8,14 +8,73 @@ impl Agent {
         policy.validate().map_err(|error| {
             KernelError::ContextResolution(format!("verification policy refused: {error}"))
         })?;
-        if self.verify_command.is_some() && policy.required_commands.is_empty() {
-            return Err(KernelError::ContextResolution(
-                "verification command is active but its immutable selection policy has no command"
-                    .into(),
-            ));
+        match self.verify_command.as_deref() {
+            Some(full_command)
+                if policy.required_commands.last().map(String::as_str) != Some(full_command) =>
+            {
+                return Err(KernelError::ContextResolution(
+                    "verification policy must end with the exact operator-owned full command"
+                        .into(),
+                ));
+            }
+            None if !policy.required_commands.is_empty() => {
+                return Err(KernelError::ContextResolution(
+                    "verification commands have no operator-owned full workspace gate".into(),
+                ));
+            }
+            _ => {}
         }
         self.verification_policy = policy;
         self.verification_quarantine.clear();
+        // The same setter is used while reopening an existing run. Mark replay pending so the
+        // immutable policy is paired with any still-live quarantine receipts in that rollout.
+        self.verification_quarantine_restored = false;
+        Ok(())
+    }
+
+    /// Restore unexpired typed quarantine receipts from the currently-owned physical rollout.
+    /// Absolute deadlines keep resume from granting contradictory evidence another try or from
+    /// restarting the quarantine duration on every process launch.
+    fn restore_verification_quarantine(&mut self) -> Result<(), KernelError> {
+        if self.verification_quarantine_restored {
+            return Ok(());
+        }
+        let now = unix_now_secs();
+        let mut restored = std::collections::BTreeMap::<String, u64>::new();
+        for timed in iteron_record::replay_timed(self.rollout.path())? {
+            let EventKind::VerificationPolicy {
+                version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                event:
+                    iteron_protocol::VerificationPolicyEvent::Quarantined {
+                        command_digests_sha256,
+                        expires_at_unix_secs,
+                        ..
+                    },
+            } = timed.event.kind
+            else {
+                continue;
+            };
+            if command_digests_sha256.len() > iteron_verify::MAX_VERIFICATION_COMMANDS
+                || command_digests_sha256
+                    .iter()
+                    .any(|digest| !is_sha256_digest(digest))
+            {
+                return Err(KernelError::ContextResolution(
+                    "durable verification quarantine receipt is outside its closed bounds".into(),
+                ));
+            }
+            if expires_at_unix_secs <= now {
+                continue;
+            }
+            for digest in command_digests_sha256 {
+                restored
+                    .entry(digest)
+                    .and_modify(|deadline| *deadline = (*deadline).max(expires_at_unix_secs))
+                    .or_insert(expires_at_unix_secs);
+            }
+        }
+        self.verification_quarantine = restored;
+        self.verification_quarantine_restored = true;
         Ok(())
     }
 
@@ -95,7 +154,8 @@ impl Agent {
         fallback_command: &str,
         plan: iteron_verify::VerifierPlan,
     ) -> Result<iteron_verify::Verdict, KernelError> {
-        let now = Instant::now();
+        self.restore_verification_quarantine()?;
+        let now = unix_now_secs();
         self.verification_quarantine
             .retain(|_, expires_at| *expires_at > now);
         let configured = if self.verification_policy.required_commands.is_empty() {
@@ -108,9 +168,22 @@ impl Agent {
                 "verification selection produced no admitted command".into(),
             ));
         }
-        for command in &configured {
-            let digest = verification_command_digest(command);
-            if self.verification_quarantine.contains_key(&digest) {
+        let command_digests = configured
+            .iter()
+            .map(|command| verification_command_digest(command))
+            .collect::<Vec<_>>();
+        for digest in &command_digests {
+            if let Some(expires_at_unix_secs) = self.verification_quarantine.get(digest).copied() {
+                self.emit_durable(
+                    TurnId(self.seq_turn),
+                    EventKind::VerificationPolicy {
+                        version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                        event: iteron_protocol::VerificationPolicyEvent::QuarantineRefused {
+                            command_digest_sha256: digest.clone(),
+                            expires_at_unix_secs,
+                        },
+                    },
+                )?;
                 return Ok(iteron_verify::Verdict::new(
                     plan.strength,
                     iteron_verify::VerificationOutcome::InfrastructureFailure,
@@ -140,6 +213,7 @@ impl Agent {
         let mut representative_outcomes = Vec::with_capacity(verifier_count);
         let mut details = Vec::with_capacity(physical_runs);
         let mut observed_flake = false;
+        let mut observed_disagreements = 0usize;
         for _ in 0..verifier_count {
             let mut lane_outcome = iteron_verify::VerificationOutcome::Pass;
             for command in &configured {
@@ -147,17 +221,35 @@ impl Agent {
                 let mut last_detail = String::new();
                 for _ in 0..repeat_count {
                     let verdict = self.run_verify(command).await?;
-                    last_detail = truncate_tail(&verdict.detail, 1_000);
+                    last_detail = truncate_tail(
+                        &verdict.detail,
+                        self.verification_policy.feedback.command_output_bytes,
+                    );
                     outcomes.push(verdict.outcome);
                 }
                 let first = outcomes[0];
                 let disagreements = outcomes.iter().filter(|outcome| **outcome != first).count();
+                observed_disagreements = observed_disagreements.saturating_add(disagreements);
                 if disagreements
                     >= usize::from(self.verification_policy.flaky.minimum_disagreements)
                 {
                     observed_flake = true;
                 }
-                lane_outcome = match (lane_outcome, first) {
+                // Repeats below the configured quarantine threshold still may not disappear. A
+                // later definite test failure vetoes an earlier pass; any other non-pass keeps the
+                // lane indeterminate instead of manufacturing green from `outcomes[0]`.
+                let command_outcome = outcomes
+                    .iter()
+                    .copied()
+                    .find(|outcome| *outcome == iteron_verify::VerificationOutcome::TestFailure)
+                    .or_else(|| {
+                        outcomes
+                            .iter()
+                            .copied()
+                            .find(|outcome| *outcome != iteron_verify::VerificationOutcome::Pass)
+                    })
+                    .unwrap_or(iteron_verify::VerificationOutcome::Pass);
+                lane_outcome = match (lane_outcome, command_outcome) {
                     (_, iteron_verify::VerificationOutcome::TestFailure) => {
                         iteron_verify::VerificationOutcome::TestFailure
                     }
@@ -173,21 +265,60 @@ impl Agent {
             representative_outcomes.push(lane_outcome);
         }
 
+        // Independent verifier lanes can contradict each other even when every lane is internally
+        // repeat-stable. Treat that as the same physical-evidence flake as an intra-lane repeat
+        // disagreement: persist the quarantine before the command digest enters the in-memory
+        // refusal map, so restart cannot silently rerun contradictory evidence.
+        if let Some(first) = representative_outcomes.first().copied() {
+            let lane_disagreements = representative_outcomes
+                .iter()
+                .filter(|outcome| **outcome != first)
+                .count();
+            observed_disagreements = observed_disagreements.saturating_add(lane_disagreements);
+            if lane_disagreements
+                >= usize::from(self.verification_policy.flaky.minimum_disagreements)
+            {
+                observed_flake = true;
+            }
+        }
+
         if observed_flake {
-            let quarantine_for =
-                Duration::from_secs(u64::from(self.verification_policy.flaky.quarantine_seconds));
-            if !quarantine_for.is_zero() {
-                let expires_at = Instant::now()
-                    .checked_add(quarantine_for)
-                    .unwrap_or_else(Instant::now);
-                for command in &configured {
+            let expires_at_unix_secs = unix_now_secs()
+                .saturating_add(u64::from(self.verification_policy.flaky.quarantine_seconds));
+            self.emit_durable(
+                TurnId(self.seq_turn),
+                EventKind::VerificationPolicy {
+                    version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                    event: iteron_protocol::VerificationPolicyEvent::Quarantined {
+                        selection: verification_selection_evidence(
+                            self.verification_policy.selection,
+                        ),
+                        command_digests_sha256: command_digests.clone(),
+                        repeat_count: u8::try_from(repeat_count).map_err(|_| {
+                            KernelError::ContextResolution(
+                                "verification repeat count exceeded its receipt bound".into(),
+                            )
+                        })?,
+                        verifier_count: self.verification_policy.quorum.verifiers,
+                        physical_runs: u16::try_from(physical_runs).map_err(|_| {
+                            KernelError::ContextResolution(
+                                "verification physical-run count exceeded its receipt bound".into(),
+                            )
+                        })?,
+                        disagreements: u16::try_from(observed_disagreements).unwrap_or(u16::MAX),
+                        expires_at_unix_secs,
+                    },
+                },
+            )?;
+            if self.verification_policy.flaky.quarantine_seconds > 0 {
+                for digest in &command_digests {
                     if self.verification_quarantine.len()
                         >= iteron_verify::MAX_VERIFICATION_COMMANDS
                     {
                         break;
                     }
                     self.verification_quarantine
-                        .insert(verification_command_digest(command), expires_at);
+                        .insert(digest.clone(), expires_at_unix_secs);
                 }
             }
             self.lifecycle_event(
@@ -230,49 +361,204 @@ impl Agent {
                 iteron_verify::VerificationOutcome::InfrastructureFailure
             }
         };
-        let detail = truncate_tail(&details.join("\n--- verifier ---\n"), 3_000);
+        let pass_lanes = representative_outcomes
+            .iter()
+            .filter(|outcome| **outcome == iteron_verify::VerificationOutcome::Pass)
+            .count();
+        let test_failure_lanes = representative_outcomes
+            .iter()
+            .filter(|outcome| **outcome == iteron_verify::VerificationOutcome::TestFailure)
+            .count();
+        let other_lanes = representative_outcomes
+            .len()
+            .saturating_sub(pass_lanes)
+            .saturating_sub(test_failure_lanes);
+        self.emit_durable(
+            TurnId(self.seq_turn),
+            EventKind::VerificationPolicy {
+                version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                event: iteron_protocol::VerificationPolicyEvent::Reduced {
+                    selection: verification_selection_evidence(self.verification_policy.selection),
+                    command_digests_sha256: command_digests,
+                    repeat_count: u8::try_from(repeat_count).map_err(|_| {
+                        KernelError::ContextResolution(
+                            "verification repeat count exceeded its receipt bound".into(),
+                        )
+                    })?,
+                    verifier_count: self.verification_policy.quorum.verifiers,
+                    physical_runs: u16::try_from(physical_runs).map_err(|_| {
+                        KernelError::ContextResolution(
+                            "verification physical-run count exceeded its receipt bound".into(),
+                        )
+                    })?,
+                    pass_lanes: u8::try_from(pass_lanes).unwrap_or(u8::MAX),
+                    test_failure_lanes: u8::try_from(test_failure_lanes).unwrap_or(u8::MAX),
+                    other_lanes: u8::try_from(other_lanes).unwrap_or(u8::MAX),
+                    consensus: verification_consensus_evidence(consensus),
+                    outcome: verification_outcome_evidence(outcome),
+                },
+            },
+        )?;
+        let detail = truncate_tail(
+            &details.join("\n--- verifier ---\n"),
+            self.verification_policy.feedback.total_bytes,
+        );
         Ok(iteron_verify::Verdict::new(plan.strength, outcome, detail))
     }
 
-    pub(super) fn rollback_after_verification_failure(&mut self) -> Result<bool, KernelError> {
+    pub(super) async fn rollback_after_verification_failure(
+        &mut self,
+    ) -> Result<bool, KernelError> {
         use iteron_verify::VerificationRollbackMode;
 
         let mode = self.verification_policy.restore.mode;
         if mode == VerificationRollbackMode::Off {
             return Ok(false);
         }
-        if self
+        if !self
             .verification_policy
             .restore
             .require_operator_confirmation
         {
             return Err(KernelError::ContextResolution(
-                "verification rollback requires an operator-confirmed immutable policy receipt"
+                "verification rollback policy attempted to disable its operator confirmation invariant"
                     .into(),
             ));
         }
-        let snapshot = self.verification_rollback_point.as_ref().ok_or_else(|| {
+        let snapshot = self.verification_rollback_point.clone().ok_or_else(|| {
             KernelError::ContextResolution(
                 "verification rollback was authorised but no pre-submission checkpoint exists"
                     .into(),
             )
         })?;
+        let approval_turn = TurnId(self.seq_turn);
+        // Bind the human decision to the exact live workspace that would be overwritten, not
+        // merely to the older rollback target.  The checkpoint uses the same hook-free isolated
+        // Git inventory as the rewind and excludes Core's runtime-state directory.  It is durable
+        // before the request is shown, so a crash cannot leave an unaccounted inventory read.
+        self.checkpoint_at_turn_end(approval_turn, true)?;
+        let approved_live_tree_ref = self
+            .latest_workspace_checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                KernelError::ContextResolution(
+                    "verification rollback approval could not bind the live workspace tree".into(),
+                )
+            })?
+            .tree_ref
+            .clone();
+        let receipt_mode = verification_rollback_evidence(mode)
+            .expect("off rollback returned before receipt construction");
+        let path_count =
+            u32::try_from(self.verification_policy.restore.paths.len()).unwrap_or(u32::MAX);
+        let mode_label = match mode {
+            VerificationRollbackMode::Off => "off",
+            VerificationRollbackMode::SelectedPaths => "selected_paths",
+            VerificationRollbackMode::Workspace => "workspace",
+        };
+        let policy_digest_sha256 =
+            digest_json(&("verification-runtime-policy-v1", &self.verification_policy))?;
+        let scope_digest_sha256 = digest_json(&(
+            "verification-rollback-scope-v1",
+            self.rollout.run_id(),
+            snapshot.at,
+            &snapshot.tree_ref,
+            mode_label,
+            &self.verification_policy.restore.paths,
+        ))?;
+        let approval_arguments = serde_json::json!({
+            "policy_id": "verification-runtime-policy-v1",
+            "policy_digest_sha256": policy_digest_sha256,
+            "scope_digest_sha256": scope_digest_sha256,
+            "run_id": &self.rollout.run_id().0,
+            "checkpoint_seq": snapshot.at.0,
+            "checkpoint_tree_ref": &snapshot.tree_ref,
+            "live_workspace_tree_ref": &approved_live_tree_ref,
+            "mode": mode_label,
+            "path_count": path_count,
+            "paths": &self.verification_policy.restore.paths,
+        });
+        let approval_binding =
+            digest_json(&("verification-rollback-approval-v1", &approval_arguments))?;
+        // Keep the exact binding inside the record layer's structural correlation-id alphabet.
+        // A colon would send the digest through generic secret scrubbing and make the durable
+        // Ask/Allow pair impossible to correlate to this exact scope after replay.
+        let approval = ToolUse {
+            id: format!("verification_rollback_v1_{approval_binding}"),
+            name: "verification_rollback".into(),
+            input: approval_arguments,
+        };
+        if !self
+            .await_approval(approval_turn, &approval, Capability::TrustMutating)
+            .await?
+        {
+            return Err(KernelError::ContextResolution(
+                "verification rollback was not approved for this exact checkpoint and scope".into(),
+            ));
+        }
+        // Approval may remain open while another terminal or editor changes the worktree.  Take
+        // the same complete inventory again immediately before the destructive restore and refuse
+        // on any drift.  This is intentionally conservative for selected-path rollback: unrelated
+        // edits also require a fresh approval rather than risking an incomplete scope preview.
+        self.checkpoint_at_turn_end(approval_turn, true)?;
+        let revalidated_live_tree_ref = self
+            .latest_workspace_checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                KernelError::ContextResolution(
+                    "verification rollback could not revalidate the live workspace tree".into(),
+                )
+            })?
+            .tree_ref
+            .clone();
+        if revalidated_live_tree_ref != approved_live_tree_ref {
+            return Err(KernelError::ContextResolution(
+                "workspace changed while verification rollback approval was pending; a fresh exact approval is required"
+                    .into(),
+            ));
+        }
+        self.emit_durable(
+            approval_turn,
+            EventKind::VerificationPolicy {
+                version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                event: iteron_protocol::VerificationPolicyEvent::RollbackAuthorized {
+                    mode: receipt_mode,
+                    checkpoint_seq: snapshot.at,
+                    path_count,
+                },
+            },
+        )?;
+        // The authorisation is durable before this potentially blocking read gate. Keep the
+        // shared owner lease through the Git restore so content revocation cannot tombstone the
+        // checkpoint after replay validation but before `read-tree`/`checkout-index` consumes it.
+        let _checkpoint_owner = iteron_record::acquire_verified_rollout_owner(self.rollout.path())?;
         match mode {
             VerificationRollbackMode::Off => return Ok(false),
             VerificationRollbackMode::Workspace => {
-                iteron_record::rewind_workspace(snapshot, &self.workspace)?;
+                iteron_record::rewind_workspace(&snapshot, &self.workspace)?;
             }
             VerificationRollbackMode::SelectedPaths => {
-                iteron_record::rewind_workspace_paths(
-                    snapshot,
+                iteron_record::checkpoint::rewind_workspace_paths(
+                    &snapshot,
                     &self.workspace,
                     &self.verification_policy.restore.paths,
                 )?;
             }
         }
+        self.emit_durable(
+            approval_turn,
+            EventKind::VerificationPolicy {
+                version: iteron_protocol::VerificationPolicyEventVersion::V1,
+                event: iteron_protocol::VerificationPolicyEvent::RollbackApplied {
+                    mode: receipt_mode,
+                    checkpoint_seq: snapshot.at,
+                    path_count,
+                },
+            },
+        )?;
         self.lifecycle_event(
             "checkpoint.created",
-            Some(TurnId(self.seq_turn)),
+            Some(approval_turn),
             LifecyclePayload {
                 reason_code: Some("verification_rollback_applied".into()),
                 count: Some(
@@ -385,7 +671,9 @@ impl Agent {
             self.workspace.clone(),
             command.to_string(),
         )
-        .with_sensitive_env_names(self.sensitive_env_names.clone());
+        .with_sensitive_env_names(self.sensitive_env_names.clone())
+        .with_output_tail_bytes(self.verification_policy.feedback.oracle_output_bytes)
+        .with_timeout_secs(self.verification_policy.verifier_timeout_secs);
         if let Some(remaining) = self.run_time_remaining() {
             // The sandbox API uses whole seconds. Round its cleanup-aware process timeout up,
             // then enforce the exact (possibly sub-second) deadline in `run_bounded_verify`.
@@ -395,7 +683,9 @@ impl Agent {
                 .as_secs()
                 .saturating_add(u64::from(remaining.subsec_nanos() != 0))
                 .max(1);
-            oracle = oracle.with_timeout_secs(rounded_up_secs);
+            oracle = oracle.with_timeout_secs(
+                rounded_up_secs.min(self.verification_policy.verifier_timeout_secs),
+            );
         }
         self.run_bounded_verify(std::sync::Arc::new(oracle)).await
     }
@@ -409,6 +699,11 @@ impl Agent {
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
     ) -> VerifyDispatch {
         const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
+        let verifier_deadline = Instant::now()
+            .checked_add(Duration::from_secs(
+                self.verification_policy.verifier_timeout_secs,
+            ))
+            .unwrap_or_else(Instant::now);
 
         // Whether the oracle future has ever been polled, which is exactly whether a sandboxed
         // process can exist. The boundary needs this distinction: a cancellation before the first
@@ -428,16 +723,24 @@ impl Agent {
                 return VerifyDispatch::from_drop(dispatched, verdict);
             }
 
-            let remaining = self.run_time_remaining();
-            if remaining.is_some_and(|duration| duration.is_zero()) {
+            let verifier_remaining = verifier_deadline.saturating_duration_since(Instant::now());
+            let run_remaining = self.run_time_remaining();
+            if run_remaining.is_some_and(|duration| duration.is_zero()) {
                 let verdict = iteron_verify::Verdict::timed_out(
                     "verification exceeded the absolute run deadline",
                 );
                 return VerifyDispatch::from_drop(dispatched, verdict);
             }
-            let poll_for = remaining
-                .map(|duration| duration.min(VERIFY_CANCEL_POLL))
-                .unwrap_or(VERIFY_CANCEL_POLL);
+            if verifier_remaining.is_zero() {
+                let verdict = iteron_verify::Verdict::timed_out(
+                    "verification exceeded its configured verifier timeout",
+                );
+                return VerifyDispatch::from_drop(dispatched, verdict);
+            }
+            let remaining = run_remaining
+                .map(|duration| duration.min(verifier_remaining))
+                .unwrap_or(verifier_remaining);
+            let poll_for = remaining.min(VERIFY_CANCEL_POLL);
 
             dispatched = true;
             match tokio::time::timeout(poll_for, &mut evaluation).await {
@@ -471,6 +774,89 @@ impl Agent {
     }
 }
 
+fn digest_json(value: &impl serde::Serialize) -> Result<String, KernelError> {
+    let encoded = serde_json::to_vec(value).map_err(|_| {
+        KernelError::ContextResolution(
+            "verification rollback approval identity could not be encoded".into(),
+        )
+    })?;
+    Ok(hex::encode(Sha256::digest(encoded)))
+}
+
 fn verification_command_digest(command: &str) -> String {
     hex::encode(Sha256::digest(command.as_bytes()))
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn verification_selection_evidence(
+    selection: iteron_verify::VerificationSelectionMode,
+) -> iteron_protocol::VerificationSelectionEvidence {
+    match selection {
+        iteron_verify::VerificationSelectionMode::Incremental => {
+            iteron_protocol::VerificationSelectionEvidence::Incremental
+        }
+        iteron_verify::VerificationSelectionMode::Impacted => {
+            iteron_protocol::VerificationSelectionEvidence::Impacted
+        }
+        iteron_verify::VerificationSelectionMode::Full => {
+            iteron_protocol::VerificationSelectionEvidence::Full
+        }
+    }
+}
+
+fn verification_consensus_evidence(
+    consensus: iteron_verify::VerificationConsensus,
+) -> iteron_protocol::VerificationConsensusEvidence {
+    match consensus {
+        iteron_verify::VerificationConsensus::Accepted => {
+            iteron_protocol::VerificationConsensusEvidence::Accepted
+        }
+        iteron_verify::VerificationConsensus::Rejected => {
+            iteron_protocol::VerificationConsensusEvidence::Rejected
+        }
+        iteron_verify::VerificationConsensus::Flaky => {
+            iteron_protocol::VerificationConsensusEvidence::Flaky
+        }
+        iteron_verify::VerificationConsensus::Indeterminate => {
+            iteron_protocol::VerificationConsensusEvidence::Indeterminate
+        }
+    }
+}
+
+fn verification_outcome_evidence(
+    outcome: iteron_verify::VerificationOutcome,
+) -> iteron_protocol::VerificationOutcomeEvidence {
+    match outcome {
+        iteron_verify::VerificationOutcome::Pass => {
+            iteron_protocol::VerificationOutcomeEvidence::Pass
+        }
+        iteron_verify::VerificationOutcome::TestFailure => {
+            iteron_protocol::VerificationOutcomeEvidence::TestFailure
+        }
+        iteron_verify::VerificationOutcome::TimedOut
+        | iteron_verify::VerificationOutcome::InfrastructureFailure
+        | iteron_verify::VerificationOutcome::Cancelled => {
+            iteron_protocol::VerificationOutcomeEvidence::InfrastructureFailure
+        }
+    }
+}
+
+fn verification_rollback_evidence(
+    mode: iteron_verify::VerificationRollbackMode,
+) -> Option<iteron_protocol::VerificationRollbackEvidence> {
+    match mode {
+        iteron_verify::VerificationRollbackMode::Off => None,
+        iteron_verify::VerificationRollbackMode::SelectedPaths => {
+            Some(iteron_protocol::VerificationRollbackEvidence::SelectedPaths)
+        }
+        iteron_verify::VerificationRollbackMode::Workspace => {
+            Some(iteron_protocol::VerificationRollbackEvidence::Workspace)
+        }
+    }
 }

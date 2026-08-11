@@ -382,9 +382,11 @@ fn assemble_system_prompt(
     home_core: Option<&std::path::Path>,
     repository_root: &std::path::Path,
     active_dir: &std::path::Path,
+    policy: iteron_ctx::InstructionDiscoveryPolicy,
 ) -> SystemPromptAssembly {
-    let bundle = iteron_ctx::discover_hierarchy(home_core, repository_root, active_dir);
-    let instruction_bytes = bundle.render();
+    let bundle =
+        iteron_ctx::discover_hierarchy_with_policy(home_core, repository_root, active_dir, policy);
+    let instruction_bytes = bundle.render_with_policy(policy);
     let instruction_trust = if instruction_bytes.is_empty() {
         iteron_protocol::Trust::Trusted
     } else {
@@ -761,7 +763,7 @@ fn local_erasure_request(
     operation_id: &str,
     target: iteron_protocol::ErasureTarget,
 ) -> anyhow::Result<iteron_protocol::ErasureRequest> {
-    let authority = iteron_record::authorize_local_erasure(runs_dir)?;
+    let authority = iteron_record::erasure::authorize_local_erasure(runs_dir)?;
     Ok(iteron_protocol::ErasureRequest {
         operation_id: iteron_protocol::ErasureOperationId::new(operation_id)?,
         authority_id: authority.id().clone(),
@@ -792,7 +794,7 @@ fn run_record_command(runs_dir: &std::path::Path, action: &RecordAction) -> anyh
                     run_id: ErasureTargetId::new(run_id.clone())?,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
         }
         RecordAction::Revoke {
             digest,
@@ -806,7 +808,7 @@ fn run_record_command(runs_dir: &std::path::Path, action: &RecordAction) -> anyh
                     content_digest: ErasureContentDigest::new(digest.clone())?,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
         }
         RecordAction::Prune {
             older_than_days,
@@ -825,27 +827,27 @@ fn run_record_command(runs_dir: &std::path::Path, action: &RecordAction) -> anyh
                     keep_last: *keep_last,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
         }
         RecordAction::Receipt { operation_id } => {
             let operation_id = iteron_protocol::ErasureOperationId::new(operation_id.clone())?;
-            let receipt = iteron_record::read_erasure_receipt(runs_dir, &operation_id)?
+            let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
                 .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
             print_erasure_receipt(&receipt)
         }
         RecordAction::Receipts { limit } => {
-            let receipts = iteron_record::list_erasure_receipts(runs_dir, *limit)?;
+            let receipts = iteron_record::erasure::list_erasure_receipts(runs_dir, *limit)?;
             println!("{}", serde_json::to_string_pretty(&receipts)?);
             Ok(output::EXIT_SUCCESS)
         }
         RecordAction::Resume { operation_id } => {
             let operation_id = iteron_protocol::ErasureOperationId::new(operation_id.clone())?;
-            let receipt = iteron_record::read_erasure_receipt(runs_dir, &operation_id)?
+            let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
                 .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
             if receipt.state().is_terminal() {
                 return print_erasure_receipt(&receipt);
             }
-            print_erasure_receipt(&iteron_record::execute_erasure(
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(
                 runs_dir,
                 receipt.request().clone(),
             )?)
@@ -1654,10 +1656,20 @@ async fn run_cli() -> anyhow::Result<u8> {
             })?,
             config::ConfigOrigin::Cli,
         ),
-        None => (
-            default_permission_mode(one_shot),
-            config::ConfigOrigin::Builtin,
-        ),
+        None => {
+            let default_mode = default_permission_mode(one_shot);
+            (
+                default_mode,
+                // `default` is the immutable embedded owner. The intentionally different
+                // no-approval-channel posture is selected by this CLI invocation and must be an
+                // admitted override, never a second value attributed to the Builtin owner.
+                if default_mode == iteron_protocol::PermissionMode::Default {
+                    config::ConfigOrigin::Builtin
+                } else {
+                    config::ConfigOrigin::Cli
+                },
+            )
+        }
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
@@ -1702,11 +1714,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--benchmark-attempt-scope requires the benchmark harness profile; omit --harness-profile or select benchmark"
         );
     }
-    session_isolation::admit_continuation(
-        runtime_profile,
-        cli.resume.is_some(),
-        cli.continue_recent,
-    )?;
+    session_isolation::SessionIsolationPolicy::from_runtime_profile(runtime_profile)
+        .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;
 
     // Resolve continuation before provider/model selection so a resumed run inherits its last
     // durably recorded route. CLI/environment routing overrides remain authoritative; user/project
@@ -1972,7 +1981,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Capture Git/clock-derived facts only for a fresh run. Resume and fork reuse the durable
     // ContextInjection and therefore do not even invoke the live collector before discarding it.
     let environment_context = match fresh_created_at {
-        Some(created_at) => Some(environment::capture_at(&repo, created_at).await),
+        // Scrub once before both resolution and runtime installation. `Agent` repeats the scrub
+        // defensively at its trust boundary; using the already-scrubbed bytes here makes the
+        // immutable environment_snapshot identity and the durable RunStart payload one truth.
+        Some(created_at) => Some(iteron_record::redact::scrub(
+            &environment::capture_at(&repo, created_at).await,
+        )),
         None => None,
     };
     let (max_consecutive_tool_errors, max_consecutive_tool_errors_origin) = cli
@@ -2024,38 +2038,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         runtime_tunables::core_facts::CompactionOwner::AdaptiveDefault
     };
 
-    // Discover operator + hierarchical repository instructions outside the kernel. Every accepted
-    // source gets its own untrusted provenance frame; imports remain confined and the complete
-    // merged prefix is bounded by iteron-ctx before it crosses into the Agent.
     // One config root for the whole binary. `ITERON_CONFIG_HOME` exists so a container or CI
     // runner without HOME is usable at all (I-24); resolving instructions and hooks from a
     // different root than the config would make that fallback a half-measure.
     let home_core = config::config_home().map(|home| home.join(".iteron"));
-    let SystemPromptAssembly {
-        base_system,
-        instruction_bytes,
-        instruction_trust,
-        bundle: instruction_bundle,
-    } = assemble_system_prompt(home_core.as_deref(), &repo, &repo);
-    for source in instruction_bundle.sources() {
-        eprintln!(
-            "instructions: loaded `{}` (untrusted guidance)",
-            source.source
-        );
-    }
-    for rejection in instruction_bundle.rejections() {
-        eprintln!(
-            "instructions: REJECTED `{}`: {}",
-            rejection.source, rejection.reason
-        );
-    }
-    if instruction_bundle.omitted_sources() > 0 {
-        eprintln!(
-            "instructions: {} sources omitted at the discovery/render bounds",
-            instruction_bundle.omitted_sources()
-        );
-    }
-    eprintln!("{}", "-".repeat(72));
 
     let agent_catalog = discover_agent_catalog(&repo, &runtime_plugins.agents);
     let (mut configured_hooks, configured_telemetry) = if let Some(home) = config::config_home() {
@@ -2101,14 +2087,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
     let prompt_cache_enabled = selected_entry.instance.prompt_cache();
     let provider_governor_configured = user_file.provider_governor.is_some();
+    let workflow_run_limits =
+        runtime::governed_workflow_limits(&budget, iteron_workflow::RunLimits::default())
+            .map_err(anyhow::Error::msg)?;
     let provider_governor = user_file
         .provider_governor
         .clone()
         .unwrap_or_default()
-        .resolve(
-            iteron_workflow::RunLimits::default().max_concurrency(),
-            prompt_cache_enabled,
-        )
+        .resolve(workflow_run_limits.max_concurrency(), prompt_cache_enabled)
         .map_err(anyhow::Error::msg)?;
     let provider_control_capabilities = provider_arc.control_capabilities();
     provider_control_capabilities
@@ -2131,7 +2117,8 @@ async fn run_cli() -> anyhow::Result<u8> {
                 workspace: &repo,
                 environment: environment_context.as_deref(),
                 operator_prompt: cli.task.as_deref(),
-                hooks_configured: !configured_hooks.is_empty(),
+                hooks_catalog: (!configured_hooks.is_empty())
+                    .then(|| configured_hooks.catalog_identity()),
                 app_server_active: true,
                 provider_origin: selected_provider_origin,
                 model_origin: selected_model_origin,
@@ -2178,14 +2165,18 @@ async fn run_cli() -> anyhow::Result<u8> {
                     max_attempts: retry_resolution.max_attempts_origin,
                 },
                 verify_command: cli.verify.as_deref(),
-                memory_enabled: true,
+                verification_config: config::trusted_verification_config(&user_file, &file),
+                memory_enabled: runtime_tunables::core_facts::Sourced {
+                    value: true,
+                    origin: config::ConfigOrigin::Builtin,
+                },
                 tenant_allows_memory: true,
                 prompt_cache_enabled,
                 provider_governor: &provider_governor,
                 provider_governor_configured,
                 provider_control_capabilities: &provider_control_capabilities,
                 authority_ceiling,
-                run_limits: iteron_workflow::RunLimits::default(),
+                run_limits: workflow_run_limits,
                 operator_egress_allow: user_file.egress_allow.as_deref(),
                 project_egress_allow: file.egress_allow.as_deref(),
             },
@@ -2201,7 +2192,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             > 0
         {
             eprintln!(
-                "tunables: resolved with owner-gap inventory iteron={} execution={} provider/process={} extension={}",
+                "tunables: active Full owner gaps={} · nonblocking FixedHidden/inactive inventory iteron={} execution={} provider/process={} extension={}",
+                fresh.fact_summary.active_full_gaps,
                 fresh.fact_summary.core_gaps,
                 fresh.fact_summary.execution_gaps,
                 fresh.fact_summary.provider_process_gaps,
@@ -2213,9 +2205,8 @@ async fn run_cli() -> anyhow::Result<u8> {
         let checkpoint = resumed_tunables_checkpoint
             .as_ref()
             .expect("resume checkpoint was loaded while holding the rollout lock");
-        let view =
-            runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(checkpoint)?;
-        let settings = runtime_tunables::effective_core::EffectiveCoreSettings::decode(&view)?;
+        let settings =
+            runtime_tunables::effective_runtime::decode_checkpoint(checkpoint, None)?.core;
         settings.verify_route(
             &selection.provider_id,
             &selection.model_id,
@@ -2223,6 +2214,13 @@ async fn run_cli() -> anyhow::Result<u8> {
         )?;
         settings
     };
+    effective_settings
+        .session_isolation
+        .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;
+    effective_settings.verify_model_capability_ceiling(
+        model_capabilities.context_window_tokens,
+        model_capabilities.max_output_tokens,
+    )?;
     if let Some(LocalCommand::Config {
         action:
             ConfigAction::Explain {
@@ -2248,8 +2246,46 @@ async fn run_cli() -> anyhow::Result<u8> {
         };
         return effective_config::emit(snapshot, family.as_deref(), *format);
     }
+    // Discovery happens only after the fresh atomic resolver result or historical checkpoint has
+    // been decoded. A resumed run therefore cannot silently traverse/render with today's machine
+    // defaults before learning the policy it originally pinned.
+    let SystemPromptAssembly {
+        base_system,
+        instruction_bytes,
+        instruction_trust,
+        bundle: instruction_bundle,
+    } = assemble_system_prompt(
+        home_core.as_deref(),
+        &repo,
+        &repo,
+        effective_settings
+            .context_materialization
+            .instruction_discovery,
+    );
+    for source in instruction_bundle.sources() {
+        eprintln!(
+            "instructions: loaded `{}` (untrusted guidance)",
+            source.source
+        );
+    }
+    for rejection in instruction_bundle.rejections() {
+        eprintln!(
+            "instructions: REJECTED `{}`: {}",
+            rejection.source, rejection.reason
+        );
+    }
+    if instruction_bundle.omitted_sources() > 0 {
+        eprintln!(
+            "instructions: {} sources omitted at the discovery/render bounds",
+            instruction_bundle.omitted_sources()
+        );
+    }
+    eprintln!("{}", "-".repeat(72));
     let model = effective_settings.model_id.clone();
-    mcp_runtime.configure(effective_settings.mcp)?;
+    mcp_runtime.configure(
+        effective_settings.mcp,
+        effective_settings.mcp_exposure.clone(),
+    )?;
     let budget = effective_settings.budget.clone();
     let route = route::RouteView::resolve(
         &provider_directory,
@@ -2369,6 +2405,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 capabilities.tool_calling,
                 capabilities.context_window_tokens,
                 capabilities.max_output_tokens,
+                capabilities.routing_objectives,
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -2434,7 +2471,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     // The built-in policy declares its complete static tool surface. This declaration never grants
     // authority by itself: runtime admission intersects it with each admitted task envelope.
     agent.narrow_policy_capabilities(built_in_policy_capabilities);
-    agent.narrow_authority_ceiling(authority_ceiling);
+    agent.narrow_authority_ceiling(
+        effective_settings.constrain_authority_ceiling(authority_ceiling),
+    );
     agent.set_context_home_dir(
         home_core
             .as_deref()
@@ -2460,8 +2499,9 @@ async fn run_cli() -> anyhow::Result<u8> {
         agent.set_pricing_port(pricing_port);
     }
     agent.set_sensitive_env_names(credential_env_names.clone());
-    agent.model_context_window = model_capabilities.context_window_tokens;
-    agent.model_max_output_tokens = model_capabilities.max_output_tokens;
+    agent.install_hooks(std::mem::take(&mut configured_hooks))?;
+    agent.model_context_window = effective_settings.model_context_window;
+    agent.model_max_output_tokens = effective_settings.request_output_cap;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
     agent.workspace = repo.clone();
@@ -2567,7 +2607,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                     agent.model_context_window,
                     // Same resolution as the request path: the declared ceiling is recorded, not
                     // a clamp, so the digest names the compaction trigger the run actually used.
-                    agent.model_max_output_tokens.unwrap_or(8192),
+                    agent
+                        .model_max_output_tokens
+                        .unwrap_or(runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
                 )
                 .to_string(),
             agent.compaction.keep_recent.to_string(),
@@ -2601,7 +2643,6 @@ async fn run_cli() -> anyhow::Result<u8> {
             "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
         );
     }
-    agent.hooks = std::mem::take(&mut configured_hooks);
     agent.telemetry = configured_telemetry;
 
     eprintln!("permission mode: {}", agent.permission_mode().label());
@@ -2954,8 +2995,9 @@ fn safe_agent_diagnostic(value: &str) -> String {
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
 /// digests from `ProviderDirectory::selection_digests`, the documented model window/output caps, the
 /// repo as workspace, and `<runs_dir>` as the runtime-state root (child rollouts land under
-/// `<runs_dir>/subagents/`). No USD ceiling is set, so `pricing_port` stays `None` (per #2's report:
-/// pricing is load-bearing only for a positive `budget.max_usd`).
+/// `<runs_dir>/subagents/`). Pricing is the same operator-trusted port resolved for the exact
+/// selected route; a positive USD ceiling is refused before this context exists when no active
+/// card can enforce it.
 // Ten parameters because this is the composition root wiring a spawner out of the provider,
 // selection digests, capability caps and run paths. Grouping them into a struct would just move
 // the same fields behind a name that exists only for this one call site.
@@ -2969,6 +3011,7 @@ fn build_workflow_spawner(
     caps: &providers::ModelCapabilities,
     provider_governor: config::ResolvedProviderGovernorConfig,
     fallback_provider_routes: Vec<runtime::GovernedProviderRoute>,
+    pricing_port: Option<std::sync::Arc<dyn iteron_obs::PricingPort>>,
     repo: &std::path::Path,
     runs_dir: &std::path::Path,
     parent_run_id: &str,
@@ -2979,6 +3022,14 @@ fn build_workflow_spawner(
     effective: &runtime_tunables::effective_core::EffectiveCoreSettings,
     session_spawn_ledger: std::sync::Arc<runtime::SessionSpawnLedger>,
 ) -> anyhow::Result<std::sync::Arc<dyn iteron_workflow::AgentSpawner>> {
+    // Standalone WorkflowEngine children intentionally receive no MCP registry/runtime owner.
+    // Their immutable checkpoint must therefore say MCP is inactive too; accepting an active
+    // transport/exposure here would claim a physical consumer that the child cannot possess.
+    if !effective.mcp.is_disabled() || !effective.mcp_exposure.is_disabled() {
+        anyhow::bail!(
+            "standalone workflow checkpoint enables MCP, but workflow children have no MCP runtime owner"
+        );
+    }
     let mut cx = runtime::KernelSpawnerContext::new(
         provider_arc,
         model,
@@ -2991,15 +3042,22 @@ fn build_workflow_spawner(
         parent_run_id.to_string(),
         workflow_id.to_string(),
     );
-    cx.model_context_window = caps.context_window_tokens;
-    cx.model_max_output_tokens = caps.max_output_tokens;
+    effective
+        .verify_model_capability_ceiling(caps.context_window_tokens, caps.max_output_tokens)?;
+    cx.model_context_window = effective.model_context_window;
+    cx.model_max_output_tokens = effective.request_output_cap;
+    cx.standalone_mcp_policy = Some((effective.mcp, effective.mcp_exposure.clone()));
     cx.provider_controls = provider_governor.controls;
-    cx.provider_governor_policy = provider_governor.policy;
     cx.fallback_provider_routes = fallback_provider_routes;
+    cx.initialize_provider_governor(provider_governor.policy)
+        .map_err(anyhow::Error::msg)?;
     cx.pin_tunables_checkpoint(tunables_checkpoint)?;
     cx.install_session_spawn_ledger(session_spawn_ledger);
     cx.default_effort = effective.effort;
+    cx.execution_policy = effective.execution;
     cx.budget = effective.budget.clone();
+    cx.install_pricing_authority(pricing_port)
+        .map_err(anyhow::Error::msg)?;
     cx.retry_policy = effective.retry;
     cx.verify_command = effective.verify_command.clone();
     cx.deferred_tool_eager_limit = effective.deferred_tool_eager_limit;
@@ -3009,6 +3067,11 @@ fn build_workflow_spawner(
     cx.permission_mode = effective.permission_mode;
     cx.permission_rules = effective.permission_rules.clone();
     cx.bypass_permissions = effective.bypass_permissions;
+    // A standalone workflow starts from a read-only host ceiling. Family 9 may only narrow that
+    // ceiling; `allow_code=true` cannot mint authority the workflow composition never received.
+    cx.authority_ceiling = effective.constrain_authority_ceiling(
+        iteron_protocol::capability_set::CapabilitySet::only(iteron_protocol::Capability::ReadOnly),
+    );
     cx.context_home_dir = config::config_home();
     cx.agent_catalog = std::sync::Arc::new(discover_agent_catalog(repo, &runtime_plugins.agents));
     cx.dependency_skill_dirs = runtime_plugins
@@ -3206,10 +3269,8 @@ async fn run_workflow_command(
     let resumed_effective_settings = resumed_tunables_checkpoint
         .as_ref()
         .map(|checkpoint| {
-            let view = runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
-                checkpoint,
-            )?;
-            runtime_tunables::effective_core::EffectiveCoreSettings::decode(&view)
+            runtime_tunables::effective_runtime::decode_checkpoint(checkpoint, None)
+                .map(|effective| effective.core)
                 .map_err(anyhow::Error::from)
         })
         .transpose()?;
@@ -3281,6 +3342,25 @@ async fn run_workflow_command(
     // inputs), plus the documented window/output caps the children inherit.
     let (catalog_digest, capability_digest) = provider_directory.selection_digests(&selection);
     let caps = provider_directory.selection_capabilities(&selection);
+    let workflow_pricing_route = iteron_protocol::PricingRoute {
+        provider_id: selection.provider_id.clone(),
+        model_id: selection.model_id.clone(),
+        catalog_digest: catalog_digest.clone(),
+        capability_digest: capability_digest.clone(),
+    };
+    // Authenticate pricing before persisting workflow sidecars or opening any child rollout. The
+    // opaque port retains key material; only its exact active-card result crosses composition.
+    let workflow_pricing_port =
+        pricing::load_authority(user_file.rate_cards.as_deref().unwrap_or_default())?;
+    let workflow_pricing_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let workflow_rate_card = workflow_pricing_port
+        .as_ref()
+        .map(|port| port.resolve_rate_card(&workflow_pricing_route, workflow_pricing_now))
+        .transpose()?
+        .flatten();
     let selected_entry = provider_directory
         .entry(&selection.provider_id)
         .ok_or_else(|| anyhow::anyhow!("selected workflow provider disappeared"))?;
@@ -3350,6 +3430,7 @@ async fn run_workflow_command(
                 capabilities.tool_calling,
                 capabilities.context_window_tokens,
                 capabilities.max_output_tokens,
+                capabilities.routing_objectives,
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -3412,6 +3493,38 @@ async fn run_workflow_command(
         max_consecutive_tool_errors: workflow_tool_errors,
     };
     workflow_budget.validate().map_err(anyhow::Error::msg)?;
+    let workflow_run_limits =
+        runtime::governed_workflow_limits(&workflow_budget, iteron_workflow::RunLimits::default())
+            .map_err(anyhow::Error::msg)?;
+    if workflow_budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && workflow_rate_card.is_none()
+    {
+        anyhow::bail!(
+            "cannot enforce the requested workflow USD ceiling: the exact selected route has no active verified rate card. Use `iteron pricing print-digests` and `iteron pricing sign <card.json>` before retrying."
+        );
+    }
+    if workflow_budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {
+        let pricing = workflow_pricing_port
+            .as_ref()
+            .expect("an active primary workflow rate card has a pricing authority");
+        pricing.verify_rate_card(
+            workflow_rate_card
+                .as_ref()
+                .expect("positive workflow USD ceiling checked the primary card above"),
+        )?;
+        // Every admitted fallback is a future physical-spend authority. Resolve all of them while
+        // composition is still effect-free instead of discovering an unpriced route only after a
+        // primary failure has already consumed money.
+        for fallback in &fallback_provider_routes {
+            let Some(card) = pricing.resolve_rate_card(&fallback.route, workflow_pricing_now)?
+            else {
+                anyhow::bail!(
+                    "cannot enforce the requested workflow USD ceiling: fallback route `{}` has no active verified rate card",
+                    fallback.id()
+                );
+            };
+            pricing.verify_rate_card(&card)?;
+        }
+    }
     let (workflow_effort_text, workflow_effort_origin) = config::pick_with_origin(
         cli.effort.clone(),
         config::env_string("ITERON_EFFORT"),
@@ -3435,7 +3548,7 @@ async fn run_workflow_command(
     } else {
         runtime_tunables::core_facts::CompactionOwner::AdaptiveDefault
     };
-    let mut runtime_plugins = plugin_runtime::RuntimePlugins::load(
+    let runtime_plugins = plugin_runtime::RuntimePlugins::load(
         config::config_home()
             .map(|home| iteron_protocol::home::path(&home, "plugins"))
             .as_deref(),
@@ -3444,15 +3557,9 @@ async fn run_workflow_command(
         ]),
     );
     let workflow_agent_catalog = discover_agent_catalog(repo, &runtime_plugins.agents);
-    let mut workflow_mcp = user_file.mcp_servers.clone().unwrap_or_default();
-    for server in runtime_plugins.mcp_servers.drain(..) {
-        if !workflow_mcp
-            .iter()
-            .any(|existing| existing.name == server.name)
-        {
-            workflow_mcp.push(server);
-        }
-    }
+    // Standalone workflow children have no MCP process/session owner and a read-only registry.
+    // Do not activate MCP families merely because operator/plugin configuration exists on this
+    // machine; the interactive session path composes those servers with its real McpRuntime.
     let workflow_registry = Registry::read_only(repo.to_path_buf())?;
     let workflow_rules = initial_permission_rules(false);
     let workflow_authority =
@@ -3493,7 +3600,7 @@ async fn run_workflow_command(
                     catalog_digest: &catalog_digest,
                     capability_digest: &capability_digest,
                     registry: &workflow_registry,
-                    configured_mcp: &workflow_mcp,
+                    configured_mcp: &[],
                     agent_catalog: &workflow_agent_catalog,
                     profile: runtime_profile,
                     tenant: &TenantId::default(),
@@ -3501,11 +3608,10 @@ async fn run_workflow_command(
                     workspace: repo,
                     environment: None,
                     operator_prompt: None,
-                    hooks_configured: user_file
-                        .hooks
-                        .as_ref()
-                        .is_some_and(|hooks| !hooks.is_empty())
-                        || !runtime_plugins.hooks.is_empty(),
+                    // Standalone workflow children do not execute operator lifecycle hooks. Their
+                    // immutable checkpoint therefore records the exact empty runtime owner rather
+                    // than claiming that merely configured hooks are installed here.
+                    hooks_catalog: None,
                     app_server_active: false,
                     provider_origin,
                     model_origin,
@@ -3527,17 +3633,19 @@ async fn run_workflow_command(
                     },
                     allow_code: runtime_tunables::core_facts::Sourced {
                         value: false,
-                        origin: config::ConfigOrigin::Builtin,
+                        // The standalone workflow CLI selects a fixed read-only posture. This is
+                        // an operator-owned tightening, not a second built-in default.
+                        origin: config::ConfigOrigin::Cli,
                     },
                     permission_mode: runtime_tunables::core_facts::Sourced {
                         value: iteron_protocol::PermissionMode::Plan,
-                        origin: config::ConfigOrigin::Builtin,
+                        origin: config::ConfigOrigin::Cli,
                     },
                     permission_rules_origin: None,
                     permission_rules: &workflow_rules,
                     bypass_permissions: runtime_tunables::core_facts::Sourced {
                         value: false,
-                        origin: config::ConfigOrigin::Builtin,
+                        origin: config::ConfigOrigin::Cli,
                     },
                     compaction: &workflow_compaction,
                     compaction_owner: workflow_compaction_owner,
@@ -3548,14 +3656,18 @@ async fn run_workflow_command(
                         max_attempts: retry_resolution.max_attempts_origin,
                     },
                     verify_command: None,
-                    memory_enabled: false,
+                    verification_config: user_file.verification.as_ref(),
+                    memory_enabled: runtime_tunables::core_facts::Sourced {
+                        value: false,
+                        origin: config::ConfigOrigin::Cli,
+                    },
                     tenant_allows_memory: false,
                     prompt_cache_enabled,
                     provider_governor: &provider_governor,
                     provider_governor_configured,
                     provider_control_capabilities: &provider_controls_capabilities,
                     authority_ceiling: workflow_authority,
-                    run_limits: iteron_workflow::RunLimits::default(),
+                    run_limits: workflow_run_limits,
                     operator_egress_allow: user_file.egress_allow.as_deref(),
                     project_egress_allow: None,
                 },
@@ -3569,6 +3681,9 @@ async fn run_workflow_command(
         }
         _ => anyhow::bail!("workflow runtime checkpoint/settings state is inconsistent"),
     };
+    effective_settings
+        .session_isolation
+        .admit_continuation(resume_from.is_some(), false)?;
 
     let meta = iteron_workflow::extract_meta(&src);
     let name = meta
@@ -3604,6 +3719,7 @@ async fn run_workflow_command(
         &caps,
         effective_settings.provider_governor.clone(),
         fallback_provider_routes,
+        workflow_pricing_port,
         repo,
         &runs_dir,
         &run_id,
@@ -3639,10 +3755,20 @@ async fn run_workflow_command(
     }
 
     // Assemble the persisted RunSpec (journal under `<workflows_dir>/<run_id>/journal.jsonl`).
+    let effective_run_limits = iteron_workflow::RunLimits::new(
+        effective_settings.execution.workflow.max_concurrency,
+        effective_settings.execution.workflow.max_calls,
+    )
+    .map_err(anyhow::Error::msg)?;
     let mut spec = iteron_workflow::RunSpec::new(src.clone())
         .with_args(args_value.clone())
         .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
-        .with_workflows_dir(workflows_dir.clone());
+        .with_workflows_dir(workflows_dir.clone())
+        .with_limits(effective_run_limits)
+        .with_early_stop_quorum(effective_settings.execution.early_stop_quorum)
+        .with_speculative_siblings(effective_settings.execution.speculative_siblings)
+        .with_task_retry(effective_settings.execution.task_retry)
+        .with_schema_retry(effective_settings.execution.schema_retry);
     if let Some(prior) = &resume_from {
         spec = spec.with_resume_from(iteron_workflow::RunId::new(prior.clone()));
     }
@@ -4059,7 +4185,12 @@ mod tests {
         std::fs::write(repo.join("CLAUDE.md"), "root claude guidance").unwrap();
         std::fs::write(active.join("AGENTS.md"), "nested guidance").unwrap();
 
-        let assembly = assemble_system_prompt(Some(&home_core), &repo, &active);
+        let assembly = assemble_system_prompt(
+            Some(&home_core),
+            &repo,
+            &active,
+            iteron_ctx::InstructionDiscoveryPolicy::owner(),
+        );
         assert_eq!(
             assembly.instruction_trust,
             iteron_protocol::Trust::Untrusted
@@ -4096,6 +4227,22 @@ mod tests {
             assert!(!assembly.base_system.contains(expected));
         }
         assert_eq!(assembly.instruction_bytes.matches("UNTRUSTED").count(), 4);
+
+        let checkpoint_policy = iteron_ctx::InstructionDiscoveryPolicy::try_new(8, 1, 1_024, 2_048)
+            .expect("bounded checkpoint policy");
+        let resumed = assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy);
+        assert_eq!(
+            resumed
+                .bundle
+                .sources()
+                .iter()
+                .map(|source| source.source.as_str())
+                .collect::<Vec<_>>(),
+            ["~/.iteron/instructions.md"],
+            "the physical discovery path obeys the policy supplied by the decoded checkpoint"
+        );
+        assert!(resumed.instruction_bytes.contains("home guidance"));
+        assert!(!resumed.instruction_bytes.contains("root agents guidance"));
         std::fs::remove_dir_all(&base).ok();
     }
 

@@ -9,6 +9,100 @@ pub const MAX_SPECULATIVE_SIBLINGS: usize = 1_024;
 /// Maximum task attempts, including the first assigned worker.
 pub const MAX_TASK_ATTEMPTS: usize = 64;
 
+/// Immutable recursion ceiling for workflow-launched agents. A child may run tools but may never
+/// become a second workflow composition root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SpawnDepthControl {
+    max_depth: u32,
+}
+
+impl SpawnDepthControl {
+    pub const fn owner() -> Self {
+        Self { max_depth: 1 }
+    }
+
+    pub const fn max_depth(self) -> u32 {
+        self.max_depth
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadyTaskTieBreak {
+    Fifo,
+}
+
+impl ReadyTaskTieBreak {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+        }
+    }
+}
+
+/// Exact ready-queue owner. The reducer consumes this policy when it materializes ready tasks;
+/// dependency admission remains a prerequisite and one level intentionally means no caller-
+/// supplied priority can reorder durable declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TaskPrioritySchedulingPolicy {
+    priority_levels: usize,
+    tie_break: ReadyTaskTieBreak,
+    dependency_ready_only: bool,
+}
+
+impl TaskPrioritySchedulingPolicy {
+    pub const fn owner() -> Self {
+        Self {
+            priority_levels: 1,
+            tie_break: ReadyTaskTieBreak::Fifo,
+            dependency_ready_only: true,
+        }
+    }
+
+    pub const fn priority_levels(self) -> usize {
+        self.priority_levels
+    }
+
+    pub const fn tie_break(self) -> ReadyTaskTieBreak {
+        self.tie_break
+    }
+
+    pub const fn dependency_ready_only(self) -> bool {
+        self.dependency_ready_only
+    }
+
+    pub(crate) fn order_ready(self, ready: &mut [crate::task_dag::TaskId]) {
+        debug_assert!(self.dependency_ready_only);
+        match self.tie_break {
+            ReadyTaskTieBreak::Fifo => ready.sort_unstable(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessagingTopology {
+    ParentMediated,
+}
+
+impl AgentMessagingTopology {
+    pub const fn owner() -> Self {
+        Self::ParentMediated
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ParentMediated => "parent_mediated",
+        }
+    }
+
+    pub(crate) const fn durable_sender(self) -> Option<crate::task_dag::TaskId> {
+        match self {
+            Self::ParentMediated => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanWriterDisposition {

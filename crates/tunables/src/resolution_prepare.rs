@@ -114,6 +114,7 @@ fn validate_candidates(input: &ResolutionInput) -> Result<(), String> {
                 .bindings
                 .iter()
                 .any(|binding| binding.kind == candidate.source)
+            || !builtin_literal_candidate_matches(family, candidate)
             || !declared.insert((family.id, candidate.source))
         {
             return Err("declared source is unauthorized, duplicated, or unattested".into());
@@ -143,6 +144,20 @@ fn validate_candidates(input: &ResolutionInput) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn builtin_literal_candidate_matches(family: &Family, candidate: &crate::DeclaredValue) -> bool {
+    if candidate.source != SourceKind::Builtin
+        || !matches!(family.default.resolver, DefaultResolver::Literal)
+    {
+        return true;
+    }
+    let Some(expected) = family.default.value.map(crate::resolution_value::owned) else {
+        return false;
+    };
+    let mut expected = expected;
+    crate::resolution_value::normalize(&mut expected);
+    candidate.value == expected
 }
 
 fn validate_default_evidence(input: &ResolutionInput) -> Result<(), String> {

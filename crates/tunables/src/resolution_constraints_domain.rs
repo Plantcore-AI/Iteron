@@ -100,7 +100,7 @@ pub(super) fn validate_domain(
         ExternalCeiling::ProviderCapability => {}
         ExternalCeiling::VerificationFloor
             if ((structured_target && allowed_nonempty)
-                || (!structured_target && minimum.is_some()))
+                || (!structured_target && (minimum.is_some() || allowed_nonempty)))
                 && preferred.is_none() => {}
         ExternalCeiling::TenantScope
             if minimum.is_none()
@@ -109,7 +109,10 @@ pub(super) fn validate_domain(
                 && (allowed_nonempty || required_nonempty) => {}
         ExternalCeiling::OperatorAuthority if preferred.is_none() => {}
         ExternalCeiling::VerificationFloor => {
-            return Err("verification floor requires a minimum and forbids preferred".into());
+            return Err(
+                "verification floor requires a minimum or bounded allowed set and forbids preferred"
+                    .into(),
+            );
         }
         ExternalCeiling::TenantScope => {
             return Err("tenant scope requires allow/required whole-value evidence".into());
@@ -302,6 +305,7 @@ fn validate_member(
     };
     if let Some((domain, canonical)) = scalar_member {
         let schema = ValueSchema {
+            version: 1,
             schema_id: "iteron://tunables/internal/constraint-member-v1",
             kind: ValueKind::String,
             domain: StructuredValueDomain::Scalar { domain },

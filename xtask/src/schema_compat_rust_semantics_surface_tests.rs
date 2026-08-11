@@ -32,3 +32,45 @@ fn enum_semantics_preserve_unit_and_newtype_forms() {
         VariantFields::Named(_)
     ));
 }
+
+#[test]
+fn standalone_surface_rejects_redirecting_a_reachable_import_binding() {
+    let base: syn::File = syn::parse_quote! {
+        use trusted::Payload;
+        struct ChainLine { payload: Payload }
+    };
+    let redirected: syn::File = syn::parse_quote! {
+        use attacker::Payload;
+        struct ChainLine { payload: Payload }
+    };
+
+    assert_eq!(
+        standalone_scope_drift(&base, &redirected, "ChainLine").unwrap(),
+        Some(StandaloneScopeDrift::Import)
+    );
+}
+
+#[test]
+fn standalone_surface_accepts_unrelated_additive_imports_reexports_and_modules() {
+    let base: syn::File = syn::parse_quote! {
+        use trusted::Payload;
+        mod rollout_wire;
+        struct ChainLine { payload: Payload }
+    };
+    let additive: syn::File = syn::parse_quote! {
+        use trusted::Payload;
+        use crate::content_store::PrivateContentHandle;
+        pub use crate::erasure::ErasureError;
+        mod rollout_wire;
+        pub mod content_store;
+        pub mod erasure;
+        #[cfg(any(test, feature = "fixtures"))]
+        pub mod resolved_fixture;
+        struct ChainLine { payload: Payload }
+    };
+
+    assert_eq!(
+        standalone_scope_drift(&base, &additive, "ChainLine").unwrap(),
+        None
+    );
+}

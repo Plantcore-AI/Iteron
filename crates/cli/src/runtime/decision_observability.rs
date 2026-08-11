@@ -784,37 +784,111 @@ impl Agent {
                     .iter()
                     .any(|block| matches!(block, Block::Text { .. }))
         });
+        let mut lsp_tool_use_ids = std::collections::BTreeSet::new();
         for (index, message) in messages.iter().enumerate() {
-            let bytes = serde_json::to_vec(message).unwrap_or_default();
-            let source = if Some(index) == active_task_index {
-                ContextSourceClass::TaskPrompt
-            } else if message
+            // Tool-result messages can contain the results of several parallel calls. Record each
+            // result as its own source so an LSP result never disappears into an ordinary mixed
+            // tool message. The exact tool-use identity, learned from the preceding request block,
+            // is the classification authority shared with RequestEstimator.
+            for block in &message.content {
+                if let Block::ToolUse(tool) = block
+                    && tool.name == "lsp_query"
+                {
+                    lsp_tool_use_ids.insert(tool.id.clone());
+                }
+            }
+            let has_tool_results = message
                 .content
                 .iter()
-                .any(|block| matches!(block, Block::ToolResult(_)))
-            {
-                ContextSourceClass::TranscriptTool
-            } else {
-                match message.role {
-                    Role::User => ContextSourceClass::TranscriptUser,
-                    Role::Assistant => ContextSourceClass::TranscriptAssistant,
-                }
-            };
-            record_segment(
-                &mut ledger,
-                ordinal,
-                source,
-                &bytes,
-                Trust::Trusted,
-                u64::try_from(
-                    self.context_estimator
-                        .estimate_text(&String::from_utf8_lossy(&bytes)),
-                )
-                .unwrap_or(u64::MAX),
-                CacheClass::Uncached,
-            );
-            ordinal = ordinal.saturating_add(1);
+                .any(|block| matches!(block, Block::ToolResult(_)));
+            if !has_tool_results {
+                let bytes = serde_json::to_vec(message).unwrap_or_default();
+                let source = if Some(index) == active_task_index {
+                    ContextSourceClass::TaskPrompt
+                } else {
+                    match message.role {
+                        Role::User => ContextSourceClass::TranscriptUser,
+                        Role::Assistant => ContextSourceClass::TranscriptAssistant,
+                    }
+                };
+                record_segment(
+                    &mut ledger,
+                    ordinal,
+                    source,
+                    &bytes,
+                    Trust::Trusted,
+                    u64::try_from(
+                        self.context_estimator
+                            .estimate_text(&String::from_utf8_lossy(&bytes)),
+                    )
+                    .unwrap_or(u64::MAX),
+                    CacheClass::Uncached,
+                );
+                ordinal = ordinal.saturating_add(1);
+                continue;
+            }
+
+            let non_results = message
+                .content
+                .iter()
+                .filter(|block| !matches!(block, Block::ToolResult(_)))
+                .collect::<Vec<_>>();
+            if !non_results.is_empty() {
+                let bytes = serde_json::to_vec(&(message.role, non_results)).unwrap_or_default();
+                let source = if Some(index) == active_task_index {
+                    ContextSourceClass::TaskPrompt
+                } else {
+                    match message.role {
+                        Role::User => ContextSourceClass::TranscriptUser,
+                        Role::Assistant => ContextSourceClass::TranscriptAssistant,
+                    }
+                };
+                record_segment(
+                    &mut ledger,
+                    ordinal,
+                    source,
+                    &bytes,
+                    Trust::Trusted,
+                    u64::try_from(
+                        self.context_estimator
+                            .estimate_text(&String::from_utf8_lossy(&bytes)),
+                    )
+                    .unwrap_or(u64::MAX),
+                    CacheClass::Uncached,
+                );
+                ordinal = ordinal.saturating_add(1);
+            }
+            for block in &message.content {
+                let Block::ToolResult(result) = block else {
+                    continue;
+                };
+                let bytes = serde_json::to_vec(block).unwrap_or_default();
+                let source = if lsp_tool_use_ids.contains(&result.tool_use_id) {
+                    ContextSourceClass::LspResult
+                } else {
+                    ContextSourceClass::TranscriptTool
+                };
+                record_segment(
+                    &mut ledger,
+                    ordinal,
+                    source,
+                    &bytes,
+                    result.trust,
+                    u64::try_from(
+                        self.context_estimator
+                            .estimate_text(&result.content)
+                            .saturating_add(8),
+                    )
+                    .unwrap_or(u64::MAX),
+                    CacheClass::Uncached,
+                );
+                ordinal = ordinal.saturating_add(1);
+            }
         }
+        ledger.totals.tool_result_tokens =
+            u64::try_from(estimate.tool_result_tokens).unwrap_or(u64::MAX);
+        ledger.totals.lsp_result_tokens =
+            u64::try_from(estimate.lsp_result_tokens).unwrap_or(u64::MAX);
         if let Some(file) = self.input_file_evidence {
             ledger.record_segment(ContextSegmentEvidence {
                 segment_id: ContextSegmentId(u64::from(ordinal)),
@@ -866,7 +940,7 @@ impl Agent {
                 segment_id: ContextSegmentId(u64::from(ordinal)),
                 parent_segment_id: None,
                 source_class: ContextSourceClass::ImageAttachment,
-                source_digest_sha256: digest(&image_bytes.to_be_bytes()),
+                source_digest_sha256: image_attachment_digest(images),
                 trust: Trust::Trusted,
                 ordinal,
                 bytes_before: image_bytes,
@@ -1658,4 +1732,44 @@ fn memory_tier(trust: Trust) -> MemoryTierClass {
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
+}
+
+/// Ordered, content-addressed identity for the exact neutral image payloads sent on this turn.
+/// The media type and explicit lengths make the framing unambiguous; hashing only aggregate byte
+/// length would make unrelated same-size images indistinguishable in the context ledger.
+fn image_attachment_digest(images: &[iteron_protocol::ImageContent]) -> [u8; 32] {
+    const DOMAIN: &[u8] = b"iteron-context-image-attachments-v1\0";
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN);
+    hasher.update((images.len() as u64).to_le_bytes());
+    for image in images {
+        let media_type = image.media_type.as_str().as_bytes();
+        let encoded = image.data.as_str().as_bytes();
+        hasher.update((media_type.len() as u64).to_le_bytes());
+        hasher.update(media_type);
+        hasher.update((encoded.len() as u64).to_le_bytes());
+        hasher.update(encoded);
+    }
+    hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod image_digest_tests {
+    use super::image_attachment_digest;
+    use iteron_protocol::{ImageContent, ImageMediaType};
+
+    #[test]
+    fn image_attachment_commitment_distinguishes_same_size_content_and_order() {
+        let first = ImageContent::new(ImageMediaType::Png, "AAAA").unwrap();
+        let second = ImageContent::new(ImageMediaType::Png, "AQID").unwrap();
+        assert_eq!(first.data.encoded_len(), second.data.encoded_len());
+        assert_ne!(
+            image_attachment_digest(std::slice::from_ref(&first)),
+            image_attachment_digest(std::slice::from_ref(&second)),
+        );
+        assert_ne!(
+            image_attachment_digest(&[first.clone(), second.clone()]),
+            image_attachment_digest(&[second, first]),
+        );
+    }
 }

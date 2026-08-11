@@ -6,7 +6,10 @@ use super::supervisor::Supervisor;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::types::ActionError;
 use super::types::{JobState, ProcessSnapshot};
-use super::{MAX_COMMAND_BYTES, POLL_OUTPUT_BYTES_PER_STREAM, RETAINED_OUTPUT_BYTES_PER_STREAM};
+use super::{
+    ChildProcessEnvironmentPolicy, InstalledProcessLaunchPolicy, MAX_COMMAND_BYTES,
+    POLL_OUTPUT_BYTES_PER_STREAM, ProcessLaunchPolicy, RETAINED_OUTPUT_BYTES_PER_STREAM,
+};
 use crate::{Registry, ToolExecution};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use iteron_protocol::ToolResult;
@@ -34,6 +37,22 @@ fn tool_use(name: &str, input: Value) -> ToolUse {
         id: format!("call-{name}"),
         name: name.into(),
         input,
+    }
+}
+
+fn installed_launch(root: &Path) -> InstalledProcessLaunchPolicy {
+    let policy = ProcessLaunchPolicy::owner(root).unwrap();
+    let child_environment = iteron_sandbox::bounded_child_environment(
+        policy.environment.reuse,
+        policy.environment.max_entries,
+        policy.environment.max_bytes,
+        &policy.environment.blocked_names,
+        &[],
+    )
+    .unwrap();
+    InstalledProcessLaunchPolicy {
+        policy,
+        child_environment,
     }
 }
 
@@ -77,6 +96,11 @@ async fn start_with_size(
     rows: u16,
     cols: u16,
 ) -> Option<Value> {
+    if registry.installed_process_launch_policy().is_none() {
+        registry
+            .install_process_launch_policy(ProcessLaunchPolicy::owner(&registry.root).unwrap())
+            .unwrap();
+    }
     let execution = registry
         .run_effect(tool_use(
             "process_start",
@@ -292,6 +316,55 @@ fn coding_registry_has_six_typed_process_tools_one_control_port_and_read_only_ha
     );
     assert!(read_only.process_control().is_none());
     cleanup(&root);
+}
+
+#[tokio::test]
+async fn process_launch_policy_is_required_one_shot_and_consumed_before_spawn() {
+    let root = temp_root("launch-policy");
+    let other = temp_root("launch-policy-other");
+    let registry = Registry::coding_agent(&root).unwrap();
+
+    assert_definite_error(
+        registry
+            .run_effect(tool_use("process_start", json!({"command":"exit 0"})))
+            .await,
+        "launch policy was not installed",
+    );
+
+    let mut policy = ProcessLaunchPolicy::owner(&other).unwrap();
+    policy.environment = ChildProcessEnvironmentPolicy {
+        reuse: false,
+        max_entries: 0,
+        max_bytes: 0,
+        blocked_names: vec!["EXACT_BLOCKED_NAME".into()],
+    };
+    registry
+        .install_process_launch_policy(policy.clone())
+        .unwrap();
+    assert_eq!(registry.installed_process_launch_policy(), Some(policy));
+    assert!(
+        registry
+            .install_process_launch_policy(ProcessLaunchPolicy::owner(&root).unwrap())
+            .is_err(),
+        "a resume cannot replace the session-pinned owner"
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use("process_start", json!({"command":"exit 0"})))
+            .await,
+        "absolute job workspace",
+    );
+
+    assert!(
+        iteron_sandbox::bounded_child_environment(true, 0, 0, &[], &[]).is_err(),
+        "reuse refuses rather than silently truncating an ambient environment"
+    );
+    assert_eq!(
+        iteron_sandbox::bounded_child_environment(false, 0, 0, &[], &[]).unwrap(),
+        Vec::new()
+    );
+    cleanup(&root);
+    cleanup(&other);
 }
 
 #[tokio::test]
@@ -530,7 +603,7 @@ async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
             "sleep 30",
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
-            Vec::new(),
+            installed_launch(&root),
         )
         .await
     {
@@ -623,6 +696,9 @@ async fn unsupported_platform_refuses_detached_session_oracle_before_spawn() {
     let root = temp_root("unsupported-detached-session");
     let marker = root.join("spawned.txt");
     let registry = Registry::coding_agent(&root).unwrap();
+    registry
+        .install_process_launch_policy(ProcessLaunchPolicy::owner(&root).unwrap())
+        .unwrap();
     let execution = registry
         .run_effect(tool_use(
             "process_start",
@@ -675,7 +751,7 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
             "(sleep 1; printf escaped > escaped.txt) & printf armed; wait",
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
-            Vec::new(),
+            installed_launch(&root),
         )
         .await
     {
@@ -754,7 +830,7 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             "exit 0",
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
-            Vec::new(),
+            installed_launch(&root),
         )
         .await
     {
@@ -771,7 +847,7 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             "exit 0",
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
-            Vec::new(),
+            installed_launch(&root),
         )
         .await
         .unwrap();

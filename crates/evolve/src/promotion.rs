@@ -338,6 +338,8 @@ pub enum PromotionAuthorityError {
     CheckpointAdmission(#[from] crate::CapabilityAdmissionError),
     #[error("dataset registry rejected the candidate: {0}")]
     Dataset(#[from] crate::DatasetRegistryError),
+    #[error("private candidate storage failed: {0}")]
+    PrivateContent(#[from] crate::EvolutionPrivateContentError),
     #[error("authority key length is {actual}; expected {min}..={max} bytes")]
     InvalidKeyLength {
         min: usize,

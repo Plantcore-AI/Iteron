@@ -297,6 +297,13 @@ impl Session {
         &self.state.permission_rules
     }
 
+    /// Ordered, durable provenance for the mutable policy fields projected beside the immutable
+    /// run-genesis tunables checkpoint. `None` is reserved for legacy or unsealed runtimes and is
+    /// never interpreted as "the genesis value is still current".
+    pub(crate) fn runtime_policy(&self) -> Option<&crate::runtime::RuntimePolicyOverlaySnapshot> {
+        self.state.runtime_policy.as_ref()
+    }
+
     pub(crate) fn ledger_summary(&self) -> &str {
         &self.state.ledger_summary
     }
@@ -334,6 +341,7 @@ impl Session {
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
                 mcp_health: Vec::new(),
@@ -388,9 +396,13 @@ impl Session {
     pub(crate) fn adopt_run(
         &mut self,
         rollout_path: std::path::PathBuf,
+        tunables_checkpoint: iteron_record::TunablesCheckpoint,
+        compaction_trigger_tokens: usize,
         snapshot: app_server::SessionSnapshot,
     ) {
         self.facts.rollout_path = rollout_path;
+        self.facts.tunables_checkpoint = Some(tunables_checkpoint);
+        self.facts.compaction_trigger_tokens = compaction_trigger_tokens;
         self.state = snapshot;
     }
 
@@ -1316,6 +1328,7 @@ pub async fn run(
     // fail-soft: an unavailable or malformed history file cannot prevent an interactive session,
     // but its diagnostic is retained for the first rendered transcript.
     let mut history_warning = None;
+    let history_source_run = prompt_history::source_run_from_rollout(&facts.rollout_path);
     let history_store_result = match (
         crate::config::config_home(),
         facts
@@ -1338,13 +1351,16 @@ pub async fn run(
             None
         }
     };
-    let history_state = history_store.as_ref().and_then(|store| match store.load() {
-        Ok(state) => Some(state),
-        Err(error) => {
-            history_warning = Some(format!("prompt history could not be restored: {error}"));
-            None
-        }
-    });
+    let history_state = history_store
+        .as_ref()
+        .zip(history_source_run.as_ref())
+        .and_then(|(store, active_run)| match store.load(active_run) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                history_warning = Some(format!("prompt history could not be restored: {error}"));
+                None
+            }
+        });
     let history_writer = prompt_history::Writer::new(history_store);
     let (mut active_keymap, initial_keymap_warning) =
         match keymap::Keymap::from_config(keymap_config.as_ref()) {
@@ -1594,6 +1610,7 @@ pub async fn run(
             schedule_transcript_viewer_effect(
                 &mut app,
                 session.workspace(),
+                session.rollout_path(),
                 &mut transcript_effects,
                 effect,
             );
@@ -1892,6 +1909,7 @@ pub async fn run(
                             schedule_transcript_viewer_effect(
                                 &mut app,
                                 session.workspace(),
+                                session.rollout_path(),
                                 &mut transcript_effects,
                                 effect,
                             );
@@ -2541,7 +2559,11 @@ pub async fn run(
         let revision = app.editor.persistence_revision();
         let history_len = app.editor.history_len();
         if history_len != persisted_history_len || revision.wrapping_sub(persisted_revision) >= 32 {
-            history_writer.schedule(app.editor.persistence_state());
+            if let Some(active_run) =
+                prompt_history::source_run_from_rollout(session.rollout_path())
+            {
+                history_writer.schedule(app.editor.persistence_state(), active_run);
+            }
             persisted_revision = revision;
             persisted_history_len = history_len;
         }
@@ -2556,7 +2578,11 @@ pub async fn run(
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    history_writer.finish(app.editor.persistence_state());
+    if let Some(active_run) = prompt_history::source_run_from_rollout(session.rollout_path()) {
+        history_writer.finish(app.editor.persistence_state(), active_run);
+    } else {
+        drop(history_writer);
+    }
     if let Some(exit_code) = termination_exit {
         drop(session);
         // A catchable termination still gives the server its shutdown: that is where a live

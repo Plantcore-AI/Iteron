@@ -15,7 +15,7 @@ pub(crate) fn persist(
     if !super::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
-    iteron_record::validate_policy_bundle_snapshot(snapshot)?;
+    iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
     if bytes.len() > MAX_POLICY_CHECKPOINT_BYTES {
         anyhow::bail!(
@@ -88,7 +88,7 @@ fn load_path(path: &PathBuf) -> anyhow::Result<RunGenesisPolicyBundleSnapshot> {
         );
     }
     let snapshot: RunGenesisPolicyBundleSnapshot = serde_json::from_slice(&bytes)?;
-    iteron_record::validate_policy_bundle_snapshot(&snapshot)?;
+    iteron_record::policy_bundle::validate_policy_bundle_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -118,7 +118,8 @@ mod tests {
         for row in &mut different.slots {
             row.policy.bundle_id = different.bundle_id.clone();
         }
-        let different = iteron_record::seal_policy_bundle_snapshot(different).unwrap();
+        let different =
+            iteron_record::policy_bundle::seal_policy_bundle_snapshot(different).unwrap();
         assert!(persist(&root, "wf-test", &different).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -3,7 +3,8 @@ use iteron_protocol::{
     ErasureRequest, ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId,
     ErasureVerification, Event, EventKind, RunId, Seq, TenantId, TurnId,
 };
-use iteron_record::{ErasureError, Rollout, execute_erasure, read_erasure_receipt};
+use iteron_record::erasure::{execute_erasure, read_erasure_receipt};
+use iteron_record::{ErasureError, Rollout};
 use std::path::{Path, PathBuf};
 
 fn now_ms() -> u64 {

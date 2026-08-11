@@ -161,7 +161,7 @@ impl HttpTransport for ProbeTransport {
             ))
         } else {
             // Delegate to the default secure client so the adapter is otherwise real.
-            DefaultHttpTransport.client()
+            DefaultHttpTransport.client(iteron_provider::provider_transport_timeout_policy())
         }
     }
 }

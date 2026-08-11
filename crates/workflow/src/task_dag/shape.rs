@@ -62,6 +62,15 @@ impl TaskDag {
                         "attempt input digest is over its byte limit",
                     ));
                 }
+                if attempt
+                    .prior_evidence_digest
+                    .as_ref()
+                    .is_some_and(|value| value.len() > 64)
+                {
+                    return Err(DagError::Invalid(
+                        "attempt predecessor evidence digest is over its byte limit",
+                    ));
+                }
                 Ok(())
             }
             Command::StartTask { .. }

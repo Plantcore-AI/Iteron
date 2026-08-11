@@ -11,7 +11,7 @@
 //!     `parallel(...).filter(Boolean)` is deterministic across a resume.
 //!   * **Schema-forced structured output (§2.5):** when `opts.schema` is set, the model's text is
 //!     parsed + validated against the JSON Schema; on failure the spawner is re-called with the
-//!     errors appended, up to [`schema::RETRY_MAX`] times, then degrades to `null`.
+//!     errors appended, up to the run's pinned schema-retry ceiling, then degrades to `null`.
 //!   * **Cancellation (B3):** each child races the cancel token and is aborted on cancel.
 //!
 //! Per-run state lives in [`RunState`]/[`AgentEnv`] (owned, never a static — a `OnceLock` silently
@@ -34,10 +34,12 @@ use crate::events::{
 use crate::journal::{Journal, Outcome, Record};
 use crate::schema::{self, SchemaValidator};
 use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
-use crate::task_dag::runtime::{AttemptTerminal, ExecutionLedger, digest_bytes};
-use crate::task_dag::{AttemptDisposition, AttemptId, TaskId};
+use crate::task_dag::runtime::{AttemptTerminal, ExecutionLedger, TaskAdmission, digest_bytes};
+use crate::task_dag::{
+    AttemptAssignment, AttemptDisposition, AttemptId, AttemptRetryCause, TaskId,
+};
 use iteron_sched::Governor;
-use iteron_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
+use iteron_sched::backoff::{Jitter, full_jitter};
 
 #[path = "bindings/quorum.rs"]
 mod quorum;
@@ -159,6 +161,7 @@ pub struct AgentEnv {
     pub task_dag: Arc<ExecutionLedger>,
     pub speculative_siblings: crate::SpeculativeSiblingPolicy,
     pub task_retry: crate::TaskRetryPolicy,
+    pub schema_retry: crate::SchemaRetryPolicy,
 }
 
 // ---- JS <-> Rust envelopes -----------------------------------------------------------------------
@@ -201,6 +204,8 @@ struct RawCall {
     quorum_group: Option<u64>,
     #[serde(default, rename = "speculativeSiblings")]
     speculative_siblings: Option<usize>,
+    #[serde(default, rename = "dependsOn")]
+    depends_on: Option<Vec<usize>>,
 }
 
 /// A short human label for the progress row when the caller gave none: the prompt's first words.
@@ -340,6 +345,43 @@ struct AttemptRun {
     execution: AttemptExecution,
 }
 
+#[derive(Debug, Clone)]
+struct AttemptLineage {
+    assignment: AttemptAssignment,
+    retry_of: Option<AttemptId>,
+    retry_cause: Option<AttemptRetryCause>,
+}
+
+impl AttemptLineage {
+    fn initial() -> Self {
+        Self {
+            assignment: AttemptAssignment::Initial,
+            retry_of: None,
+            retry_cause: None,
+        }
+    }
+
+    fn retry(
+        assignment: AttemptAssignment,
+        retry_of: AttemptId,
+        retry_cause: AttemptRetryCause,
+    ) -> Self {
+        debug_assert!(assignment != AttemptAssignment::Initial);
+        Self {
+            assignment,
+            retry_of: Some(retry_of),
+            retry_cause: Some(retry_cause),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CandidateSelection {
+    outcome: AgentOutcome,
+    evidence_attempt: AttemptId,
+    retry_cause: Option<AttemptRetryCause>,
+}
+
 /// Reserve one physical-dispatch identity before its external effect begins. A pre-dispatch ceiling
 /// refusal creates no attempt because no child effect crossed the broker boundary.
 async fn prepare_attempt(
@@ -348,6 +390,7 @@ async fn prepare_attempt(
     call: &AgentCall,
     retry_ordinal: usize,
     sibling_ordinal: usize,
+    lineage: &AttemptLineage,
 ) -> Result<AttemptId, String> {
     if !env.state.admit_agent_call() {
         return Err(format!(
@@ -357,7 +400,15 @@ async fn prepare_attempt(
     }
     let input_digest = digest_bytes(call.prompt.as_bytes());
     env.task_dag
-        .begin_attempt(task, retry_ordinal, sibling_ordinal, &input_digest)
+        .begin_attempt(
+            task,
+            retry_ordinal,
+            sibling_ordinal,
+            lineage.assignment,
+            lineage.retry_of,
+            lineage.retry_cause,
+            &input_digest,
+        )
         .await
 }
 
@@ -442,25 +493,34 @@ async fn spawn_candidate(
     task: TaskId,
     retry_ordinal: usize,
     speculative_siblings: usize,
-) -> Result<AgentOutcome, String> {
+    lineage: &AttemptLineage,
+) -> Result<CandidateSelection, String> {
     if speculative_siblings == 0 {
-        let attempt = prepare_attempt(env, task, call, retry_ordinal, 0).await?;
+        let attempt = prepare_attempt(env, task, call, retry_ordinal, 0, lineage).await?;
         let run = spawn_child(env, call, idx, attempt).await;
         return settle_sole_attempt(env, task, run).await;
+    }
+    if env.spawner.execution_class(call) != crate::AgentExecutionClass::ReadOnly {
+        return Err(
+            "speculative siblings are read-only; isolated writer authority cannot be duplicated"
+                .into(),
+        );
     }
 
     let group = call.cancel.child_token();
     let mut tasks = tokio::task::JoinSet::new();
     let mut pending = std::collections::BTreeSet::new();
-    let mut first_negative = None;
+    let mut first_negative: Option<(AgentOutcome, AttemptId, AttemptRetryCause)> = None;
+    let mut first_refusal = None;
     for sibling_ordinal in 0..=speculative_siblings {
-        let attempt = match prepare_attempt(env, task, call, retry_ordinal, sibling_ordinal).await {
-            Ok(attempt) => attempt,
-            Err(reason) => {
-                first_negative.get_or_insert_with(|| AgentOutcome::null(reason));
-                continue;
-            }
-        };
+        let attempt =
+            match prepare_attempt(env, task, call, retry_ordinal, sibling_ordinal, lineage).await {
+                Ok(attempt) => attempt,
+                Err(reason) => {
+                    first_refusal.get_or_insert(reason);
+                    continue;
+                }
+            };
         pending.insert(attempt);
         let env = env.clone();
         let mut sibling = call.clone();
@@ -475,29 +535,55 @@ async fn spawn_candidate(
         match result {
             Ok((attempt, run)) => {
                 pending.remove(&attempt);
-                if winner_id.is_none()
-                    && let AttemptExecution::Settled(outcome @ AgentOutcome::Text { .. }) =
-                        &run.execution
-                {
+                let positive = match &run.execution {
+                    AttemptExecution::Settled(outcome @ AgentOutcome::Text { text, .. })
+                        if winner_id.is_none() =>
+                    {
+                        Some((outcome.clone(), digest_bytes(text.as_bytes())))
+                    }
+                    _ => None,
+                };
+                if let Some((outcome, result_digest)) = positive {
                     winner_id = Some(run.id);
-                    winner_outcome = Some(outcome.clone());
-                }
-                if winner_id == Some(run.id) && env.speculative_siblings.cancel_losers() {
-                    group.cancel();
+                    winner_outcome = Some(outcome);
+                    match env
+                        .task_dag
+                        .record_speculative_winner(task, run.id, &result_digest)
+                        .await
+                    {
+                        Ok(()) if env.speculative_siblings.cancel_losers() => group.cancel(),
+                        Ok(()) => {}
+                        Err(error) => env.sink.emit(ProgressEvent::Log {
+                            message: format!(
+                                "workflow: speculative winner receipt unavailable; siblings were not cancelled early: {error}"
+                            ),
+                        }),
+                    }
                 }
                 if let AttemptExecution::Settled(AgentOutcome::Null { reason }) = &run.execution {
-                    first_negative.get_or_insert_with(|| AgentOutcome::Null {
-                        reason: reason.clone(),
+                    first_negative.get_or_insert_with(|| {
+                        (
+                            AgentOutcome::Null {
+                                reason: reason.clone(),
+                            },
+                            run.id,
+                            AttemptRetryCause::NegativeTerminal,
+                        )
                     });
                 } else if let AttemptExecution::Failed(reason) = &run.execution {
-                    first_negative.get_or_insert_with(|| AgentOutcome::null(reason.clone()));
+                    first_negative.get_or_insert_with(|| {
+                        (
+                            AgentOutcome::null(reason.clone()),
+                            run.id,
+                            AttemptRetryCause::ChildFailure,
+                        )
+                    });
                 }
                 runs.push(run);
             }
             Err(error) => {
-                first_negative.get_or_insert_with(|| {
-                    AgentOutcome::null(format!("agent task failed: {error}"))
-                });
+                first_refusal
+                    .get_or_insert_with(|| format!("agent task failed without identity: {error}"));
             }
         }
     }
@@ -525,21 +611,33 @@ async fn spawn_candidate(
             }
         }
     }
-    if unknown && env.speculative_siblings.reconcile_unknown_effects() {
+    if unknown {
         return Err(
             "speculative sibling effect outcome is unknown; selected result refused".into(),
         );
     }
-    Ok(winner_outcome
-        .or(first_negative)
-        .unwrap_or_else(|| AgentOutcome::null("speculative group produced no terminal")))
+    if let (Some(outcome), Some(evidence_attempt)) = (winner_outcome, winner_id) {
+        return Ok(CandidateSelection {
+            outcome,
+            evidence_attempt,
+            retry_cause: None,
+        });
+    }
+    if let Some((outcome, evidence_attempt, retry_cause)) = first_negative {
+        return Ok(CandidateSelection {
+            outcome,
+            evidence_attempt,
+            retry_cause: Some(retry_cause),
+        });
+    }
+    Err(first_refusal.unwrap_or_else(|| "speculative group produced no terminal".into()))
 }
 
 async fn settle_sole_attempt(
     env: &AgentEnv,
     task: TaskId,
     run: AttemptRun,
-) -> Result<AgentOutcome, String> {
+) -> Result<CandidateSelection, String> {
     let AttemptRun {
         id,
         elapsed_ms,
@@ -564,11 +662,15 @@ async fn settle_sole_attempt(
                     },
                 )
                 .await?;
-            Ok(AgentOutcome::Text {
-                text,
-                tokens,
-                tool_calls,
-                last_tool_summary,
+            Ok(CandidateSelection {
+                outcome: AgentOutcome::Text {
+                    text,
+                    tokens,
+                    tool_calls,
+                    last_tool_summary,
+                },
+                evidence_attempt: id,
+                retry_cause: None,
             })
         }
         AttemptExecution::Settled(AgentOutcome::Null { reason }) => {
@@ -587,7 +689,11 @@ async fn settle_sole_attempt(
                     },
                 )
                 .await?;
-            Ok(AgentOutcome::Null { reason })
+            Ok(CandidateSelection {
+                outcome: AgentOutcome::Null { reason },
+                evidence_attempt: id,
+                retry_cause: Some(AttemptRetryCause::NegativeTerminal),
+            })
         }
         AttemptExecution::Failed(reason) => {
             env.task_dag
@@ -603,7 +709,11 @@ async fn settle_sole_attempt(
                     },
                 )
                 .await?;
-            Err(reason)
+            Ok(CandidateSelection {
+                outcome: AgentOutcome::null(reason),
+                evidence_attempt: id,
+                retry_cause: Some(AttemptRetryCause::ChildFailure),
+            })
         }
         AttemptExecution::UnknownEffect(reason) => {
             env.task_dag
@@ -749,32 +859,63 @@ async fn run_plain(
 ) -> (Record, String) {
     let attempts = env.task_retry.max_attempts().max(1);
     let mut assigned = call.clone();
-    let mut last_negative = None;
+    let mut lineage = AttemptLineage::initial();
     for attempt in 0..attempts {
-        match spawn_candidate(env, &assigned, idx, task, attempt, speculative_siblings).await {
-            Ok(AgentOutcome::Text {
-                text,
-                tokens,
-                tool_calls,
-                last_tool_summary,
+        match spawn_candidate(
+            env,
+            &assigned,
+            idx,
+            task,
+            attempt,
+            speculative_siblings,
+            &lineage,
+        )
+        .await
+        {
+            Ok(CandidateSelection {
+                outcome:
+                    AgentOutcome::Text {
+                        text,
+                        tokens,
+                        tool_calls,
+                        last_tool_summary,
+                    },
+                ..
             }) => {
                 let record = Record::text(text.clone(), tokens, tool_calls, last_tool_summary);
                 let envelope = text_envelope(&text);
                 return (record, envelope);
             }
-            Ok(AgentOutcome::Null { reason }) => {
+            Ok(CandidateSelection {
+                outcome: AgentOutcome::Null { reason },
+                evidence_attempt,
+                retry_cause,
+            }) => {
                 let exhausted = attempt + 1 >= attempts
                     || env.task_retry.on_failure() == crate::TaskFailureAction::Stop;
                 if exhausted {
                     let envelope = null_envelope(reason.as_deref().unwrap_or("null"));
                     return (Record::null(reason), envelope);
                 }
-                if env.task_retry.preserve_evidence() {
-                    let evidence = reason
-                        .as_deref()
-                        .map(|value| truncate_preview(value, 512))
-                        .unwrap_or_else(|| "definite negative terminal".into());
-                    last_negative = Some(evidence);
+                let evidence = reason
+                    .as_deref()
+                    .map(|value| truncate_preview(value, 512))
+                    .unwrap_or_else(|| "definite negative terminal".into());
+                let assignment = match env.task_retry.on_failure() {
+                    crate::TaskFailureAction::RetrySame => AttemptAssignment::RetrySame,
+                    crate::TaskFailureAction::Reassign => AttemptAssignment::Reassigned,
+                    crate::TaskFailureAction::Stop => unreachable!("handled as exhausted"),
+                };
+                let retry_cause = retry_cause
+                    .expect("a definite negative candidate must retain its durable terminal cause");
+                lineage = AttemptLineage::retry(assignment, evidence_attempt, retry_cause);
+                if env.task_retry.on_failure() == crate::TaskFailureAction::Reassign
+                    && env.task_retry.preserve_evidence()
+                {
+                    assigned.prompt = format!(
+                        "{}\n\nA prior read-only assignee ended without usable evidence: {}\nIndependently complete the original task.",
+                        call.prompt, evidence
+                    );
                 }
             }
             Err(reason) => {
@@ -782,21 +923,13 @@ async fn run_plain(
                 return (Record::null(Some(reason)), envelope);
             }
         }
-        if env.task_retry.on_failure() == crate::TaskFailureAction::Reassign
-            && let Some(evidence) = &last_negative
-        {
-            assigned.prompt = format!(
-                "{}\n\nA prior read-only assignee ended without usable evidence: {}\nIndependently complete the original task.",
-                call.prompt, evidence
-            );
-        }
     }
     let reason = "task retry policy exhausted without a terminal";
     (Record::null(Some(reason.into())), null_envelope(reason))
 }
 
 /// The schema-forced path (design §2.5): parse+validate the output; on failure re-call the spawner
-/// with the errors appended, up to `RETRY_MAX` times (spaced by full-jitter backoff); return the
+/// with the errors appended, up to the pinned attempt ceiling (spaced by full-jitter backoff); return the
 /// validated object as a `Structured` record, or `Null` on exhaustion / a degraded child.
 async fn run_with_schema(
     env: &AgentEnv,
@@ -818,16 +951,12 @@ async fn run_with_schema(
         }
     };
 
-    // Tiny backoff so 5 retries stay sub-100ms; jitter is timing, not a recorded decision (ADR-006).
-    let policy = BackoffPolicy {
-        base_ms: 2,
-        cap_ms: 20,
-        max_attempts: schema::RETRY_MAX,
-    };
+    let policy = env.schema_retry.backoff();
     let mut jitter = Jitter::new();
     let mut last_errors: Vec<String> = Vec::new();
+    let mut lineage = AttemptLineage::initial();
 
-    for attempt in 0..schema::RETRY_MAX {
+    for attempt in 0..env.schema_retry.max_attempts() {
         let mut call = base_call.clone();
         if attempt > 0 {
             call.prompt = schema::augment_prompt(&base_call.prompt, &last_errors);
@@ -843,27 +972,43 @@ async fn run_with_schema(
             task,
             attempt as usize,
             speculative_siblings,
+            &lineage,
         )
         .await
         {
-            Ok(AgentOutcome::Text {
-                text,
-                tokens,
-                tool_calls,
+            Ok(CandidateSelection {
+                outcome:
+                    AgentOutcome::Text {
+                        text,
+                        tokens,
+                        tool_calls,
+                        ..
+                    },
+                evidence_attempt,
                 ..
-            }) => match schema::parse_json(&text) {
-                Ok(value) => match validator.validate(&value) {
-                    Ok(()) => {
-                        let record = Record::structured(value.clone(), tokens, tool_calls);
-                        let envelope = structured_envelope(&value);
-                        return (record, envelope);
-                    }
-                    Err(errors) => last_errors = errors,
-                },
-                Err(parse_error) => last_errors = vec![parse_error],
-            },
+            }) => {
+                match schema::parse_json(&text) {
+                    Ok(value) => match validator.validate(&value) {
+                        Ok(()) => {
+                            let record = Record::structured(value.clone(), tokens, tool_calls);
+                            let envelope = structured_envelope(&value);
+                            return (record, envelope);
+                        }
+                        Err(errors) => last_errors = errors,
+                    },
+                    Err(parse_error) => last_errors = vec![parse_error],
+                }
+                lineage = AttemptLineage::retry(
+                    AttemptAssignment::RetrySame,
+                    evidence_attempt,
+                    AttemptRetryCause::SchemaValidation,
+                );
+            }
             // A degraded child or a cancel is terminal: no point retrying a deterministic null.
-            Ok(AgentOutcome::Null { reason }) => {
+            Ok(CandidateSelection {
+                outcome: AgentOutcome::Null { reason },
+                ..
+            }) => {
                 let envelope = null_envelope(reason.as_deref().unwrap_or("null"));
                 return (Record::null(reason), envelope);
             }
@@ -876,7 +1021,7 @@ async fn run_with_schema(
 
     let reason = format!(
         "schema validation failed after {} attempts",
-        schema::RETRY_MAX
+        env.schema_retry.max_attempts()
     );
     env.sink.emit(ProgressEvent::Log {
         message: format!("workflow: agent #{idx} {reason}"),
@@ -887,19 +1032,23 @@ async fn run_with_schema(
 
 /// The `__agent` body: cache short-circuit -> lifetime cap -> permit -> live run -> journal.
 async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
-    let task = match env.task_dag.begin_task(idx).await {
-        Ok(task) => task,
-        Err(error) => {
-            env.sink.emit(ProgressEvent::Log {
-                message: format!("workflow: task DAG admission failed: {error}"),
-            });
-            env.cancel.cancel();
-            return null_envelope("task DAG admission failed");
-        }
-    };
     let raw: RawCall = match serde_json::from_str(&arg) {
         Ok(call) => call,
         Err(_) => {
+            let input_digest = digest_bytes(arg.as_bytes());
+            let task = match env.task_dag.begin_task(idx, &input_digest, &[]).await {
+                Ok(TaskAdmission::Ready(task)) => task,
+                Ok(TaskAdmission::SkippedDependency { .. }) => {
+                    unreachable!("a dependency-free task cannot be skipped")
+                }
+                Err(error) => {
+                    env.sink.emit(ProgressEvent::Log {
+                        message: format!("workflow: task DAG admission failed: {error}"),
+                    });
+                    env.cancel.cancel();
+                    return null_envelope("task DAG admission failed");
+                }
+            };
             if env
                 .task_dag
                 .finish_task_failure(task, "malformed_agent_call", "malformed agent call")
@@ -910,6 +1059,65 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
                 return null_envelope("task DAG durability failed");
             }
             return null_envelope("malformed agent() call");
+        }
+    };
+    let dependencies = raw.depends_on.as_deref().unwrap_or(&[]);
+
+    // Validate routing metadata before catalog lookup, rollout creation, provider dispatch, or a
+    // Governor permit. The error type contains no caller text, so the same static reason is safe in
+    // the envelope, progress row, and durable negative journal record.
+    let metadata = AgentCall::validate_agent_type(raw.agent_type.as_deref())
+        .and_then(|()| AgentCall::validate_model(raw.model.as_deref()));
+
+    // --- content key over the CALLER's raw input (deterministic; §2.6) --------------------------
+    let key = match metadata {
+        Ok(()) => cachekey::agent_key_with_execution(
+            &raw.prompt,
+            raw.label.as_deref(),
+            raw.phase.as_deref(),
+            raw.schema.as_ref(),
+            raw.model.as_deref(),
+            raw.effort.as_deref(),
+            raw.agent_type.as_deref(),
+            raw.speculative_siblings,
+            Some(dependencies),
+        ),
+        Err(error) => cachekey::rejected_agent_key(&arg, error.code()),
+    };
+    let input_digest = digest_bytes(arg.as_bytes());
+    let task = match env
+        .task_dag
+        .begin_task(idx, &input_digest, dependencies)
+        .await
+    {
+        Ok(TaskAdmission::Ready(task)) => task,
+        Ok(TaskAdmission::SkippedDependency { task, dependency }) => {
+            let reason = format!(
+                "dependency task {} did not succeed; dependent task {task:?} was skipped",
+                dependency.0
+            );
+            let record = Record::null(Some(reason.clone()));
+            if env
+                .journal
+                .record(&key, &cachekey::agent_id(&key), record.clone())
+                .is_err()
+            {
+                env.cancel.cancel();
+                return null_envelope("journal durability failed");
+            }
+            let label = raw
+                .label
+                .clone()
+                .unwrap_or_else(|| label_for(&raw.prompt, idx));
+            emit_finished(&env, idx, label, &record, 0);
+            return null_envelope(&reason);
+        }
+        Err(error) => {
+            env.sink.emit(ProgressEvent::Log {
+                message: format!("workflow: task DAG admission failed: {error}"),
+            });
+            env.cancel.cancel();
+            return null_envelope("task DAG admission failed");
         }
     };
     let speculative_siblings = raw.speculative_siblings.unwrap_or(0);
@@ -929,27 +1137,25 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         }
         return null_envelope("speculative sibling request exceeds the host ceiling");
     }
-
-    // Validate routing metadata before catalog lookup, rollout creation, provider dispatch, or a
-    // Governor permit. The error type contains no caller text, so the same static reason is safe in
-    // the envelope, progress row, and durable negative journal record.
-    let metadata = AgentCall::validate_agent_type(raw.agent_type.as_deref())
-        .and_then(|()| AgentCall::validate_model(raw.model.as_deref()));
-
-    // --- content key over the CALLER's raw input (deterministic; §2.6) --------------------------
-    let key = match metadata {
-        Ok(()) => cachekey::agent_key_with_execution(
-            &raw.prompt,
-            raw.label.as_deref(),
-            raw.phase.as_deref(),
-            raw.schema.as_ref(),
-            raw.model.as_deref(),
-            raw.effort.as_deref(),
-            raw.agent_type.as_deref(),
-            raw.speculative_siblings,
-        ),
-        Err(error) => cachekey::rejected_agent_key(&arg, error.code()),
-    };
+    if speculative_siblings > 0 && raw.schema.is_some() {
+        // The winner must be selected from verified evidence. Schema validation currently occurs
+        // after the physical child settles, so duplicating this call would otherwise cancel a
+        // valid sibling merely because an earlier sibling returned invalid JSON.
+        if env
+            .task_dag
+            .finish_task_failure(
+                task,
+                "speculative_schema_unsupported",
+                "schema-validated calls cannot use speculative siblings",
+            )
+            .await
+            .is_err()
+        {
+            env.cancel.cancel();
+            return null_envelope("task DAG durability failed");
+        }
+        return null_envelope("schema-validated calls cannot use speculative siblings");
+    }
 
     // --- (1) JOURNAL HIT — before Governor / budget / lifetime cap (B2 invariant) ---------------
     if let Some(record) = env.journal.get(&key) {
@@ -1071,7 +1277,6 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         }
         None => run_plain(&env, &call, idx, task, speculative_siblings).await,
     };
-    drop(permit);
     let duration_ms = started.elapsed().as_millis() as u64;
 
     // --- (5) journal the outcome (positive AND negative — B2) -----------------------------------
@@ -1109,6 +1314,11 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
             Outcome::Text { .. } | Outcome::Structured { .. }
         ),
     );
+    // Quorum cancellation is evidence-driven. Keep the scarce permit until both durable stores
+    // have accepted the selected terminal and `observe_quorum` has cancelled only this sibling
+    // group; otherwise a queued sibling can acquire the released slot during the fsync window and
+    // dispatch after the quorum was already logically satisfied.
+    drop(permit);
     envelope
 }
 

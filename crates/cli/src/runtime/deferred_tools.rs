@@ -2,6 +2,28 @@
 
 use iteron_protocol::{Capability, ToolUse};
 
+/// Fixed owner for the effecting-tool scheduler and its write-set admission gate.
+///
+/// This is deliberately not user/project serde. Production construction and the tunables fact
+/// adapter both read this value, so the checkpoint cannot claim a wider batch or weaker conflict
+/// rule than the executor actually applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct EffectingToolAdmissionPolicy {
+    pub max_concurrency: usize,
+    pub declared_set_required: bool,
+    pub overlap: &'static str,
+    pub unknown_set: &'static str,
+}
+
+pub(crate) const fn effecting_tool_admission_policy() -> EffectingToolAdmissionPolicy {
+    EffectingToolAdmissionPolicy {
+        max_concurrency: super::DEFAULT_MAX_TOOL_CONCURRENCY,
+        declared_set_required: true,
+        overlap: "reject",
+        unknown_set: "reject",
+    }
+}
+
 /// One deferred call admitted by the capability gate for concurrent execution.
 pub(super) struct AutoApprovedCall {
     /// Index in model tool order; also the durable effect ordinal.

@@ -71,7 +71,7 @@ fn create_run(runs_dir: &Path, run: &str) {
 }
 
 fn text_digest(value: &str) -> iteron_protocol::ErasureContentDigest {
-    crate::private_content_digest(value.as_bytes())
+    crate::content_store::private_content_digest(value.as_bytes())
 }
 
 #[test]
@@ -88,7 +88,11 @@ fn exact_session_erasure_is_durable_and_idempotent() {
     );
     assert!(!dir.join("run-1.jsonl").exists());
     assert!(matches!(
-        crate::guard_private_content(&dir, &TenantId::default(), &text_digest("/workspace")),
+        crate::content_store::guard_private_content(
+            &dir,
+            &TenantId::default(),
+            &text_digest("/workspace")
+        ),
         Err(crate::ContentStoreError::Unresolved { .. })
     ));
 
@@ -129,7 +133,11 @@ fn exact_session_recovery_resumes_after_unlink_before_tombstone_receipt() {
     assert_eq!(recovered.transition_count(), 3);
     assert!(!dir.join("run-recover.meta.json").exists());
     assert!(matches!(
-        crate::guard_private_content(&dir, &TenantId::default(), &text_digest("/workspace")),
+        crate::content_store::guard_private_content(
+            &dir,
+            &TenantId::default(),
+            &text_digest("/workspace")
+        ),
         Err(crate::ContentStoreError::Unresolved { .. })
     ));
     std::fs::remove_dir_all(&dir).unwrap();
@@ -236,7 +244,11 @@ fn retention_recovery_removes_a_stale_index_after_the_last_unlink() {
             .contains("run-stale")
     );
     assert!(matches!(
-        crate::guard_private_content(&dir, &TenantId::default(), &text_digest("/workspace")),
+        crate::content_store::guard_private_content(
+            &dir,
+            &TenantId::default(),
+            &text_digest("/workspace")
+        ),
         Err(crate::ContentStoreError::Unresolved { .. })
     ));
     std::fs::remove_dir_all(&dir).unwrap();
@@ -248,7 +260,7 @@ fn exact_erasure_preserves_shared_material_until_its_last_session_is_removed() {
     create_run(&dir, "run-shared-a");
     create_run(&dir, "run-shared-b");
     let digest = text_digest("/workspace");
-    crate::guard_private_content(&dir, &TenantId::default(), &digest).unwrap();
+    crate::content_store::guard_private_content(&dir, &TenantId::default(), &digest).unwrap();
 
     assert_eq!(
         execute_erasure(&dir, exact("erase-shared-a", "run-shared-a"))
@@ -256,7 +268,7 @@ fn exact_erasure_preserves_shared_material_until_its_last_session_is_removed() {
             .state(),
         ErasureState::Verified
     );
-    crate::guard_private_content(&dir, &TenantId::default(), &digest).unwrap();
+    crate::content_store::guard_private_content(&dir, &TenantId::default(), &digest).unwrap();
 
     assert_eq!(
         execute_erasure(&dir, exact("erase-shared-b", "run-shared-b"))
@@ -265,7 +277,7 @@ fn exact_erasure_preserves_shared_material_until_its_last_session_is_removed() {
         ErasureState::Verified
     );
     assert!(matches!(
-        crate::guard_private_content(&dir, &TenantId::default(), &digest),
+        crate::content_store::guard_private_content(&dir, &TenantId::default(), &digest),
         Err(crate::ContentStoreError::Unresolved { .. })
     ));
     std::fs::remove_dir_all(&dir).unwrap();
@@ -294,6 +306,31 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
         })
         .unwrap();
     drop(rollout);
+    session::reindex(&dir).unwrap();
+    let sidecar_manifest = std::fs::read(dir.join("run-content.meta.json")).unwrap();
+    let index_manifest = std::fs::read(dir.join("sessions.index"))
+        .unwrap()
+        .split(|byte| *byte == b'\n')
+        .find(|line| !line.is_empty())
+        .unwrap()
+        .to_vec();
+    assert!(
+        !String::from_utf8_lossy(&sidecar_manifest).contains(secret)
+            && !String::from_utf8_lossy(&index_manifest).contains(secret),
+        "session cache files must publish handles, never content-bearing metadata"
+    );
+    assert_eq!(
+        session::private_cache::read_sidecar(&dir, &sidecar_manifest)
+            .unwrap()
+            .title,
+        secret
+    );
+    assert_eq!(
+        session::private_cache::read_index_line(&dir, &index_manifest)
+            .unwrap()
+            .title,
+        secret
+    );
     let raw = std::fs::read_to_string(dir.join("run-content.jsonl")).unwrap();
     assert!(!raw.contains(secret));
     assert!(matches!(
@@ -301,7 +338,7 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
         EventKind::Message { message }
             if matches!(&message.content[0], Block::Text { text } if text == secret)
     ));
-    let digest = crate::private_content_digest(secret.as_bytes());
+    let digest = crate::content_store::private_content_digest(secret.as_bytes());
     let request = request(
         "erase-content",
         ErasureTarget::ContentRevocation {
@@ -312,20 +349,62 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
 
     let receipt = execute_erasure(&dir, request.clone()).unwrap();
     assert_eq!(receipt.state(), ErasureState::Verified);
-    assert!(matches!(
-        receipt.verification(),
-        Some(ErasureVerification::ContentRevoked {
-            reference_count: 1,
-            affected_sessions: 1,
-            ..
-        })
-    ));
+    let Some(ErasureVerification::ContentRevoked {
+        reference_count,
+        affected_sessions,
+        ..
+    }) = receipt.verification()
+    else {
+        panic!("content revocation must produce typed verification");
+    };
+    // The source record plus the independently gated sidecar and index derivatives.
+    assert_eq!(*reference_count, 3);
+    assert_eq!(*affected_sessions, 1);
+    let Some(ErasureVerification::ContentRevoked { coverage, .. }) = receipt.verification() else {
+        panic!("verified content revocation must carry propagation coverage");
+    };
+    assert!(
+        coverage.session_projections
+            && coverage.indexes
+            && coverage.prompt_history
+            && coverage.attachments
+            && coverage.tool_artifacts
+            && coverage.checkpoints
+            && coverage.memory_context
+            && coverage.exports
+            && coverage.telemetry_debug
+            && coverage.trajectories
+            && coverage.datasets
+            && coverage.evaluator_inputs
+            && coverage.candidate_stores,
+        "a verified receipt may claim complete coverage only while all 13 production gates exist"
+    );
+    assert!(
+        !dir.join("run-content.meta.json").exists() && !dir.join("sessions.index").exists(),
+        "propagation must invalidate private caches without recursively acquiring the content lock"
+    );
+    assert!(
+        session::list(&dir, &TenantId::default()).is_empty(),
+        "lazy cache rebuild must skip a rollout whose source handle is revoked"
+    );
+    assert!(
+        dir.join("sessions.index").exists(),
+        "the next unlocked list must rebuild the bounded index manifest"
+    );
     assert!(matches!(
         crate::replay(&dir.join("run-content.jsonl")),
         Err(crate::RecordError::PrivateContent(
             crate::ContentStoreError::Revoked { .. }
         ))
     ));
+    assert!(
+        session::private_cache::read_sidecar(&dir, &sidecar_manifest).is_err(),
+        "a copied pre-revocation projection manifest must not hydrate after source revocation"
+    );
+    assert!(
+        session::private_cache::read_index_line(&dir, &index_manifest).is_err(),
+        "a copied pre-revocation index manifest must not hydrate after source revocation"
+    );
     assert!(
         crate::fork(
             &dir,
@@ -337,6 +416,203 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
     );
     assert_eq!(execute_erasure(&dir, request).unwrap(), receipt);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn content_revocation_transitively_shreds_record_trajectory_dataset_and_candidate() {
+    let dir = tmpdir("transitive-content");
+    create_run(&dir, "run-transitive");
+    let secret = "source content with transformed descendants";
+    let mut rollout =
+        crate::Rollout::open_existing(&dir, &RunId("run-transitive".into()), TenantId::default())
+            .unwrap();
+    rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(1),
+            kind: EventKind::Message {
+                message: Message::user_text(secret),
+            },
+        })
+        .unwrap();
+    drop(rollout);
+
+    let tenant = TenantId::default();
+    let source_run = RunId("run-transitive".into());
+    let trajectory_store = crate::PrivateContentDerivativeStore::open(
+        &dir,
+        tenant.clone(),
+        source_run.clone(),
+        crate::ContentReferenceSurface::Trajectory,
+        crate::PrivateContentClass::Trajectory,
+        crate::PrivateContentRetention::ExplicitRevocation,
+        1024,
+    )
+    .unwrap();
+    let trajectory = trajectory_store
+        .put_derived_from_run(Seq(20), b"trajectory projection", &source_run)
+        .unwrap();
+    let dataset_owner = RunId("dataset-transitive".into());
+    let dataset_store = crate::PrivateContentDerivativeStore::open(
+        &dir,
+        tenant.clone(),
+        dataset_owner.clone(),
+        crate::ContentReferenceSurface::Dataset,
+        crate::PrivateContentClass::Dataset,
+        crate::PrivateContentRetention::ExplicitRevocation,
+        1024,
+    )
+    .unwrap();
+    let dataset = dataset_store
+        .put_derived(
+            Seq(21),
+            b"governed dataset",
+            &[crate::content_store::PrivateContentSource {
+                owner: source_run.clone(),
+                digest: trajectory.digest.clone(),
+            }],
+        )
+        .unwrap();
+    let candidate_owner = RunId("candidate-transitive".into());
+    let candidate_store = crate::PrivateContentDerivativeStore::open(
+        &dir,
+        tenant.clone(),
+        candidate_owner.clone(),
+        crate::ContentReferenceSurface::CandidateStore,
+        crate::PrivateContentClass::Candidate,
+        crate::PrivateContentRetention::ExplicitRevocation,
+        1024,
+    )
+    .unwrap();
+    let candidate = candidate_store
+        .put_derived(
+            Seq(22),
+            b"candidate artifact",
+            &[crate::content_store::PrivateContentSource {
+                owner: dataset_owner.clone(),
+                digest: dataset.digest.clone(),
+            }],
+        )
+        .unwrap();
+    drop(candidate_store);
+    drop(dataset_store);
+    drop(trajectory_store);
+
+    let receipt = execute_erasure(
+        &dir,
+        request(
+            "erase-transitive",
+            ErasureTarget::ContentRevocation {
+                scope_id: scope(),
+                content_digest: crate::content_store::private_content_digest(secret.as_bytes()),
+            },
+        ),
+    )
+    .unwrap();
+    assert_eq!(receipt.state(), ErasureState::Verified);
+    assert!(matches!(
+        receipt.verification(),
+        Some(ErasureVerification::ContentRevoked {
+            reference_count: 5,
+            affected_sessions: 1,
+            ..
+        })
+    ));
+
+    for (owner, surface, class, seq, handle) in [
+        (
+            source_run,
+            crate::ContentReferenceSurface::Trajectory,
+            crate::PrivateContentClass::Trajectory,
+            Seq(20),
+            trajectory,
+        ),
+        (
+            dataset_owner,
+            crate::ContentReferenceSurface::Dataset,
+            crate::PrivateContentClass::Dataset,
+            Seq(21),
+            dataset,
+        ),
+        (
+            candidate_owner,
+            crate::ContentReferenceSurface::CandidateStore,
+            crate::PrivateContentClass::Candidate,
+            Seq(22),
+            candidate,
+        ),
+    ] {
+        let reopened = crate::PrivateContentDerivativeStore::open(
+            &dir,
+            tenant.clone(),
+            owner,
+            surface,
+            class,
+            crate::PrivateContentRetention::ExplicitRevocation,
+            1024,
+        )
+        .unwrap();
+        assert!(matches!(
+            reopened.read_at(seq, &handle),
+            Err(crate::ContentStoreError::Revoked { .. })
+        ));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn checkpoint_projection_is_lineaged_to_prior_record_content_and_replay_fails_closed() {
+    let dir = tmpdir("checkpoint-lineage");
+    let tenant = TenantId::default();
+    let run = RunId("checkpoint-lineage".into());
+    let mut rollout = crate::Rollout::open(&dir, &run, tenant.clone()).unwrap();
+    rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(1),
+            kind: EventKind::Notice {
+                text: "checkpoint source content".into(),
+            },
+        })
+        .unwrap();
+    let source = crate::content_store::private_content_sources_for_run(&dir, &tenant, &run)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("notice is a private record field");
+    rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(1),
+            kind: EventKind::Checkpoint {
+                at: Seq(1),
+                tree_ref: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+        })
+        .unwrap();
+    let path = rollout.path().to_path_buf();
+    assert_eq!(crate::replay(&path).unwrap().len(), 2);
+    drop(rollout);
+
+    let receipt = execute_erasure(
+        &dir,
+        request(
+            "revoke-checkpoint-source",
+            ErasureTarget::ContentRevocation {
+                scope_id: scope(),
+                content_digest: source.digest,
+            },
+        ),
+    )
+    .unwrap();
+    assert_eq!(receipt.state(), ErasureState::Verified);
+    assert!(matches!(
+        crate::replay(&path),
+        Err(crate::RecordError::PrivateContent(
+            crate::ContentStoreError::Revoked { .. } | crate::ContentStoreError::Unresolved { .. }
+        ))
+    ));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

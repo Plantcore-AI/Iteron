@@ -52,9 +52,15 @@ pub use erasure::{
     MAX_RETENTION_KEEP_LAST,
 };
 pub use event::{
-    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,
-    MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
-    RuntimePolicyEventVersion, RuntimePolicySource, RuntimePolicyState, SubmissionRejectionReason,
+    DurableEnvironmentContext, DurableInstructionContext, EnvironmentSnapshotIdentity, Event,
+    EventKind, MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
+    ProviderGovernorDecision, ProviderGovernorDecisionVersion, ProviderHedgeSuppressionReason,
+    ProviderRouteAttemptAccounting, ProviderRouteAttemptAccountingVersion,
+    ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
+    ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason, RuntimePolicyEventVersion,
+    RuntimePolicySource, RuntimePolicyState, SubmissionRejectionReason,
+    VerificationConsensusEvidence, VerificationOutcomeEvidence, VerificationPolicyEvent,
+    VerificationPolicyEventVersion, VerificationRollbackEvidence, VerificationSelectionEvidence,
     WorkflowChildOutcome, WorkflowCostEvidence, WorkflowEvent, WorkflowEventVersion,
     WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome, WorkflowPhase, WorkflowTaskEvidence,
 };
@@ -84,9 +90,11 @@ pub use policy_bundle_checkpoint::{
     RunGenesisPolicyBundleVersion, RunGenesisPolicySlotBinding,
 };
 pub use policy_evidence::{
-    MAX_POLICY_ACTIONS, MAX_POLICY_MACHINE_ID_BYTES, POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
-    POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION, PolicyActionId, PolicyDecisionDisposition,
-    PolicyDecisionEvidence, PolicyEvidenceError, PolicyOpportunityId, PolicyOpportunityJoinDigest,
+    MAX_POLICY_ACTIONS, MAX_POLICY_MACHINE_ID_BYTES, POLICY_ACTION_VOCABULARY_VERSION,
+    POLICY_DECISION_EVIDENCE_SCHEMA_VERSION, POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyDecisionEvidence,
+    PolicyEvidenceError, PolicyHarnessErrorCode, PolicyHarnessErrorJoinDigest,
+    PolicyHarnessOutcomeId, PolicyOpportunityId, PolicyOpportunityJoinDigest,
     PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyRuntimeIdentity, PolicyTerminalOutcome,
     PolicyVerifierOutcome,
 };
@@ -101,9 +109,9 @@ pub use tunables_snapshot::{
     MAX_RUN_GENESIS_TUNABLE_ID_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_BYTES,
     MAX_RUN_GENESIS_TUNABLES_V2_DEPTH, MAX_RUN_GENESIS_TUNABLES_V2_NODES,
     RUN_GENESIS_TUNABLES_CANONICALIZATION, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
-    RunGenesisTunableEntry, RunGenesisTunableEntryV2, RunGenesisTunableState,
-    RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, RunGenesisTunablesSnapshotV2,
-    RunGenesisTunablesVersion,
+    RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntry,
+    RunGenesisTunableEntryV2, RunGenesisTunableState, RunGenesisTunablesInheritance,
+    RunGenesisTunablesSnapshot, RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion,
 };
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 

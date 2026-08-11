@@ -12,7 +12,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iteron_workflow::events::{NullSink, ProgressEvent, ProgressSink};
-use iteron_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunId, RunSpec, WorkflowEngine};
+use iteron_workflow::{
+    AgentCall, AgentOutcome, AgentSpawner, RunId, RunSpec, SchemaRetryPolicy, WorkflowEngine,
+};
+
+fn scratch(label: &str) -> std::path::PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "iteron-workflow-engine-depth-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
 
 // ---- (a) schema-forced structured output ---------------------------------------------------------
 
@@ -64,9 +78,16 @@ return {
         }
     });
 
-    let value = WorkflowEngine::run(script, args, spawner.clone(), Arc::new(NullSink))
-        .await
-        .expect("workflow runs");
+    let value = WorkflowEngine::execute(
+        RunSpec::new(script)
+            .with_args(args)
+            .with_workflows_dir(scratch("schema-retry")),
+        spawner.clone(),
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("workflow runs")
+    .value;
 
     // A validated JSON OBJECT is returned to JS (not a string).
     assert_eq!(value["good"], serde_json::json!({ "answer": 42 }));
@@ -82,6 +103,34 @@ return {
         spawner.bad_calls.load(Ordering::SeqCst),
         iteron_workflow::RETRY_MAX as usize
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_schema_retry_policy_changes_physical_attempts() {
+    let spawner = Arc::new(SchemaMock::default());
+    let script = r#"return await agent('make-bad', { schema: args.schema });"#;
+    let args = serde_json::json!({
+        "schema": {
+            "type": "object",
+            "required": ["answer"],
+            "properties": { "answer": { "type": "number" } },
+            "additionalProperties": false
+        }
+    });
+    let policy = SchemaRetryPolicy::new(2, 0, 0).expect("bounded policy");
+    let report = WorkflowEngine::execute(
+        RunSpec::new(script)
+            .with_args(args)
+            .with_workflows_dir(scratch("pinned-schema-retry"))
+            .with_schema_retry(policy),
+        spawner.clone(),
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("schema exhaustion is a terminal null, not an engine error");
+
+    assert_eq!(report.value, serde_json::Value::Null);
+    assert_eq!(spawner.bad_calls.load(Ordering::SeqCst), 2);
 }
 
 // ---- (b) journal + resume cache (B2) -------------------------------------------------------------
@@ -349,7 +398,7 @@ async fn cancel_stops_a_running_two_agent_workflow() {
     let script = r#"export const meta = { name: 'cancel', description: '', phases: [] };
 return await parallel([() => agent('A'), () => agent('B')]);
 "#;
-    let spec = RunSpec::new(script);
+    let spec = RunSpec::new(script).with_workflows_dir(scratch("cancel"));
     let handle = WorkflowEngine::launch(spec, Arc::new(BlockingSpawner), Arc::new(NullSink));
 
     // Let both agents get in-flight, then stop the run.

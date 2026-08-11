@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     config::{McpServerConfig, McpTransportConfig},
-    runtime_tunables::effective_mcp::EffectiveMcpSettings,
+    runtime_tunables::effective_mcp::{EffectiveMcpSettings, McpCapabilityExposure},
 };
 use iteron_mcp::supervisor::{
     ManagedCatalog, McpCancellation, McpLaunchConfig, McpSupervisor, McpTimeouts, McpToolIdentity,
@@ -34,6 +34,9 @@ use tokio::time::Instant;
 #[derive(Clone)]
 pub(crate) struct McpRuntimeControl {
     servers: Arc<BTreeMap<String, Arc<ManagedServer>>>,
+    policy: Arc<OnceLock<EffectiveMcpSettings>>,
+    exposure: Arc<OnceLock<McpCapabilityExposure>>,
+    configuration_lock: Arc<Mutex<()>>,
 }
 
 impl McpRuntimeControl {
@@ -43,7 +46,13 @@ impl McpRuntimeControl {
         sensitive_env_names: &[String],
     ) -> anyhow::Result<Self> {
         let mut managed = BTreeMap::new();
+        let policy = Arc::new(OnceLock::new());
+        let exposure = Arc::new(OnceLock::new());
         for config in servers {
+            config
+                .origin
+                .validate_for_server(&config.name)
+                .map_err(anyhow::Error::msg)?;
             let server = Arc::new(match config.transport {
                 McpTransportConfig::Stdio => ManagedServer::Stdio(ManagedStdioServer::new(
                     config.clone(),
@@ -54,29 +63,174 @@ impl McpRuntimeControl {
                     sensitive_env_names.to_vec(),
                 )?),
             });
-            register_server_tools(registry, server.clone())?;
+            register_server_tools(registry, server.clone(), exposure.clone())?;
             managed.insert(config.name.clone(), server);
         }
         Ok(Self {
             servers: Arc::new(managed),
+            policy,
+            exposure,
+            configuration_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Pure staged-adoption preflight. This verifies the exact live server/configuration owner
+    /// without changing the currently running session; callers may discard a staged target after
+    /// any later failure without polluting the source session.
+    pub(crate) fn validate_configuration(
+        &self,
+        policy: &EffectiveMcpSettings,
+        exposure: &McpCapabilityExposure,
+    ) -> anyhow::Result<()> {
+        let _guard = self
+            .configuration_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP configuration lock is unavailable"))?;
+        self.validate_configuration_locked(policy, exposure)
     }
 
     /// Atomically preflight and then install the checkpoint-decoded MCP policy into every lazy
     /// server. Once a session has a policy, even an identical-looking live config cannot replace
     /// it; resume uses the bytes in the historical tunables checkpoint.
-    pub(crate) fn configure(&self, policy: EffectiveMcpSettings) -> anyhow::Result<()> {
-        if self.servers.values().any(|server| {
-            server
-                .current_policy()
-                .is_some_and(|current| current != policy)
-        }) {
-            anyhow::bail!("MCP runtime policy is already pinned to a different checkpoint")
-        }
+    pub(crate) fn configure(
+        &self,
+        policy: EffectiveMcpSettings,
+        exposure: McpCapabilityExposure,
+    ) -> anyhow::Result<()> {
+        let _guard = self
+            .configuration_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP configuration lock is unavailable"))?;
+        self.validate_configuration_locked(&policy, &exposure)?;
+        // Every operation after the complete preflight is infallible. The session-level policy is
+        // retained even for an empty server topology, so families 149--152 have a real physical
+        // consumer rather than disappearing into a zero-iteration loop.
+        let _ = self.policy.set(policy);
+        let _ = self.exposure.set(exposure);
         for server in self.servers.values() {
             server.configure(policy);
         }
         Ok(())
+    }
+
+    fn validate_configuration_locked(
+        &self,
+        policy: &EffectiveMcpSettings,
+        exposure: &McpCapabilityExposure,
+    ) -> anyhow::Result<()> {
+        if self.policy.get().is_some_and(|current| current != policy) {
+            anyhow::bail!("MCP runtime policy is already pinned to a different checkpoint")
+        }
+        if self.servers.values().any(|server| {
+            server
+                .current_policy()
+                .is_some_and(|current| current != *policy)
+        }) {
+            anyhow::bail!("MCP runtime policy is already pinned to a different checkpoint")
+        }
+        let live_configs = self
+            .servers
+            .values()
+            .map(|server| server.config().clone())
+            .collect::<Vec<_>>();
+        if policy.transport
+            != crate::runtime_tunables::effective_mcp::McpTransportSelection::from_servers(
+                &live_configs,
+            )
+        {
+            anyhow::bail!(
+                "MCP transport-selection checkpoint does not match the registered server owner"
+            )
+        }
+        let live_oauth =
+            crate::runtime_tunables::effective_mcp::McpOAuthLifecyclePolicy::from_servers(
+                &live_configs,
+            )
+            .map_err(anyhow::Error::new)?;
+        if policy.oauth != live_oauth {
+            anyhow::bail!(
+                "MCP OAuth-lifecycle checkpoint does not match the registered server owner"
+            )
+        }
+        let expected_resources = self
+            .servers
+            .keys()
+            .flat_map(|name| {
+                [
+                    format!("{name}__resources_list"),
+                    format!("{name}__resources_read"),
+                ]
+            })
+            .collect();
+        let expected_prompts = self
+            .servers
+            .keys()
+            .flat_map(|name| {
+                [
+                    format!("{name}__prompts_list"),
+                    format!("{name}__prompts_get"),
+                ]
+            })
+            .collect();
+        let mut expected_plugin_bindings = std::collections::BTreeSet::new();
+        let mut expected_server_bindings = std::collections::BTreeSet::new();
+        for server in self.servers.values() {
+            expected_server_bindings
+                .insert(server.runtime_binding_id().map_err(anyhow::Error::msg)?);
+            if let Some(binding) = server
+                .origin()
+                .plugin_binding_id(server.name())
+                .map_err(anyhow::Error::msg)?
+            {
+                expected_plugin_bindings.insert(binding);
+            }
+        }
+        let expected_visible = if self.servers.is_empty() {
+            0
+        } else {
+            policy.result.visible_max_bytes()
+        };
+        if exposure.resource_tool_ids != expected_resources
+            || exposure.prompt_tool_ids != expected_prompts
+            || exposure.plugin_binding_ids != expected_plugin_bindings
+            || exposure.max_visible_bytes != expected_visible
+        {
+            anyhow::bail!(
+                "MCP resource/prompt/plugin exposure checkpoint does not match the registered proxy owner"
+            )
+        }
+        if exposure.server_binding_ids.is_empty() {
+            // Historical value-v1/v2 checkpoints did not carry exact per-server identities.
+            // Preserve the only case that can still be proved exactly from families 147/153: one
+            // operator-owned server with no OAuth lifecycle (or no server). Multiple slots can
+            // swap transports while retaining the same set, and OAuth endpoints/env bindings are
+            // not reconstructible from aggregate counts, so those histories fail closed.
+            let legacy_exact = self.servers.len() <= 1
+                && policy.oauth.is_disabled()
+                && expected_plugin_bindings.is_empty();
+            if !legacy_exact {
+                anyhow::bail!(
+                    "legacy MCP checkpoint lacks exact server bindings for this live topology"
+                )
+            }
+        } else if exposure.server_binding_ids != expected_server_bindings {
+            anyhow::bail!(
+                "MCP server-binding checkpoint does not match the registered server owner"
+            )
+        }
+        if self
+            .exposure
+            .get()
+            .is_some_and(|current| current != exposure)
+        {
+            anyhow::bail!("MCP capability exposure is already pinned to a different checkpoint")
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configured_policy(&self) -> Option<EffectiveMcpSettings> {
+        self.policy.get().copied()
     }
 
     pub(crate) fn health(&self) -> Vec<McpServerHealth> {
@@ -88,25 +242,28 @@ impl McpRuntimeControl {
 
     pub(crate) fn cancel(&self, name: &str) -> bool {
         self.servers.get(name).is_some_and(|server| {
+            if !server_identity_admitted(&self.exposure, server) {
+                return false;
+            }
             server.cancel();
             true
         })
     }
 
     pub(crate) async fn restart(&self, name: &str) -> Result<(), &'static str> {
-        self.servers
-            .get(name)
-            .ok_or("unknown MCP server")?
-            .restart()
-            .await
+        let server = self.servers.get(name).ok_or("unknown MCP server")?;
+        if !server_identity_admitted(&self.exposure, server) {
+            return Err("MCP server identity is not admitted by the pinned plugin exposure policy");
+        }
+        server.restart().await
     }
 
     pub(crate) async fn stop(&self, name: &str) -> Result<(), &'static str> {
-        self.servers
-            .get(name)
-            .ok_or("unknown MCP server")?
-            .stop()
-            .await
+        let server = self.servers.get(name).ok_or("unknown MCP server")?;
+        if !server_identity_admitted(&self.exposure, server) {
+            return Err("MCP server identity is not admitted by the pinned plugin exposure policy");
+        }
+        server.stop().await
     }
 
     pub(crate) async fn cleanup_spills(
@@ -115,6 +272,15 @@ impl McpRuntimeControl {
     ) -> Result<(), iteron_mcp::McpError> {
         let mut first_failure = None;
         for server in self.servers.values() {
+            if !server_identity_admitted(&self.exposure, server) {
+                first_failure.get_or_insert_with(|| {
+                    iteron_mcp::McpError::Protocol(
+                        "MCP server identity is not admitted by the pinned plugin exposure policy"
+                            .into(),
+                    )
+                });
+                continue;
+            }
             if let Err(error) = server.cleanup_spills(boundary).await {
                 first_failure.get_or_insert(error);
             }
@@ -136,11 +302,29 @@ enum ManagedServer {
 }
 
 impl ManagedServer {
+    fn config(&self) -> &McpServerConfig {
+        match self {
+            Self::Stdio(server) => &server.config,
+            Self::Http(server) => &server.config,
+        }
+    }
+
     fn name(&self) -> &str {
         match self {
             Self::Stdio(server) => &server.config.name,
             Self::Http(server) => &server.config.name,
         }
+    }
+
+    fn origin(&self) -> &crate::config::McpServerOrigin {
+        match self {
+            Self::Stdio(server) => &server.config.origin,
+            Self::Http(server) => &server.config.origin,
+        }
+    }
+
+    fn runtime_binding_id(&self) -> Result<crate::config::McpServerBindingId, &'static str> {
+        self.config().runtime_binding_id()
     }
 
     fn current_policy(&self) -> Option<EffectiveMcpSettings> {
@@ -240,6 +424,8 @@ impl ManagedServer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct McpServerHealth {
     pub(crate) name: String,
+    pub(crate) origin: &'static str,
+    pub(crate) plugin_identity: Option<String>,
     pub(crate) transport: &'static str,
     pub(crate) phase: String,
     pub(crate) generation: Option<u64>,
@@ -474,6 +660,8 @@ impl ManagedStdioServer {
         let Ok(mut state) = self.state.try_lock() else {
             return McpServerHealth {
                 name: self.config.name.clone(),
+                origin: self.config.origin.label(),
+                plugin_identity: plugin_binding_text(&self.config),
                 transport: "stdio",
                 phase: "busy".into(),
                 generation: None,
@@ -488,14 +676,16 @@ impl ManagedStdioServer {
             };
         };
         if state.stopped {
-            return idle_health(&self.config.name, "stopped", self.policy.get());
+            return idle_health(&self.config, "stopped", self.policy.get());
         }
         let Some(supervisor) = state.supervisor.as_mut() else {
-            return idle_health(&self.config.name, "deferred", self.policy.get());
+            return idle_health(&self.config, "deferred", self.policy.get());
         };
         let status = supervisor.status();
         McpServerHealth {
             name: self.config.name.clone(),
+            origin: self.config.origin.label(),
+            plugin_identity: plugin_binding_text(&self.config),
             transport: "stdio",
             phase: status.phase.label().into(),
             generation: status.generation.map(|generation| generation.get()),
@@ -987,6 +1177,8 @@ impl ManagedHttpServer {
         let Ok(state) = self.state.try_lock() else {
             return McpServerHealth {
                 name: self.config.name.clone(),
+                origin: self.config.origin.label(),
+                plugin_identity: plugin_binding_text(&self.config),
                 transport: "http",
                 phase: "busy".into(),
                 generation: None,
@@ -1001,14 +1193,16 @@ impl ManagedHttpServer {
             };
         };
         if state.stopped {
-            return http_idle_health(&self.config.name, "stopped", self.policy.get());
+            return http_idle_health(&self.config, "stopped", self.policy.get());
         }
         let Some(lifecycle) = state.lifecycle.as_ref() else {
-            return http_idle_health(&self.config.name, "deferred", self.policy.get());
+            return http_idle_health(&self.config, "deferred", self.policy.get());
         };
         let status = lifecycle.status();
         McpServerHealth {
             name: self.config.name.clone(),
+            origin: self.config.origin.label(),
+            plugin_identity: plugin_binding_text(&self.config),
             transport: "http",
             phase: status.phase.label().into(),
             generation: status.generation.map(|generation| generation.get()),
@@ -1033,12 +1227,14 @@ impl ManagedHttpServer {
 }
 
 fn http_idle_health(
-    name: &str,
+    config: &McpServerConfig,
     phase: &str,
     policy: Option<&EffectiveMcpSettings>,
 ) -> McpServerHealth {
     McpServerHealth {
-        name: name.into(),
+        name: config.name.clone(),
+        origin: config.origin.label(),
+        plugin_identity: plugin_binding_text(config),
         transport: "http",
         phase: phase.into(),
         generation: None,
@@ -1051,6 +1247,15 @@ fn http_idle_health(
         negotiated_protocol_version: None,
         last_failure: None,
     }
+}
+
+fn plugin_binding_text(config: &McpServerConfig) -> Option<String> {
+    config
+        .origin
+        .plugin_binding_id(&config.name)
+        .ok()
+        .flatten()
+        .map(|identity| identity.as_str().to_owned())
 }
 
 fn classify_http_failure(error: &iteron_mcp::McpError) -> iteron_mcp::reconnect::LifecycleFailure {
@@ -1125,16 +1330,32 @@ fn http_server_binding(config: &McpServerConfig) -> anyhow::Result<Arc<[u8]>> {
         .map_err(|_| anyhow::anyhow!("HTTP MCP lineage exhausted"))?;
     let encoded = serde_json::to_vec(config)?;
     let mut hasher = Sha256::new();
-    hasher.update(b"core-http-mcp-session-binding-v1\0");
+    hasher.update(b"core-http-mcp-session-binding-v2\0");
     hasher.update(lineage.to_be_bytes());
+    if let Some(plugin_identity) = config
+        .origin
+        .plugin_binding_id(&config.name)
+        .map_err(anyhow::Error::msg)?
+    {
+        hasher.update((plugin_identity.as_str().len() as u64).to_be_bytes());
+        hasher.update(plugin_identity.as_str().as_bytes());
+    } else {
+        hasher.update(0u64.to_be_bytes());
+    }
     hasher.update((encoded.len() as u64).to_be_bytes());
     hasher.update(encoded);
     Ok(Arc::from(hasher.finalize().to_vec()))
 }
 
-fn idle_health(name: &str, phase: &str, policy: Option<&EffectiveMcpSettings>) -> McpServerHealth {
+fn idle_health(
+    config: &McpServerConfig,
+    phase: &str,
+    policy: Option<&EffectiveMcpSettings>,
+) -> McpServerHealth {
     McpServerHealth {
-        name: name.into(),
+        name: config.name.clone(),
+        origin: config.origin.label(),
+        plugin_identity: plugin_binding_text(config),
         transport: "stdio",
         phase: phase.into(),
         generation: None,
@@ -1163,10 +1384,12 @@ fn lifecycle_failure_label(failure: iteron_mcp::reconnect::LifecycleFailure) -> 
 fn register_server_tools(
     registry: &mut Registry,
     server: Arc<ManagedServer>,
+    exposure: Arc<OnceLock<McpCapabilityExposure>>,
 ) -> Result<(), iteron_tools::ToolError> {
     let name = server.name().to_owned();
     let search_name = format!("{name}__tool_search");
     let search_server = server.clone();
+    let search_exposure = exposure.clone();
     registry.register_external_effect(
         ToolSpec {
             name: search_name,
@@ -1186,7 +1409,16 @@ fn register_server_tools(
         },
         move |call, _root| {
             let server = search_server.clone();
+            let exposure = search_exposure.clone();
             iteron_tools::effectfut::box_it(async move {
+                if !server_identity_admitted(&exposure, &server) {
+                    return definite_result(
+                        call.id,
+                        "MCP server identity is not admitted by the pinned plugin exposure policy"
+                            .into(),
+                        true,
+                    );
+                }
                 let query = call
                     .input
                     .get("query")
@@ -1211,6 +1443,7 @@ fn register_server_tools(
     )?;
 
     let call_server = server.clone();
+    let call_exposure = exposure.clone();
     registry.register_mcp_effect(
         ToolSpec {
             name: format!("{name}__tool_call"),
@@ -1231,7 +1464,16 @@ fn register_server_tools(
         McpEffectAttribution::new(&name, "tool_call"),
         move |call, _root, dispatch_clock| {
             let server = call_server.clone();
+            let exposure = call_exposure.clone();
             iteron_tools::effectfut::box_it(async move {
+                if !server_identity_admitted(&exposure, &server) {
+                    return definite_result(
+                        call.id,
+                        "MCP server identity is not admitted by the pinned plugin exposure policy"
+                            .into(),
+                        true,
+                    );
+                }
                 let tool = call.input.get("name").and_then(Value::as_str).unwrap_or("");
                 let arguments = call
                     .input
@@ -1248,9 +1490,11 @@ fn register_server_tools(
 
     for (suffix, method, description, schema) in extension_tools(&name) {
         let extension_server = server.clone();
+        let extension_exposure = exposure.clone();
+        let tool_id = format!("{name}__{suffix}");
         registry.register_mcp_effect(
             ToolSpec {
-                name: format!("{name}__{suffix}"),
+                name: tool_id.clone(),
                 description,
                 input_schema: schema,
                 purity: Purity::Effecting,
@@ -1259,7 +1503,21 @@ fn register_server_tools(
             McpEffectAttribution::new(&name, suffix),
             move |call, _root, dispatch_clock| {
                 let server = extension_server.clone();
+                let exposure = extension_exposure.clone();
+                let tool_id = tool_id.clone();
                 iteron_tools::effectfut::box_it(async move {
+                    if !server_identity_admitted(&exposure, &server)
+                        || !exposure
+                            .get()
+                            .is_some_and(|policy| policy.allows(&tool_id, method))
+                    {
+                        return definite_result(
+                            call.id,
+                            "MCP resource/prompt capability is not admitted by the pinned exposure policy"
+                                .into(),
+                            true,
+                        );
+                    }
                     let params = match normalize_extension_params(method, call.input.clone()) {
                         Ok(params) => params,
                         Err(reason) => return definite_result(call.id, reason.into(), true),
@@ -1274,6 +1532,7 @@ fn register_server_tools(
     }
 
     let lifecycle_server = server;
+    let lifecycle_exposure = exposure;
     registry.register_external_effect(
         ToolSpec {
             name: format!("{name}__lifecycle"),
@@ -1296,7 +1555,16 @@ fn register_server_tools(
         },
         move |call, _root| {
             let server = lifecycle_server.clone();
+            let exposure = lifecycle_exposure.clone();
             iteron_tools::effectfut::box_it(async move {
+                if !server_identity_admitted(&exposure, &server) {
+                    return definite_result(
+                        call.id,
+                        "MCP server identity is not admitted by the pinned plugin exposure policy"
+                            .into(),
+                        true,
+                    );
+                }
                 let action = call.input.get("action").and_then(Value::as_str).unwrap_or("");
                 let result = match action {
                     "status" => Ok(()),
@@ -1321,6 +1589,17 @@ fn register_server_tools(
         },
     )?;
     Ok(())
+}
+
+fn server_identity_admitted(
+    exposure: &OnceLock<McpCapabilityExposure>,
+    server: &ManagedServer,
+) -> bool {
+    exposure.get().is_some_and(|policy| {
+        server
+            .runtime_binding_id()
+            .is_ok_and(|binding| policy.allows_server(server.name(), server.origin(), &binding))
+    })
 }
 
 fn extension_tools(server: &str) -> Vec<(&'static str, &'static str, String, Value)> {

@@ -18,6 +18,8 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
+#[path = "session_private_cache.rs"]
+pub(crate) mod private_cache;
 #[path = "tunables.rs"]
 pub mod tunables;
 
@@ -1083,7 +1085,7 @@ fn read_index(runs_dir: &Path, live_runs: usize) -> IndexRead {
                 exact: false,
             };
         }
-        let Ok(meta) = serde_json::from_slice::<SessionMeta>(&line) else {
+        let Ok(meta) = private_cache::read_index_line(runs_dir, &line) else {
             return IndexRead {
                 entries: Vec::new(),
                 physical_lines,
@@ -1099,6 +1101,10 @@ fn read_index(runs_dir: &Path, live_runs: usize) -> IndexRead {
     }
 }
 
+// Legacy plaintext index bytes are still useful as adversarial fixtures: readers must reject or
+// rebuild these pre-private-cache encodings instead of accidentally serving them. Keep the encoder
+// out of production so no caller can create a plaintext session index.
+#[cfg(test)]
 fn encode_index<'a>(
     metas: impl IntoIterator<Item = &'a SessionMeta>,
 ) -> Result<Vec<u8>, RecordError> {
@@ -1133,9 +1139,7 @@ fn rewrite_index_unlocked<'a>(
     runs_dir: &Path,
     metas: impl IntoIterator<Item = &'a SessionMeta>,
 ) -> Result<(), RecordError> {
-    let bytes = encode_index(metas)?;
-    crate::cache_io::atomic_replace(&index_path(runs_dir), &bytes)?;
-    Ok(())
+    private_cache::write_index(runs_dir, &index_path(runs_dir), metas)
 }
 
 /// Merge candidate projections with the latest structurally current index snapshot while holding
@@ -1178,9 +1182,7 @@ fn merge_rewrite_index(
 
 fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
     let path = per_run_meta_path(runs_dir, &projected.run_id)?;
-    let encoded = encode_meta_sidecar(projected)?;
-    crate::cache_io::atomic_replace(&path, &encoded)?;
-    Ok(())
+    private_cache::write_sidecar(runs_dir, &path, projected, false)
 }
 
 /// The metadata for one run: a current cache may directly serve only an honest `Unknown` cost;
@@ -1189,7 +1191,7 @@ fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), Re
 pub fn meta(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
     let cache = per_run_meta_path(runs_dir, run)?;
     if let Ok(bytes) = crate::cache_io::read_session_meta(&cache)
-        && let Ok(m) = serde_json::from_slice::<SessionMeta>(&bytes)
+        && let Ok(m) = private_cache::read_sidecar(runs_dir, &bytes)
         && m.run_id == *run
         && projection_covers_rollout(runs_dir, &m)
     {
@@ -1219,8 +1221,15 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
 
     let mut by_run: HashMap<String, SessionMeta> = HashMap::new();
     let mut indexable: HashMap<String, SessionMeta> = HashMap::new();
+    let index_manifest_missing = !existing.is_empty()
+        && std::fs::symlink_metadata(index_path(runs_dir))
+            .map(|metadata| !metadata.file_type().is_file())
+            .unwrap_or(true);
     let index = read_index(runs_dir, existing.len());
-    let mut needs_compaction = !index.exact;
+    // A missing manifest decodes as an exact empty cache so ordinary first-use remains cheap. If
+    // rollouts do exist, however, it also means revocation/crash invalidated the projection and
+    // this unlocked read must republish the canonical (possibly empty) bounded manifest.
+    let mut needs_compaction = !index.exact || index_manifest_missing;
     // Fast path: a bounded legacy index, last write wins. Entries whose rollout was deleted or
     // whose record cursor is stale are dropped and force a canonical rewrite.
     for m in index.entries {
@@ -1339,12 +1348,11 @@ pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
     // would change — and the surviving writes share ONE directory sync at the end.
     let mut wrote = false;
     for m in &metas {
-        let encoded = encode_meta_sidecar(m)?;
-        if sidecar_is_unchanged(runs_dir, m, &encoded) {
+        if sidecar_is_unchanged(runs_dir, m) {
             continue;
         }
         let path = per_run_meta_path(runs_dir, &m.run_id)?;
-        crate::cache_io::atomic_replace_deferring_dir_sync(&path, &encoded)?;
+        private_cache::write_sidecar(runs_dir, &path, m, true)?;
         wrote = true;
     }
     if wrote {
@@ -1354,28 +1362,15 @@ pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
     Ok(metas.len())
 }
 
-/// The exact bytes a sidecar rewrite would persist, bounded the same way the write path bounds them.
-fn encode_meta_sidecar(projected: &SessionMeta) -> Result<Vec<u8>, RecordError> {
-    let encoded = serde_json::to_vec_pretty(projected)?;
-    if encoded.len() > crate::cache_io::MAX_SESSION_META_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session metadata exceeds the cache byte limit",
-        )
-        .into());
-    }
-    Ok(encoded)
-}
-
-/// True when the persisted sidecar is already byte-identical to `encoded`. The record cursor
-/// (`record_tail_seq` + `record_bytes`) is what moves when a session grows, and it is inside these
-/// bytes; comparing the whole encoding rather than only that cursor means a schema, pricing, or
-/// projection-digest change still forces the rewrite instead of being skipped by a matching tail.
-fn sidecar_is_unchanged(runs_dir: &Path, projected: &SessionMeta, encoded: &[u8]) -> bool {
+/// True when the gated CAS projection is semantically byte-identical to `projected`. The public
+/// sidecar is a handle manifest, so comparing it with serialized private metadata would force
+/// every warm reindex to republish an unchanged projection.
+fn sidecar_is_unchanged(runs_dir: &Path, projected: &SessionMeta) -> bool {
     let Ok(path) = per_run_meta_path(runs_dir, &projected.run_id) else {
         return false;
     };
-    crate::cache_io::read_session_meta(&path).is_ok_and(|bytes| bytes == encoded)
+    crate::cache_io::read_session_meta(&path)
+        .is_ok_and(|bytes| private_cache::sidecar_matches(runs_dir, &bytes, projected))
 }
 
 /// What [`prune`] is allowed to delete. A policy that names nothing deletes nothing: retention is
@@ -2007,6 +2002,7 @@ pub fn replay_run_timed(runs_dir: &Path, run: &RunId) -> Result<Vec<TimedEvent>,
 
 /// [`load_forked`] with the original tenant/run scope retained for every physical event.
 pub fn load_forked_scoped(runs_dir: &Path, run: &RunId) -> Result<Vec<ScopedEvent>, RecordError> {
+    crate::require_strict_replay_policy()?;
     let mut budget = LogicalReplayBudget::default();
     expand_scoped(runs_dir, run, None, 0, &mut budget)
 }
@@ -3035,9 +3031,11 @@ mod tests {
 
         let sidecar_path = per_run_meta_path(&dir, &run).unwrap();
         assert!(sidecar_path.is_file());
-        let persisted: SessionMeta =
-            serde_json::from_slice(&crate::cache_io::read_session_meta(&sidecar_path).unwrap())
-                .unwrap();
+        let persisted = private_cache::read_sidecar(
+            &dir,
+            &crate::cache_io::read_session_meta(&sidecar_path).unwrap(),
+        )
+        .unwrap();
         assert_eq!(persisted.cost, CostState::Zero);
         assert!(projection_is_current(&dir, &persisted));
         assert!(!projection_covers_rollout(&dir, &persisted));
@@ -3072,9 +3070,11 @@ mod tests {
 
         let child_sidecar = per_run_meta_path(&dir, &child).unwrap();
         assert!(child_sidecar.is_file());
-        let persisted: SessionMeta =
-            serde_json::from_slice(&crate::cache_io::read_session_meta(&child_sidecar).unwrap())
-                .unwrap();
+        let persisted = private_cache::read_sidecar(
+            &dir,
+            &crate::cache_io::read_session_meta(&child_sidecar).unwrap(),
+        )
+        .unwrap();
         assert_eq!(persisted.parent.as_ref().unwrap().parent_run, parent);
         assert_eq!(persisted.ancestry.len(), 1);
         assert_eq!(persisted.ancestry[0].run_id, parent);
@@ -3216,7 +3216,8 @@ mod tests {
         let second = fork(&dir, &first, first_tail, &tenant).unwrap();
         complete_one_turn(&dir, &second, &tenant, "nested child task");
 
-        let persisted: SessionMeta = serde_json::from_slice(
+        let persisted = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &second).unwrap())
                 .unwrap(),
         )
@@ -3344,7 +3345,8 @@ mod tests {
         let tenant = TenantId::default();
         let run = RunId("middle-record-corruption".into());
         mk_run(&dir, &run, &tenant, "/repo/middle-corruption", "truth");
-        let cached: SessionMeta = serde_json::from_slice(
+        let cached = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
         )
         .unwrap();
@@ -3468,7 +3470,8 @@ mod tests {
             "K turn-boundary refreshes must pay for only the initialization replay"
         );
 
-        let persisted: SessionMeta = serde_json::from_slice(
+        let persisted = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
         )
         .unwrap();
@@ -3946,7 +3949,7 @@ mod tests {
         let ids: HashSet<RunId> = scan
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(ids.len(), run_count);
         assert_eq!(list(&dir, &tenant).len(), run_count);
@@ -4155,7 +4158,7 @@ mod tests {
         assert_eq!(reindex(&dir).unwrap(), 1);
         let path = per_run_meta_path(&dir, &run).unwrap();
         let old = std::fs::read(&path).unwrap();
-        let old_meta: SessionMeta = serde_json::from_slice(&old).unwrap();
+        let old_meta = private_cache::read_sidecar(&dir, &old).unwrap();
         assert!(projection_covers_rollout(&dir, &old_meta));
 
         let mut replacement = old_meta.clone();
@@ -4168,7 +4171,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         assert_eq!(std::fs::read(&path).unwrap(), old);
 
-        let after: SessionMeta = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let after = private_cache::read_sidecar(&dir, &std::fs::read(&path).unwrap()).unwrap();
         assert!(projection_covers_rollout(&dir, &after));
         assert_eq!(meta(&dir, &run).unwrap().title, "original title");
         std::fs::remove_dir_all(dir).ok();
@@ -4204,7 +4207,7 @@ mod tests {
         let ids: HashSet<RunId> = scan
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(ids, runs.iter().cloned().collect());
         assert_eq!(list(&dir, &tenant).len(), runs.len());
@@ -4316,7 +4319,7 @@ mod tests {
         let repaired_ids: Vec<RunId> = repaired
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(repaired_ids, runs);
         std::fs::remove_dir_all(dir).ok();
@@ -5081,8 +5084,8 @@ mod tests {
                 "a changed session is still reindexed"
             );
         }
-        let refreshed: SessionMeta =
-            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        let refreshed =
+            private_cache::read_sidecar(&dir, &std::fs::read(&sidecar).unwrap()).unwrap();
         assert!(refreshed.turns > 1, "{refreshed:?}");
         std::fs::remove_dir_all(&dir).ok();
     }

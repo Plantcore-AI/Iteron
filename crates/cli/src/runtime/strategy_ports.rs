@@ -271,6 +271,17 @@ impl Agent {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
+        Self::validate_compiled_policy_bundle_shape(compiled.as_ref())?;
+        self.apply_validated_compiled_policy_bundle(compiled);
+        Ok(())
+    }
+
+    /// Pure shape preflight for an adopted generation. It is deliberately independent of the
+    /// current run's turn/context state so adoption can prove the candidate before swapping the
+    /// live writer, then apply it through the infallible assignment-only seam below.
+    pub(super) fn validate_compiled_policy_bundle_shape(
+        compiled: &crate::bundle_adapter::CompiledPolicyBundle,
+    ) -> Result<(), KernelError> {
         let slots = compiled.slots();
         for (strategy, expected) in [
             (&slots.context, "core/context"),
@@ -289,6 +300,17 @@ impl Agent {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Apply a compiler-validated generation with assignments only. Callers must have run
+    /// `validate_compiled_policy_bundle_shape`; this function intentionally has no fallible work
+    /// so an atomic adoption cannot return `Refused` after the rollout writer changes.
+    pub(super) fn apply_validated_compiled_policy_bundle(
+        &mut self,
+        compiled: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
+    ) {
+        let slots = compiled.slots();
         self.context_strategy = slots.context.clone();
         self.tool_policy = slots.tool_policy.clone();
         self.memory_strategy = slots.memory.clone();
@@ -300,7 +322,6 @@ impl Agent {
         self.model_router = slots.model_router.clone();
         self.boot_bundle = compiled.boot_bundle();
         self.compiled_policy_bundle = compiled;
-        Ok(())
     }
 
     pub(crate) fn policy_runtime_bindings(
@@ -382,6 +403,12 @@ impl Agent {
         } else {
             trust
         };
+        let context = DurableEnvironmentContext {
+            text: text.clone(),
+            trust,
+        };
+        self.validate_environment_identity(Some(&context))?;
+        self.composition_environment_context = Some((text.clone(), trust));
         self.environment_context = Some((text, trust));
         Ok(())
     }

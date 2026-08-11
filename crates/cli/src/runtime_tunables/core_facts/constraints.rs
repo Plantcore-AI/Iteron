@@ -21,17 +21,15 @@ pub(super) fn add_constraints(
         en(&route.route.model_id),
     )?;
     operator_one(builder, "base_url", text(input.base_url.value))?;
+    // Effort is first a local harness policy (planning/orchestration and child ceilings). It must
+    // remain effective even when the selected provider cannot serialize a semantic effort field.
+    // Provider reasoning/thinking maps below stay capability-gated; adapters independently omit an
+    // unsupported wire control.
+    operator_one(builder, "effort", en(input.effort.value.label()))?;
     if route
         .capabilities
         .contains(&CapabilityRequirement::ProviderReasoningControl)
     {
-        domain_many(
-            builder,
-            "effort",
-            "$",
-            ExternalCeiling::ProviderCapability,
-            Effort::ALL.into_iter().map(|e| en(e.label())),
-        )?;
         domain_one(
             builder,
             "effort_reasoning_map",
@@ -45,13 +43,6 @@ pub(super) fn add_constraints(
             "$",
             ExternalCeiling::ProviderCapability,
             thinking_map(),
-        )?;
-        domain_many(
-            builder,
-            "summary_profile",
-            "effort",
-            ExternalCeiling::ProviderCapability,
-            Effort::ALL.into_iter().map(|e| en(e.label())),
         )?;
     }
     upper(
@@ -97,7 +88,17 @@ pub(super) fn add_constraints(
             text_list(input.operator_egress_allow.unwrap_or_default()),
         )?;
     }
-    add_compaction_constraints(builder, input, report)?;
+    add_compaction_constraints(builder, input)?;
+    upper(
+        builder,
+        "instruction_discovery_render",
+        "total_bytes",
+        ExternalCeiling::ToolBudget,
+        int(i64u(
+            iteron_ctx::InstructionDiscoveryPolicy::owner().total_bytes,
+            "instruction_discovery_render",
+        )?),
+    )?;
     if let Some(requested) = input.verify_command {
         operator_one(builder, "verify_command", text(requested))?;
         if let Some(planned) = input.verifier_plan_command {
@@ -152,21 +153,24 @@ pub(super) fn add_constraints(
             [boolv(false), boolv(true)],
         )?;
     } else {
-        report
-            .gaps
-            .push(CoreFactGap::PromptCacheCapabilityUnattested);
-    }
-    if input.model_capabilities.context_window_tokens.is_some() {
         domain_one(
             builder,
-            "compaction_failure",
+            "prompt_cache",
             "$",
-            ExternalCeiling::ContextWindow,
-            en("retain_original"),
+            ExternalCeiling::ProviderCapability,
+            boolv(false),
         )?;
-    } else {
-        report.gaps.push(CoreFactGap::ContextWindowUnknown);
     }
+    // Retaining the original transcript is the complete fail-safe domain even when the selected
+    // route cannot attest a model window. Unknown metadata must not make this fixed policy
+    // unresolved or silently permit a truncating failure mode.
+    domain_one(
+        builder,
+        "compaction_failure",
+        "$",
+        ExternalCeiling::ContextWindow,
+        en("retain_original"),
+    )?;
     domain_many(
         builder,
         "memory_enable",
@@ -193,33 +197,55 @@ fn add_token_constraints(
     input: &CoreFactsInput<'_>,
     report: &mut CoreFactsReport,
 ) -> Result<(), CoreFactError> {
-    let Some(tokens) = input.budget.max_tokens else {
-        report.gaps.push(CoreFactGap::ParentTokenCeilingAbsent);
-        return Ok(());
-    };
-    let cap = int(i64v(tokens, "parent_tokens")?);
-    upper(
-        builder,
-        "max_tokens",
-        "$",
-        ExternalCeiling::ParentTokens,
-        cap.clone(),
-    )?;
-    upper(
-        builder,
-        "request_output_cap",
-        "$",
-        ExternalCeiling::ParentTokens,
-        cap.clone(),
-    )?;
+    let cap = input
+        .budget
+        .max_tokens
+        .map(|tokens| i64v(tokens, "parent_tokens"))
+        .transpose()?;
+    if let Some(cap) = cap {
+        upper(
+            builder,
+            "max_tokens",
+            "$",
+            ExternalCeiling::ParentTokens,
+            int(cap),
+        )?;
+    }
+    // Compaction is a local context operation. Parent tokens bound both its output and its local
+    // reasoning effort; provider reasoning capability only controls outbound serialization.
+    let parent_token_ceiling = cap.unwrap_or(1_000_000);
     upper(
         builder,
         "summary_profile",
         "max_output_tokens",
         ExternalCeiling::ParentTokens,
-        cap,
+        int(parent_token_ceiling),
     )?;
-    if tokens >= u64::from(Effort::Ultracode.thinking_budget()) {
+    domain_many(
+        builder,
+        "summary_profile",
+        "effort",
+        ExternalCeiling::ParentTokens,
+        Effort::ALL
+            .into_iter()
+            .filter(|effort| i64::from(effort.thinking_budget()) <= parent_token_ceiling)
+            .map(|effort| en(effort.label())),
+    )?;
+    // An absent aggregate parent-token budget means unbounded authority, not missing authority.
+    // Family 19 is still bounded by its own schema and provider/request envelope, so publish that
+    // complete domain rather than leaving an always-active fixed family unresolved.
+    upper(
+        builder,
+        "request_output_cap",
+        "$",
+        ExternalCeiling::ParentTokens,
+        int(parent_token_ceiling),
+    )?;
+    if input
+        .budget
+        .max_tokens
+        .is_none_or(|tokens| tokens >= u64::from(Effort::Ultracode.thinking_budget()))
+    {
         domain_one(
             builder,
             "thinking_map",
@@ -238,45 +264,66 @@ fn add_token_constraints(
 fn add_compaction_constraints(
     builder: &mut RuntimeResolutionBuilder,
     input: &CoreFactsInput<'_>,
-    report: &mut CoreFactsReport,
 ) -> Result<(), CoreFactError> {
-    if let Some(window) = input.model_capabilities.context_window_tokens {
-        upper(
-            builder,
-            "compaction_trigger",
-            "fallback_trigger_tokens",
-            ExternalCeiling::ContextWindow,
-            int(i64v(window, "context_window")?),
-        )?;
-        upper(
-            builder,
-            "compaction_adaptive",
-            "output_reserve_tokens",
-            ExternalCeiling::ContextWindow,
-            int(i64v(window, "context_window")?),
-        )?;
-    }
-    if let Some(output) = input.model_capabilities.max_output_tokens {
-        domain_max(
-            builder,
-            "compaction_trigger",
-            "output_reserve_tokens",
-            ExternalCeiling::ProviderCapability,
-            int(output.into()),
-        )?;
-        domain_max(
-            builder,
-            "request_output_cap",
-            "$",
-            ExternalCeiling::ProviderCapability,
-            int(output.into()),
-        )?;
-    }
-    // A token window does not itself attest byte or message ceilings. These remain unresolved
-    // until the context owner exposes typed projections instead of silently mixing units.
-    report.gaps.extend([
-        CoreFactGap::ContextByteCeilingNotOwned,
-        CoreFactGap::ContextMessageCeilingNotOwned,
-    ]);
+    let output_reserve = super::model_output_reserve(input);
+    // With no provider window, the executable context decoder uses exactly the fixed compaction
+    // fallback plus family-19's output reserve as its synthetic usable window. Bind every fixed
+    // context policy to that same owner value instead of leaving an active family unresolved.
+    let context_ceiling = super::compaction_context_ceiling(input);
+    let context_ceiling_value = int(i64v(context_ceiling, "context_window")?);
+    upper(
+        builder,
+        "compaction_trigger",
+        "fallback_trigger_tokens",
+        ExternalCeiling::ContextWindow,
+        context_ceiling_value.clone(),
+    )?;
+    upper(
+        builder,
+        "compaction_adaptive",
+        "output_reserve_tokens",
+        ExternalCeiling::ContextWindow,
+        context_ceiling_value.clone(),
+    )?;
+    upper(
+        builder,
+        "compaction_keep_recent",
+        "$",
+        ExternalCeiling::ContextWindow,
+        context_ceiling_value,
+    )?;
+    // With unknown metadata, the canonical family-19 fallback is the conservative request
+    // envelope. With attested metadata, that live value may only narrow the envelope. Both
+    // compaction reserve and the actual request cap consume the same pinned value.
+    domain_max(
+        builder,
+        "compaction_trigger",
+        "output_reserve_tokens",
+        ExternalCeiling::ProviderCapability,
+        int(i64v(output_reserve, "request_output_cap")?),
+    )?;
+    domain_max(
+        builder,
+        "request_output_cap",
+        "$",
+        ExternalCeiling::ProviderCapability,
+        int(i64v(output_reserve, "request_output_cap")?),
+    )?;
+    let materialization = iteron_ctx::ContextMaterializationPolicy::default();
+    let materialization_ceiling = int(i64::from(materialization.max_bytes));
+    upper(
+        builder,
+        "memory_budgets",
+        "total_bytes",
+        ExternalCeiling::ContextWindow,
+        materialization_ceiling.clone(),
+    )?;
+    upper(
+        builder,
+        "skill_listing_budget",
+        "$",
+        ExternalCeiling::ContextWindow,
+        materialization_ceiling,
+    )?;
     Ok(())
 }

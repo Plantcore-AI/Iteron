@@ -101,8 +101,61 @@ fn builder_never_invents_sources_defaults_constraints_or_activation() {
 
     assert!(matches!(
         builder.resolve(),
-        Err(RuntimeResolutionError::MissingActivation { .. })
+        Err(RuntimeResolutionError::Resolution(_))
     ));
+}
+
+#[test]
+fn builtin_literal_declarations_cannot_override_the_canonical_value() {
+    for (family, value) in [
+        (
+            "effort",
+            ResolutionValue::Enum {
+                value: "high".to_owned(),
+            },
+        ),
+        (
+            "model_fallback_chain",
+            ResolutionValue::List {
+                items: vec![ResolutionValue::Enum {
+                    value: "fixture:fallback".to_owned(),
+                }],
+            },
+        ),
+    ] {
+        assert!(matches!(
+            builder().declare(family, SourceKind::Builtin, value),
+            Err(RuntimeResolutionError::LiteralOwnerMismatch(rejected)) if rejected == family
+        ));
+    }
+
+    builder()
+        .declare(
+            "effort",
+            SourceKind::Builtin,
+            ResolutionValue::Enum {
+                value: "medium".to_owned(),
+            },
+        )
+        .expect("the exact embedded effort literal remains admissible");
+    builder()
+        .declare(
+            "model_fallback_chain",
+            SourceKind::Builtin,
+            ResolutionValue::List { items: Vec::new() },
+        )
+        .expect("the exact embedded empty fallback chain remains admissible");
+    builder()
+        .declare(
+            "model_fallback_chain",
+            SourceKind::UserConfig,
+            ResolutionValue::List {
+                items: vec![ResolutionValue::Enum {
+                    value: "fixture:fallback".to_owned(),
+                }],
+            },
+        )
+        .expect("a non-empty fallback chain remains operator-owned");
 }
 
 #[test]
@@ -127,7 +180,7 @@ fn complete_activation_inventory_still_returns_only_an_atomic_set_or_failure() {
 fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     let activations = runtime_activation_requirements();
     // One per `RuntimeDerived` family in the registry; the rest are `Always` or `Configured`.
-    assert_eq!(activations.len(), 47);
+    assert!(activations.is_empty());
     assert!(activations.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(
         activations
@@ -137,20 +190,6 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
             .len(),
         activations.len()
     );
-    assert!(
-        activations
-            .iter()
-            .map(|item| item.seam)
-            .collect::<BTreeSet<_>>()
-            .len()
-            < activations.len()
-    );
-    assert!(activations.iter().any(|item| {
-        item.family_id == "retry_backoff_base" && item.seam == "crates/cli/src/config/retry.rs"
-    }));
-    assert!(activations.iter().any(|item| {
-        item.family_id == "retry_backoff_cap" && item.seam == "crates/cli/src/config/retry.rs"
-    }));
 
     let defaults = runtime_default_observations();
     assert!(defaults.len() <= iteron_tunables::EXPECTED_FAMILY_COUNT);
@@ -161,7 +200,7 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     );
 
     let constraints = runtime_constraint_requirements();
-    assert_eq!(constraints.len(), 198);
+    assert_eq!(constraints.len(), 196);
     assert!(constraints.iter().any(|item| {
         item.family_id == "max_turns" && item.ceiling == ExternalCeiling::ParentTurns
     }));
@@ -185,50 +224,28 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
 }
 
 #[test]
-fn activation_identity_is_per_family_and_fails_closed() {
-    let inventory = runtime_activation_requirements();
-    let shared_seam = "crates/cli/src/config/retry.rs";
-
-    let mut incomplete = builder();
-    for requirement in &inventory {
-        if requirement.family_id != "retry_backoff_cap" {
-            incomplete
-                .activate(requirement.family_id, requirement.seam, false, DIGEST_A)
-                .unwrap();
-        }
-    }
-    assert!(matches!(
-        incomplete.resolve(),
-        Err(RuntimeResolutionError::MissingActivation { family, seam })
-            if family == "retry_backoff_cap" && seam == shared_seam
-    ));
-
-    let mut mismatched = builder();
-    assert!(matches!(
-        mismatched.activate("retry_backoff_base", "crates/cli/src/runtime.rs", true, DIGEST_A),
-        Err(RuntimeResolutionError::MismatchedActivation { family, .. })
-            if family == "retry_backoff_base"
-    ));
-
-    let mut duplicate = builder();
-    duplicate
-        .activate("retry_backoff_base", shared_seam, true, DIGEST_A)
-        .unwrap();
-    assert!(matches!(
-        duplicate.activate("retry_backoff_base", shared_seam, false, DIGEST_B),
-        Err(RuntimeResolutionError::DuplicateActivation(family))
-            if family == "retry_backoff_base"
-    ));
-
+fn stale_runtime_activation_evidence_is_rejected_for_the_canonical_registry() {
+    assert!(runtime_activation_requirements().is_empty());
     let mut non_runtime = builder();
     assert!(matches!(
-        non_runtime.activate("max_turns", "crates/protocol/src/lib.rs", true, DIGEST_A),
-        Err(RuntimeResolutionError::NonRuntimeActivation(family)) if family == "max_turns"
+        non_runtime.activate(
+            "retry_backoff_base",
+            "crates/cli/src/config/retry.rs",
+            true,
+            DIGEST_A
+        ),
+        Err(RuntimeResolutionError::NonRuntimeActivation(family))
+            if family == "retry_backoff_base"
     ));
 
     let mut unknown = builder();
     assert!(matches!(
-        unknown.activate("not-a-family", shared_seam, true, DIGEST_A),
+        unknown.activate(
+            "not-a-family",
+            "crates/cli/src/config/retry.rs",
+            true,
+            DIGEST_A
+        ),
         Err(RuntimeResolutionError::UnknownFamily(family)) if family == "not-a-family"
     ));
 }

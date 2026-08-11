@@ -18,7 +18,10 @@ use crate::effects::{
     broker_effect, open_effect, settle_effect,
 };
 use iteron_protocol::{
-    Block, Capability, Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId,
+    Block, Capability, Effort, Event, EventKind, Message, ProviderRouteAttemptAccounting,
+    ProviderRouteAttemptAccountingVersion, ProviderRouteAttemptIdentity, ProviderRouteCostTruth,
+    ProviderRouteCostUnknownReason, ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason,
+    RunId, Seq, TenantId, TurnId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -49,6 +52,13 @@ impl DurableEffectLog for ProbeLog {
 }
 
 fn effect_for(turn: TurnId, class: EffectClass, ordinal: usize) -> BrokeredEffect {
+    let provider_route_attempt =
+        (class == EffectClass::Provider).then(|| ProviderRouteAttemptIdentity {
+            version: ProviderRouteAttemptAccountingVersion::V1,
+            route_id: format!("sha256:{:064x}", ordinal.saturating_add(1)),
+            physical_attempt: u32::try_from(ordinal).unwrap_or(u32::MAX).saturating_add(1),
+            max_cost_reservation_microusd: None,
+        });
     BrokeredEffect {
         turn,
         effect_id: effect_id(turn, class, ordinal),
@@ -62,6 +72,24 @@ fn effect_for(turn: TurnId, class: EffectClass, ordinal: usize) -> BrokeredEffec
         capability: Capability::ReversibleLocal,
         audit_arguments: serde_json::json!({ "probe": ordinal }),
         workspace: "/repo".to_string(),
+        provider_route_attempt,
+    }
+}
+
+fn crash_unknown_accounting(
+    identity: ProviderRouteAttemptIdentity,
+) -> ProviderRouteAttemptAccounting {
+    ProviderRouteAttemptAccounting {
+        version: identity.version,
+        route_id: identity.route_id,
+        physical_attempt: identity.physical_attempt,
+        max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+        usage: ProviderRouteUsageTruth::Unknown {
+            reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable,
+        },
+        cost: ProviderRouteCostTruth::Unknown {
+            reason: ProviderRouteCostUnknownReason::OutcomeUnobservable,
+        },
     }
 }
 
@@ -73,6 +101,10 @@ async fn every_effect_class_crosses_intent_then_executor_then_exactly_one_termin
         let mut admissions = EffectAdmissions::default();
         let effect = effect_for(turn, class, index);
         let id = effect.effect_id.clone();
+        let provider_route_attempt = effect
+            .provider_route_attempt
+            .clone()
+            .map(crash_unknown_accounting);
         // Records the log length the executor observed, which is the only way to prove ordering
         // rather than merely asserting on the events afterwards.
         let seen_before_execute = Arc::new(AtomicUsize::new(usize::MAX));
@@ -81,6 +113,7 @@ async fn every_effect_class_crosses_intent_then_executor_then_exactly_one_termin
             id: id.clone(),
             tool: class.label().unwrap_or("edit").to_string(),
             duration_ms: None,
+            provider_route_attempt,
         };
 
         let outcome: BrokeredOutcome<()> =
@@ -146,6 +179,48 @@ async fn every_effect_class_crosses_intent_then_executor_then_exactly_one_termin
 }
 
 #[tokio::test]
+async fn provider_unknown_settlement_preserves_intent_identity_and_marks_truth_unobservable() {
+    let turn = TurnId(9);
+    let mut log = ProbeLog::default();
+    let mut admissions = EffectAdmissions::default();
+    let effect = effect_for(turn, EffectClass::Provider, 0);
+    let expected = effect
+        .provider_route_attempt
+        .clone()
+        .expect("provider fixture identity");
+
+    let outcome = broker_effect(&mut log, &mut admissions, effect, || async {
+        EffectDisposition::Unknown {
+            reason: "process exited before a terminal was observable".into(),
+            value: (),
+        }
+    })
+    .await
+    .expect("unknown remains a durable terminal");
+    assert!(matches!(outcome, BrokeredOutcome::Unknown(())));
+    let EventKind::EffectUnknown {
+        provider_route_attempt: Some(accounting),
+        ..
+    } = &log.events[1].kind
+    else {
+        panic!("provider unknown terminal must carry accounting")
+    };
+    assert_eq!(accounting.identity(), expected);
+    assert!(matches!(
+        accounting.usage,
+        ProviderRouteUsageTruth::Unknown {
+            reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable
+        }
+    ));
+    assert!(matches!(
+        accounting.cost,
+        ProviderRouteCostTruth::Unknown {
+            reason: ProviderRouteCostUnknownReason::OutcomeUnobservable
+        }
+    ));
+}
+
+#[tokio::test]
 async fn a_failed_intent_append_never_enters_the_executor() {
     for (index, class) in EffectClass::ALL.into_iter().enumerate() {
         let mut log = ProbeLog {
@@ -203,6 +278,7 @@ async fn a_duplicate_effect_identity_is_refused_before_the_executor() {
             id: effect.effect_id.clone(),
             tool: "subagent".into(),
             duration_ms: None,
+            provider_route_attempt: None,
         };
         let result: Result<BrokeredOutcome<()>, BrokerError> =
             broker_effect(&mut log, &mut admissions, effect, move || {
@@ -300,6 +376,7 @@ fn a_dispatch_killed_between_intent_and_terminal_resumes_unknown_and_never_re_ex
             id: id.clone(),
             tool: "verify".into(),
             reason: "recovery found a durable intent without a durable terminal".into(),
+            provider_route_attempt: None,
         },
     });
     let after = EffectJournal::replay(&recovered).expect("recovered journal folds");
@@ -386,6 +463,7 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
                     id: id.clone(),
                     tool: "verify".into(),
                     reason: "recovery found a durable intent without a durable terminal".into(),
+                    provider_route_attempt: None,
                 },
             })
             .expect("fsync recovery marker");
@@ -526,6 +604,7 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
                     id,
                     tool: kind,
                     duration_ms: None,
+                    provider_route_attempt: None,
                 }),
             )
             .expect("settle done"),
@@ -538,6 +617,7 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
                     tool: kind,
                     reason: "probe failure".into(),
                     duration_ms: None,
+                    provider_route_attempt: None,
                 }),
             )
             .expect("settle failed"),
@@ -896,6 +976,7 @@ fn every_effect_class_records_a_duration_on_its_proven_terminal() {
                 // The caller does NOT measure. The boundary must fill this in, which is exactly
                 // what stops seven dispatch sites from each inventing their own scope.
                 duration_ms: None,
+                provider_route_attempt: None,
             }),
         )
         .expect("settle");
@@ -932,6 +1013,7 @@ fn a_proven_failure_carries_its_duration_too() {
             tool: "hook".into(),
             reason: "probe failure".into(),
             duration_ms: None,
+            provider_route_attempt: None,
         }),
     )
     .expect("settle");
@@ -1018,6 +1100,7 @@ fn an_unmeasured_terminal_omits_the_key_rather_than_writing_null() {
         id: iteron_protocol::EffectId("effect-1".into()),
         tool: "provider".into(),
         duration_ms: None,
+        provider_route_attempt: None,
     })
     .expect("serialise");
     assert!(
@@ -1028,6 +1111,7 @@ fn an_unmeasured_terminal_omits_the_key_rather_than_writing_null() {
         id: iteron_protocol::EffectId("effect-1".into()),
         tool: "provider".into(),
         duration_ms: Some(0),
+        provider_route_attempt: None,
     })
     .expect("serialise");
     assert_eq!(

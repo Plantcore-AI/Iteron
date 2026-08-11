@@ -29,13 +29,13 @@ impl Agent {
         msgs.push(Message::user_text(prompt));
         let req = TurnRequest {
             model: self.model.clone(),
-            controls: iteron_provider::ProviderRequestControls::default(),
+            controls: self.provider_controls,
             system: "You compress a coding-agent transcript into a terse hand-off note.".into(),
             messages: msgs,
             input_images: Vec::new(),
             tools: vec![],
             max_tokens: self.compaction.summary_profile.max_output_tokens,
-            cache_system: false,
+            cache_system: self.provider_cache_system_enabled(),
             thinking_budget: self.compaction.summary_profile.effort.thinking_budget(),
             reasoning_effort: self.compaction.summary_profile.effort.reasoning_effort(),
         };
@@ -45,7 +45,10 @@ impl Agent {
         let mut first_item_at: Option<Instant> = None;
         let mut stream_items: u32 = 0;
         let turn_id = TurnId(self.seq_turn);
-        let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
+        let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+        let usd_attempt = admission.attempt_guard;
+        let primary_route_permit = admission.primary_route_permit;
+        let use_hedge = admission.use_hedge;
         self.emit(
             turn_id,
             EventKind::Phase {
@@ -66,7 +69,9 @@ impl Agent {
                 progress.observe(&item);
             };
             let model_started = Instant::now();
-            let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
+            let response = self
+                .brokered_provider_turn(turn_id, &req, &mut sink, primary_route_permit, use_hedge)
+                .await;
             (response, model_started)
         };
         let (response, model_started) = response;
@@ -99,7 +104,9 @@ impl Agent {
                 Ok(text)
             }
             Err(error) => {
-                self.mark_usd_unknown();
+                // `brokered_provider_turn` has already made the physical route's typed
+                // Known/Unknown/NotDispatched terminal load-bearing. Do not overwrite a proven
+                // known failure or zero-dispatch refusal with a caller-level Unknown.
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
                 self.advance_turn().await?;
                 Err(error)
@@ -184,7 +191,8 @@ impl Agent {
             .estimate_uncached(&system, &rebuilt, &tools);
         let trigger = self.compaction.effective_trigger_tokens(
             self.model_context_window,
-            self.model_max_output_tokens.unwrap_or(8192),
+            self.model_max_output_tokens
+                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
         );
         let compaction = iteron_ctx::CompactionEvidence {
             trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
@@ -207,10 +215,13 @@ impl Agent {
         let mut ledger =
             iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
         ledger.model_context_window = self.model_context_window;
-        ledger.usable_window = self.model_context_window.map(|window| {
-            window.saturating_sub(u64::from(self.model_max_output_tokens.unwrap_or(8192)))
-        });
-        ledger.output_reserved_tokens = u64::from(self.model_max_output_tokens.unwrap_or(8192));
+        let output_reserve = self
+            .model_max_output_tokens
+            .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+        ledger.usable_window = self
+            .model_context_window
+            .map(|window| window.saturating_sub(u64::from(output_reserve)));
+        ledger.output_reserved_tokens = u64::from(output_reserve);
         ledger.record_transform(iteron_ctx::ContextTransformEvidence {
             kind: iteron_ctx::ContextTransformKind::Compact,
             policy_id: "core/compaction@1".into(),
@@ -334,7 +345,9 @@ impl Agent {
         // Same ceiling rule as the request path: a declared capability is used as declared, and
         // 8192 is the default for an UNKNOWN one only (#I-02). Clamping here would plan against a
         // window the route does not actually have.
-        let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+        let request_max_tokens = self
+            .model_max_output_tokens
+            .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
         let Some(plan) = self.compaction.plan_at_turn_end(
             &self.effective_system(),
             &messages,

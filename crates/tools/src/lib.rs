@@ -11,6 +11,7 @@ use std::time::Instant;
 
 mod edit;
 mod egress;
+mod execution_policy;
 mod fs_tools;
 mod git;
 mod git_changes;
@@ -38,21 +39,28 @@ mod workspace_boundary;
 mod write_file;
 
 pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
+pub use web::WEB_SEARCH_RESULT_CAP;
 
 pub use edit::apply_unique_edit;
 pub use egress::{EgressAllowPolicy, EgressPolicyError, MAX_EGRESS_HOST_BYTES, MAX_EGRESS_HOSTS};
+pub use execution_policy::{
+    DirectoryListPolicy, GitPolicy, GlobPolicy, GrepPolicy, ObservationToolPolicy,
+    ObservationToolPolicyError, ReadFilePolicy, RepoMapPolicy, ShellPolicy, WebFetchPolicy,
+};
 pub use lsp::{
     LanguageServerRoute, LspControl, LspControlError, LspHealth, LspLanguageRoute, LspPolicyError,
     LspRecoveryPolicy, LspRuntimePolicy, MAX_LSP_BACKOFF_MILLISECONDS, MAX_LSP_POOL_SERVERS,
     MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS, MAX_LSP_RESTARTS,
 };
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
+pub use memo::PureMemoCachePolicy;
 use memo::{Lookup, Memo};
 pub use process::{
-    InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS, MAX_IDLE_STALL_MILLISECONDS,
+    ChildProcessEnvironmentPolicy, InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS,
+    MAX_CHILD_ENV_BYTES, MAX_CHILD_ENV_ENTRIES, MAX_IDLE_STALL_MILLISECONDS,
     MAX_STDIN_POLL_MILLISECONDS, PersistentBackendSelection, ProcessControl, ProcessControlError,
-    ProcessHealth, ProcessLifecycleKind, ProcessLifecycleNotice, ProcessLifecycleObserver,
-    ProcessPolicyError, ProcessRuntimePolicy,
+    ProcessCwdPolicy, ProcessCwdScope, ProcessHealth, ProcessLaunchPolicy, ProcessLifecycleKind,
+    ProcessLifecycleNotice, ProcessLifecycleObserver, ProcessPolicyError, ProcessRuntimePolicy,
 };
 pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
@@ -202,6 +210,9 @@ pub struct Registry {
     /// without rebuilding them and invalidating prompt-cache identity.
     confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
     egress_allow_policy: std::sync::Arc<std::sync::OnceLock<Option<EgressAllowPolicy>>>,
+    observation_tool_policy: std::sync::Arc<std::sync::OnceLock<ObservationToolPolicy>>,
+    process_launch_policy:
+        std::sync::Arc<std::sync::OnceLock<process::InstalledProcessLaunchPolicy>>,
     /// Fail-closed path scope used only by a host-provisioned isolated writer. Ordinary operator
     /// registries intentionally retain the owner-directed host-wide path behavior documented by
     /// [`resolve_in_root`].
@@ -212,6 +223,25 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Process-wide immutable owner of whether independent PURE calls may overlap. The instance
+    /// method below delegates to this owner so resume admission can re-sample the same physical
+    /// invariant without constructing a synthetic registry.
+    pub const fn pure_overlap_owner() -> bool {
+        true
+    }
+
+    /// Fixed product invariant consumed by the streaming scheduler before it dispatches a pure
+    /// call. Hooks and policy admission may narrow this to deferred execution; they never expand
+    /// the set of eligible calls.
+    pub const fn pure_overlap_enabled(&self) -> bool {
+        Self::pure_overlap_owner()
+    }
+
+    /// Exact policy of this registry's physical memo owner.
+    pub fn pure_memo_cache_policy(&self) -> PureMemoCachePolicy {
+        self.memo.policy()
+    }
+
     /// Build the default coding-agent tool set rooted at `root` (the repo the agent works in).
     pub fn coding_agent(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
         Self::coding_agent_with_lsp_routes(root, Vec::new())
@@ -230,6 +260,8 @@ impl Registry {
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
+            observation_tool_policy: Default::default(),
+            process_launch_policy: Default::default(),
             workspace_boundary: false,
             process_control: None,
             lsp_control: None,
@@ -271,6 +303,8 @@ impl Registry {
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
+            observation_tool_policy: Default::default(),
+            process_launch_policy: Default::default(),
             workspace_boundary: true,
             process_control: None,
             lsp_control: None,
@@ -299,6 +333,8 @@ impl Registry {
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
+            observation_tool_policy: Default::default(),
+            process_launch_policy: Default::default(),
             workspace_boundary: false,
             process_control: None,
             lsp_control: None,
@@ -587,6 +623,76 @@ impl Registry {
         self.egress_allow_policy.clone()
     }
 
+    /// Snapshot the installed immutable egress owner. The outer `Option` distinguishes an
+    /// unconfigured registry from the explicitly unconfined `None` policy.
+    pub fn installed_egress_allow_policy(&self) -> Option<Option<EgressAllowPolicy>> {
+        self.egress_allow_policy.get().cloned()
+    }
+
+    /// Install the immutable bounded-observation policy before the first tool dispatch.
+    pub fn install_observation_tool_policy(
+        &self,
+        policy: ObservationToolPolicy,
+    ) -> Result<(), ObservationToolPolicyError> {
+        let policy = policy
+            .validate()
+            .map_err(ObservationToolPolicyError::Invalid)?;
+        self.observation_tool_policy
+            .set(policy)
+            .map_err(|_| ObservationToolPolicyError::AlreadyInstalled)
+    }
+
+    pub(crate) fn observation_tool_policy_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::OnceLock<ObservationToolPolicy>> {
+        self.observation_tool_policy.clone()
+    }
+
+    pub fn installed_observation_tool_policy(&self) -> Option<ObservationToolPolicy> {
+        self.observation_tool_policy.get().copied()
+    }
+
+    /// Freeze the process working-directory and bounded ambient-environment owners before any
+    /// process effect. The private values are captured once here; later environment mutation or
+    /// resume-time config drift cannot change what a child inherits.
+    pub fn install_process_launch_policy(
+        &self,
+        policy: ProcessLaunchPolicy,
+    ) -> Result<(), ProcessPolicyError> {
+        let policy = ProcessLaunchPolicy::new(policy.cwd, policy.environment)?;
+        let sensitive = self
+            .sensitive_env_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let child_environment = iteron_sandbox::bounded_child_environment(
+            policy.environment.reuse,
+            policy.environment.max_entries,
+            policy.environment.max_bytes,
+            &policy.environment.blocked_names,
+            &sensitive,
+        )
+        .map_err(|_| ProcessPolicyError::EnvironmentPolicy)?;
+        self.process_launch_policy
+            .set(process::InstalledProcessLaunchPolicy {
+                policy,
+                child_environment,
+            })
+            .map_err(|_| ProcessPolicyError::LaunchPolicyAlreadyInstalled)
+    }
+
+    pub fn installed_process_launch_policy(&self) -> Option<ProcessLaunchPolicy> {
+        self.process_launch_policy
+            .get()
+            .map(|installed| installed.policy.clone())
+    }
+
+    pub(crate) fn process_launch_policy_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::OnceLock<process::InstalledProcessLaunchPolicy>> {
+        self.process_launch_policy.clone()
+    }
+
     /// Execute a tool call. `latency_ms` is measured here (tau_wall contribution for obs). An
     /// EFFECTING tool bumps the memo generation on completion, invalidating every cached pure
     /// read (a write must never leave a stale read servable).
@@ -639,6 +745,19 @@ impl Registry {
     /// Memo hit/miss counts (for obs telemetry).
     pub fn memo_stats(&self) -> (u64, u64) {
         self.memo.stats()
+    }
+
+    /// Install the immutable, run-pinned lifetime of deterministic pure-tool results. Zero turns
+    /// reuse off without disabling the pure executor itself.
+    pub fn install_tool_result_cache_ttl(&self, ttl_seconds: u64) -> Result<(), ToolError> {
+        self.memo
+            .install_ttl_seconds(ttl_seconds)
+            .map_err(|reason| ToolError::Registration(reason.into()))
+    }
+
+    /// Exact live memo-owner value used by tunables activation evidence and adoption checks.
+    pub fn tool_result_cache_ttl_seconds(&self) -> u64 {
+        self.memo.ttl_seconds()
     }
 
     /// Invalidate pure observations after an explicit ambient-state mutation that happened outside
@@ -978,6 +1097,8 @@ mod tests {
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
+            observation_tool_policy: Default::default(),
+            process_launch_policy: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -1037,6 +1158,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "v1").unwrap();
         let reg = Registry::coding_agent(&root).unwrap();
+        reg.install_observation_tool_policy(ObservationToolPolicy::default())
+            .unwrap();
 
         let read = |n: &str| ToolUse {
             id: n.into(),
@@ -1085,6 +1208,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "v1").unwrap();
         let mut registry = Registry::read_only(&root).unwrap();
+        registry
+            .install_observation_tool_policy(ObservationToolPolicy::default())
+            .unwrap();
         registry
             .register_external(
                 ToolSpec {

@@ -18,6 +18,7 @@ pub(crate) struct RuntimeOperatorStatusSources {
     context_ledgers: iteron_ctx::ContextLedgerStore,
     session_spawns: Arc<SessionSpawnLedger>,
     settled_budget: RuntimeBudgetHealth,
+    runtime_policy: super::RuntimePolicyOverlayHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +34,9 @@ pub(crate) struct RuntimeOperatorStatusSnapshot {
     /// health above remain live while a turn runs; this field never pretends to race the Agent's
     /// exclusive ledger borrow.
     pub(crate) settled_budget: RuntimeBudgetHealth,
+    /// Ordered current policy from the live resident owner. This is deliberately not copied from
+    /// the frontend's last terminal-event cache.
+    pub(crate) runtime_policy: Option<super::RuntimePolicyOverlaySnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +80,7 @@ impl Agent {
                 tool_calls: self.ledger.tool_calls,
                 tool_errors: self.ledger.tool_errors,
             },
+            runtime_policy: self.runtime_policy_overlay_handle(),
         }
     }
 }
@@ -102,6 +107,7 @@ impl RuntimeOperatorStatusSources {
                 session_spawns_remaining: self.session_spawns.limit().saturating_sub(admitted),
             },
             settled_budget: self.settled_budget.clone(),
+            runtime_policy: self.runtime_policy.snapshot(),
         }
     }
 }

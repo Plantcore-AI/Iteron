@@ -213,6 +213,26 @@ impl Agent {
         let ceiling = CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling);
         let opportunity =
             self.begin_policy_decision(policy_evidence::ROUTER_SLOT, Some(TurnId(self.seq_turn)))?;
+        if self.execution_policy.route_topology
+            == crate::runtime_tunables::execution_policy::RouteTopology::Direct
+        {
+            let route = iteron_agents::RouterRoute::direct(iteron_agents::TaskClass::Localized);
+            self.append_policy_decision(
+                opportunity,
+                policy_evidence::PolicyDecisionDraft::selected(
+                    policy_evidence::ROUTER_SLOT,
+                    &[
+                        iteron_protocol::PolicyActionV1::RouterDirect,
+                        iteron_protocol::PolicyActionV1::RouterFanOut,
+                    ],
+                    iteron_protocol::PolicyActionV1::RouterDirect,
+                    "iteron:router-features-v1",
+                    &(&observation, route),
+                    &"immutable_route_topology_refuses_fan_out",
+                )?,
+            )?;
+            return Ok(route);
+        }
         match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling)
         {
             Ok(proposal) => {
@@ -224,8 +244,16 @@ impl Agent {
                 self.append_policy_decision(
                     opportunity,
                     policy_evidence::PolicyDecisionDraft::selected(
-                        &["direct", "fan_out"],
-                        action,
+                        policy_evidence::ROUTER_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::RouterDirect,
+                            iteron_protocol::PolicyActionV1::RouterFanOut,
+                        ],
+                        if action == "fan_out" {
+                            iteron_protocol::PolicyActionV1::RouterFanOut
+                        } else {
+                            iteron_protocol::PolicyActionV1::RouterDirect
+                        },
                         "iteron:router-features-v1",
                         &(&observation, proposal.route),
                         &"fan_out_may_only_narrow_caller_ceiling",
@@ -237,7 +265,11 @@ impl Agent {
                 self.append_policy_decision(
                     opportunity,
                     policy_evidence::PolicyDecisionDraft::baseline_fallback(
-                        &["direct", "fan_out"],
+                        policy_evidence::ROUTER_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::RouterDirect,
+                            iteron_protocol::PolicyActionV1::RouterFanOut,
+                        ],
                         "iteron:router-features-v1",
                         &observation,
                         &"refusal_falls_back_to_direct",
@@ -262,13 +294,14 @@ impl Agent {
     /// Malformed/refusing replacements fail closed to one permit; no slot can exceed the runtime's
     /// existing product ceiling.
     pub(super) fn scheduled_tool_concurrency(&mut self) -> Result<usize, KernelError> {
-        let max_concurrency = u32::try_from(self.max_tool_concurrency)
+        let physical_ceiling = super::effecting_tool_admission_policy().max_concurrency;
+        let max_concurrency = u32::try_from(self.max_tool_concurrency.min(physical_ceiling))
             .unwrap_or(u32::MAX)
             .max(1);
         let opportunity = self
             .begin_policy_decision(policy_evidence::SCHEDULER_SLOT, Some(TurnId(self.seq_turn)))?;
         let observation = match iteron_sched::SchedulerSlotObservation::baseline(
-            iteron_sched::BackoffPolicy::default(),
+            self.retry_policy,
             max_concurrency,
         ) {
             Ok(observation) => observation,
@@ -276,7 +309,11 @@ impl Agent {
                 self.append_policy_decision(
                     opportunity,
                     policy_evidence::PolicyDecisionDraft::baseline_fallback(
-                        &["bounded_plan", "single_permit"],
+                        policy_evidence::SCHEDULER_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::SchedulerBoundedPlan,
+                            iteron_protocol::PolicyActionV1::SchedulerSinglePermit,
+                        ],
                         "iteron:scheduler-features-v1",
                         &max_concurrency,
                         &"invalid_observation_falls_back_to_one_permit",
@@ -294,8 +331,12 @@ impl Agent {
                 self.append_policy_decision(
                     opportunity,
                     policy_evidence::PolicyDecisionDraft::selected(
-                        &["bounded_plan", "single_permit"],
-                        "bounded_plan",
+                        policy_evidence::SCHEDULER_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::SchedulerBoundedPlan,
+                            iteron_protocol::PolicyActionV1::SchedulerSinglePermit,
+                        ],
+                        iteron_protocol::PolicyActionV1::SchedulerBoundedPlan,
                         "iteron:scheduler-features-v1",
                         &(&observation, proposal.plan),
                         &"strategy_may_only_narrow_retry_and_concurrency",
@@ -307,7 +348,11 @@ impl Agent {
                 self.append_policy_decision(
                     opportunity,
                     policy_evidence::PolicyDecisionDraft::baseline_fallback(
-                        &["bounded_plan", "single_permit"],
+                        policy_evidence::SCHEDULER_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::SchedulerBoundedPlan,
+                            iteron_protocol::PolicyActionV1::SchedulerSinglePermit,
+                        ],
                         "iteron:scheduler-features-v1",
                         &observation,
                         &"strategy_refusal_falls_back_to_one_permit",

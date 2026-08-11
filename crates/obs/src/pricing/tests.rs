@@ -145,6 +145,7 @@ fn replay_reconstructs_only_durable_counters_and_marks_wall_time_unknown() {
             id: EffectId("unknown-effect".into()),
             tool: "remote_write".into(),
             reason: "typed fixture".into(),
+            provider_route_attempt: None,
         }),
     ] {
         observe(&mut replay, &event, &mut restored).unwrap();

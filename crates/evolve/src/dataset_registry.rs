@@ -1,11 +1,17 @@
 //! Consent-aware registry for datasets assembled only from authenticated trajectories.
 
+use crate::private_derivatives::{
+    EvolutionDerivativeKind, EvolutionPrivateContent, EvolutionPrivateContentError,
+    source_for_trajectory,
+};
 use crate::{
-    EvolutionVerifier, MAX_SHORT_STRING_BYTES, PolicyManifest, SignedTrajectory,
-    VerifiedTrainingDataset, VerifiedTrajectory, VerifierError, validate_nonempty_string,
+    EvolutionVerifier, MAX_SHORT_STRING_BYTES, PolicyManifest, ProducedPolicyCandidate,
+    SignedTrajectory, TrajectoryEnvelope, VerifiedTrainingDataset, VerifiedTrajectory,
+    VerifierError, validate_nonempty_string,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 pub const MAX_REGISTERED_DATASETS: usize = 1_024;
 pub const MAX_DATASET_REVOCATIONS: usize = 4_096;
@@ -75,11 +81,28 @@ pub struct ConsentAwareDatasetRegistry {
     revocations: BTreeMap<(String, String), Revocation>,
     audit: Vec<DatasetAuditEvent>,
     next_seq: u64,
+    private_content: Option<EvolutionPrivateContent>,
 }
 
 impl ConsentAwareDatasetRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Open the production registry with dataset/candidate bytes behind the record erasure gate.
+    pub fn open_record_backed(
+        manifest_root: &Path,
+        content_runs_dir: &Path,
+        tenant_id: iteron_protocol::TenantId,
+    ) -> Result<Self, EvolutionPrivateContentError> {
+        Ok(Self {
+            private_content: Some(EvolutionPrivateContent::open(
+                manifest_root,
+                content_runs_dir,
+                tenant_id,
+            )?),
+            ..Self::default()
+        })
     }
 
     pub fn revoke_run(
@@ -169,6 +192,25 @@ impl ConsentAwareDatasetRegistry {
                 let dataset = self.datasets.get(digest).ok_or_else(|| {
                     DatasetRegistryError::UnregisteredManifestDataset(digest.clone())
                 })?;
+                if let Some(private) = &self.private_content {
+                    let bytes = private.read(EvolutionDerivativeKind::Dataset, digest)?;
+                    let envelopes: Vec<TrajectoryEnvelope> = serde_json::from_slice(&bytes)
+                        .map_err(EvolutionPrivateContentError::from)?;
+                    if envelopes.len() != dataset.members.len()
+                        || envelopes
+                            .iter()
+                            .zip(&dataset.members)
+                            .any(|(envelope, member)| {
+                                envelope.tenant_id.0 != member.tenant_id
+                                    || envelope.run_id.0 != member.run_id
+                                    || envelope.task_id != member.task_id
+                            })
+                    {
+                        return Err(DatasetRegistryError::PrivateContent(
+                            EvolutionPrivateContentError::ContentDigestMismatch,
+                        ));
+                    }
+                }
                 if let Some(member) = dataset.members.iter().find(|member| {
                     self.revocations
                         .contains_key(&(member.tenant_id.clone(), member.run_id.clone()))
@@ -193,6 +235,44 @@ impl ConsentAwareDatasetRegistry {
             .contains_key(&(tenant_id.to_owned(), run_id.to_owned()))
     }
 
+    /// Publish an inert candidate artifact as a derivative of its registered training dataset.
+    /// A record-backed promotion authority will refuse the candidate unless this handoff exists.
+    pub fn persist_candidate(
+        &self,
+        candidate: &ProducedPolicyCandidate,
+    ) -> Result<(), DatasetRegistryError> {
+        let Some(private) = &self.private_content else {
+            return Ok(());
+        };
+        let digest = candidate
+            .manifest()
+            .training_dataset_digest
+            .as_ref()
+            .ok_or(DatasetRegistryError::CandidateMissingTrainingDataset)?;
+        if !self.datasets.contains_key(digest) {
+            return Err(DatasetRegistryError::UnregisteredManifestDataset(
+                digest.clone(),
+            ));
+        }
+        let source = private.source(EvolutionDerivativeKind::Dataset, digest)?;
+        private.store(
+            EvolutionDerivativeKind::Candidate,
+            candidate.candidate_digest(),
+            candidate.artifact_bytes(),
+            &[source],
+        )?;
+        let hydrated = private.read(
+            EvolutionDerivativeKind::Candidate,
+            candidate.candidate_digest(),
+        )?;
+        if hydrated != candidate.artifact_bytes() {
+            return Err(DatasetRegistryError::PrivateContent(
+                EvolutionPrivateContentError::ContentDigestMismatch,
+            ));
+        }
+        Ok(())
+    }
+
     fn register(
         &mut self,
         dataset: &VerifiedTrainingDataset<'_>,
@@ -204,6 +284,46 @@ impl ConsentAwareDatasetRegistry {
             .copied()
             .map(DatasetMemberIdentity::from_verified)
             .collect();
+        if let Some(private) = &self.private_content {
+            if dataset
+                .members()
+                .iter()
+                .any(|member| member.envelope().tenant_id != *private.tenant_id())
+            {
+                return Err(DatasetRegistryError::PrivateContent(
+                    EvolutionPrivateContentError::TenantMismatch,
+                ));
+            }
+            let envelopes: Vec<_> = dataset
+                .members()
+                .iter()
+                .map(|member| member.envelope())
+                .collect();
+            let bytes =
+                serde_json::to_vec(&envelopes).map_err(EvolutionPrivateContentError::from)?;
+            if crate::verifier_crypto::sha256_hex(&bytes) != dataset.digest() {
+                return Err(DatasetRegistryError::PrivateContent(
+                    EvolutionPrivateContentError::ContentDigestMismatch,
+                ));
+            }
+            let sources = dataset
+                .members()
+                .iter()
+                .map(|member| {
+                    source_for_trajectory(
+                        private.tenant_id(),
+                        &member.envelope().run_id.0,
+                        member.envelope_digest(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            private.store(
+                EvolutionDerivativeKind::Dataset,
+                dataset.digest(),
+                &bytes,
+                &sources,
+            )?;
+        }
         if let Some(existing) = self.datasets.get(dataset.digest()) {
             return if existing.members == members {
                 Ok(())
@@ -254,6 +374,8 @@ pub enum DatasetRegistryError {
     InvalidContract(#[from] crate::ContractError),
     #[error("trajectory verification failed: {0}")]
     Verification(#[from] VerifierError),
+    #[error("private dataset/candidate storage failed: {0}")]
+    PrivateContent(#[from] EvolutionPrivateContentError),
     #[error("revocation reason contains a control character")]
     InvalidRevocationReason,
     #[error("run is already revoked with a different reason")]
@@ -272,4 +394,6 @@ pub enum DatasetRegistryError {
     UnregisteredManifestDataset(String),
     #[error("registered dataset contains revoked run `{tenant_id}/{run_id}`")]
     RegisteredDatasetContainsRevokedRun { tenant_id: String, run_id: String },
+    #[error("a persisted candidate must name one registered training dataset")]
+    CandidateMissingTrainingDataset,
 }

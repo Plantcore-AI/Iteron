@@ -20,6 +20,8 @@ pub(super) struct Layout {
     pub(super) keys: PathBuf,
     pub(super) refs: PathBuf,
     pub(super) run_refs: PathBuf,
+    pub(super) lineage_from: PathBuf,
+    pub(super) lineage_to: PathBuf,
     pub(super) owner_locks: PathBuf,
     pub(super) tombstones: PathBuf,
     pub(super) state: PathBuf,
@@ -41,6 +43,8 @@ impl Layout {
             keys: scope.join("keys"),
             refs: scope.join("refs"),
             run_refs: scope.join("run-refs"),
+            lineage_from: scope.join("lineage-from"),
+            lineage_to: scope.join("lineage-to"),
             owner_locks: scope.join("owner-locks"),
             tombstones: scope.join("tombstones"),
             state: scope.join("revocations.json"),
@@ -73,6 +77,8 @@ pub(super) fn ensure_layout(layout: &Layout) -> Result<(), ContentStoreError> {
         &layout.keys,
         &layout.refs,
         &layout.run_refs,
+        &layout.lineage_from,
+        &layout.lineage_to,
         &layout.owner_locks,
         &layout.tombstones,
     ] {
@@ -419,7 +425,7 @@ pub(super) fn read_limited(path: &Path, max: usize) -> std::io::Result<Vec<u8>> 
     Ok(bytes)
 }
 
-fn private_replace(path: &Path, bytes: &[u8]) -> Result<(), ContentStoreError> {
+pub(super) fn private_replace(path: &Path, bytes: &[u8]) -> Result<(), ContentStoreError> {
     crate::cache_io::atomic_replace(path, bytes)?;
     set_private_file(path)?;
     File::open(path)?.sync_all()?;

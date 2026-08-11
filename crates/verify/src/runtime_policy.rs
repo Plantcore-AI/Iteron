@@ -12,15 +12,125 @@ pub const MAX_VERIFICATION_COMMANDS: usize = 64;
 pub const MAX_VERIFICATION_PATHS: usize = 100_000;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 4_096;
 pub const MAX_PHYSICAL_VERIFIER_RUNS: usize = 64;
+pub const MAX_VERIFICATION_FEEDBACK_BYTES: usize = 2 * 1024 * 1024;
+pub const DEFAULT_VERIFIER_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_VERIFICATION_REPAIR_ATTEMPTS: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationFailureClass {
+    TestFailure,
+    TimedOut,
+    InfrastructureFailure,
+    Cancelled,
+}
+
+impl VerificationFailureClass {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::TestFailure => "verification.test_failure",
+            Self::TimedOut => "verification.timed_out",
+            Self::InfrastructureFailure => "verification.infrastructure_failure",
+            Self::Cancelled => "verification.cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownVerificationRetryAction {
+    Stop,
+    Operator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationRetryPolicy {
+    pub eligible_classes: Vec<VerificationFailureClass>,
+    pub max_attempts: u32,
+    pub unknown: UnknownVerificationRetryAction,
+}
+
+impl Default for VerificationRetryPolicy {
+    fn default() -> Self {
+        Self {
+            eligible_classes: vec![VerificationFailureClass::TestFailure],
+            max_attempts: DEFAULT_VERIFICATION_REPAIR_ATTEMPTS,
+            unknown: UnknownVerificationRetryAction::Stop,
+        }
+    }
+}
+
+impl VerificationRetryPolicy {
+    pub fn admits(&self, class: VerificationFailureClass) -> bool {
+        self.eligible_classes.contains(&class)
+    }
+}
+
+/// Fixed recovery escalation owned by the physical verification loop.
+///
+/// An eligible candidate failure consumes one bounded repair attempt, returns a new model turn to
+/// replan/fix, and eventually stops at the immutable attempt ceiling. Ineligible failure classes
+/// stop immediately. Keeping this typed owner next to the retry policy lets composition attest the
+/// exact FixedHidden family instead of inventing resolver evidence disconnected from execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerificationRecoveryEscalationPolicy;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationRecoveryAction {
+    RetryReplan,
+    StopIneligible,
+    StopExhausted,
+}
+
+impl VerificationRecoveryEscalationPolicy {
+    pub const ID: &'static str = "retry_replan_stop";
+
+    pub fn decide(
+        self,
+        retry: &VerificationRetryPolicy,
+        class: VerificationFailureClass,
+        completed_attempts: u32,
+    ) -> VerificationRecoveryAction {
+        if !retry.admits(class) {
+            VerificationRecoveryAction::StopIneligible
+        } else if completed_attempts.saturating_add(1) >= retry.max_attempts {
+            VerificationRecoveryAction::StopExhausted
+        } else {
+            VerificationRecoveryAction::RetryReplan
+        }
+    }
+}
+
+pub const fn verification_recovery_escalation_policy() -> VerificationRecoveryEscalationPolicy {
+    VerificationRecoveryEscalationPolicy
+}
+
+/// Immutable context-admission bounds for physical and aggregate verifier feedback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationFeedbackTailPolicy {
+    pub command_output_bytes: usize,
+    pub oracle_output_bytes: usize,
+    pub total_bytes: usize,
+}
+
+impl Default for VerificationFeedbackTailPolicy {
+    fn default() -> Self {
+        Self {
+            command_output_bytes: 1_000,
+            oracle_output_bytes: 4_000,
+            total_bytes: 3_000,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationSelectionMode {
-    /// Run the first admitted command. Intended for the narrowest feedback loop.
+    /// Run the trusted incremental feedback command(s), then the mandatory full workspace gate.
     Incremental,
-    /// Run the admitted impacted-command prefix selected by the composition root.
+    /// Run the trusted impacted feedback command(s), then the mandatory full workspace gate.
     Impacted,
-    /// Run every admitted command before accepting completion.
+    /// Run the mandatory full workspace gate.
     Full,
 }
 
@@ -45,7 +155,7 @@ impl Default for VerificationCheckpointPolicy {
         Self {
             turn_boundary: true,
             before_verification: false,
-            before_drain: false,
+            before_drain: true,
             minimum_turn_interval: 1,
         }
     }
@@ -55,9 +165,8 @@ impl Default for VerificationCheckpointPolicy {
 pub struct VerificationRestorePolicy {
     pub mode: VerificationRollbackMode,
     pub paths: Vec<String>,
-    /// This is an assertion about the provenance of the resolved value, not an instruction to
-    /// prompt from inside the kernel. A trusted composition root may set it false only after it
-    /// has independently established operator authority.
+    /// Assertion that the runtime must obtain one live exact operator decision immediately before
+    /// this destructive effect. It is fixed true by validation and is never a configuration knob.
     pub require_operator_confirmation: bool,
 }
 
@@ -109,6 +218,9 @@ impl Default for VerificationQuorumPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationRuntimePolicy {
+    /// Exact per-command wall deadline, independently tightened by the enclosing run deadline.
+    #[serde(default = "default_verifier_timeout_secs")]
+    pub verifier_timeout_secs: u64,
     pub selection: VerificationSelectionMode,
     pub required_commands: Vec<String>,
     pub max_commands: u16,
@@ -116,11 +228,14 @@ pub struct VerificationRuntimePolicy {
     pub quorum: VerificationQuorumPolicy,
     pub checkpoint: VerificationCheckpointPolicy,
     pub restore: VerificationRestorePolicy,
+    pub feedback: VerificationFeedbackTailPolicy,
+    pub retry: VerificationRetryPolicy,
 }
 
 impl Default for VerificationRuntimePolicy {
     fn default() -> Self {
         Self {
+            verifier_timeout_secs: DEFAULT_VERIFIER_TIMEOUT_SECS,
             selection: VerificationSelectionMode::Full,
             required_commands: Vec::new(),
             max_commands: 1,
@@ -128,6 +243,8 @@ impl Default for VerificationRuntimePolicy {
             quorum: VerificationQuorumPolicy::default(),
             checkpoint: VerificationCheckpointPolicy::default(),
             restore: VerificationRestorePolicy::default(),
+            feedback: VerificationFeedbackTailPolicy::default(),
+            retry: VerificationRetryPolicy::default(),
         }
     }
 }
@@ -141,6 +258,9 @@ pub enum VerificationPolicyError {
     InvalidQuorum,
     InvalidRestorePolicy,
     InvalidCheckpointPolicy,
+    InvalidFeedbackPolicy,
+    InvalidTimeoutPolicy,
+    InvalidRetryPolicy,
 }
 
 impl std::fmt::Display for VerificationPolicyError {
@@ -153,6 +273,9 @@ impl std::fmt::Display for VerificationPolicyError {
             Self::InvalidQuorum => "verification quorum is inconsistent",
             Self::InvalidRestorePolicy => "verification restore policy is inconsistent",
             Self::InvalidCheckpointPolicy => "verification checkpoint cadence is inconsistent",
+            Self::InvalidFeedbackPolicy => "verification feedback bounds are inconsistent",
+            Self::InvalidTimeoutPolicy => "verification timeout is outside its bounded domain",
+            Self::InvalidRetryPolicy => "verification retry policy is inconsistent",
         })
     }
 }
@@ -161,6 +284,20 @@ impl std::error::Error for VerificationPolicyError {}
 
 impl VerificationRuntimePolicy {
     pub fn validate(&self) -> Result<(), VerificationPolicyError> {
+        if !(1..=86_400).contains(&self.verifier_timeout_secs) {
+            return Err(VerificationPolicyError::InvalidTimeoutPolicy);
+        }
+        if self.retry.max_attempts == 0
+            || self.retry.max_attempts > 64
+            || self.retry.eligible_classes.len() > 4
+            || self
+                .retry
+                .eligible_classes
+                .windows(2)
+                .any(|classes| classes[0] >= classes[1])
+        {
+            return Err(VerificationPolicyError::InvalidRetryPolicy);
+        }
         let limit = usize::from(self.max_commands);
         if limit == 0
             || limit > MAX_VERIFICATION_COMMANDS
@@ -205,10 +342,18 @@ impl VerificationRuntimePolicy {
         {
             return Err(VerificationPolicyError::InvalidQuorum);
         }
-        if self.checkpoint.minimum_turn_interval > 10_000 {
+        if !self.checkpoint.before_drain || self.checkpoint.minimum_turn_interval > 10_000 {
             return Err(VerificationPolicyError::InvalidCheckpointPolicy);
         }
-        if self.restore.paths.len() > MAX_VERIFICATION_PATHS
+        if self.feedback.command_output_bytes > 1_048_576
+            || self.feedback.oracle_output_bytes > 1_048_576
+            || self.feedback.total_bytes == 0
+            || self.feedback.total_bytes > MAX_VERIFICATION_FEEDBACK_BYTES
+        {
+            return Err(VerificationPolicyError::InvalidFeedbackPolicy);
+        }
+        if !self.restore.require_operator_confirmation
+            || self.restore.paths.len() > MAX_VERIFICATION_PATHS
             || self.restore.paths.iter().any(|path| {
                 path.is_empty()
                     || path.len() > MAX_VERIFICATION_COMMAND_BYTES
@@ -225,21 +370,17 @@ impl VerificationRuntimePolicy {
         Ok(())
     }
 
-    /// Commands selected for one completion claim. The composition root owns the ordering; this
-    /// method only applies the immutable bounded selection mode.
+    /// Commands selected for one completion claim. The trusted composition root has already
+    /// materialized the selected narrow feedback commands followed by the mandatory full
+    /// workspace gate. Runtime must execute the complete vector; applying `selection` again here
+    /// used to silently drop that final gate for incremental and impacted modes.
     pub fn selected_commands(&self) -> &[String] {
-        let count = match self.selection {
-            VerificationSelectionMode::Incremental => {
-                usize::from(!self.required_commands.is_empty())
-            }
-            VerificationSelectionMode::Impacted => self
-                .required_commands
-                .len()
-                .min(usize::from(self.quorum.verifiers).max(1)),
-            VerificationSelectionMode::Full => self.required_commands.len(),
-        };
-        &self.required_commands[..count]
+        &self.required_commands
     }
+}
+
+const fn default_verifier_timeout_secs() -> u64 {
+    DEFAULT_VERIFIER_TIMEOUT_SECS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,6 +476,101 @@ mod tests {
                 &[VerificationOutcome::Pass, VerificationOutcome::TestFailure]
             ),
             VerificationConsensus::Flaky
+        );
+    }
+
+    #[test]
+    fn drain_checkpoint_and_operator_confirmation_are_non_disableable_invariants() {
+        let mut policy = VerificationRuntimePolicy::default();
+        policy.checkpoint.before_drain = false;
+        assert_eq!(
+            policy.validate(),
+            Err(VerificationPolicyError::InvalidCheckpointPolicy)
+        );
+
+        let mut policy = VerificationRuntimePolicy::default();
+        policy.restore.require_operator_confirmation = false;
+        assert_eq!(
+            policy.validate(),
+            Err(VerificationPolicyError::InvalidRestorePolicy)
+        );
+    }
+
+    #[test]
+    fn verifier_timeout_is_bounded_and_part_of_the_typed_policy() {
+        let mut policy = VerificationRuntimePolicy::default();
+        policy.verifier_timeout_secs = 0;
+        assert_eq!(
+            policy.validate(),
+            Err(VerificationPolicyError::InvalidTimeoutPolicy)
+        );
+
+        policy.verifier_timeout_secs = 86_401;
+        assert_eq!(
+            policy.validate(),
+            Err(VerificationPolicyError::InvalidTimeoutPolicy)
+        );
+
+        policy.verifier_timeout_secs = 1;
+        policy
+            .validate()
+            .expect("one second is the minimum admitted timeout");
+    }
+
+    #[test]
+    fn retry_policy_is_typed_bounded_and_defaults_to_test_failures_only() {
+        let policy = VerificationRuntimePolicy::default();
+        assert!(policy.retry.admits(VerificationFailureClass::TestFailure));
+        assert!(!policy.retry.admits(VerificationFailureClass::TimedOut));
+        assert!(
+            !policy
+                .retry
+                .admits(VerificationFailureClass::InfrastructureFailure)
+        );
+        assert_eq!(policy.retry.max_attempts, 3);
+
+        let mut invalid = policy.clone();
+        invalid.retry.max_attempts = 0;
+        assert_eq!(
+            invalid.validate(),
+            Err(VerificationPolicyError::InvalidRetryPolicy)
+        );
+        invalid.retry.max_attempts = 65;
+        assert_eq!(
+            invalid.validate(),
+            Err(VerificationPolicyError::InvalidRetryPolicy)
+        );
+        invalid.retry.max_attempts = 2;
+        invalid.retry.eligible_classes = vec![
+            VerificationFailureClass::TimedOut,
+            VerificationFailureClass::TestFailure,
+        ];
+        assert_eq!(
+            invalid.validate(),
+            Err(VerificationPolicyError::InvalidRetryPolicy),
+            "canonical policy order prevents ambiguous checkpoint identity"
+        );
+    }
+
+    #[test]
+    fn fixed_recovery_owner_drives_retry_replan_then_stop() {
+        let retry = VerificationRetryPolicy::default();
+        let owner = verification_recovery_escalation_policy();
+        assert_eq!(
+            VerificationRecoveryEscalationPolicy::ID,
+            "retry_replan_stop"
+        );
+        assert_eq!(
+            owner.decide(&retry, VerificationFailureClass::TestFailure, 0),
+            VerificationRecoveryAction::RetryReplan
+        );
+        assert_eq!(
+            owner.decide(&retry, VerificationFailureClass::TestFailure, 2),
+            VerificationRecoveryAction::StopExhausted
+        );
+        assert_eq!(
+            owner.decide(&retry, VerificationFailureClass::TimedOut, 0),
+            VerificationRecoveryAction::StopIneligible
         );
     }
 }

@@ -18,16 +18,16 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Bounded connect timeout shared by every adapter's HTTP client.
-const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long an idle pooled connection is kept for the next turn. A coding turn is mostly the
-/// operator (or the model) thinking, and reqwest's 90s default evicts the connection during that
-/// pause: the next turn then pays a full TCP+TLS handshake again, measured at 0.78-1.02s on this
-/// network. 300s covers a long think without holding a connection open indefinitely.
-const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// TCP keepalive on the pooled connection, so a NAT or middlebox on the path does not silently
-/// drop a connection that is being kept for exactly that long think.
-const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+/// Bounded TCP/TLS connect timeout shared by every adapter's HTTP client and re-sampled by the
+/// run-genesis fixed-authority receipt.
+pub const fn provider_connect_timeout() -> Duration {
+    crate::provider_transport_timeout_policy().connect_tls
+}
+
+/// Exact pool owner consumed by the default transport and by the fixed-authority fact adapter.
+pub const fn provider_http_pool_policy() -> crate::ProviderTransportTimeoutPolicy {
+    crate::provider_transport_timeout_policy()
+}
 
 /// The concrete HTTP client an adapter dispatches through. Re-exported so a host
 /// implementing [`HttpTransport`] can name the port's return type without
@@ -54,7 +54,10 @@ pub trait HttpTransport: Send + Sync {
     /// Implementations MUST disable transparent redirects: the configured API
     /// root is an authority boundary, and an API key, prompt, or POST body must
     /// never be replayed to a redirect target chosen by the remote endpoint.
-    fn client(&self) -> Result<HttpClient, ProviderError>;
+    fn client(
+        &self,
+        policy: crate::ProviderTransportTimeoutPolicy,
+    ) -> Result<HttpClient, ProviderError>;
 }
 
 /// Default transport: the mandated secure client construction the adapters used
@@ -63,18 +66,88 @@ pub trait HttpTransport: Send + Sync {
 pub struct DefaultHttpTransport;
 
 impl HttpTransport for DefaultHttpTransport {
-    fn client(&self) -> Result<HttpClient, ProviderError> {
-        reqwest::Client::builder()
-            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+    fn client(
+        &self,
+        policy: crate::ProviderTransportTimeoutPolicy,
+    ) -> Result<HttpClient, ProviderError> {
+        let policy = policy.validate()?;
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(policy.connect_tls)
             // Connection reuse is a latency policy, not a tuning detail: without these two the
             // pool drops the connection across a long think and the next turn re-handshakes.
-            .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
-            .tcp_keepalive(HTTP_TCP_KEEPALIVE)
             // The configured API root is an authority boundary. Never replay an
             // API key, prompt, or POST body through an endpoint-chosen redirect.
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        if policy.connection_reuse {
+            builder = builder
+                .pool_idle_timeout(policy.pool_idle)
+                .tcp_keepalive((!policy.tcp_keepalive.is_zero()).then_some(policy.tcp_keepalive));
+        } else {
+            builder = builder.pool_max_idle_per_host(0).tcp_keepalive(None);
+        }
+        builder
             .build()
             .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))
+    }
+}
+
+/// A provider built before resume/fresh composition can still install the exact checkpointed
+/// transport policy before its first physical request. Custom injected transports remain fixed:
+/// Core never replaces an injected authority with its default network client.
+pub(crate) struct RuntimeHttpClient {
+    state: Mutex<(crate::ProviderTransportTimeoutPolicy, HttpClient)>,
+    default_reconfigurable: bool,
+}
+
+impl RuntimeHttpClient {
+    pub(crate) fn default_reconfigurable() -> Result<Self, ProviderError> {
+        let policy = crate::provider_transport_timeout_policy();
+        let client = DefaultHttpTransport.client(policy)?;
+        Ok(Self {
+            state: Mutex::new((policy, client)),
+            default_reconfigurable: true,
+        })
+    }
+
+    pub(crate) fn fixed(transport: &dyn HttpTransport) -> Result<Self, ProviderError> {
+        let policy = crate::provider_transport_timeout_policy();
+        let client = transport.client(policy)?;
+        Ok(Self {
+            state: Mutex::new((policy, client)),
+            default_reconfigurable: false,
+        })
+    }
+
+    pub(crate) fn inert() -> Self {
+        Self {
+            state: Mutex::new((
+                crate::provider_transport_timeout_policy(),
+                reqwest::Client::new(),
+            )),
+            default_reconfigurable: false,
+        }
+    }
+
+    pub(crate) fn client(
+        &self,
+        policy: crate::ProviderTransportTimeoutPolicy,
+    ) -> Result<HttpClient, ProviderError> {
+        let policy = policy.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ProviderError::Configuration("HTTP transport lock poisoned".into()))?;
+        if state.0 != policy {
+            if !self.default_reconfigurable {
+                return Err(ProviderError::Configuration(
+                    "injected HTTP transport does not attest the checkpointed transport policy"
+                        .into(),
+                ));
+            }
+            state.1 = DefaultHttpTransport.client(policy)?;
+            state.0 = policy;
+        }
+        Ok(state.1.clone())
     }
 }
 
@@ -3184,14 +3257,37 @@ mod tests {
         // reqwest exposes no getter for either option, so the audited policy is pinned as named
         // constants applied in the single client constructor; the behavioural half of this pin is
         // `a_second_turn_reuses_the_pooled_connection`.
-        assert_eq!(HTTP_POOL_IDLE_TIMEOUT, Duration::from_secs(300));
-        assert_eq!(HTTP_TCP_KEEPALIVE, Duration::from_secs(30));
+        let policy = provider_http_pool_policy();
+        assert_eq!(policy.pool_idle, Duration::from_secs(300));
+        assert_eq!(policy.tcp_keepalive, Duration::from_secs(30));
+        assert!(policy.connection_reuse);
         assert!(
-            HTTP_POOL_IDLE_TIMEOUT > Duration::from_secs(90),
+            policy.pool_idle > Duration::from_secs(90),
             "the pool must outlive a think longer than reqwest's 90s default, or the next turn \
              pays a fresh TLS handshake"
         );
-        assert!(DefaultHttpTransport.client().is_ok());
+        assert!(DefaultHttpTransport.client(policy).is_ok());
+    }
+
+    #[test]
+    fn checkpointed_transport_policy_reconfigures_default_but_not_injected_authority() {
+        let checkpointed = crate::ProviderTransportTimeoutPolicy {
+            connect_tls: Duration::from_secs(1),
+            request_total: Duration::from_secs(2),
+            stream_idle: Duration::from_secs(1),
+            pool_idle: Duration::from_secs(1),
+            tcp_keepalive: Duration::ZERO,
+            connection_reuse: false,
+        };
+        let default = RuntimeHttpClient::default_reconfigurable().unwrap();
+        assert!(default.client(checkpointed).is_ok());
+
+        let injected = RuntimeHttpClient::fixed(&DefaultHttpTransport).unwrap();
+        assert!(matches!(
+            injected.client(checkpointed),
+            Err(ProviderError::Configuration(message))
+                if message.contains("does not attest the checkpointed transport policy")
+        ));
     }
 
     #[tokio::test]
@@ -3231,7 +3327,9 @@ mod tests {
             sender.send(listener.accept().is_ok()).unwrap();
         });
 
-        let client = DefaultHttpTransport.client().unwrap();
+        let client = DefaultHttpTransport
+            .client(provider_http_pool_policy())
+            .unwrap();
         let url = format!("http://{address}/v1/messages");
         for _ in 0..2 {
             let response = client.get(&url).send().await.unwrap();

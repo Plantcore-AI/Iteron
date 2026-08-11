@@ -27,8 +27,6 @@ const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 1024;
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_REASONING_STATE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -43,7 +41,7 @@ pub struct OpenAiCompat {
     error_profile: ErrorProfile,
     route_scope: String,
     static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
-    client: reqwest::Client,
+    client: crate::catalog::RuntimeHttpClient,
 }
 
 impl OpenAiCompat {
@@ -61,7 +59,7 @@ impl OpenAiCompat {
                 error_profile: ErrorProfile::CustomConservative,
                 route_scope: direct_chat_route_scope(),
                 static_metadata: crate::StaticProviderMetadata::embedded(),
-                client: reqwest::Client::new(),
+                client: crate::catalog::RuntimeHttpClient::inert(),
             },
         }
     }
@@ -73,7 +71,8 @@ impl OpenAiCompat {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
+        let client = crate::catalog::RuntimeHttpClient::default_reconfigurable()?;
+        Self::with_client(key, api_root, client)
     }
 
     /// Build against an exact API root, obtaining the HTTP client from an injected
@@ -84,6 +83,18 @@ impl OpenAiCompat {
         api_root: ApiRoot,
         transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
+        Self::with_client(
+            key,
+            api_root,
+            crate::catalog::RuntimeHttpClient::fixed(transport)?,
+        )
+    }
+
+    fn with_client(
+        key: String,
+        api_root: ApiRoot,
+        client: crate::catalog::RuntimeHttpClient,
+    ) -> Result<Self, ProviderError> {
         Ok(OpenAiCompat {
             key,
             api_root: Some(api_root),
@@ -91,7 +102,7 @@ impl OpenAiCompat {
             error_profile: ErrorProfile::CustomConservative,
             route_scope: direct_chat_route_scope(),
             static_metadata: crate::StaticProviderMetadata::embedded(),
-            client: transport.client()?,
+            client,
         })
     }
 
@@ -877,14 +888,24 @@ impl Provider for OpenAiCompat {
                     .unwrap_or_else(|| "invalid API root".into()),
             )
         })?;
-        let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
+        let transport = req.controls.transport;
+        let deadline = Instant::now()
+            .checked_add(transport.request_total)
+            .ok_or_else(|| {
+                ProviderError::Configuration(
+                    "provider request total deadline exceeds the platform clock range".into(),
+                )
+            })?;
+        let client = self.client.client(transport)?;
         let body = self.body(req)?;
-        let request = self
-            .client
+        let request = client
             .post(api_root.endpoint("chat/completions")?)
             .bearer_auth(&self.key)
             .json(&body);
-        let resp = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, request.send())
+        let header_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(RESPONSE_HEADER_TIMEOUT);
+        let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| {
                 ProviderError::Http("OpenAI-compatible response headers timed out".into())
@@ -895,7 +916,9 @@ impl Provider for OpenAiCompat {
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
             let error = tokio::time::timeout(
-                RESPONSE_HEADER_TIMEOUT,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(RESPONSE_HEADER_TIMEOUT),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::OpenAiCompatibleChat,
@@ -936,7 +959,7 @@ impl Provider for OpenAiCompat {
                     "OpenAI-compatible stream exceeded total deadline".into(),
                 ));
             }
-            let wait = remaining.min(STREAM_IDLE_TIMEOUT);
+            let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
                 .map_err(|_| {

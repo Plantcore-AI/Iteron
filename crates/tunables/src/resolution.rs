@@ -22,7 +22,7 @@ use source_merge::{Selected, select_explicit};
 )]
 pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
     let prepared = crate::resolution_prepare::prepare(input).map_err(invalid_input)?;
-    let entries = families()
+    let mut entries = families()
         .iter()
         .map(|family| resolve_family(family, &prepared))
         .collect::<Vec<_>>();
@@ -33,6 +33,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
             crate::EXPECTED_FAMILY_COUNT
         )));
     }
+    crate::resolved_set_rules::enforce(&mut entries).map_err(invalid_input)?;
     let effective_digest_sha256 =
         crate::resolution_digest::effective_digest(&entries).map_err(invalid_input)?;
     let mut report = ResolutionReport {
@@ -44,6 +45,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
         effective_digest_sha256,
         resolution_digest_sha256: String::new(),
         profile_digest_sha256: prepared.profile_digest_sha256.clone(),
+        fixed_authority_attestations: Vec::new(),
         entries,
     };
     report.resolution_digest_sha256 =

@@ -4,6 +4,7 @@
 //! audited offline active-bundle pointer whose exact bytes can be handed to a separate human-owned
 //! release process.
 
+use crate::private_derivatives::{EvolutionDerivativeKind, EvolutionPrivateContent};
 use crate::promotion::{
     EvaluatorTrustAnchor, PromotionAuthorityError, PromotionControlPolicy, PromotionTrustAnchor,
 };
@@ -68,6 +69,7 @@ pub struct PromotionAuthority {
     pub(crate) evaluator_anchors: BTreeMap<String, EvaluatorTrustAnchor>,
     pub(crate) journal: PromotionJournal,
     pub(crate) state: AuthorityState,
+    private_content: Option<EvolutionPrivateContent>,
 }
 
 impl PromotionAuthority {
@@ -122,8 +124,35 @@ impl PromotionAuthority {
             evaluator_anchors: evaluators,
             journal,
             state: AuthorityState::default(),
+            private_content: None,
         };
         authority.refresh()?;
+        Ok(authority)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_record_backed(
+        directory: &Path,
+        authority_id: impl Into<String>,
+        policy: PromotionControlPolicy,
+        promotion_anchors: Vec<PromotionTrustAnchor>,
+        evaluator_anchors: Vec<EvaluatorTrustAnchor>,
+        manifest_root: &Path,
+        content_runs_dir: &Path,
+        tenant_id: iteron_protocol::TenantId,
+    ) -> Result<Self, PromotionAuthorityError> {
+        let mut authority = Self::open(
+            directory,
+            authority_id,
+            policy,
+            promotion_anchors,
+            evaluator_anchors,
+        )?;
+        authority.private_content = Some(EvolutionPrivateContent::open(
+            manifest_root,
+            content_runs_dir,
+            tenant_id,
+        )?);
         Ok(authority)
     }
 
@@ -194,6 +223,17 @@ impl PromotionAuthority {
             (None, None) => {}
             _ => return Err(PromotionAuthorityError::LineageMismatch),
         }
+        let hydrated_artifact;
+        let artifact_bytes = if let Some(private) = &self.private_content {
+            hydrated_artifact =
+                private.read(EvolutionDerivativeKind::Candidate, &manifest.policy.digest)?;
+            if hydrated_artifact.as_slice() != artifact_bytes {
+                return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+            }
+            hydrated_artifact.as_slice()
+        } else {
+            artifact_bytes
+        };
         let verified = verifier.verify_candidate_inputs(
             manifest,
             artifact_bytes,
@@ -289,9 +329,20 @@ impl PromotionAuthority {
                 (None, None) => {}
                 _ => return Err(PromotionAuthorityError::LineageMismatch),
             }
+            let hydrated_artifact;
+            let artifact_bytes = if let Some(private) = &self.private_content {
+                hydrated_artifact =
+                    private.read(EvolutionDerivativeKind::Candidate, &manifest.policy.digest)?;
+                if hydrated_artifact.as_slice() != admission.artifact_bytes {
+                    return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+                }
+                hydrated_artifact.as_slice()
+            } else {
+                admission.artifact_bytes
+            };
             let verified = verifier.verify_candidate_inputs(
                 manifest,
-                admission.artifact_bytes,
+                artifact_bytes,
                 admission.training_dataset,
                 admission.evaluation_suite,
             )?;

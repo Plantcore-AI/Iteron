@@ -122,7 +122,7 @@ impl Bubblewrap {
         // (ANTHROPIC_API_KEY, *_TOKEN, AWS_*, …). The egress-off network denial is the real
         // containment; this restores venvs/PATH/HOME so real build/test commands run
         // (live-e2e review: env_clear + HOME=/tmp broke Python user site-packages).
-        crate::confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
+        crate::apply_confinement_environment(&mut cmd, conf);
         cmd.env("TERM", "dumb")
             .env("PAGER", "cat")
             .env("MANPAGER", "cat")

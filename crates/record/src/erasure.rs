@@ -427,7 +427,10 @@ fn execute_content_revocation(
         Err(crate::ContentStoreError::ActiveWriter { .. }) => {
             return fail(runs_dir, receipt, ErasureFailureCode::ActiveWriter);
         }
-        Err(crate::ContentStoreError::ReferenceBound { .. }) => {
+        Err(
+            crate::ContentStoreError::ReferenceBound { .. }
+            | crate::ContentStoreError::RevocationBound { .. },
+        ) => {
             return fail(
                 runs_dir,
                 receipt,
@@ -443,7 +446,20 @@ fn execute_content_revocation(
     if receipt.state() == ErasureState::Quiescing {
         let operation_id = receipt.request().operation_id.clone();
         let authority_id = receipt.request().authority_id.clone();
-        guard.tombstone(&operation_id, &authority_id, now_unix_ms())?;
+        match guard.tombstone(&operation_id, &authority_id, now_unix_ms()) {
+            Ok(_) => {}
+            Err(
+                crate::ContentStoreError::ReferenceBound { .. }
+                | crate::ContentStoreError::RevocationBound { .. },
+            ) => {
+                return fail(
+                    runs_dir,
+                    receipt,
+                    ErasureFailureCode::ReferenceGraphBoundExceeded,
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
         advance(runs_dir, receipt, ErasureState::Tombstoned)?;
     }
     if receipt.state() == ErasureState::Tombstoned {
@@ -459,7 +475,10 @@ fn execute_content_revocation(
     guard.propagate()?;
     let summary = match guard.verify() {
         Ok(summary) => summary,
-        Err(crate::ContentStoreError::ReferenceBound { .. }) => {
+        Err(
+            crate::ContentStoreError::ReferenceBound { .. }
+            | crate::ContentStoreError::RevocationBound { .. },
+        ) => {
             return fail(
                 runs_dir,
                 receipt,

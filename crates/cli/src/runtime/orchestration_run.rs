@@ -61,8 +61,12 @@ impl Agent {
             return self.drive_admitted(messages, task, input_images).await;
         };
         let tasks = plan.fan_tasks().to_vec();
-        let Some(allocation) = allocate_orchestration(remaining_turns, tasks.len(), remaining_wall)
-        else {
+        let Some(allocation) = allocate_orchestration(
+            remaining_turns,
+            tasks.len(),
+            remaining_wall,
+            self.execution_policy,
+        ) else {
             self.emit(
                 TurnId(self.seq_turn),
                 EventKind::Notice {

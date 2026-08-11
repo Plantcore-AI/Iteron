@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 mod schema;
 pub use schema::*;
 
+mod binding;
+pub use binding::*;
+
 /// One coarse subsystem owning a semantic tuning decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -409,4 +412,7 @@ pub struct Family {
     pub optimization: OptimizationSpec,
     pub risk_class: RiskClass,
     pub authority_class: AuthorityClass,
+    /// Closed, machine-checkable path from the production owner through the effective getter (or
+    /// fixed authority) to durable run-genesis evidence.
+    pub runtime_binding: RuntimeBindingSpec,
 }

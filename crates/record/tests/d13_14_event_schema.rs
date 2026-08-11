@@ -24,7 +24,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 38] = [
+const WRITABLE_EVENT_TAGS: [&str; 39] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -61,6 +61,7 @@ const WRITABLE_EVENT_TAGS: [&str; 38] = [
     "turn_end",
     "turn_start",
     "usd_ceiling_changed",
+    "verification_policy",
     "workflow",
     "workflow_v2",
 ];
@@ -824,6 +825,7 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
     Some(match kind {
         EventKind::Phase { phase: _ } => "phase",
         EventKind::TurnStart => "turn_start",
+        EventKind::ProviderGovernorDecision { decision: _ } => "provider_governor_decision",
         EventKind::PolicyDecision { evidence: _ } => "policy_decision",
         EventKind::PolicyOutcome { evidence: _ } => "policy_outcome",
         EventKind::Message { message: _ } => "message",
@@ -846,11 +848,13 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             capability: _,
             arguments: _,
             workspace: _,
+            provider_route_attempt: _,
         } => "effect_intent",
         EventKind::EffectUnknown {
             id: _,
             tool: _,
             reason: _,
+            ..
         } => "effect_unknown",
         EventKind::EffectDone { id: _, tool: _, .. } => "effect_done",
         EventKind::ArtifactProduced { artifact: _ } => "artifact_produced",
@@ -956,6 +960,10 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             workflow_id: _,
             event: _,
         } => "workflow_v2",
+        EventKind::VerificationPolicy {
+            version: _,
+            event: _,
+        } => "verification_policy",
         EventKind::Done { outcome: _ } => "done",
         EventKind::Unknown => return None,
     })

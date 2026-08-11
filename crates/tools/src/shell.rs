@@ -11,15 +11,11 @@
 //! read as ordinary command errors rather than as a policy denial. The remaining ceilings are
 //! liveness ones — a wall clock and a retained-output bound (invariant #1) — not security ones.
 
-use crate::{Registry, ToolError, ToolExecution, effectfut};
+use crate::{Registry, ShellPolicy, ToolError, ToolExecution, effectfut};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use iteron_sandbox::{Confinement, RunOutput, Sandbox, SandboxError, platform_sandbox};
 use std::fmt::Write as _;
 
-/// One hour. A build, a full test suite, or a slow clone are the commands the old 120 s ceiling cut
-/// off mid-flight; this is still a ceiling, because a wedged child holding host authority is
-/// precisely the thing that must not run unbounded.
-const TIMEOUT_SECS: u64 = Confinement::UNCONFINED_TIMEOUT_SECS;
 const MIN_OUTPUT_BYTES_PER_STREAM: usize = 4 * 1024;
 // `RunOutput` may append one fixed truncation marker after retaining the configured source-byte
 // ceiling. This allowance is framing, not an additional source-output budget.
@@ -30,15 +26,22 @@ const UPSTREAM_MARKER_ALLOWANCE_BYTES: usize = 160;
 /// evidence that the sandbox already retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ShellOutputBudget {
-    per_stream_bytes: usize,
+    timeout_seconds: u64,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
 }
 
 impl ShellOutputBudget {
     const MAX_PER_STREAM_BYTES: usize = Confinement::UNCONFINED_MAX_OUTPUT_BYTES;
 
-    fn from_input(input: &serde_json::Value) -> Result<Self, String> {
+    fn from_policy(policy: ShellPolicy, input: &serde_json::Value) -> Result<Self, String> {
+        let mut budget = Self {
+            timeout_seconds: policy.timeout_seconds,
+            stdout_bytes: policy.stdout_max_bytes,
+            stderr_bytes: policy.stderr_max_bytes,
+        };
         let Some(requested) = input.get("max_output_bytes") else {
-            return Ok(Self::default());
+            return Ok(budget);
         };
         let Some(requested) = requested.as_u64() else {
             // Registry schema validation normally catches this before the executor is entered.
@@ -56,35 +59,42 @@ impl ShellOutputBudget {
                 Self::MAX_PER_STREAM_BYTES
             ));
         }
-        Ok(Self {
-            per_stream_bytes: requested,
-        })
+        // A call may narrow the immutable checkpoint, never widen it.
+        budget.stdout_bytes = budget.stdout_bytes.min(requested);
+        budget.stderr_bytes = budget.stderr_bytes.min(requested);
+        Ok(budget)
     }
 
     fn apply_to(self, confinement: &mut Confinement) {
-        confinement.max_output_bytes = self.per_stream_bytes;
+        confinement.timeout_secs = self.timeout_seconds;
+        // The sandbox has one capture ceiling. Capture the wider pinned stream, then apply each
+        // stream's exact immutable ceiling during result framing below.
+        confinement.max_output_bytes = self.stdout_bytes.max(self.stderr_bytes);
     }
 }
 
 impl Default for ShellOutputBudget {
     fn default() -> Self {
-        Self {
-            per_stream_bytes: Self::MAX_PER_STREAM_BYTES,
-        }
+        Self::from_policy(
+            crate::ObservationToolPolicy::default().shell,
+            &serde_json::json!({}),
+        )
+        .expect("canonical shell policy is valid")
     }
 }
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     let sensitive_env_names = r.sensitive_env_names_handle();
     let confine_execution = r.confine_execution_handle();
+    let observation_policy = r.observation_tool_policy_handle();
     r.register_external_effect(
         ToolSpec {
             name: "bash".into(),
             description: "Run a bash command, cwd = the workspace root. Use for building, \
                           running tests, git, and network access; the command runs with your own \
                           user authority unless the operator passed --confine. Stdout/stderr are \
-                          independently length-framed; each stream has a fixed-bounded capture \
-                          budget and an explicit isIncomplete flag. Directory changes do not \
+                          independently length-framed by the pinned runtime stdout/stderr \
+                          ceilings and an explicit isIncomplete flag. Directory changes do not \
                           persist across calls; chain with `&&`."
                 .into(),
             input_schema: serde_json::json!({
@@ -108,8 +118,16 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         move |call, root| {
             let sensitive_env_names = sensitive_env_names.clone();
             let confine_execution = confine_execution.clone();
+            let observation_policy = observation_policy.clone();
             effectfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(shell_policy) = observation_policy.get().copied().map(|p| p.shell) else {
+                    return ToolExecution::Definite(tool_result(
+                        id,
+                        "bash refused: immutable observation-tool policy was not installed".into(),
+                        true,
+                    ));
+                };
                 let cmd = call
                     .input
                     .get("command")
@@ -118,7 +136,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 if cmd.is_empty() {
                     return ToolExecution::Definite(tool_result(id, "empty command".into(), true));
                 }
-                let budget = match ShellOutputBudget::from_input(&call.input) {
+                let budget = match ShellOutputBudget::from_policy(shell_policy, &call.input) {
                     Ok(budget) => budget,
                     Err(error) => {
                         return ToolExecution::Definite(tool_result(id, error, true));
@@ -200,7 +218,6 @@ fn bash_confinement(
     } else {
         Confinement::unconfined(root)
     };
-    conf.timeout_secs = TIMEOUT_SECS;
     conf.sensitive_env_names = sensitive_env_names;
     budget.apply_to(&mut conf);
     conf
@@ -240,7 +257,8 @@ fn finish_sandbox_run_with_budget(
         return ToolExecution::Unknown(tool_result(
             tool_use_id,
             format!(
-                "[timed out after {TIMEOUT_SECS}s; workspace may be partially changed]\n{framed}"
+                "[timed out after {}s; workspace may be partially changed]\n{framed}",
+                budget.timeout_seconds
             ),
             true,
         ));
@@ -258,25 +276,19 @@ struct FramedStream {
     is_incomplete: bool,
 }
 
-fn frame_stream(
-    content: &str,
-    upstream_incomplete: bool,
-    budget: ShellOutputBudget,
-) -> FramedStream {
+fn frame_stream(content: &str, upstream_incomplete: bool, budget_bytes: usize) -> FramedStream {
     let observed_bytes = content.len();
     // A conforming sandbox retains at most the source-byte budget plus its fixed marker. Keep a
     // defensive head/tail bound here for injected/alternate backends so one violated contract can
     // never make ToolResult unbounded. Per-stream elision retains each stream's final diagnostics.
-    let maximum_with_upstream_marker = budget
-        .per_stream_bytes
-        .saturating_add(UPSTREAM_MARKER_ALLOWANCE_BYTES);
+    let maximum_with_upstream_marker = budget_bytes.saturating_add(UPSTREAM_MARKER_ALLOWANCE_BYTES);
     let exceeds_budget = if upstream_incomplete {
         observed_bytes > maximum_with_upstream_marker
     } else {
-        observed_bytes > budget.per_stream_bytes
+        observed_bytes > budget_bytes
     };
     let content = if exceeds_budget {
-        iteron_protocol::text::elide_middle(content, budget.per_stream_bytes)
+        iteron_protocol::text::elide_middle(content, budget_bytes)
     } else {
         content.to_owned()
     };
@@ -291,7 +303,7 @@ fn append_stream_frame(
     framed: &mut String,
     name: &str,
     stream: &FramedStream,
-    budget: ShellOutputBudget,
+    budget_bytes: usize,
 ) {
     // `contentBytes` makes the boundary unambiguous even if adversarial output prints a frame
     // delimiter itself. The raw text remains readable to a model/operator.
@@ -300,7 +312,7 @@ fn append_stream_frame(
         "[stream {name}; contentBytes={}; observedBytes={}; budgetBytes={}; isIncomplete={}]",
         stream.content.len(),
         stream.observed_bytes,
-        budget.per_stream_bytes,
+        budget_bytes,
         stream.is_incomplete
     );
     framed.push_str(&stream.content);
@@ -309,16 +321,16 @@ fn append_stream_frame(
 }
 
 fn frame_output(out: &RunOutput, budget: ShellOutputBudget) -> String {
-    let stdout = frame_stream(&out.stdout, out.stdout_truncated, budget);
-    let stderr = frame_stream(&out.stderr, out.stderr_truncated, budget);
+    let stdout = frame_stream(&out.stdout, out.stdout_truncated, budget.stdout_bytes);
+    let stderr = frame_stream(&out.stderr, out.stderr_truncated, budget.stderr_bytes);
     let is_incomplete = stdout.is_incomplete || stderr.is_incomplete;
     let maximum_capacity = budget
-        .per_stream_bytes
-        .saturating_mul(2)
+        .stdout_bytes
+        .saturating_add(budget.stderr_bytes)
         .saturating_add(1_024);
     let mut framed = String::with_capacity(maximum_capacity);
-    append_stream_frame(&mut framed, "stdout", &stdout, budget);
-    append_stream_frame(&mut framed, "stderr", &stderr, budget);
+    append_stream_frame(&mut framed, "stdout", &stdout, budget.stdout_bytes);
+    append_stream_frame(&mut framed, "stderr", &stderr, budget.stderr_bytes);
     if is_incomplete {
         framed.push_str(
             "[resumeHint: rerun with stdout/stderr redirected to workspace files, then inspect ",
@@ -454,7 +466,10 @@ mod tests {
         assert!(seen.unconfined, "bash runs with the operator's authority");
         assert!(seen.allow_egress, "the network denial is what was removed");
         assert_eq!(seen.workspace, root);
-        assert_eq!(seen.timeout_secs, TIMEOUT_SECS);
+        assert_eq!(
+            seen.timeout_secs,
+            ShellOutputBudget::default().timeout_seconds
+        );
     }
 
     #[test]
@@ -482,7 +497,9 @@ mod tests {
     #[test]
     fn d4_14_g1_large_build_log_keeps_each_stream_head_tail_and_exit() {
         let budget = ShellOutputBudget {
-            per_stream_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
+            timeout_seconds: 17,
+            stdout_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
+            stderr_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
         };
         let stdout = format!(
             "compile: first-unit\n{}\ncompile: FINAL SUMMARY\n",
@@ -524,7 +541,7 @@ mod tests {
         assert!(result.content.contains("isIncomplete=true"));
         assert!(result.content.contains("[resumeHint:"));
         assert!(
-            result.content.len() <= budget.per_stream_bytes * 2 + 2_048,
+            result.content.len() <= budget.stdout_bytes + budget.stderr_bytes + 2_048,
             "framing must add only a fixed overhead: {} bytes",
             result.content.len()
         );
@@ -532,25 +549,39 @@ mod tests {
 
     #[test]
     fn d4_14_g2_one_typed_budget_controls_capture_and_rendering() {
-        let default = ShellOutputBudget::from_input(&serde_json::json!({})).unwrap();
+        let owner = crate::ObservationToolPolicy::default().shell;
+        let default = ShellOutputBudget::from_policy(owner, &serde_json::json!({})).unwrap();
         assert_eq!(
-            default.per_stream_bytes,
+            default.stdout_bytes,
             Confinement::UNCONFINED_MAX_OUTPUT_BYTES
         );
+        assert_eq!(default.stderr_bytes, owner.stderr_max_bytes);
+        assert_eq!(default.timeout_seconds, owner.timeout_seconds);
 
-        let requested =
-            ShellOutputBudget::from_input(&serde_json::json!({"max_output_bytes": 16 * 1024}))
-                .unwrap();
+        let requested = ShellOutputBudget::from_policy(
+            ShellPolicy {
+                timeout_seconds: 19,
+                stdout_max_bytes: 32 * 1024,
+                stderr_max_bytes: 8 * 1024,
+            },
+            &serde_json::json!({"max_output_bytes": 16 * 1024}),
+        )
+        .unwrap();
         let confinement = bash_confinement(&std::env::temp_dir(), Vec::new(), requested, false);
-        assert_eq!(confinement.max_output_bytes, requested.per_stream_bytes);
+        assert_eq!(requested.stdout_bytes, 16 * 1024);
+        assert_eq!(requested.stderr_bytes, 8 * 1024);
+        assert_eq!(confinement.timeout_secs, 19);
+        assert_eq!(confinement.max_output_bytes, requested.stdout_bytes);
 
         for rejected in [
             MIN_OUTPUT_BYTES_PER_STREAM - 1,
             ShellOutputBudget::MAX_PER_STREAM_BYTES + 1,
         ] {
-            let error =
-                ShellOutputBudget::from_input(&serde_json::json!({"max_output_bytes": rejected}))
-                    .unwrap_err();
+            let error = ShellOutputBudget::from_policy(
+                owner,
+                &serde_json::json!({"max_output_bytes": rejected}),
+            )
+            .unwrap_err();
             assert!(error.contains("max_output_bytes"));
         }
     }
@@ -567,7 +598,9 @@ mod tests {
             timed_out: false,
         };
         let budget = ShellOutputBudget {
-            per_stream_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
+            timeout_seconds: 17,
+            stdout_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
+            stderr_bytes: MIN_OUTPUT_BYTES_PER_STREAM,
         };
 
         let first = frame_output(&out, budget);
@@ -577,13 +610,62 @@ mod tests {
             "[stream stdout; contentBytes={}; observedBytes={}; budgetBytes={}; isIncomplete=true]",
             hostile.len(),
             hostile.len(),
-            budget.per_stream_bytes
+            budget.stdout_bytes
         )));
         assert!(first.contains(&format!(
             "[stream stderr; contentBytes=12; observedBytes=12; budgetBytes={}; isIncomplete=false]",
-            budget.per_stream_bytes
+            budget.stderr_bytes
         )));
         assert!(first.contains(hostile));
         assert_eq!(first.matches("[resumeHint:").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn registry_refuses_unpinned_shell_and_policy_is_one_shot() {
+        use iteron_protocol::ToolUse;
+
+        let root = std::env::temp_dir();
+        let registry = Registry::coding_agent(&root).unwrap();
+        let call = || ToolUse {
+            id: "shell-policy".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command":""}),
+        };
+        let ToolExecution::Definite(refused) = registry.run_effect(call()).await else {
+            panic!("an uninstalled immutable policy must refuse definitely")
+        };
+        assert!(refused.is_error);
+        assert!(refused.content.contains("policy was not installed"));
+
+        let mut policy = crate::ObservationToolPolicy::default();
+        policy.shell.timeout_seconds = 19;
+        policy.shell.stdout_max_bytes = 16 * 1024;
+        policy.shell.stderr_max_bytes = 8 * 1024;
+        registry.install_observation_tool_policy(policy).unwrap();
+        assert!(registry.install_observation_tool_policy(policy).is_err());
+
+        let ToolExecution::Definite(installed) = registry.run_effect(call()).await else {
+            panic!("empty command is a definite validation result")
+        };
+        assert!(installed.is_error);
+        assert_eq!(installed.content, "empty command");
+
+        let budget = ShellOutputBudget::from_policy(policy.shell, &serde_json::json!({})).unwrap();
+        let confinement = bash_confinement(&root, Vec::new(), budget, false);
+        assert_eq!(confinement.timeout_secs, 19);
+        assert_eq!(confinement.max_output_bytes, 16 * 1024);
+        let framed = frame_output(
+            &RunOutput {
+                exit_code: 0,
+                stdout: "x".repeat(20 * 1024),
+                stderr: "y".repeat(12 * 1024),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
+            },
+            budget,
+        );
+        assert!(framed.contains("budgetBytes=16384"));
+        assert!(framed.contains("budgetBytes=8192"));
     }
 }

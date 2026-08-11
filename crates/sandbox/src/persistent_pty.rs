@@ -223,7 +223,7 @@ fn configure_pty_environment(
     conf: &Confinement,
     scratch: Option<&std::path::Path>,
 ) {
-    crate::confine_env_with_exact(process, &conf.sensitive_env_names);
+    crate::apply_confinement_environment(process, conf);
     process
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")

@@ -909,7 +909,28 @@ pub(super) async fn handle_registered_command(
             app.panel("⚙", "config", rows);
         }
         SlashCommand::Tunables => {
-            open_tunables_picker(app, session, arg);
+            let requested = arg.trim();
+            if requested == "registry" || requested == "load" || requested.starts_with("load ") {
+                open_tunables_picker(app, session, arg);
+                return;
+            }
+            let runtime_policy = match session.control(app_server::Control::OperatorStatus).await {
+                Some(app_server::ControlReply::OperatorStatus(snapshot)) => {
+                    snapshot.runtime.runtime_policy.clone()
+                }
+                Some(app_server::ControlReply::Refused(reason)) => {
+                    app.note(block::NoticeLevel::Err, reason);
+                    return;
+                }
+                _ => {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        "the resident runtime could not provide its current tunables overlay",
+                    );
+                    return;
+                }
+            };
+            open_tunables_picker_with_runtime_policy(app, session, arg, runtime_policy.as_ref());
         }
         SlashCommand::Lab => {
             experiment_lab::handle(app, session, arg);
@@ -999,6 +1020,7 @@ pub(super) async fn handle_registered_command(
             schedule_slash_export(
                 app,
                 session.workspace(),
+                session.rollout_path(),
                 transcript_effects,
                 requested,
                 collision,
@@ -1045,6 +1067,16 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::Rewind => {
             let path = session.rollout_path().to_path_buf();
+            let _content_owner = match iteron_record::acquire_verified_rollout_owner(&path) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    app.push(
+                        fg(Color::Red),
+                        format!("cannot acquire checkpoint content gate: {error}"),
+                    );
+                    return;
+                }
+            };
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let stem = path
                 .file_stem()

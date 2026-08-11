@@ -1,7 +1,7 @@
 //! Host-owned isolated writer worktrees and validating serialized merge mechanics.
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -20,6 +20,7 @@ pub(super) enum MergeFailureKind {
     WorktreeProvision,
     WorktreeState,
     PatchTooLarge,
+    PatchReceiptMismatch,
     VerificationUnavailable,
     VerificationFailed,
     VerificationMutatedWorkspace,
@@ -37,6 +38,7 @@ impl MergeFailureKind {
             Self::WorktreeProvision => "worktree_provision_failed",
             Self::WorktreeState => "worktree_state_invalid",
             Self::PatchTooLarge => "patch_too_large",
+            Self::PatchReceiptMismatch => "patch_receipt_mismatch",
             Self::VerificationUnavailable => "verification_unavailable",
             Self::VerificationFailed => "verification_failed",
             Self::VerificationMutatedWorkspace => "verification_mutated_workspace",
@@ -74,6 +76,7 @@ impl MergeFailure {
 pub(super) struct MergeReceipt {
     pub(super) patch_digest_sha256: Option<String>,
     pub(super) patch_bytes: u64,
+    sealed_index_tree: String,
 }
 
 /// An exact Git worktree registered under the parent repository. The path is derived below the
@@ -125,8 +128,10 @@ impl WriterWorktree {
 
     pub(super) async fn verify(
         &self,
+        receipt: &MergeReceipt,
         command: Option<&str>,
         sensitive_env_names: &[String],
+        output_tail_bytes: usize,
     ) -> Result<(), MergeFailure> {
         let Some(command) = command.filter(|command| !command.trim().is_empty()) else {
             return Err(MergeFailure::new(
@@ -140,7 +145,8 @@ impl WriterWorktree {
             command.to_owned(),
         )
         .with_timeout_secs(VERIFY_TIMEOUT_SECS)
-        .with_sensitive_env_names(sensitive_env_names.to_vec());
+        .with_sensitive_env_names(sensitive_env_names.to_vec())
+        .with_output_tail_bytes(output_tail_bytes);
         let verdict = oracle.evaluate().await;
         if !verdict.passed() {
             return Err(MergeFailure::new(
@@ -149,23 +155,28 @@ impl WriterWorktree {
             ));
         }
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || ensure_verification_did_not_mutate(&path))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::VerificationMutatedWorkspace,
-                    "verification mutation audit did not complete",
-                )
-            })?
+        let base_head = self.base_head.clone();
+        let sealed_index_tree = receipt.sealed_index_tree.clone();
+        tokio::task::spawn_blocking(move || {
+            ensure_verification_did_not_mutate(&path, &base_head, &sealed_index_tree)
+        })
+        .await
+        .map_err(|_| {
+            MergeFailure::new(
+                MergeFailureKind::VerificationMutatedWorkspace,
+                "verification mutation audit did not complete",
+            )
+        })?
     }
 
     /// Apply the prepared patch only after revalidating the parent HEAD and cleanliness while the
     /// caller holds the session-wide writer mutex.
-    pub(super) async fn merge(&mut self) -> Result<(), MergeFailure> {
+    pub(super) async fn merge(&mut self, receipt: &MergeReceipt) -> Result<(), MergeFailure> {
         let parent = self.parent.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
-        tokio::task::spawn_blocking(move || merge_sync(&parent, &patch_path, &base_head))
+        let receipt = receipt.clone();
+        tokio::task::spawn_blocking(move || merge_sync(&parent, &patch_path, &base_head, &receipt))
             .await
             .map_err(|_| {
                 MergeFailure::new(
@@ -306,34 +317,77 @@ fn prepare_patch_sync(
         })?;
         Some(format!("sha256:{:x}", Sha256::digest(bytes)))
     };
+    let sealed_index_tree = index_tree(worktree)?;
     Ok(MergeReceipt {
         patch_digest_sha256: digest,
         patch_bytes: metadata.len(),
+        sealed_index_tree,
     })
 }
 
-fn ensure_verification_did_not_mutate(worktree: &Path) -> Result<(), MergeFailure> {
+fn ensure_verification_did_not_mutate(
+    worktree: &Path,
+    base_head: &str,
+    sealed_index_tree: &str,
+) -> Result<(), MergeFailure> {
+    require_head(
+        worktree,
+        base_head,
+        MergeFailureKind::VerificationMutatedWorkspace,
+    )?;
     if !git_quiet(worktree, ["diff", "--quiet", "--"])? || has_untracked(worktree)? {
         return Err(MergeFailure::new(
             MergeFailureKind::VerificationMutatedWorkspace,
             "verification changed tracked or non-ignored files after the writer patch was sealed",
         ));
     }
+    if index_tree(worktree)? != sealed_index_tree {
+        return Err(MergeFailure::new(
+            MergeFailureKind::VerificationMutatedWorkspace,
+            "verification changed the staged writer patch after it was sealed",
+        ));
+    }
     Ok(())
 }
 
-fn merge_sync(parent: &Path, patch_path: &Path, base_head: &str) -> Result<(), MergeFailure> {
+fn index_tree(path: &Path) -> Result<String, MergeFailure> {
+    let output = git_capture(path, [OsStr::new("write-tree")])?;
+    if !output.status.success() {
+        return Err(MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            output.message(),
+        ));
+    }
+    let tree = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if (tree.len() != 40 && tree.len() != 64) || !tree.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            "Git index tree has an invalid object identity",
+        ));
+    }
+    Ok(tree)
+}
+
+fn merge_sync(
+    parent: &Path,
+    patch_path: &Path,
+    base_head: &str,
+    receipt: &MergeReceipt,
+) -> Result<(), MergeFailure> {
+    let patch = verified_patch_bytes(patch_path, receipt)?;
     require_head(parent, base_head, MergeFailureKind::ParentAdvanced)?;
     require_clean(parent)?;
-    let check = git_capture(
+    let check = git_capture_with_input(
         parent,
         [
             OsStr::new("apply"),
             OsStr::new("--check"),
             OsStr::new("--binary"),
             OsStr::new("--whitespace=nowarn"),
-            patch_path.as_os_str(),
+            OsStr::new("-"),
         ],
+        &patch,
     )?;
     if !check.status.success() {
         return Err(MergeFailure::new(
@@ -341,14 +395,15 @@ fn merge_sync(parent: &Path, patch_path: &Path, base_head: &str) -> Result<(), M
             check.message(),
         ));
     }
-    let apply = git_capture(
+    let apply = git_capture_with_input(
         parent,
         [
             OsStr::new("apply"),
             OsStr::new("--binary"),
             OsStr::new("--whitespace=nowarn"),
-            patch_path.as_os_str(),
+            OsStr::new("-"),
         ],
+        &patch,
     )?;
     if !apply.status.success() {
         return Err(MergeFailure::new(
@@ -357,6 +412,35 @@ fn merge_sync(parent: &Path, patch_path: &Path, base_head: &str) -> Result<(), M
         ));
     }
     Ok(())
+}
+
+/// Load the controller-sealed patch once and bind the exact bytes used by both `--check` and
+/// apply to the pre-verification receipt. Applying by mutable path after hashing left a TOCTOU
+/// window in which a same-user process could replace verified evidence before merge.
+fn verified_patch_bytes(
+    patch_path: &Path,
+    receipt: &MergeReceipt,
+) -> Result<Vec<u8>, MergeFailure> {
+    let metadata = std::fs::metadata(patch_path).map_err(|error| {
+        MergeFailure::new(MergeFailureKind::PatchReceiptMismatch, error.to_string())
+    })?;
+    if metadata.len() != receipt.patch_bytes || metadata.len() > MAX_WRITER_PATCH_BYTES {
+        return Err(MergeFailure::new(
+            MergeFailureKind::PatchReceiptMismatch,
+            "sealed writer patch byte count changed before merge",
+        ));
+    }
+    let patch = std::fs::read(patch_path).map_err(|error| {
+        MergeFailure::new(MergeFailureKind::PatchReceiptMismatch, error.to_string())
+    })?;
+    let actual = (!patch.is_empty()).then(|| format!("sha256:{:x}", Sha256::digest(&patch)));
+    if actual != receipt.patch_digest_sha256 {
+        return Err(MergeFailure::new(
+            MergeFailureKind::PatchReceiptMismatch,
+            "sealed writer patch digest changed before merge",
+        ));
+    }
+    Ok(patch)
 }
 
 fn cleanup_sync(parent: &Path, path: &Path, patch_path: &Path) -> Result<(), MergeFailure> {
@@ -562,6 +646,61 @@ where
     })
 }
 
+fn git_capture_with_input<I, S>(
+    path: &Path,
+    args: I,
+    input: &[u8],
+) -> Result<GitOutput, MergeFailure>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut child = git_command(path)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdin was not piped")
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdout was not piped")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stderr was not piped")
+    })?;
+    let input = input.to_vec();
+    let input_writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = std::thread::spawn(move || read_bounded(stdout));
+    let err = std::thread::spawn(move || read_bounded(stderr));
+    let status = child
+        .wait()
+        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
+    let input_result = input_writer.join().map_err(|_| {
+        MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            "Git patch input writer did not complete",
+        )
+    })?;
+    if let Err(error) = input_result
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            error.to_string(),
+        ));
+    }
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    Ok(GitOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn git_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command
@@ -637,4 +776,138 @@ fn set_private_directory(path: &Path) -> Result<(), MergeFailure> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "iteron-h07-writer-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn git_ok(path: &Path, args: &[&str]) {
+        let output = git_command(path).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn h07_isolated_writer_seals_the_verified_index_before_deterministic_merge() {
+        let root = scratch();
+        let parent = root.join("repo");
+        let init = Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&parent)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        git_ok(&parent, &["config", "user.name", "Core Test"]);
+        git_ok(
+            &parent,
+            &["config", "user.email", "core-test@example.invalid"],
+        );
+        std::fs::write(parent.join("owned.txt"), "base\n").unwrap();
+        git_ok(&parent, &["add", "owned.txt"]);
+        git_ok(&parent, &["commit", "--quiet", "-m", "base"]);
+        let runtime_state = root.join("runtime");
+
+        let staged_mutation =
+            provision_sync(parent.clone(), runtime_state.clone(), "staged-mutation")
+                .expect("host provisions an exact detached writer worktree");
+        assert_ne!(staged_mutation.path(), parent.as_path());
+        std::fs::write(staged_mutation.path().join("owned.txt"), "writer patch\n").unwrap();
+        let receipt = prepare_patch_sync(
+            staged_mutation.path(),
+            &staged_mutation.patch_path,
+            &staged_mutation.base_head,
+        )
+        .expect("writer patch seals");
+        std::fs::write(
+            staged_mutation.path().join("owned.txt"),
+            "verifier staged mutation\n",
+        )
+        .unwrap();
+        git_ok(staged_mutation.path(), &["add", "owned.txt"]);
+        let refused = ensure_verification_did_not_mutate(
+            staged_mutation.path(),
+            &staged_mutation.base_head,
+            &receipt.sealed_index_tree,
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind, MergeFailureKind::VerificationMutatedWorkspace);
+        assert_eq!(
+            std::fs::read_to_string(parent.join("owned.txt")).unwrap(),
+            "base\n"
+        );
+        drop(staged_mutation);
+
+        let tampered = provision_sync(parent.clone(), runtime_state.clone(), "tampered-patch")
+            .expect("a new isolated writer worktree is provisioned");
+        std::fs::write(tampered.path().join("owned.txt"), "sealed patch\n").unwrap();
+        let receipt =
+            prepare_patch_sync(tampered.path(), &tampered.patch_path, &tampered.base_head)
+                .expect("controller seals a content-addressed patch");
+        ensure_verification_did_not_mutate(
+            tampered.path(),
+            &tampered.base_head,
+            &receipt.sealed_index_tree,
+        )
+        .expect("writer evidence is unchanged before the patch-file tamper");
+        std::fs::write(&tampered.patch_path, "not the verified patch\n").unwrap();
+        let refused =
+            merge_sync(&parent, &tampered.patch_path, &tampered.base_head, &receipt).unwrap_err();
+        assert_eq!(refused.kind, MergeFailureKind::PatchReceiptMismatch);
+        assert!(
+            refused
+                .public_summary()
+                .starts_with("writer merge requires human resolution [patch_receipt_mismatch]")
+        );
+        assert_eq!(
+            std::fs::read_to_string(parent.join("owned.txt")).unwrap(),
+            "base\n"
+        );
+        drop(tampered);
+
+        let deterministic = provision_sync(parent.clone(), runtime_state, "deterministic-merge")
+            .expect("a final isolated writer worktree is provisioned");
+        std::fs::write(deterministic.path().join("owned.txt"), "accepted patch\n").unwrap();
+        let receipt = prepare_patch_sync(
+            deterministic.path(),
+            &deterministic.patch_path,
+            &deterministic.base_head,
+        )
+        .expect("controller seals a content-addressed patch");
+        ensure_verification_did_not_mutate(
+            deterministic.path(),
+            &deterministic.base_head,
+            &receipt.sealed_index_tree,
+        )
+        .expect("unchanged sealed writer evidence remains mergeable");
+        merge_sync(
+            &parent,
+            &deterministic.patch_path,
+            &deterministic.base_head,
+            &receipt,
+        )
+        .expect("the clean unchanged parent accepts the validated patch deterministically");
+        assert_eq!(
+            std::fs::read_to_string(parent.join("owned.txt")).unwrap(),
+            "accepted patch\n"
+        );
+        drop(deterministic);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

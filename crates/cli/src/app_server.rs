@@ -50,9 +50,13 @@
 //!   reported. Everything else, and `Done` above all, is delivered even if that means waiting for
 //!   the reader.
 
+#[path = "app_server/backpressure.rs"]
+mod backpressure;
 mod control;
 mod mcp_control;
 mod operator_status;
+
+pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
 
 use self::control::{apply_control, apply_immediate_control, is_immediate_control, snapshot_of};
 #[cfg(test)]
@@ -82,6 +86,7 @@ pub(crate) const SQ_CAPACITY: usize = 256;
 /// data slot, but can never prevent an interrupt, force-cancel, drain, steer, or approval receipt
 /// from reaching the resident actor.
 const SQ_PRIORITY_CAPACITY: usize = 16;
+#[cfg(test)]
 const SQ_DATA_CAPACITY: usize = SQ_CAPACITY - SQ_PRIORITY_CAPACITY;
 
 /// Conservative heap charge for the envelope, enum/segment storage, channel node and allocator
@@ -165,6 +170,10 @@ pub(crate) struct SessionSnapshot {
     /// The capability rules in force. Dynamic: `/permissions` changes them, and the frontend
     /// renders them, so they cannot be a session-invariant fact.
     pub(crate) permission_rules: iteron_protocol::PermissionRules,
+    /// Ordered live runtime-policy overlay joined to the durable transition that made each value
+    /// effective. `None` is reserved for an unsealed legacy/test agent and must never be rendered
+    /// as though the immutable genesis values were still live.
+    pub(crate) runtime_policy: Option<crate::runtime::RuntimePolicyOverlaySnapshot>,
     /// The ledger line the status panel prints.
     pub(crate) ledger_summary: String,
     /// One line of provider quota, read from the response headers of the last request. `None`
@@ -435,6 +444,13 @@ pub(crate) enum ControlReply {
     Adopted {
         adopted: Box<crate::runtime::AdoptedRun>,
         snapshot: Box<SessionSnapshot>,
+        /// Exact immutable tunables identity of the run now owned by the resident runtime. This
+        /// is dynamic run state: keeping the attach-time checkpoint after an in-process resume
+        /// would make `/tunables` and `/config` describe the run that was left.
+        tunables_checkpoint: Box<iteron_record::TunablesCheckpoint>,
+        /// Run-local compaction trigger decoded from the same checkpoint. The frontend's context
+        /// surface reads this value directly, so it must move with an adopted run as one reply.
+        compaction_trigger_tokens: usize,
         blocked: Option<String>,
     },
     /// `/workflows` inventory or action result.
@@ -680,6 +696,7 @@ impl AppServerClient {
         )
     }
 
+    #[cfg(test)]
     fn connect_weighted(
         server_version: u32,
         submissions: mpsc::Sender<QueuedSubmission>,
@@ -687,14 +704,32 @@ impl AppServerClient {
         budget: Arc<Semaphore>,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
+        Self::connect_weighted_with_policy(
+            server_version,
+            submissions,
+            priority_submissions,
+            budget,
+            lifecycle,
+            AppServerQueuePolicy::owner(),
+        )
+    }
+
+    fn connect_weighted_with_policy(
+        server_version: u32,
+        submissions: mpsc::Sender<QueuedSubmission>,
+        priority_submissions: mpsc::Sender<QueuedSubmission>,
+        budget: Arc<Semaphore>,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        queue_policy: AppServerQueuePolicy,
+    ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
             SubmissionSender::Weighted {
                 sender: submissions,
                 priority_sender: priority_submissions,
                 budget,
-                data_slots: Arc::new(Semaphore::new(SQ_DATA_CAPACITY)),
-                priority_slots: Arc::new(Semaphore::new(SQ_PRIORITY_CAPACITY)),
+                data_slots: Arc::new(Semaphore::new(queue_policy.data_entries())),
+                priority_slots: Arc::new(Semaphore::new(queue_policy.priority_entries())),
             },
             lifecycle,
         )
@@ -979,7 +1014,8 @@ pub(crate) fn attach(
     interactive_approvals: bool,
     lossless_events: bool,
 ) -> Result<Attached, ProtocolVersionError> {
-    let (handle, ends) = wire_with_policy(lossless_events)?;
+    let queue_policy = agent.app_server_queue_policy();
+    let (handle, ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
 
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
@@ -1056,15 +1092,27 @@ pub(crate) struct EventPublisher {
     session_id: Option<SessionId>,
     run_id: Option<RunId>,
     workflow_phases: std::collections::BTreeMap<String, String>,
+    queue_policy: AppServerQueuePolicy,
+    pending_cosmetic: Option<ServerEvent>,
 }
 
 const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
 
 impl EventPublisher {
+    #[cfg(test)]
     fn new(
         events: mpsc::Sender<EventEnvelope>,
         lossless: bool,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+    ) -> Self {
+        Self::new_with_policy(events, lossless, lifecycle, AppServerQueuePolicy::owner())
+    }
+
+    fn new_with_policy(
+        events: mpsc::Sender<EventEnvelope>,
+        lossless: bool,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        queue_policy: AppServerQueuePolicy,
     ) -> Self {
         Self {
             events,
@@ -1076,6 +1124,8 @@ impl EventPublisher {
             session_id: None,
             run_id: None,
             workflow_phases: std::collections::BTreeMap::new(),
+            queue_policy,
+            pending_cosmetic: None,
         }
     }
 
@@ -1257,16 +1307,21 @@ impl EventPublisher {
     }
 
     async fn send(&mut self, event: ServerEvent) -> Result<(), ()> {
+        let reject_authoritative = !self.lossless
+            && event.is_authoritative()
+            && self.queue_policy.authoritative_overflow() == AuthoritativeOverflow::Reject;
         let seq = self.next_seq;
         self.next_seq = self.next_seq.checked_add(1).ok_or(())?;
-        self.events
-            .send(EventEnvelope {
-                seq,
-                protocol_version: PROTOCOL_VERSION,
-                event,
-            })
-            .await
-            .map_err(|_| ())
+        let envelope = EventEnvelope {
+            seq,
+            protocol_version: PROTOCOL_VERSION,
+            event,
+        };
+        if reject_authoritative {
+            self.events.try_send(envelope).map_err(|_| ())
+        } else {
+            self.events.send(envelope).await.map_err(|_| ())
+        }
     }
 
     /// Publish one event, applying the bounded-queue policy.
@@ -1277,8 +1332,33 @@ impl EventPublisher {
     pub(crate) async fn publish(&mut self, event: ServerEvent) -> Result<(), ()> {
         let authoritative = event.is_authoritative();
         if !self.lossless && !authoritative && self.events.capacity() == 0 {
+            match self.queue_policy.cosmetic_overflow() {
+                CosmeticOverflow::Drop => self.dropped += 1,
+                CosmeticOverflow::Coalesce => {
+                    if self.pending_cosmetic.replace(event).is_some() {
+                        self.dropped += 1;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !self.lossless
+            && !authoritative
+            && self.pending_cosmetic.is_some()
+            && self.events.capacity() <= 1
+        {
+            self.pending_cosmetic = Some(event);
             self.dropped += 1;
             return Ok(());
+        }
+        if self.pending_cosmetic.is_some() && (authoritative || self.events.capacity() > 1) {
+            if self.dropped > 0 {
+                let dropped = std::mem::take(&mut self.dropped);
+                self.send(ServerEvent::Lagged { dropped }).await?;
+            }
+            if let Some(pending) = self.pending_cosmetic.take() {
+                self.send(pending).await?;
+            }
         }
         // Report the gap immediately before the event that follows it. A cosmetic event only gets
         // to report when there is spare room — reporting a drop must never itself block the stream.
@@ -1326,13 +1406,22 @@ pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionErr
     wire_with_policy(false)
 }
 
+#[cfg(test)]
 fn wire_with_policy(
     lossless_events: bool,
 ) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
-    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
-    let (priority_sq_tx, priority_sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
-    let sq_budget = Arc::new(Semaphore::new(SQ_BYTE_CAPACITY));
-    let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(EQ_CAPACITY);
+    wire_with_queue_policy(lossless_events, AppServerQueuePolicy::owner())
+}
+
+fn wire_with_queue_policy(
+    lossless_events: bool,
+    queue_policy: AppServerQueuePolicy,
+) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
+    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(queue_policy.data_entries());
+    let (priority_sq_tx, priority_sq_rx) =
+        mpsc::channel::<QueuedSubmission>(queue_policy.priority_entries());
+    let sq_budget = Arc::new(Semaphore::new(queue_policy.submission_bytes()));
+    let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(queue_policy.event_entries());
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
@@ -1342,20 +1431,21 @@ fn wire_with_policy(
         "queue.capacity_resolved",
         iteron_obs::lifecycle::LifecycleCorrelation::default(),
         LifecyclePayload {
-            count: Some(u64::try_from(SQ_CAPACITY).unwrap_or(u64::MAX)),
-            magnitude: Some(u64::try_from(SQ_BYTE_CAPACITY).unwrap_or(u64::MAX)),
+            count: Some(u64::try_from(queue_policy.submission_entries()).unwrap_or(u64::MAX)),
+            magnitude: Some(u64::try_from(queue_policy.submission_bytes()).unwrap_or(u64::MAX)),
             ..LifecyclePayload::default()
         },
     );
     let lifecycle_otel =
         iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
-    let client = AppServerClient::connect_weighted(
+    let client = AppServerClient::connect_weighted_with_policy(
         advertised_version(),
         sq_tx,
         priority_sq_tx,
         sq_budget,
         lifecycle_emitter.clone(),
+        queue_policy,
     )?;
     Ok((
         AppServerHandle {
@@ -1370,7 +1460,12 @@ fn wire_with_policy(
             submissions: sq_rx,
             priority_submissions: priority_sq_rx,
             control: control_rx,
-            events: EventPublisher::new(eq_tx, lossless_events, lifecycle_emitter),
+            events: EventPublisher::new_with_policy(
+                eq_tx,
+                lossless_events,
+                lifecycle_emitter,
+                queue_policy,
+            ),
             hook_health,
         },
     ))
@@ -3284,6 +3379,113 @@ mod tests {
         SqEnvelope::with_version(PROTOCOL_VERSION, op)
     }
 
+    #[test]
+    fn immutable_queue_policy_changes_the_actual_wire_capacities() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 3,
+            1_000_000,
+            7,
+            CosmeticOverflow::Drop,
+            AuthoritativeOverflow::Reject,
+        )
+        .unwrap();
+        let (handle, ends) = wire_with_queue_policy(false, policy).expect("wire");
+
+        assert_eq!(ends.submissions.max_capacity(), 3);
+        assert_eq!(
+            ends.priority_submissions.max_capacity(),
+            SQ_PRIORITY_CAPACITY
+        );
+        assert_eq!(handle.events.max_capacity(), 7);
+        assert_eq!(ends.events.queue_policy, policy);
+        match &handle.client.submissions {
+            SubmissionSender::Weighted { budget, .. } => {
+                assert_eq!(budget.available_permits(), 1_000_000)
+            }
+            SubmissionSender::Bare(_) => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn immutable_overflow_policy_coalesces_cosmetic_and_rejects_authoritative() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 1,
+            1_000_000,
+            1,
+            CosmeticOverflow::Coalesce,
+            AuthoritativeOverflow::Wait,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut publisher = EventPublisher::new_with_policy(
+            tx,
+            false,
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+            policy,
+        );
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("second".into())))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("third".into())))
+            .await
+            .unwrap();
+        let flush = tokio::spawn(async move {
+            publisher
+                .publish(ServerEvent::Notice("authoritative".into()))
+                .await
+        });
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "first")
+        );
+        assert!(matches!(
+            rx.recv().await.unwrap().event,
+            ServerEvent::Lagged { dropped: 1 }
+        ));
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "third")
+        );
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Notice(text) if text == "authoritative")
+        );
+        flush.await.unwrap().unwrap();
+
+        let reject = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 1,
+            1_000_000,
+            1,
+            CosmeticOverflow::Drop,
+            AuthoritativeOverflow::Reject,
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut publisher = EventPublisher::new_with_policy(
+            tx,
+            false,
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+            reject,
+        );
+        publisher
+            .publish(ServerEvent::Notice("first".into()))
+            .await
+            .unwrap();
+        assert!(
+            publisher
+                .publish(ServerEvent::Notice("refused".into()))
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn a_settled_background_run_returns_one_task_notification_without_polling() {
         let (eq_tx, mut eq_rx) = mpsc::channel(4);
@@ -3399,6 +3601,7 @@ mod tests {
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
             permission_rules: iteron_protocol::PermissionRules::new(),
+            runtime_policy: None,
             ledger_summary: String::new(),
             rate_limit: None,
             mcp_health: Vec::new(),
@@ -4005,6 +4208,79 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn session_snapshot_exposes_the_exact_ordered_runtime_policy_overlay() {
+        let workspace = temp_workspace("runtime-policy-overlay");
+        let mut agent = agent_in(&workspace);
+        agent
+            .configure_initial_runtime_policy(
+                iteron_protocol::Effort::Low,
+                iteron_protocol::PermissionMode::Default,
+                iteron_protocol::PermissionRules::new(),
+            )
+            .unwrap();
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        let stale_frontend_snapshot = control::snapshot_of(&mut agent);
+        let live_operator_sources = agent.operator_status_sources();
+        agent
+            .transition_effort(
+                iteron_protocol::Effort::High,
+                iteron_protocol::RuntimePolicySource::Operator,
+            )
+            .unwrap();
+        agent.set_turn_ceiling(17).unwrap();
+        let mut rules = iteron_protocol::PermissionRules::new();
+        rules
+            .try_set_cap(
+                iteron_protocol::Capability::CodeExecuting,
+                iteron_protocol::Verdict::Deny,
+            )
+            .unwrap();
+        agent
+            .transition_permission_policy(
+                iteron_protocol::PermissionMode::Plan,
+                rules,
+                iteron_protocol::RuntimePolicySource::Operator,
+            )
+            .unwrap();
+
+        let snapshot = control::snapshot_of(&mut agent);
+        let overlay = snapshot
+            .runtime_policy
+            .expect("sealed production state has a complete overlay");
+        assert_eq!(snapshot.effort, overlay.effort.value);
+        assert_eq!(snapshot.mode, overlay.permission_mode.value);
+        assert_eq!(overlay.max_turns.value, 17);
+        assert_eq!(overlay.permission_rule_count, 1);
+        assert_eq!(
+            overlay.effort.observed_via,
+            crate::runtime::RuntimePolicyObservation::LiveCommit
+        );
+        assert!(
+            overlay.effort.sequence < overlay.max_turns.sequence
+                && overlay.max_turns.sequence < overlay.permission_mode.sequence,
+            "the overlay must preserve durable transition order"
+        );
+        let stale_overlay = stale_frontend_snapshot
+            .runtime_policy
+            .expect("genesis overlay");
+        assert_eq!(stale_overlay.effort.value, iteron_protocol::Effort::Low);
+        assert_eq!(stale_overlay.max_turns.value, 4);
+        let live_overlay = live_operator_sources
+            .snapshot()
+            .runtime_policy
+            .expect("captured operator source advances without the frontend cache");
+        assert_eq!(live_overlay.effort.value, iteron_protocol::Effort::High);
+        assert_eq!(live_overlay.max_turns.value, 17);
+        assert_eq!(
+            live_overlay.permission_mode.value,
+            iteron_protocol::PermissionMode::Plan
+        );
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     /// UX-3 control plane: the side conversation is SERVER state. Every request answers, an

@@ -51,6 +51,10 @@ globalThis.agent = async function (prompt, opts) {
     effort: opts.effort != null ? String(opts.effort) : null,
     agentType: opts.agentType != null ? String(opts.agentType) : null,
     speculativeSiblings: opts.speculativeSiblings != null ? Number(opts.speculativeSiblings) : null,
+    // Explicit declaration-order dependencies. A dependency must name an earlier, already-settled
+    // agent call; the host rejects implicit waits so a script cannot create an unbounded scheduler
+    // deadlock. The durable DAG records the resolved task-id edge, never this JS index alone.
+    dependsOn: opts.dependsOn != null ? opts.dependsOn : null,
     quorumGroup: globalThis.__activeQuorumGroup == null ? null : globalThis.__activeQuorumGroup,
     // JSON Schema (draft 2020-12) passed through as-is; the host validates + retries.
     schema: opts.schema != null ? opts.schema : null,

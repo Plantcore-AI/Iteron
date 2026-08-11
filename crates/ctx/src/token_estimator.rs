@@ -8,6 +8,24 @@
 
 use crate::{TokenEstimateProvenance, TokenizerIdentity};
 
+pub const ROUTE_AWARE_ESTIMATOR_POLICY_ID: &str = "iteron.request-estimator-route-aware-v2";
+
+/// Immutable selector policy stored in the tunables checkpoint. The selected concrete profile is
+/// still route-specific and is recorded in each ContextLedger tokenizer identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TokenEstimatorPolicy {
+    #[default]
+    RouteAwareV2,
+}
+
+impl TokenEstimatorPolicy {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::RouteAwareV2 => ROUTE_AWARE_ESTIMATOR_POLICY_ID,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TokenEstimatorProfile {
     #[default]
@@ -51,14 +69,20 @@ impl TokenEstimatorProfile {
         if text.is_empty() {
             return 0;
         }
+        // The compatibility spelling predates the v2 behavior. An unidentified route must fail
+        // toward admission safety: one token per UTF-8 byte is an explicit upper bound because a
+        // provider token cannot encode less than one byte of the request. Route-specific
+        // approximations below remain reconciled against authoritative provider usage.
+        if self == Self::GenericBytesPerToken35 {
+            return text.len();
+        }
         let ascii_bytes = text.bytes().filter(u8::is_ascii).count();
         let non_ascii = text
             .chars()
             .filter(|character| !character.is_ascii())
             .count();
-        let (numerator, denominator) = match self {
-            // Preserve the historical 1/3.5 estimator exactly for an unidentified route.
-            Self::GenericBytesPerToken35 => (2usize, 7usize),
+        let (numerator, denominator): (usize, usize) = match self {
+            Self::GenericBytesPerToken35 => unreachable!("generic fallback returned above"),
             // These are conservative route calibrations, not upstream tokenizer claims.
             Self::OpenAiBpeApprox => (5, 18),
             Self::AnthropicBpeApprox => (3, 10),
@@ -92,7 +116,7 @@ impl TokenEstimatorProfile {
 
     pub fn provenance(self) -> TokenEstimateProvenance {
         match self {
-            Self::GenericBytesPerToken35 => TokenEstimateProvenance::HeuristicBytesPerToken35,
+            Self::GenericBytesPerToken35 => TokenEstimateProvenance::ConservativeByteUpperBound,
             Self::OpenAiBpeApprox => TokenEstimateProvenance::OpenAiBpeApproximation,
             Self::AnthropicBpeApprox => TokenEstimateProvenance::AnthropicBpeApproximation,
             Self::SentencePieceApprox => TokenEstimateProvenance::SentencePieceApproximation,
@@ -100,16 +124,48 @@ impl TokenEstimatorProfile {
     }
 
     pub fn identity(self) -> TokenizerIdentity {
-        let catalog_id = match self {
-            Self::GenericBytesPerToken35 => "iteron.byte-heuristic",
-            Self::OpenAiBpeApprox => "iteron.openai-bpe-approx",
-            Self::AnthropicBpeApprox => "iteron.anthropic-bpe-approx",
-            Self::SentencePieceApprox => "iteron.sentencepiece-approx",
+        let (catalog_id, version) = match self {
+            Self::GenericBytesPerToken35 => ("iteron.conservative-byte-upper-bound", 2),
+            Self::OpenAiBpeApprox => ("iteron.openai-bpe-approx", 1),
+            Self::AnthropicBpeApprox => ("iteron.anthropic-bpe-approx", 1),
+            Self::SentencePieceApprox => ("iteron.sentencepiece-approx", 1),
         };
         TokenizerIdentity {
             catalog_id: catalog_id.into(),
-            version: 1,
+            version,
             exact: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_identity_selects_a_provider_profile_and_names_the_fallback() {
+        let openai = TokenEstimatorProfile::for_route(Some("openai"), "gpt-5");
+        let anthropic = TokenEstimatorProfile::for_route(Some("anthropic"), "claude-opus");
+        let sentencepiece = TokenEstimatorProfile::for_route(Some("deepseek"), "deepseek-v4");
+        let fallback = TokenEstimatorProfile::for_route(Some("unknown"), "custom-model");
+
+        assert_eq!(openai, TokenEstimatorProfile::OpenAiBpeApprox);
+        assert_eq!(anthropic, TokenEstimatorProfile::AnthropicBpeApprox);
+        assert_eq!(sentencepiece, TokenEstimatorProfile::SentencePieceApprox);
+        assert_eq!(fallback, TokenEstimatorProfile::GenericBytesPerToken35);
+        assert_eq!(
+            fallback.identity().catalog_id,
+            "iteron.conservative-byte-upper-bound"
+        );
+        assert_eq!(fallback.identity().version, 2);
+        assert!(!fallback.identity().exact);
+        assert_eq!(fallback.estimate("ascii"), "ascii".len());
+        assert_eq!(fallback.estimate("上下文"), "上下文".len());
+        assert_eq!(
+            fallback.provenance(),
+            TokenEstimateProvenance::ConservativeByteUpperBound
+        );
+        let sample = "x".repeat(360);
+        assert_ne!(openai.estimate(&sample), anthropic.estimate(&sample));
     }
 }

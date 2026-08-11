@@ -18,7 +18,6 @@ pub(crate) enum FactGapReason {
     OwnerGetterMissing,
     OwnerSchemaMismatch,
     RequiredOwnerFieldUnknown,
-    CapabilityNotAttested,
     IndependentAuthorityMissing,
     ExternalCeilingBelowSchemaMinimum,
     GovernedCatalogMaterializerMissing,
@@ -33,7 +32,6 @@ impl FactGapReason {
             Self::OwnerGetterMissing => "owner_getter_missing",
             Self::OwnerSchemaMismatch => "owner_schema_mismatch",
             Self::RequiredOwnerFieldUnknown => "required_owner_field_unknown",
-            Self::CapabilityNotAttested => "capability_not_attested",
             Self::IndependentAuthorityMissing => "independent_authority_missing",
             Self::ExternalCeilingBelowSchemaMinimum => "external_ceiling_below_schema_minimum",
             Self::GovernedCatalogMaterializerMissing => "governed_catalog_materializer_missing",
@@ -129,6 +127,8 @@ pub(crate) enum ProviderProcessFactError {
     IntegerOverflow(&'static str),
     #[error("the configured verification command is outside its bounded schema")]
     InvalidVerificationCommand,
+    #[error("the typed verification owner policy is invalid or disagrees with its verifier floor")]
+    InvalidVerificationPolicy,
     #[error("provider/process owner evidence could not be encoded")]
     EvidenceEncoding,
     #[error(transparent)]

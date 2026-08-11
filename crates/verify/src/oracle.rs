@@ -1,7 +1,78 @@
 //! Oracles, ranked by strength. A weak oracle never vetoes (ADR-005 R6).
 
+use crate::runtime_policy::VerificationFailureClass;
 use iteron_sandbox::{Confinement, Sandbox};
 use std::path::PathBuf;
+
+/// One immutable entry in the failure taxonomy consumed by the verification loop.
+///
+/// The serialized shape is exactly family 126's governed catalog entry. `class()` is derived from
+/// the namespaced id so the content-addressed materializer and the physical recovery decision
+/// cannot drift into two independent mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct VerificationFailureTaxonomyEntry {
+    pub class_id: &'static str,
+    pub outcome: &'static str,
+    pub terminal: bool,
+    pub version: &'static str,
+}
+
+impl VerificationFailureTaxonomyEntry {
+    pub fn class(self) -> VerificationFailureClass {
+        match self.class_id {
+            "verification.test_failure" => VerificationFailureClass::TestFailure,
+            "verification.timed_out" => VerificationFailureClass::TimedOut,
+            "verification.infrastructure_failure" => {
+                VerificationFailureClass::InfrastructureFailure
+            }
+            "verification.cancelled" => VerificationFailureClass::Cancelled,
+            _ => unreachable!(),
+        }
+    }
+}
+
+const FAILURE_TAXONOMY: [VerificationFailureTaxonomyEntry; 4] = [
+    VerificationFailureTaxonomyEntry {
+        class_id: "verification.test_failure",
+        outcome: "test_failure",
+        terminal: false,
+        version: "1.0.0",
+    },
+    VerificationFailureTaxonomyEntry {
+        class_id: "verification.timed_out",
+        outcome: "timeout",
+        terminal: true,
+        version: "1.0.0",
+    },
+    VerificationFailureTaxonomyEntry {
+        class_id: "verification.infrastructure_failure",
+        outcome: "infrastructure_failure",
+        terminal: true,
+        version: "1.0.0",
+    },
+    VerificationFailureTaxonomyEntry {
+        class_id: "verification.cancelled",
+        outcome: "unknown",
+        terminal: true,
+        version: "1.0.0",
+    },
+];
+
+pub const fn verification_failure_taxonomy() -> &'static [VerificationFailureTaxonomyEntry; 4] {
+    &FAILURE_TAXONOMY
+}
+
+pub const fn classify_verification_failure(
+    outcome: VerificationOutcome,
+) -> Option<VerificationFailureTaxonomyEntry> {
+    match outcome {
+        VerificationOutcome::Pass => None,
+        VerificationOutcome::TestFailure => Some(FAILURE_TAXONOMY[0]),
+        VerificationOutcome::TimedOut => Some(FAILURE_TAXONOMY[1]),
+        VerificationOutcome::InfrastructureFailure => Some(FAILURE_TAXONOMY[2]),
+        VerificationOutcome::Cancelled => Some(FAILURE_TAXONOMY[3]),
+    }
+}
 
 /// How much authority an oracle's verdict carries. The ranking is a type, not a convention.
 #[derive(
@@ -126,6 +197,7 @@ pub struct TestOracle {
     command: String,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
+    output_tail_bytes: usize,
 }
 
 impl TestOracle {
@@ -136,6 +208,7 @@ impl TestOracle {
             command,
             timeout_secs: 300,
             sensitive_env_names: Vec::new(),
+            output_tail_bytes: crate::VerificationFeedbackTailPolicy::default().oracle_output_bytes,
         }
     }
 
@@ -152,6 +225,12 @@ impl TestOracle {
         names.sort();
         names.dedup();
         self.sensitive_env_names = names;
+        self
+    }
+
+    /// Tighten the UTF-8-safe physical-oracle feedback tail from the pinned runtime policy.
+    pub fn with_output_tail_bytes(mut self, output_tail_bytes: usize) -> Self {
+        self.output_tail_bytes = output_tail_bytes.min(1_048_576);
         self
     }
 }
@@ -198,7 +277,10 @@ impl Oracle for TestOracle {
                 // Keep the tail (test failures print last), UTF-8-safe (code review CRITICAL:
                 // a raw byte slice panics on a multibyte char at the cut).
                 let combined = format!("{}\n{}", out.stdout, out.stderr);
-                detail.push_str(&iteron_protocol::text::tail(&combined, 4000));
+                detail.push_str(&iteron_protocol::text::tail(
+                    &combined,
+                    self.output_tail_bytes,
+                ));
                 Verdict::new(OracleStrength::Strong, outcome, detail)
             }
             Err(e) => Verdict::new(
@@ -403,6 +485,39 @@ mod tests {
             assert!(!verdict.passed(), "{} must fail closed", outcome.label());
         }
         assert!(Verdict::new(OracleStrength::Strong, VerificationOutcome::Pass, "ok").passed());
+    }
+
+    #[test]
+    fn fixed_failure_taxonomy_classifies_every_non_pass_outcome_exactly() {
+        assert_eq!(verification_failure_taxonomy().len(), 4);
+        assert!(classify_verification_failure(VerificationOutcome::Pass).is_none());
+        for (outcome, class, terminal) in [
+            (
+                VerificationOutcome::TestFailure,
+                VerificationFailureClass::TestFailure,
+                false,
+            ),
+            (
+                VerificationOutcome::TimedOut,
+                VerificationFailureClass::TimedOut,
+                true,
+            ),
+            (
+                VerificationOutcome::InfrastructureFailure,
+                VerificationFailureClass::InfrastructureFailure,
+                true,
+            ),
+            (
+                VerificationOutcome::Cancelled,
+                VerificationFailureClass::Cancelled,
+                true,
+            ),
+        ] {
+            let entry = classify_verification_failure(outcome).expect("non-pass taxonomy entry");
+            assert_eq!(entry.class(), class);
+            assert_eq!(entry.terminal, terminal);
+            assert_eq!(entry.version, "1.0.0");
+        }
     }
 
     #[cfg(target_os = "macos")]

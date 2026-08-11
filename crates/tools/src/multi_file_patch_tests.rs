@@ -46,6 +46,8 @@ fn patch_only_registry(root: &Path) -> Registry {
         sensitive_env_names: Default::default(),
         confine_execution: Default::default(),
         egress_allow_policy: Default::default(),
+        observation_tool_policy: Default::default(),
+        process_launch_policy: Default::default(),
         workspace_boundary: false,
         process_control: None,
         lsp_control: None,

@@ -18,8 +18,8 @@ use digest::{OrderedOpportunityDigest, opportunity_id};
 use iteron_protocol::{
     EventKind, MAX_POLICY_ACTIONS, POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
     POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION, PolicyDecisionDisposition, PolicyDecisionEvidence,
-    PolicyEvidenceError, PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope,
-    PolicyRuntimeIdentity, RunId, Seq, TurnId,
+    PolicyEvidenceError, PolicyHarnessOutcomeId, PolicyOpportunityId, PolicyOutcomeEvidence,
+    PolicyOutcomeScope, PolicyRuntimeIdentity, RunId, Seq, TurnId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -285,6 +285,14 @@ impl PolicyEvidenceRecorder {
         join(Some(&self.run_join))
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_opportunity_count(&self) -> usize {
+        self.opportunities
+            .values()
+            .filter(|state| state.status == OpportunityStatus::Pending)
+            .count()
+    }
+
     pub(crate) fn append_turn_outcome(
         &mut self,
         rollout: &mut iteron_record::Rollout,
@@ -305,7 +313,7 @@ impl PolicyEvidenceRecorder {
         if &actual != expected_join {
             return Err(PolicyEvidenceRecorderError::OutcomeJoinMismatch);
         }
-        let aggregate_input = input.clone();
+        let next_run_aggregate = self.aggregate_with_turn(&input)?;
         let (event, next_ordinal) =
             self.outcome_event(PolicyOutcomeScope::Turn, Some(turn), actual, input)?;
         let seq = rollout.append(&iteron_protocol::Event {
@@ -315,7 +323,7 @@ impl PolicyEvidenceRecorder {
         })?;
         self.next_outcome_ordinal = next_ordinal;
         self.terminal_turns.insert(turn.0);
-        self.absorb_turn_input(&aggregate_input);
+        self.run_aggregate = next_run_aggregate;
         Ok(seq)
     }
 
@@ -324,7 +332,6 @@ impl PolicyEvidenceRecorder {
         rollout: &mut iteron_record::Rollout,
         event_turn: TurnId,
         expected_join: &PolicyOpportunityJoin,
-        input: PolicyOutcomeInput,
     ) -> Result<Seq, PolicyEvidenceRecorderError> {
         if self.run_terminal {
             return Err(PolicyEvidenceRecorderError::RunAlreadyTerminal);
@@ -343,16 +350,7 @@ impl PolicyEvidenceRecorder {
         if &actual != expected_join {
             return Err(PolicyEvidenceRecorderError::OutcomeJoinMismatch);
         }
-        if input.terminal != self.run_aggregate.terminal
-            || input.quality_micros != self.run_aggregate.quality_micros
-            || input.latency_us != self.run_aggregate.latency_us
-            || input.verifier != self.run_aggregate.verifier
-            || input.harness_error_code.is_some() != self.run_aggregate.has_harness_error
-        {
-            return Err(PolicyEvidenceRecorderError::ReplayInvariant(
-                "run outcome does not aggregate its terminal turn evidence",
-            ));
-        }
+        let input = self.derived_run_outcome();
         let (event, next_ordinal) =
             self.outcome_event(PolicyOutcomeScope::Run, None, actual, input)?;
         let seq = rollout.append(&iteron_protocol::Event {
@@ -387,7 +385,9 @@ impl PolicyEvidenceRecorder {
             output_tokens: input.output_tokens,
             latency_us: input.latency_us,
             verifier: input.verifier,
-            harness_error_code: input.harness_error_code,
+            harness_error_code: input
+                .harness_error_code
+                .map(PolicyHarnessOutcomeId::into_string),
             outcome_ordinal: ordinal,
         };
         evidence.validate()?;

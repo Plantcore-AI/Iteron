@@ -4,7 +4,8 @@ use super::{
     PolicyRunAggregate, join,
 };
 use iteron_protocol::{
-    EventKind, PolicyOutcomeScope, PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TurnId,
+    EventKind, PolicyHarnessOutcomeId, PolicyOutcomeScope, PolicyTerminalOutcome,
+    PolicyVerifierOutcome, RunId, TurnId,
 };
 use sha2::{Digest, Sha256};
 
@@ -221,7 +222,20 @@ impl PolicyEvidenceRecorder {
                 {
                     return Err(PolicyEvidenceRecorderError::OutcomeJoinMismatch);
                 }
-                self.absorb_turn_evidence(evidence);
+                self.run_aggregate = self.aggregate_with_turn(&PolicyOutcomeInput {
+                    terminal: evidence.terminal,
+                    quality_micros: evidence.quality_micros,
+                    cost_microusd: evidence.cost_microusd,
+                    input_tokens: evidence.input_tokens,
+                    output_tokens: evidence.output_tokens,
+                    latency_us: evidence.latency_us,
+                    verifier: evidence.verifier,
+                    harness_error_code: evidence
+                        .harness_error_code
+                        .as_deref()
+                        .map(|value| PolicyHarnessOutcomeId::from_persisted(value, evidence.scope))
+                        .transpose()?,
+                })?;
             }
             PolicyOutcomeScope::Run => {
                 if self.run_terminal {
@@ -242,12 +256,7 @@ impl PolicyEvidenceRecorder {
                 {
                     return Err(PolicyEvidenceRecorderError::OutcomeJoinMismatch);
                 }
-                if evidence.terminal != self.run_aggregate.terminal
-                    || evidence.quality_micros != self.run_aggregate.quality_micros
-                    || evidence.latency_us != self.run_aggregate.latency_us
-                    || evidence.verifier != self.run_aggregate.verifier
-                    || evidence.harness_error_code.is_some() != self.run_aggregate.has_harness_error
-                {
+                if evidence != &self.derived_run_evidence(evidence) {
                     return Err(PolicyEvidenceRecorderError::ReplayInvariant(
                         "run outcome does not aggregate its terminal turn evidence",
                     ));
@@ -262,55 +271,115 @@ impl PolicyEvidenceRecorder {
         Ok(())
     }
 
-    pub(super) fn absorb_turn_input(&mut self, input: &PolicyOutcomeInput) {
-        self.absorb_turn(
-            input.terminal,
-            input.quality_micros,
-            input.latency_us,
-            input.verifier,
-            input.harness_error_code.is_some(),
-        );
-    }
-
-    fn absorb_turn_evidence(&mut self, evidence: &iteron_protocol::PolicyOutcomeEvidence) {
-        self.absorb_turn(
-            evidence.terminal,
-            evidence.quality_micros,
-            evidence.latency_us,
-            evidence.verifier,
-            evidence.harness_error_code.is_some(),
-        );
-    }
-
-    fn absorb_turn(
-        &mut self,
-        terminal: PolicyTerminalOutcome,
-        quality_micros: Option<i64>,
-        latency_us: u64,
-        verifier: PolicyVerifierOutcome,
-        has_harness_error: bool,
-    ) {
-        if terminal_rank(terminal) > terminal_rank(self.run_aggregate.terminal) {
-            self.run_aggregate.terminal = terminal;
+    pub(super) fn aggregate_with_turn(
+        &self,
+        input: &PolicyOutcomeInput,
+    ) -> Result<PolicyRunAggregate, PolicyEvidenceRecorderError> {
+        let mut aggregate = self.run_aggregate;
+        if terminal_rank(input.terminal) > terminal_rank(aggregate.terminal) {
+            aggregate.terminal = input.terminal;
         }
-        self.run_aggregate.quality_micros = if self.run_aggregate.completed_turns == 0 {
-            quality_micros
+        aggregate.quality_micros = if aggregate.completed_turns == 0 {
+            input.quality_micros
         } else {
-            self.run_aggregate
+            aggregate
                 .quality_micros
-                .zip(quality_micros)
+                .zip(input.quality_micros)
                 .map(|(current, next)| current.min(next))
         };
-        self.run_aggregate.latency_us = self.run_aggregate.latency_us.saturating_add(latency_us);
-        if verifier_rank(verifier) > verifier_rank(self.run_aggregate.verifier) {
-            self.run_aggregate.verifier = verifier;
+        aggregate.cost_microusd = checked_optional_sum(
+            aggregate.cost_microusd,
+            input.cost_microusd,
+            "policy cost aggregate overflowed",
+        )?;
+        aggregate.input_tokens = checked_optional_sum(
+            aggregate.input_tokens,
+            input.input_tokens,
+            "policy input-token aggregate overflowed",
+        )?;
+        aggregate.output_tokens = checked_optional_sum(
+            aggregate.output_tokens,
+            input.output_tokens,
+            "policy output-token aggregate overflowed",
+        )?;
+        aggregate.latency_us = aggregate.latency_us.checked_add(input.latency_us).ok_or(
+            PolicyEvidenceRecorderError::ReplayInvariant("policy latency aggregate overflowed"),
+        )?;
+        if verifier_rank(input.verifier) > verifier_rank(aggregate.verifier) {
+            aggregate.verifier = input.verifier;
         }
-        self.run_aggregate.has_harness_error |= has_harness_error;
-        self.run_aggregate.completed_turns = self.run_aggregate.completed_turns.saturating_add(1);
+        if let Some(outcome) = &input.harness_error_code {
+            let code =
+                outcome
+                    .single_code()
+                    .ok_or(PolicyEvidenceRecorderError::InvalidEvidence(
+                    iteron_protocol::policy_evidence::PolicyEvidenceError::InvalidHarnessOutcome,
+                ))?;
+            aggregate.harness_errors.append(code)?;
+        }
+        aggregate.completed_turns = aggregate.completed_turns.checked_add(1).ok_or(
+            PolicyEvidenceRecorderError::ReplayInvariant(
+                "policy completed-turn aggregate overflowed",
+            ),
+        )?;
+        Ok(aggregate)
+    }
+
+    pub(super) fn derived_run_outcome(&self) -> PolicyOutcomeInput {
+        PolicyOutcomeInput {
+            terminal: self.run_aggregate.terminal,
+            quality_micros: self.run_aggregate.quality_micros,
+            cost_microusd: self.run_aggregate.cost_microusd,
+            input_tokens: self.run_aggregate.input_tokens,
+            output_tokens: self.run_aggregate.output_tokens,
+            latency_us: self.run_aggregate.latency_us,
+            verifier: self.run_aggregate.verifier,
+            harness_error_code: self.run_aggregate.harness_errors.outcome(),
+        }
+    }
+
+    fn derived_run_evidence(
+        &self,
+        evidence: &iteron_protocol::PolicyOutcomeEvidence,
+    ) -> iteron_protocol::PolicyOutcomeEvidence {
+        let input = self.derived_run_outcome();
+        iteron_protocol::PolicyOutcomeEvidence {
+            schema_version: evidence.schema_version,
+            scope: evidence.scope,
+            run_id: evidence.run_id.clone(),
+            turn_id: evidence.turn_id,
+            terminal: input.terminal,
+            opportunity_count: evidence.opportunity_count,
+            opportunities_digest_sha256: evidence.opportunities_digest_sha256.clone(),
+            quality_micros: input.quality_micros,
+            cost_microusd: input.cost_microusd,
+            input_tokens: input.input_tokens,
+            output_tokens: input.output_tokens,
+            latency_us: input.latency_us,
+            verifier: input.verifier,
+            harness_error_code: input
+                .harness_error_code
+                .map(PolicyHarnessOutcomeId::into_string),
+            outcome_ordinal: evidence.outcome_ordinal,
+        }
     }
 
     pub(crate) fn run_aggregate(&self) -> PolicyRunAggregate {
         self.run_aggregate
+    }
+}
+
+fn checked_optional_sum(
+    left: Option<u64>,
+    right: Option<u64>,
+    overflow: &'static str,
+) -> Result<Option<u64>, PolicyEvidenceRecorderError> {
+    match (left, right) {
+        (Some(left), Some(right)) => left
+            .checked_add(right)
+            .map(Some)
+            .ok_or(PolicyEvidenceRecorderError::ReplayInvariant(overflow)),
+        (None, _) | (_, None) => Ok(None),
     }
 }
 

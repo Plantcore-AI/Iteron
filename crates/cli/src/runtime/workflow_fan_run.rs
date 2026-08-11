@@ -16,7 +16,12 @@ impl Agent {
         aggregate: &Budget,
         workflow_state: &mut WorkflowRunState,
     ) -> Result<FanRun, KernelError> {
-        let active_workers = tasks.len().min((aggregate.max_turns / 2) as usize);
+        let fan_breadth = self.execution_policy.fan_breadth.unwrap_or(0);
+        let worker_min_turns = self.execution_policy.worker_min_turns.unwrap_or(u32::MAX);
+        let active_workers = tasks
+            .len()
+            .min(fan_breadth)
+            .min((aggregate.max_turns / worker_min_turns.max(1)) as usize);
         if active_workers == 0 {
             return Ok(FanRun::Completed(
                 tasks
@@ -45,6 +50,7 @@ impl Agent {
         cx.budget_slices = Some(budget_slices.clone());
         cx.child_ledgers = Some(child_ledgers.clone());
         cx.child_outcomes = Some(child_outcomes.clone());
+        let workflow_budget = cx.budget.clone();
         let spawner = std::sync::Arc::new(KernelSpawner::new(cx));
         let child_run_ids = (0..active_workers)
             .map(|ordinal| spawner.run_id_for_ordinal(ordinal as u64).0)
@@ -72,6 +78,7 @@ impl Agent {
         )
         .map_err(|error| KernelError::WorkflowEngine(format!("collaboration refused: {error}")))?;
         let limits = iteron_workflow::RunLimits::new(collaboration.concurrency, active_workers)
+            .and_then(|limits| workflow_spawner::governed_workflow_limits(&workflow_budget, limits))
             .map_err(|reason| KernelError::WorkflowEngine(reason.into()))?;
         let spec = iteron_workflow::RunSpec::new(ULTRACODE_FAN_SCRIPT)
             .with_args(args.clone())
@@ -327,7 +334,7 @@ impl Agent {
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
-                .map(|text| strict_utf8_head(text, 16 * 1024));
+                .map(|text| bounded_child_report(self.execution_policy, text));
             let done = terminal.state == iteron_workflow::WorkflowState::Done && text.is_some();
             let child_terminal = outcomes_by_ordinal[index].take();
             let drained = matches!(child_terminal.as_ref(), Some(Ok(Outcome::Drained)));

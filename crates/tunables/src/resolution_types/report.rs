@@ -1,7 +1,8 @@
 use super::{EvidenceSubject, ResolutionValue, RouteIdentity};
 use crate::{
     BenchmarkRelevance, CapabilityRequirement, CoreStrategySlot, DefaultSpec, ExternalCeiling,
-    InactiveReason, OptimizationSpec, ProviderRequirement, SourceKind, SourceTrust,
+    FixedAuthorityId, InactiveReason, OptimizationSpec, ProviderRequirement, SourceKind,
+    SourceTrust,
 };
 use serde::Serialize;
 
@@ -168,6 +169,19 @@ pub struct ResolvedEntry {
     pub benchmark_relevance: BenchmarkRelevance,
 }
 
+/// Content-free proof that the production composition root sampled one exact fixed authority.
+///
+/// This is deliberately separate from provenance: provenance identifies where the resolver's
+/// value came from, while this receipt proves that the non-replaceable physical owner was
+/// executed and produced the same canonical value. The value itself remains in the ordinary
+/// entry; only its domain-separated digest is repeated here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FixedAuthorityAttestation {
+    pub family_id: String,
+    pub authority: FixedAuthorityId,
+    pub owner_value_digest_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolutionReport {
     pub schema_version: u16,
@@ -178,6 +192,8 @@ pub struct ResolutionReport {
     pub effective_digest_sha256: String,
     pub resolution_digest_sha256: String,
     pub profile_digest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed_authority_attestations: Vec<FixedAuthorityAttestation>,
     pub entries: Vec<ResolvedEntry>,
 }
 

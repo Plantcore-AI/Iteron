@@ -1,10 +1,10 @@
-use super::value::{boolv, dec, en, int, list, text, upper};
+use super::value::{boolv, dec, en, int, list, map, text, upper};
 use super::{
     FactGapReason, FactLayer, ProviderProcessFactError, ProviderProcessFactGap,
     ProviderProcessFactsInput, ProviderProcessFactsReport, VerificationOwnerFacts,
 };
 use iteron_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
-use iteron_verify::VerifierScope;
+use iteron_verify::{VerificationRollbackMode, VerificationSelectionMode, VerifierScope};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -15,6 +15,7 @@ pub(super) fn apply(
     add_wall_constraints(builder, input, report)?;
     add_context_constraints(builder, input, report)?;
     add_process_constraints(builder, input, report)?;
+    add_binary_media_constraints(builder, input, report)?;
     add_verification_constraints(builder, input, report)?;
     Ok(())
 }
@@ -24,6 +25,28 @@ fn add_governor_constraints(
     input: &ProviderProcessFactsInput<'_>,
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
+    let role_routes = super::super::execution_policy::admitted_role_model_routes(
+        input.agent_catalog,
+        &input.selection.provider_id,
+        &input.selection.model_id,
+    )
+    .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
+    let role_routes = map(role_routes
+        .into_iter()
+        .map(|(role, route)| (role, en(&route))));
+    for ceiling in [
+        ExternalCeiling::ProviderCapability,
+        ExternalCeiling::ParentCost,
+    ] {
+        super::value::domain(
+            builder,
+            "role_specific_model_map",
+            "$",
+            ceiling,
+            [role_routes.clone()],
+        )?;
+        report.constrained("role_specific_model_map", "$", ceiling);
+    }
     let fallback = list(
         input
             .provider_governor
@@ -236,15 +259,15 @@ fn add_context_constraints(
     input: &ProviderProcessFactsInput<'_>,
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
-    let window = input
-        .model_capabilities
-        .context_window_tokens
-        .filter(|value| *value > 0)
-        .map(|value| value.min(10_000_000));
-    let window_value = window
-        .map(|value| super::value::i64u(value, "context_window"))
+    let (actual_window, execution_window, _) = super::context_owner_window(input)?;
+    let window_value = actual_window
+        .map(|value| super::value::i64u(value as u64, "context_window"))
         .transpose()?
         .map(int);
+    let execution_window_value = int(super::value::i64u(
+        execution_window as u64,
+        "context_window",
+    )?);
     if let Some(value) = &window_value {
         super::value::domain_max(
             builder,
@@ -268,31 +291,33 @@ fn add_context_constraints(
             FactGapReason::RequiredOwnerFieldUnknown,
         );
     }
-    for (ordinal, family) in [
-        (97, "system_prefix_budget"),
-        (98, "conversation_history_budget"),
-        (99, "tool_result_history_budget"),
-        (100, "multimodal_token_budget"),
+    for family in [
+        "system_prefix_budget",
+        "conversation_history_budget",
+        "tool_result_history_budget",
     ] {
-        if let Some(value) = &window_value {
-            upper(
-                builder,
-                family,
-                "$",
-                ExternalCeiling::ContextWindow,
-                value.clone(),
-            )?;
-            report.constrained(family, "$", ExternalCeiling::ContextWindow);
-        } else {
-            gap(
-                report,
-                ordinal,
-                family,
-                "$",
-                ExternalCeiling::ContextWindow,
-                FactGapReason::RequiredOwnerFieldUnknown,
-            );
-        }
+        upper(
+            builder,
+            family,
+            "$",
+            ExternalCeiling::ContextWindow,
+            execution_window_value.clone(),
+        )?;
+        report.constrained(family, "$", ExternalCeiling::ContextWindow);
+    }
+    if let Some(value) = &window_value {
+        upper(
+            builder,
+            "multimodal_token_budget",
+            "$",
+            ExternalCeiling::ContextWindow,
+            value.clone(),
+        )?;
+        report.constrained(
+            "multimodal_token_budget",
+            "$",
+            ExternalCeiling::ContextWindow,
+        );
     }
     if input.model_capabilities.image_input == Some(true) {
         if let Some(value) = &window_value {
@@ -310,64 +335,56 @@ fn add_context_constraints(
             );
         }
     } else {
-        gap(
-            report,
-            100,
+        super::value::domain(
+            builder,
             "multimodal_token_budget",
             "$",
             ExternalCeiling::ProviderCapability,
-            FactGapReason::CapabilityNotAttested,
-        );
-    }
-    if super::owner::has_tool(input.registry, "lsp_query") {
-        if let Some(value) = &window_value {
-            upper(
-                builder,
-                "lsp_result_context_budget",
-                "$",
-                ExternalCeiling::ContextWindow,
-                value.clone(),
-            )?;
-            report.constrained(
-                "lsp_result_context_budget",
-                "$",
-                ExternalCeiling::ContextWindow,
-            );
-        } else {
-            gap(
-                report,
-                121,
-                "lsp_result_context_budget",
-                "$",
-                ExternalCeiling::ContextWindow,
-                FactGapReason::RequiredOwnerFieldUnknown,
-            );
-        }
-    }
-
-    if window.is_some() {
-        super::value::domain(
-            builder,
-            "auto_compaction_enable",
-            "$",
-            ExternalCeiling::ContextWindow,
-            [boolv(false), boolv(true)],
+            [int(0)],
         )?;
         report.constrained(
-            "auto_compaction_enable",
+            "multimodal_token_budget",
             "$",
-            ExternalCeiling::ContextWindow,
-        );
-    } else {
-        gap(
-            report,
-            101,
-            "auto_compaction_enable",
-            "$",
-            ExternalCeiling::ContextWindow,
-            FactGapReason::RequiredOwnerFieldUnknown,
+            ExternalCeiling::ProviderCapability,
         );
     }
+    upper(
+        builder,
+        "lsp_result_context_budget",
+        "$",
+        ExternalCeiling::ContextWindow,
+        execution_window_value,
+    )?;
+    report.constrained(
+        "lsp_result_context_budget",
+        "$",
+        ExternalCeiling::ContextWindow,
+    );
+
+    super::value::domain(
+        builder,
+        "auto_compaction_enable",
+        "$",
+        ExternalCeiling::ContextWindow,
+        [boolv(input.compaction.enabled)],
+    )?;
+    report.constrained(
+        "auto_compaction_enable",
+        "$",
+        ExternalCeiling::ContextWindow,
+    );
+    super::value::domain(
+        builder,
+        "summary_consistency_coverage_check",
+        "$",
+        ExternalCeiling::VerificationFloor,
+        [boolv(input.compaction.coverage_check)],
+    )?;
+    report.constrained(
+        "summary_consistency_coverage_check",
+        "$",
+        ExternalCeiling::VerificationFloor,
+    );
 
     let turns = int(i64::from(input.budget.max_turns.min(10_000)));
     upper(
@@ -382,7 +399,7 @@ fn add_context_constraints(
         "cooldown_turns",
         ExternalCeiling::ParentTurns,
     );
-    let topologies = match window {
+    let topologies = match actual_window {
         Some(window) if window >= 64_000 => {
             vec![en("single_stage"), en("hierarchical"), en("map_reduce")]
         }
@@ -403,12 +420,12 @@ fn add_context_constraints(
         "$",
         ExternalCeiling::ContextWindow,
     );
-    upper(
+    super::value::domain(
         builder,
         "retrieval_recency_decay",
         "$",
         ExternalCeiling::TenantScope,
-        dec(1, 0),
+        [dec(1, 0)],
     )?;
     report.constrained("retrieval_recency_decay", "$", ExternalCeiling::TenantScope);
     upper(
@@ -470,8 +487,15 @@ fn add_process_constraints(
         ExternalCeiling::ToolBudget,
     );
 
-    if let Some(control) = input.registry.process_control() {
-        let policy = control.policy();
+    {
+        let policy = input
+            .registry
+            .process_control()
+            .map_or_else(iteron_tools::ProcessRuntimePolicy::default, |control| {
+                control.policy()
+            });
+        let launch = iteron_tools::ProcessLaunchPolicy::owner(input.workspace)
+            .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
         let backend = en(policy.backend.as_str());
         for ceiling in [
             ExternalCeiling::ProcessBudget,
@@ -528,6 +552,74 @@ fn add_process_constraints(
             "idle_timeout_milliseconds",
             ExternalCeiling::ParentWall,
         );
+        super::value::domain(
+            builder,
+            "process_cwd_continuity",
+            "scope",
+            ExternalCeiling::OperatorAuthority,
+            [en(launch.cwd.scope.as_str())],
+        )?;
+        report.constrained(
+            "process_cwd_continuity",
+            "scope",
+            ExternalCeiling::OperatorAuthority,
+        );
+        super::value::domain(
+            builder,
+            "process_cwd_continuity",
+            "initial_cwd",
+            ExternalCeiling::TenantScope,
+            [text(&launch.cwd.initial_cwd.to_string_lossy())],
+        )?;
+        report.constrained(
+            "process_cwd_continuity",
+            "initial_cwd",
+            ExternalCeiling::TenantScope,
+        );
+        super::value::domain(
+            builder,
+            "process_cwd_continuity",
+            "preserve_changes",
+            ExternalCeiling::OperatorAuthority,
+            [boolv(launch.cwd.preserve_changes)],
+        )?;
+        report.constrained(
+            "process_cwd_continuity",
+            "preserve_changes",
+            ExternalCeiling::OperatorAuthority,
+        );
+        upper(
+            builder,
+            "child_process_environment_reuse",
+            "max_entries",
+            ExternalCeiling::ProcessBudget,
+            int(i64::try_from(launch.environment.max_entries).map_err(|_| {
+                ProviderProcessFactError::IntegerOverflow("child_process_environment_reuse")
+            })?),
+        )?;
+        report.constrained(
+            "child_process_environment_reuse",
+            "max_entries",
+            ExternalCeiling::ProcessBudget,
+        );
+        super::value::domain(
+            builder,
+            "child_process_environment_reuse",
+            "blocked_names",
+            ExternalCeiling::OperatorAuthority,
+            [list(
+                launch
+                    .environment
+                    .blocked_names
+                    .iter()
+                    .map(|name| text(name)),
+            )],
+        )?;
+        report.constrained(
+            "child_process_environment_reuse",
+            "blocked_names",
+            ExternalCeiling::OperatorAuthority,
+        );
     }
 
     if let Some(control) = input.registry.lsp_control() {
@@ -576,87 +668,99 @@ fn add_process_constraints(
         );
     }
 
-    for (ordinal, family, field, ceiling, reason) in [
-        (
-            93,
-            "role_specific_model_map",
-            "$",
-            ExternalCeiling::ProviderCapability,
-            FactGapReason::OwnerSchemaMismatch,
-        ),
-        (
-            93,
-            "role_specific_model_map",
-            "$",
-            ExternalCeiling::ParentCost,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-        (
-            112,
-            "process_signal_kill_escalation",
-            "$",
-            ExternalCeiling::BenchmarkProtocol,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-        (
-            113,
-            "process_cwd_continuity",
-            "initial_cwd",
-            ExternalCeiling::TenantScope,
-            FactGapReason::OwnerSchemaMismatch,
-        ),
-        (
-            114,
-            "child_process_environment_reuse",
-            "max_entries",
-            ExternalCeiling::ProcessBudget,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-        (
-            114,
-            "child_process_environment_reuse",
-            "blocked_names",
-            ExternalCeiling::OperatorAuthority,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            115,
-            "effecting_tool_concurrency",
-            "$",
-            ExternalCeiling::ProcessBudget,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-        (
-            115,
-            "effecting_tool_concurrency",
-            "$",
-            ExternalCeiling::OperatorAuthority,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            116,
-            "write_set_conflict_admission",
-            "declared_set_required",
-            ExternalCeiling::OperatorAuthority,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            118,
+    super::value::exact(
+        builder,
+        "process_signal_kill_escalation",
+        "$",
+        ExternalCeiling::BenchmarkProtocol,
+        en(iteron_sandbox::ProcessSignalKillEscalationPolicy::ID),
+    )?;
+    report.constrained(
+        "process_signal_kill_escalation",
+        "$",
+        ExternalCeiling::BenchmarkProtocol,
+    );
+
+    let effecting = crate::runtime::effecting_tool_admission_policy();
+    let concurrency = int(super::value::i64z(
+        effecting.max_concurrency,
+        "effecting_tool_concurrency",
+    )?);
+    upper(
+        builder,
+        "effecting_tool_concurrency",
+        "$",
+        ExternalCeiling::ProcessBudget,
+        concurrency.clone(),
+    )?;
+    report.constrained(
+        "effecting_tool_concurrency",
+        "$",
+        ExternalCeiling::ProcessBudget,
+    );
+    super::value::domain(
+        builder,
+        "effecting_tool_concurrency",
+        "$",
+        ExternalCeiling::OperatorAuthority,
+        [concurrency],
+    )?;
+    report.constrained(
+        "effecting_tool_concurrency",
+        "$",
+        ExternalCeiling::OperatorAuthority,
+    );
+    super::value::domain(
+        builder,
+        "write_set_conflict_admission",
+        "declared_set_required",
+        ExternalCeiling::OperatorAuthority,
+        [boolv(effecting.declared_set_required)],
+    )?;
+    report.constrained(
+        "write_set_conflict_admission",
+        "declared_set_required",
+        ExternalCeiling::OperatorAuthority,
+    );
+    Ok(())
+}
+
+fn add_binary_media_constraints(
+    builder: &mut RuntimeResolutionBuilder,
+    input: &ProviderProcessFactsInput<'_>,
+    report: &mut ProviderProcessFactsReport,
+) -> Result<(), ProviderProcessFactError> {
+    let policy = input.binary_media_policy;
+    super::value::domain(
+        builder,
+        "binary_media_inspection_routing",
+        "mime_routes",
+        ExternalCeiling::OperatorAuthority,
+        [map(policy
+            .mime_routes()
+            .into_iter()
+            .map(|(mime, inspector)| (mime, en(&inspector))))],
+    )?;
+    report.constrained(
+        "binary_media_inspection_routing",
+        "mime_routes",
+        ExternalCeiling::OperatorAuthority,
+    );
+    upper(
+        builder,
+        "binary_media_inspection_routing",
+        "max_input_bytes",
+        ExternalCeiling::ToolBudget,
+        int(super::value::i64u(
+            policy.max_input_bytes() as u64,
             "binary_media_inspection_routing",
-            "mime_routes",
-            ExternalCeiling::OperatorAuthority,
-            FactGapReason::OwnerSchemaMismatch,
-        ),
-        (
-            118,
-            "binary_media_inspection_routing",
-            "max_input_bytes",
-            ExternalCeiling::ToolBudget,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-    ] {
-        gap(report, ordinal, family, field, ceiling, reason);
-    }
+        )?),
+    )?;
+    report.constrained(
+        "binary_media_inspection_routing",
+        "max_input_bytes",
+        ExternalCeiling::ToolBudget,
+    );
     Ok(())
 }
 
@@ -666,7 +770,7 @@ fn add_verification_constraints(
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
     match input.verification {
-        VerificationOwnerFacts::Configured { command, floor, .. } => {
+        VerificationOwnerFacts::Configured { floor, .. } => {
             let scopes = match floor.scope_floor {
                 VerifierScope::Lane => vec![en("lane"), en("workspace")],
                 VerifierScope::Workspace => vec![en("workspace")],
@@ -688,7 +792,13 @@ fn add_verification_constraints(
                 "test_selection_strategy",
                 "required_commands",
                 ExternalCeiling::VerificationFloor,
-                [list([text(command)])],
+                [list(
+                    input
+                        .verification_policy
+                        .required_commands
+                        .iter()
+                        .map(|command| text(command)),
+                )],
             )?;
             report.constrained(
                 "test_selection_strategy",
@@ -696,7 +806,33 @@ fn add_verification_constraints(
                 ExternalCeiling::VerificationFloor,
             );
         }
-        VerificationOwnerFacts::Disabled | VerificationOwnerFacts::GetterUnavailable => {
+        VerificationOwnerFacts::Disabled => {
+            super::value::domain(
+                builder,
+                "test_selection_strategy",
+                "scope",
+                ExternalCeiling::VerificationFloor,
+                [en("workspace")],
+            )?;
+            report.constrained(
+                "test_selection_strategy",
+                "scope",
+                ExternalCeiling::VerificationFloor,
+            );
+            super::value::domain(
+                builder,
+                "test_selection_strategy",
+                "required_commands",
+                ExternalCeiling::VerificationFloor,
+                [list(std::iter::empty::<iteron_tunables::ResolutionValue>())],
+            )?;
+            report.constrained(
+                "test_selection_strategy",
+                "required_commands",
+                ExternalCeiling::VerificationFloor,
+            );
+        }
+        VerificationOwnerFacts::GetterUnavailable => {
             for field in ["scope", "required_commands"] {
                 gap(
                     report,
@@ -709,66 +845,155 @@ fn add_verification_constraints(
             }
         }
     }
-    for (ordinal, family, field, ceiling, reason) in [
-        (
-            124,
-            "incremental_versus_full_verification",
-            "$",
-            ExternalCeiling::VerificationFloor,
-            FactGapReason::OwnerSchemaMismatch,
-        ),
-        (
-            125,
-            "flaky_test_detection_quarantine",
-            "repeat_count",
-            ExternalCeiling::RunBudget,
-            FactGapReason::IndependentAuthorityMissing,
-        ),
-        (
-            126,
-            "failure_classification_taxonomy",
-            "version",
-            ExternalCeiling::BenchmarkProtocol,
-            FactGapReason::GovernedCatalogMaterializerMissing,
-        ),
-        (
-            127,
-            "retry_eligibility_policy",
-            "eligible_classes",
-            ExternalCeiling::VerificationFloor,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            127,
-            "retry_eligibility_policy",
-            "max_attempts",
-            ExternalCeiling::RunBudget,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            130,
+    let allowed_selection = match input.verification {
+        VerificationOwnerFacts::Configured { .. }
+            if input.verification_policy.required_commands.len() > 1 =>
+        {
+            // A narrow value is admitted only when its resolved command vector also contains the
+            // exact full workspace command as the final gate. The resolver cannot invent this
+            // vector and the runtime executes it without applying selection a second time.
+            vec![en(match input.verification_policy.selection {
+                VerificationSelectionMode::Incremental => "incremental",
+                VerificationSelectionMode::Impacted => "impacted",
+                VerificationSelectionMode::Full => "full",
+            })]
+        }
+        VerificationOwnerFacts::Configured { .. }
+        | VerificationOwnerFacts::Disabled
+        | VerificationOwnerFacts::GetterUnavailable => vec![en("full")],
+    };
+    super::value::domain(
+        builder,
+        "incremental_versus_full_verification",
+        "$",
+        ExternalCeiling::VerificationFloor,
+        allowed_selection,
+    )?;
+    report.constrained(
+        "incremental_versus_full_verification",
+        "$",
+        ExternalCeiling::VerificationFloor,
+    );
+    upper(
+        builder,
+        "flaky_test_detection_quarantine",
+        "repeat_count",
+        ExternalCeiling::RunBudget,
+        int(i64::from(input.budget.max_turns.min(64).max(1))),
+    )?;
+    report.constrained(
+        "flaky_test_detection_quarantine",
+        "repeat_count",
+        ExternalCeiling::RunBudget,
+    );
+
+    let rollback = match input.verification_policy.restore.mode {
+        VerificationRollbackMode::Off => "off",
+        VerificationRollbackMode::SelectedPaths => "selected_paths",
+        VerificationRollbackMode::Workspace => "workspace",
+    };
+    super::value::domain(
+        builder,
+        "rollback_on_verification_failure",
+        "$",
+        ExternalCeiling::OperatorAuthority,
+        [en(rollback)],
+    )?;
+    report.constrained(
+        "rollback_on_verification_failure",
+        "$",
+        ExternalCeiling::OperatorAuthority,
+    );
+    if input.verification_policy.restore.mode == VerificationRollbackMode::SelectedPaths {
+        super::value::domain(
+            builder,
             "selective_restore_scope",
             "paths",
             ExternalCeiling::OperatorAuthority,
-            FactGapReason::OwnerGetterMissing,
-        ),
-        (
-            131,
-            "verification_quorum_consensus",
-            "verifiers",
-            ExternalCeiling::RunBudget,
-            FactGapReason::OwnerSchemaMismatch,
-        ),
-        (
-            132,
-            "recovery_escalation_policy",
-            "$",
-            ExternalCeiling::VerificationFloor,
-            FactGapReason::OwnerGetterMissing,
-        ),
-    ] {
-        gap(report, ordinal, family, field, ceiling, reason);
+            [list(
+                input
+                    .verification_policy
+                    .restore
+                    .paths
+                    .iter()
+                    .map(|path| text(path)),
+            )],
+        )?;
+        report.constrained(
+            "selective_restore_scope",
+            "paths",
+            ExternalCeiling::OperatorAuthority,
+        );
     }
+    upper(
+        builder,
+        "verification_quorum_consensus",
+        "verifiers",
+        ExternalCeiling::RunBudget,
+        int(i64::from(input.budget.max_turns.min(64).max(1))),
+    )?;
+    report.constrained(
+        "verification_quorum_consensus",
+        "verifiers",
+        ExternalCeiling::RunBudget,
+    );
+
+    super::value::domain(
+        builder,
+        "retry_eligibility_policy",
+        "eligible_classes",
+        ExternalCeiling::VerificationFloor,
+        [list(
+            input
+                .verification_policy
+                .retry
+                .eligible_classes
+                .iter()
+                .map(|class| text(class.id())),
+        )],
+    )?;
+    report.constrained(
+        "retry_eligibility_policy",
+        "eligible_classes",
+        ExternalCeiling::VerificationFloor,
+    );
+    upper(
+        builder,
+        "retry_eligibility_policy",
+        "max_attempts",
+        ExternalCeiling::RunBudget,
+        int(i64::from(input.verification_policy.retry.max_attempts)),
+    )?;
+    report.constrained(
+        "retry_eligibility_policy",
+        "max_attempts",
+        ExternalCeiling::RunBudget,
+    );
+
+    super::value::exact(
+        builder,
+        "failure_classification_taxonomy",
+        "version",
+        ExternalCeiling::BenchmarkProtocol,
+        super::defaults::failure_classification_catalog_value()?,
+    )?;
+    report.constrained(
+        "failure_classification_taxonomy",
+        "version",
+        ExternalCeiling::BenchmarkProtocol,
+    );
+    super::value::domain(
+        builder,
+        "recovery_escalation_policy",
+        "$",
+        ExternalCeiling::VerificationFloor,
+        [en(iteron_verify::VerificationRecoveryEscalationPolicy::ID)],
+    )?;
+    report.constrained(
+        "recovery_escalation_policy",
+        "$",
+        ExternalCeiling::VerificationFloor,
+    );
     Ok(())
 }
 

@@ -71,7 +71,7 @@ pub(crate) fn baseline_compiled_bundle() -> Arc<CompiledPolicyBundle> {
 pub(crate) fn compile_recorded_bundle(
     snapshot: &RunGenesisPolicyBundleSnapshot,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
-    iteron_record::validate_policy_bundle_snapshot(snapshot)
+    iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot)
         .map_err(|_| malformed_snapshot_failure())?;
     let compiled = match snapshot.coverage {
         GenesisCoverage::Baseline => compile_operator_bundle(None)?,
@@ -175,7 +175,7 @@ fn snapshot_from_receipt(
             })
         })
         .collect::<Result<Vec<_>, iteron_record::PolicyBundleCheckpointError>>()?;
-    iteron_record::seal_policy_bundle_snapshot(RunGenesisPolicyBundleSnapshot {
+    iteron_record::policy_bundle::seal_policy_bundle_snapshot(RunGenesisPolicyBundleSnapshot {
         version: RunGenesisPolicyBundleVersion::V1,
         canonicalization: RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION.to_owned(),
         bundle_id: receipt.bundle_id.clone().ok_or(

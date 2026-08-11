@@ -383,3 +383,95 @@ pub(crate) fn valid_sha256(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
+
+#[cfg(test)]
+mod memory_policy_tests {
+    use super::*;
+    use crate::DecimalValue;
+
+    fn decimal(coefficient: i64, scale: u8) -> ResolutionValue {
+        ResolutionValue::Decimal {
+            value: DecimalValue { coefficient, scale },
+        }
+    }
+
+    fn map(entries: impl IntoIterator<Item = (&'static str, ResolutionValue)>) -> ResolutionValue {
+        ResolutionValue::Map {
+            entries: entries
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        }
+    }
+
+    fn schema(id: &str) -> ValueSchema {
+        crate::families()
+            .iter()
+            .find(|family| family.id == id)
+            .unwrap()
+            .value_schema
+    }
+
+    fn accepted(value: &ResolutionValue, family: &str) -> bool {
+        validate(value, schema(family), &BTreeMap::new()).is_ok()
+    }
+
+    #[test]
+    fn bm25_key_domains_match_the_runtime_decoder_units() {
+        let valid = map([
+            ("k1", decimal(12, 1)),
+            ("b", decimal(75, 2)),
+            ("recall_limit", decimal(32, 0)),
+        ]);
+        assert!(accepted(&valid, "bm25"));
+
+        for invalid in [
+            map([
+                ("k1", decimal(0, 0)),
+                ("b", decimal(75, 2)),
+                ("recall_limit", decimal(32, 0)),
+            ]),
+            map([
+                ("k1", decimal(12, 1)),
+                ("b", decimal(100_001, 5)),
+                ("recall_limit", decimal(32, 0)),
+            ]),
+            map([
+                ("k1", decimal(12, 1)),
+                ("b", decimal(75, 2)),
+                ("recall_limit", decimal(325, 1)),
+            ]),
+            map([
+                ("k1", decimal(12, 1)),
+                ("b", decimal(75, 2)),
+                ("recall_limit", decimal(4097, 0)),
+            ]),
+        ] {
+            assert!(!accepted(&invalid, "bm25"), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn hybrid_weights_require_a_live_supported_signal() {
+        assert!(accepted(
+            &map([("lexical", decimal(1, 0))]),
+            "hybrid_retrieval_fusion_weights"
+        ));
+        assert!(accepted(
+            &map([("lexical", decimal(5, 1)), ("structural", decimal(5, 1)),]),
+            "hybrid_retrieval_fusion_weights"
+        ));
+        assert!(!accepted(
+            &map([("lexical", decimal(0, 0)), ("structural", decimal(0, 0)),]),
+            "hybrid_retrieval_fusion_weights"
+        ));
+        assert!(!accepted(
+            &map([("lexical", decimal(0, 0)), ("vector", decimal(1, 0)),]),
+            "hybrid_retrieval_fusion_weights"
+        ));
+        assert!(!accepted(
+            &map([("lexical", decimal(1, 0)), ("reranker", decimal(1, 1)),]),
+            "hybrid_retrieval_fusion_weights"
+        ));
+    }
+}

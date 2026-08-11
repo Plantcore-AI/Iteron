@@ -76,6 +76,10 @@ impl Agent {
                     EventKind::ContextInjection { .. }
                 ) | (DurableAppendFault::Notice, EventKind::Notice { .. })
                     | (DurableAppendFault::TurnStart, EventKind::TurnStart)
+                    | (
+                        DurableAppendFault::EffectIntent,
+                        EventKind::EffectIntent { .. }
+                    )
                     | (DurableAppendFault::ToolDone, EventKind::ToolDone { .. })
                     | (
                         DurableAppendFault::SubagentFinished,
@@ -177,8 +181,40 @@ impl Agent {
         class: effect_class::EffectClass,
         ordinal: usize,
         capability: Capability,
-        audit_arguments: serde_json::Value,
+        mut audit_arguments: serde_json::Value,
     ) -> Result<effects::EffectTicket, KernelError> {
+        let provider_route_attempt = if class == effect_class::EffectClass::Provider {
+            let route_id = audit_arguments
+                .get("route_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(KernelError::InvalidRouteMetadata {
+                    field: "provider_route_attempt.route_id",
+                    reason: "provider effect audit projection omitted the selected route",
+                })?;
+            let physical_attempt = audit_arguments
+                .get("physical_attempt")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(KernelError::InvalidRouteMetadata {
+                    field: "provider_route_attempt.physical_attempt",
+                    reason: "provider effect audit projection omitted a bounded physical ordinal",
+                })?;
+            let identity = route_attempt_accounting::route_attempt_identity(
+                route_id,
+                physical_attempt,
+                self.active_provider_cost_reservation(),
+            )?;
+            // The typed identity above is the durable route evidence. Raw provider/model strings
+            // are operator-controlled and can contain paths or credential-like material, so the
+            // generic audit projection must not persist a second, unsafe copy.
+            if let Some(arguments) = audit_arguments.as_object_mut() {
+                arguments.remove("route_id");
+                arguments.remove("model");
+            }
+            Some(identity)
+        } else {
+            None
+        };
         let effect = effects::BrokeredEffect {
             turn,
             effect_id: effect_class::effect_id(turn, class, ordinal),
@@ -187,7 +223,21 @@ impl Agent {
             capability,
             audit_arguments,
             workspace: effect_workspace(&self.workspace),
+            provider_route_attempt,
         };
+        // `EffectIntent` is appended by the kernel broker rather than `emit_durable_seq`, so the
+        // focused durability fault must be injected at this exact production boundary.  Keeping
+        // the seam here proves that no executor/provider call can exist after an intent fsync
+        // failure, and lets the caller close any pre-dispatch monetary reservation as known zero.
+        #[cfg(test)]
+        if self.fail_next_durable_append == Some(DurableAppendFault::EffectIntent) {
+            self.fail_next_durable_append = None;
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
+                std::io::Error::other("injected durable effect-intent append failure"),
+            )));
+        }
         let Agent {
             rollout,
             effect_admissions,
@@ -638,13 +688,31 @@ impl Agent {
         // must not be able to re-mint an identity the previous process already admitted.
         self.effect_admissions = effect_admission::EffectAdmissions::from_journal(&journal);
         let newly_unknown = journal.pending();
+        // A historical provider intent without the pre-dispatch route identity cannot be repaired
+        // honestly: inventing a route digest would turn "unknown identity" into false accounting.
+        // Decode remains compatible, but production recovery fails closed before appending any
+        // terminal or admitting new work.
+        if newly_unknown.iter().any(|pending| {
+            pending.tool == effect_class_label(effect_class::EffectClass::Provider)
+                && pending.provider_route_attempt.is_none()
+        }) {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "provider_route_attempt",
+                reason: "pending legacy provider intent has no pre-dispatch route identity",
+            });
+        }
         for pending in &newly_unknown {
+            let provider_route_attempt = pending
+                .provider_route_attempt
+                .clone()
+                .map(route_attempt_accounting::crash_recovery_accounting);
             self.emit_durable(
                 pending.turn,
                 EventKind::EffectUnknown {
                     id: pending.id.clone(),
                     tool: pending.tool.clone(),
                     reason: "recovery found a durable intent without a durable tool result; automatic retry is forbidden".into(),
+                    provider_route_attempt,
                 },
             )?;
         }

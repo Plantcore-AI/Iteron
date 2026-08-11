@@ -21,10 +21,12 @@ use supervisor::Supervisor;
 use types::ActionError;
 pub use types::ProcessHealth;
 
+pub(crate) use policy::InstalledProcessLaunchPolicy;
 pub use policy::{
-    InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS, MAX_IDLE_STALL_MILLISECONDS,
-    MAX_STDIN_POLL_MILLISECONDS, PersistentBackendSelection, ProcessPolicyError,
-    ProcessRuntimePolicy,
+    ChildProcessEnvironmentPolicy, InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS,
+    MAX_CHILD_ENV_BYTES, MAX_CHILD_ENV_ENTRIES, MAX_IDLE_STALL_MILLISECONDS,
+    MAX_STDIN_POLL_MILLISECONDS, PersistentBackendSelection, ProcessCwdPolicy, ProcessCwdScope,
+    ProcessLaunchPolicy, ProcessPolicyError, ProcessRuntimePolicy,
 };
 
 pub(super) const MAX_JOB_RECORDS: usize = 16;
@@ -200,7 +202,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<ProcessControl, ToolEr
 }
 
 fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    let sensitive_env_names = registry.sensitive_env_names_handle();
+    let launch_policy = registry.process_launch_policy_handle();
     registry.register_external_effect(
         ToolSpec {
             name: "process_start".into(),
@@ -228,7 +230,7 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
         },
         move |call, root| {
             let supervisor = Arc::clone(&supervisor);
-            let sensitive_env_names = Arc::clone(&sensitive_env_names);
+            let launch_policy = Arc::clone(&launch_policy);
             effectfut::box_it(async move {
                 let Some(command) = required_string(&call.input, "command") else {
                     return definite_error(call.id, "command must be a non-empty string");
@@ -250,13 +252,17 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                     Ok(value) => value,
                     Err(error) => return definite_error(call.id, error),
                 };
-                let names = sensitive_env_names
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
+                let Some(launch_policy) = launch_policy.get().cloned() else {
+                    return definite_error(
+                        call.id,
+                        "process_start refused: immutable process launch policy was not installed",
+                    );
+                };
                 action_result(
                     call.id,
-                    supervisor.start(&root, command, rows, cols, names).await,
+                    supervisor
+                        .start(&root, command, rows, cols, launch_policy)
+                        .await,
                 )
             })
         },

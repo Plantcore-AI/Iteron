@@ -14,24 +14,30 @@ pub(super) const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
 pub(super) const MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
 /// Decode one frame at a time and reject animations whose aggregate work exceeds eight maximum
 /// frames. The count ceiling separately bounds tiny-frame iteration overhead.
-const MAX_ANIMATION_FRAMES: u32 = 256;
+pub(super) const MAX_ANIMATION_FRAMES: u32 = 256;
 const MAX_TOTAL_FRAME_PIXELS: u64 = 64 * 1024 * 1024;
 /// Caller-owned output plus each decoder's internal workspace remain independently bounded.
 const MAX_DECODE_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
-pub(super) fn validate_decodable(
+pub(super) fn validate_decodable_with_limits(
     bytes: &[u8],
     media_type: ImageMediaType,
+    max_dimension: u32,
+    max_frames: u32,
 ) -> Result<(), ImageInputErrorKind> {
     match media_type {
-        ImageMediaType::Png => validate_png(bytes),
-        ImageMediaType::Jpeg => validate_jpeg(bytes),
-        ImageMediaType::Gif => validate_gif(bytes),
-        ImageMediaType::Webp => validate_webp(bytes),
+        ImageMediaType::Png => validate_png(bytes, max_dimension, max_frames),
+        ImageMediaType::Jpeg => validate_jpeg(bytes, max_dimension),
+        ImageMediaType::Gif => validate_gif(bytes, max_dimension, max_frames),
+        ImageMediaType::Webp => validate_webp(bytes, max_dimension, max_frames),
     }
 }
 
-fn validate_png(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
+fn validate_png(
+    bytes: &[u8],
+    max_dimension: u32,
+    max_frames: u32,
+) -> Result<(), ImageInputErrorKind> {
     let decoder = png::Decoder::new_with_limits(
         BufReader::new(Cursor::new(bytes)),
         png::Limits {
@@ -51,7 +57,7 @@ fn validate_png(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
             .unwrap_or(1);
         (info.width, info.height, frames)
     };
-    validate_animation_bounds(width, height, frames)?;
+    validate_animation_bounds(width, height, frames, max_dimension, max_frames)?;
     let buffer_size = reader
         .output_buffer_size()
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
@@ -62,17 +68,18 @@ fn validate_png(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
     Ok(())
 }
 
-fn validate_jpeg(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
+fn validate_jpeg(bytes: &[u8], max_dimension: u32) -> Result<(), ImageInputErrorKind> {
     let options = DecoderOptions::new_safe()
         .set_strict_mode(true)
-        .set_max_width(MAX_IMAGE_DIMENSION as usize)
-        .set_max_height(MAX_IMAGE_DIMENSION as usize);
+        .set_max_width(max_dimension as usize)
+        .set_max_height(max_dimension as usize);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     decoder.decode_headers().map_err(|_| invalid())?;
     let (width, height) = decoder.dimensions().ok_or_else(invalid)?;
-    validate_static_bounds(
+    validate_static_bounds_with_limit(
         u32::try_from(width).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?,
         u32::try_from(height).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?,
+        max_dimension,
     )?;
     let buffer_size = decoder
         .output_buffer_size()
@@ -81,7 +88,11 @@ fn validate_jpeg(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
     decoder.decode_into(&mut output).map_err(|_| invalid())
 }
 
-fn validate_gif(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
+fn validate_gif(
+    bytes: &[u8],
+    max_dimension: u32,
+    max_frames: u32,
+) -> Result<(), ImageInputErrorKind> {
     let mut options = DecodeOptions::new();
     options.set_color_output(ColorOutput::Indexed);
     options.set_memory_limit(MemoryLimit::Bytes(
@@ -92,7 +103,11 @@ fn validate_gif(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
     let mut reader = options
         .read_info(Cursor::new(bytes))
         .map_err(|_| invalid())?;
-    validate_static_bounds(u32::from(reader.width()), u32::from(reader.height()))?;
+    validate_static_bounds_with_limit(
+        u32::from(reader.width()),
+        u32::from(reader.height()),
+        max_dimension,
+    )?;
 
     let mut frame_count = 0u32;
     let mut total_pixels = 0u64;
@@ -100,7 +115,7 @@ fn validate_gif(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
         frame_count = frame_count
             .checked_add(1)
             .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
-        if frame_count > MAX_ANIMATION_FRAMES {
+        if frame_count > max_frames {
             return Err(ImageInputErrorKind::DecodeLimitExceeded);
         }
         let frame = reader.current_frame_info().ok_or_else(invalid)?;
@@ -108,6 +123,7 @@ fn validate_gif(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
             total_pixels,
             u32::from(frame.width),
             u32::from(frame.height),
+            max_dimension,
         )?;
         let buffer_size = reader.buffer_size();
         let mut output = bounded_buffer(buffer_size)?;
@@ -121,7 +137,11 @@ fn validate_gif(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
     Ok(())
 }
 
-fn validate_webp(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
+fn validate_webp(
+    bytes: &[u8],
+    max_dimension: u32,
+    max_frames: u32,
+) -> Result<(), ImageInputErrorKind> {
     let mut decoder =
         WebPDecoder::new(BufReader::new(Cursor::new(bytes))).map_err(|_| invalid())?;
     decoder.set_memory_limit(MAX_DECODE_BUFFER_BYTES);
@@ -131,7 +151,7 @@ fn validate_webp(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
     } else {
         1
     };
-    validate_animation_bounds(width, height, frames)?;
+    validate_animation_bounds(width, height, frames, max_dimension, max_frames)?;
     let buffer_size = decoder
         .output_buffer_size()
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
@@ -147,7 +167,15 @@ fn validate_webp(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
 }
 
 fn validate_static_bounds(width: u32, height: u32) -> Result<(), ImageInputErrorKind> {
-    validate_dimensions(width, height)?;
+    validate_static_bounds_with_limit(width, height, MAX_IMAGE_DIMENSION)
+}
+
+fn validate_static_bounds_with_limit(
+    width: u32,
+    height: u32,
+    max_dimension: u32,
+) -> Result<(), ImageInputErrorKind> {
+    validate_dimensions(width, height, max_dimension)?;
     Ok(())
 }
 
@@ -155,9 +183,11 @@ fn validate_animation_bounds(
     width: u32,
     height: u32,
     frames: u32,
+    max_dimension: u32,
+    max_frames: u32,
 ) -> Result<(), ImageInputErrorKind> {
-    validate_dimensions(width, height)?;
-    if frames == 0 || frames > MAX_ANIMATION_FRAMES {
+    validate_dimensions(width, height, max_dimension)?;
+    if frames == 0 || frames > max_frames {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
     let pixels = u64::from(width)
@@ -170,14 +200,18 @@ fn validate_animation_bounds(
     Ok(())
 }
 
-fn validate_dimensions(width: u32, height: u32) -> Result<(), ImageInputErrorKind> {
+fn validate_dimensions(
+    width: u32,
+    height: u32,
+    max_dimension: u32,
+) -> Result<(), ImageInputErrorKind> {
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
     if width == 0
         || height == 0
-        || width > MAX_IMAGE_DIMENSION
-        || height > MAX_IMAGE_DIMENSION
+        || width > max_dimension
+        || height > max_dimension
         || pixels > MAX_IMAGE_PIXELS
     {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
@@ -185,8 +219,13 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), ImageInputErrorKin
     Ok(())
 }
 
-fn add_frame_pixels(total: u64, width: u32, height: u32) -> Result<u64, ImageInputErrorKind> {
-    validate_dimensions(width, height)?;
+fn add_frame_pixels(
+    total: u64,
+    width: u32,
+    height: u32,
+    max_dimension: u32,
+) -> Result<u64, ImageInputErrorKind> {
+    validate_dimensions(width, height, max_dimension)?;
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
@@ -213,4 +252,37 @@ fn bounded_buffer(size: usize) -> Result<Vec<u8>, ImageInputErrorKind> {
 
 const fn invalid() -> ImageInputErrorKind {
     ImageInputErrorKind::InvalidImage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn animation_count_and_dimensions_use_the_exported_owner_envelope() {
+        assert_eq!(
+            validate_animation_bounds(
+                1,
+                1,
+                MAX_ANIMATION_FRAMES,
+                MAX_IMAGE_DIMENSION,
+                MAX_ANIMATION_FRAMES,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_animation_bounds(
+                1,
+                1,
+                MAX_ANIMATION_FRAMES + 1,
+                MAX_IMAGE_DIMENSION,
+                MAX_ANIMATION_FRAMES,
+            ),
+            Err(ImageInputErrorKind::DecodeLimitExceeded)
+        );
+        assert_eq!(
+            validate_static_bounds(MAX_IMAGE_DIMENSION + 1, 1),
+            Err(ImageInputErrorKind::DecodeLimitExceeded)
+        );
+    }
 }

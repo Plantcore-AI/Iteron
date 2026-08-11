@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
 use super::DagError;
+use super::hash::digest_json;
 use super::reducer::TaskDag;
 use super::types::{
-    Actor, AttemptCompletion, AttemptDisposition, AttemptId, AttemptSpec, AttemptState,
-    BudgetReservation, BudgetUsage, Command, Completion, DeliveryState, HARD_MAX_ATTEMPTS,
-    JoinSpec, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES, Task, TaskId, TaskMessage,
-    TaskSpec, TaskState, valid_digest, validate_identifier,
+    Actor, AttemptAssignment, AttemptCompletion, AttemptDisposition, AttemptId, AttemptRetryCause,
+    AttemptSpec, AttemptState, BudgetReservation, BudgetUsage, Command, Completion, DeliveryState,
+    HARD_MAX_ATTEMPTS, JoinSpec, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES, Task,
+    TaskId, TaskMessage, TaskSpec, TaskState, valid_digest, validate_identifier,
 };
 use super::validation_support::{budget_fits, transition, validate_visible};
 
@@ -147,6 +148,9 @@ impl TaskDag {
         if self.tasks.contains_key(&spec.id) {
             return Err(DagError::DuplicateTask(spec.id.0));
         }
+        if spec.declaration_index == Some(0) {
+            return Err(DagError::Invalid("task declaration index must be non-zero"));
+        }
         if self.tasks.len() >= self.config.limits.max_tasks {
             return Err(DagError::Capacity { kind: "task" });
         }
@@ -282,6 +286,83 @@ impl TaskDag {
             return Err(DagError::Invalid(
                 "attempt input digest must be exactly 64 hexadecimal bytes",
             ));
+        }
+        if attempt.lineage_version == 0 {
+            if attempt.retry_of.is_some()
+                || attempt.retry_cause.is_some()
+                || attempt.prior_evidence_digest.is_some()
+            {
+                return Err(DagError::Invalid(
+                    "legacy attempt lineage cannot carry version-one fields",
+                ));
+            }
+            return Ok(());
+        }
+        if attempt.lineage_version != 1 {
+            return Err(DagError::Invalid("unsupported attempt lineage version"));
+        }
+        match (
+            attempt.retry_ordinal,
+            attempt.assignment,
+            attempt.retry_of,
+            attempt.retry_cause,
+            attempt.prior_evidence_digest.as_deref(),
+        ) {
+            (0, AttemptAssignment::Initial, None, None, None) => {}
+            (
+                retry_ordinal,
+                AttemptAssignment::RetrySame | AttemptAssignment::Reassigned,
+                Some(prior_id),
+                Some(retry_cause),
+                Some(evidence_digest),
+            ) if retry_ordinal > 0 && valid_digest(evidence_digest) => {
+                let prior = self.require_attempt(prior_id)?;
+                if prior.spec.task != attempt.task {
+                    return Err(DagError::Invalid(
+                        "retry predecessor belongs to a different task",
+                    ));
+                }
+                if prior.spec.retry_ordinal.checked_add(1) != Some(retry_ordinal) {
+                    return Err(DagError::Invalid(
+                        "retry ordinal must immediately follow its predecessor",
+                    ));
+                }
+                if !prior.state.is_terminal() {
+                    return Err(DagError::Invalid(
+                        "retry predecessor must have a durable terminal",
+                    ));
+                }
+                if matches!(prior.state, AttemptState::UnknownEffect { .. }) {
+                    return Err(DagError::Invalid(
+                        "an unknown-effect attempt may not be retried or reassigned",
+                    ));
+                }
+                if digest_json(&prior.state)? != evidence_digest {
+                    return Err(DagError::Invalid(
+                        "retry predecessor evidence digest does not match its durable terminal",
+                    ));
+                }
+                let cause_matches_terminal = match (&prior.state, retry_cause) {
+                    (AttemptState::Succeeded { .. }, AttemptRetryCause::SchemaValidation) => true,
+                    (AttemptState::Failed { code, .. }, AttemptRetryCause::ChildFailure) => {
+                        code == "child_task_failed"
+                    }
+                    (AttemptState::Failed { code, .. }, AttemptRetryCause::NegativeTerminal) => {
+                        code == "negative_terminal"
+                    }
+                    _ => false,
+                };
+                if !cause_matches_terminal {
+                    return Err(DagError::Invalid(
+                        "retry cause is inconsistent with its durable predecessor terminal",
+                    ));
+                }
+            }
+            _ => {
+                return Err(DagError::Invalid(
+                    "attempt assignment lineage is inconsistent",
+                ));
+            }
         }
         Ok(())
     }

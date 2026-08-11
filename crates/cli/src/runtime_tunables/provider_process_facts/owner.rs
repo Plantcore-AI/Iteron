@@ -3,7 +3,7 @@ use iteron_provider::{AccountAvailability, BalanceAvailability};
 use iteron_tools::Registry;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Serialize)]
 pub(super) struct OwnerSnapshot {
@@ -12,12 +12,17 @@ pub(super) struct OwnerSnapshot {
     model: ModelEvidence,
     compaction: CompactionEvidence,
     registered_tools: BTreeSet<String>,
+    role_model_routes: BTreeMap<String, String>,
     pub process_surface: bool,
     pub lsp_surface: bool,
     process_policy: Option<iteron_tools::ProcessRuntimePolicy>,
+    process_launch_policy: Option<iteron_tools::ProcessLaunchPolicy>,
     lsp_policy: Option<iteron_tools::LspRuntimePolicy>,
+    tool_result_cache_ttl_seconds: u64,
     pub checkpoint_supported: bool,
     verification: VerificationEvidence,
+    verification_policy: iteron_verify::VerificationRuntimePolicy,
+    binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,7 +51,7 @@ struct CompactionEvidence {
 #[serde(tag = "state", rename_all = "snake_case")]
 enum VerificationEvidence {
     Configured {
-        command_digest_sha256: String,
+        command_digests_sha256: Vec<String>,
         floor: iteron_verify::VerifierSlotObservation,
         plan: iteron_verify::VerifierPlan,
     },
@@ -66,23 +71,40 @@ impl OwnerSnapshot {
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
         let verification = match input.verification {
-            VerificationOwnerFacts::Configured {
-                command,
-                floor,
-                plan,
-            } => VerificationEvidence::Configured {
-                command_digest_sha256: hex::encode(Sha256::digest(command.as_bytes())),
-                floor: *floor,
-                plan: *plan,
-            },
+            VerificationOwnerFacts::Configured { floor, plan, .. } => {
+                VerificationEvidence::Configured {
+                    command_digests_sha256: input
+                        .verification_policy
+                        .required_commands
+                        .iter()
+                        .map(|command| hex::encode(Sha256::digest(command.as_bytes())))
+                        .collect(),
+                    floor: *floor,
+                    plan: *plan,
+                }
+            }
             VerificationOwnerFacts::Disabled => VerificationEvidence::Disabled,
             VerificationOwnerFacts::GetterUnavailable => VerificationEvidence::GetterUnavailable,
         };
-        let process_policy = input
-            .registry
-            .process_control()
-            .map(|control| control.policy());
+        let process_policy = Some(
+            input
+                .registry
+                .process_control()
+                .map_or_else(iteron_tools::ProcessRuntimePolicy::default, |control| {
+                    control.policy()
+                }),
+        );
+        let process_launch_policy = Some(
+            iteron_tools::ProcessLaunchPolicy::owner(input.workspace)
+                .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?,
+        );
         let lsp_policy = input.registry.lsp_control().map(|control| control.policy());
+        let role_model_routes = super::super::execution_policy::admitted_role_model_routes(
+            input.agent_catalog,
+            &input.selection.provider_id,
+            &input.selection.model_id,
+        )
+        .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
         Ok(Self {
             route_attestation_digest_sha256: input.route.attestation_digest_sha256.clone(),
             health: HealthEvidence {
@@ -106,10 +128,15 @@ impl OwnerSnapshot {
             process_surface: has_process_surface(input.registry),
             lsp_surface: registered_tools.contains("lsp_query") && lsp_policy.is_some(),
             process_policy,
+            process_launch_policy,
             lsp_policy,
+            role_model_routes,
+            tool_result_cache_ttl_seconds: input.registry.tool_result_cache_ttl_seconds(),
             registered_tools,
             checkpoint_supported: iteron_record::checkpoint_supported(input.workspace),
             verification,
+            verification_policy: input.verification_policy.clone(),
+            binary_media_policy: input.binary_media_policy.clone(),
         })
     }
 

@@ -10,6 +10,7 @@ use crate::policy_evidence::{PolicyDecisionEvidence, PolicyOutcomeEvidence};
 use crate::pricing::{CostProjection, SignedRateCard};
 use crate::tool::{Capability, ToolResult, ToolUse};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Schema version for durable runtime-policy snapshots. This is an enum rather than an open
 /// integer so writers cannot accidentally emit an unreviewed wire format under a familiar event
@@ -202,6 +203,210 @@ pub enum WorkflowEvent {
     },
 }
 
+/// Wire version for durable verifier selection, quarantine, consensus, and rollback receipts.
+/// The receipt contains only fixed vocabulary, counts, content digests, and an expiry sampled once
+/// at the policy boundary; command text and verifier output stay in their owning effect records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationPolicyEventVersion {
+    V1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationSelectionEvidence {
+    Incremental,
+    Impacted,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationConsensusEvidence {
+    Accepted,
+    Rejected,
+    Flaky,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationOutcomeEvidence {
+    Pass,
+    TestFailure,
+    InfrastructureFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationRollbackEvidence {
+    SelectedPaths,
+    Workspace,
+}
+
+/// Typed, content-free verifier control-plane evidence. Physical oracle effects remain one-for-one
+/// `EffectIntent` + terminal records; this event records the deterministic reduction over those
+/// terminals and makes a flaky quarantine recoverable instead of process-local folklore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum VerificationPolicyEvent {
+    Reduced {
+        selection: VerificationSelectionEvidence,
+        command_digests_sha256: Vec<String>,
+        repeat_count: u8,
+        verifier_count: u8,
+        physical_runs: u16,
+        pass_lanes: u8,
+        test_failure_lanes: u8,
+        other_lanes: u8,
+        consensus: VerificationConsensusEvidence,
+        outcome: VerificationOutcomeEvidence,
+    },
+    Quarantined {
+        selection: VerificationSelectionEvidence,
+        command_digests_sha256: Vec<String>,
+        repeat_count: u8,
+        verifier_count: u8,
+        physical_runs: u16,
+        disagreements: u16,
+        /// Absolute wall deadline sampled once before this receipt is fsynced. Resume reads this
+        /// value; it never restarts or silently extends the quarantine interval.
+        expires_at_unix_secs: u64,
+    },
+    QuarantineRefused {
+        command_digest_sha256: String,
+        expires_at_unix_secs: u64,
+    },
+    RollbackAuthorized {
+        mode: VerificationRollbackEvidence,
+        checkpoint_seq: Seq,
+        path_count: u32,
+    },
+    RollbackApplied {
+        mode: VerificationRollbackEvidence,
+        checkpoint_seq: Seq,
+        path_count: u32,
+    },
+}
+
+impl VerificationPolicyEvent {
+    /// Keep the long-retained control receipt content-free and within the same immutable physical
+    /// ceilings as the runtime that emits it. This validator is called by the record boundary, not
+    /// merely by constructors in the CLI.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const MAX_COMMANDS: usize = 64;
+        const MAX_PHYSICAL_RUNS: usize = 64;
+        const MAX_ROLLBACK_PATHS: u32 = 100_000;
+        match self {
+            Self::Reduced {
+                command_digests_sha256,
+                repeat_count,
+                verifier_count,
+                physical_runs,
+                pass_lanes,
+                test_failure_lanes,
+                other_lanes,
+                ..
+            } => {
+                validate_verification_commands(
+                    command_digests_sha256,
+                    *repeat_count,
+                    *verifier_count,
+                    *physical_runs,
+                    MAX_COMMANDS,
+                    MAX_PHYSICAL_RUNS,
+                )?;
+                if u16::from(*pass_lanes)
+                    .saturating_add(u16::from(*test_failure_lanes))
+                    .saturating_add(u16::from(*other_lanes))
+                    != u16::from(*verifier_count)
+                {
+                    return Err("verification reduction lane counts do not cover its quorum");
+                }
+                Ok(())
+            }
+            Self::Quarantined {
+                command_digests_sha256,
+                repeat_count,
+                verifier_count,
+                physical_runs,
+                disagreements,
+                expires_at_unix_secs,
+                ..
+            } => {
+                validate_verification_commands(
+                    command_digests_sha256,
+                    *repeat_count,
+                    *verifier_count,
+                    *physical_runs,
+                    MAX_COMMANDS,
+                    MAX_PHYSICAL_RUNS,
+                )?;
+                if *disagreements == 0 || *expires_at_unix_secs == 0 {
+                    return Err("verification quarantine lacks disagreement or expiry evidence");
+                }
+                Ok(())
+            }
+            Self::QuarantineRefused {
+                command_digest_sha256,
+                expires_at_unix_secs,
+            } => {
+                if !valid_sha256(command_digest_sha256) || *expires_at_unix_secs == 0 {
+                    return Err("verification quarantine refusal evidence is invalid");
+                }
+                Ok(())
+            }
+            Self::RollbackAuthorized {
+                mode, path_count, ..
+            }
+            | Self::RollbackApplied {
+                mode, path_count, ..
+            } => {
+                if *path_count > MAX_ROLLBACK_PATHS
+                    || matches!(mode, VerificationRollbackEvidence::SelectedPaths)
+                        != (*path_count > 0)
+                {
+                    return Err("verification rollback receipt has inconsistent path scope");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn validate_verification_commands(
+    command_digests: &[String],
+    repeat_count: u8,
+    verifier_count: u8,
+    physical_runs: u16,
+    max_commands: usize,
+    max_physical_runs: usize,
+) -> Result<(), &'static str> {
+    if command_digests.is_empty()
+        || command_digests.len() > max_commands
+        || command_digests.iter().any(|digest| !valid_sha256(digest))
+        || repeat_count == 0
+        || verifier_count == 0
+    {
+        return Err("verification receipt command selection is outside its closed bounds");
+    }
+    let expected = command_digests
+        .len()
+        .saturating_mul(usize::from(repeat_count))
+        .saturating_mul(usize::from(verifier_count));
+    if expected == 0 || expected > max_physical_runs || usize::from(physical_runs) != expected {
+        return Err("verification receipt physical-run count is inconsistent");
+    }
+    Ok(())
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Canonical pure projection of runtime policy from a logical rollout. Keeping this reducer beside
 /// the wire vocabulary gives the kernel, session index, and fork code one interpretation of legacy
 /// genesis events and v1 snapshots.
@@ -316,6 +521,61 @@ pub struct DurableEnvironmentContext {
     pub trust: crate::Trust,
 }
 
+/// Content-free identity of the exact optional environment proposal bound to a run.
+///
+/// The text itself is already carried by `RunStart`/`ContextInjection`; tunables diagnostics need
+/// only enough information to prove that the resolver, durable record, and runtime consumed the
+/// same bytes without repeating repository or process details in another operator surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSnapshotIdentity {
+    pub present: bool,
+    pub digest_sha256: String,
+    pub canonical_bytes: usize,
+    pub trust: crate::Trust,
+}
+
+impl EnvironmentSnapshotIdentity {
+    pub fn from_optional(context: Option<&DurableEnvironmentContext>) -> Self {
+        match context {
+            Some(context) => context.content_free_identity(),
+            None => Self {
+                present: false,
+                digest_sha256: environment_identity_digest(false, crate::Trust::Trusted, b""),
+                canonical_bytes: 0,
+                trust: crate::Trust::Trusted,
+            },
+        }
+    }
+
+    pub fn matches(&self, context: Option<&DurableEnvironmentContext>) -> bool {
+        self == &Self::from_optional(context)
+    }
+}
+
+impl DurableEnvironmentContext {
+    pub fn content_free_identity(&self) -> EnvironmentSnapshotIdentity {
+        EnvironmentSnapshotIdentity {
+            present: true,
+            digest_sha256: environment_identity_digest(true, self.trust, self.text.as_bytes()),
+            canonical_bytes: self.text.len(),
+            trust: self.trust,
+        }
+    }
+}
+
+fn environment_identity_digest(present: bool, trust: crate::Trust, text: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"iteron-environment-snapshot-v1");
+    digest.update([u8::from(present), trust as u8]);
+    digest.update(u64::try_from(text.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(text);
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Exact strategy-admitted frontend prefix carried beside the legacy memory/skills context.
 /// Keeping it as an optional typed field lets older readers ignore the additive evidence while a
 /// current reader can distinguish a complete durable context from a pre-instruction legacy event.
@@ -338,6 +598,235 @@ pub enum SubmissionRejectionReason {
     ProtocolVersionMismatch,
 }
 
+/// Version of the content-free billing truth attached to one physical provider-route terminal.
+///
+/// This is deliberately distinct from `TurnEnd`: one logical turn may retry or fail over across
+/// several paid requests, and folding those requests into the eventual successful turn loses the
+/// billing truth for every earlier route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRouteAttemptAccountingVersion {
+    V1,
+}
+
+/// Content-free identity durably committed before one physical provider request can dispatch.
+///
+/// Keeping this separate from [`ProviderRouteAttemptAccounting`] is load-bearing: a process can
+/// die after the intent is durable but before any response or billing evidence is observable. In
+/// that state recovery still knows exactly which route attempt became physically possible, while
+/// its usage and cost remain explicitly unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRouteAttemptIdentity {
+    pub version: ProviderRouteAttemptAccountingVersion,
+    /// Domain-separated SHA-256 identity of the selected provider/model route. Raw route and model
+    /// strings are deliberately not durable fields because operator-defined identifiers may carry
+    /// paths or credential-like content.
+    pub route_id: String,
+    /// One-based physical request ordinal within the logical provider turn.
+    pub physical_attempt: u32,
+    /// Conservative cost reserved before this physical dispatch. Historical and unpriced
+    /// attempts omit it; a positive monetary ceiling requires it at the runtime mint boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_reservation_microusd: Option<u64>,
+}
+
+impl ProviderRouteAttemptIdentity {
+    pub const ROUTE_ID_BYTES: usize = 71;
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.route_id.len() != Self::ROUTE_ID_BYTES
+            || !self.route_id.starts_with("sha256:")
+            || !self.route_id[7..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("provider route attempt route_id must be a canonical SHA-256 identity");
+        }
+        if self.physical_attempt == 0 {
+            return Err("provider route attempt physical_attempt must be one-based");
+        }
+        Ok(())
+    }
+}
+
+/// Complete usage truth for one physical provider request, or a closed reason why it is unknown.
+/// No provider response text, prompt, header, or credential can enter this vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderRouteUsageTruth {
+    Known {
+        usage: Usage,
+    },
+    Unknown {
+        reason: ProviderRouteUsageUnknownReason,
+    },
+    /// The adapter proved that it rejected the route before transport dispatch.
+    NotDispatched,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRouteUsageUnknownReason {
+    ProviderOmitted,
+    CacheCreationUnreported,
+    ProvenFailureWithoutUsage,
+    OutcomeUnobservable,
+}
+
+/// Monetary truth for one physical provider request.
+///
+/// A known value names the exact immutable rate-card digest used by the injected pricing
+/// authority. Unknown is never serialized as zero, and therefore cannot reopen a monetary gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderRouteCostTruth {
+    Known {
+        amount_microusd: u64,
+        rate_card_digest: String,
+        /// Complete signed pricing authority for this physical request. The duplicated bounded
+        /// amount/digest above keep terminals cheap to project, while this proof makes the charge
+        /// independently replayable and prevents a durable-but-unverified number from reopening
+        /// or consuming a monetary gate. Historical v1 records may omit it; such a record remains
+        /// readable but cannot restore a known physical-attempt charge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection: Option<Box<CostProjection>>,
+    },
+    Unknown {
+        reason: ProviderRouteCostUnknownReason,
+    },
+    /// Paired only with [`ProviderRouteUsageTruth::NotDispatched`].
+    NotDispatched,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRouteCostUnknownReason {
+    UsageIncomplete,
+    RateCardUnavailable,
+    ProjectionRejected,
+    ProvenFailureWithoutBillingEvidence,
+    OutcomeUnobservable,
+}
+
+/// Versioned runtime decision made by the provider-route governor before physical dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderGovernorDecisionVersion {
+    V1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ProviderGovernorDecision {
+    HedgeSuppressed {
+        version: ProviderGovernorDecisionVersion,
+        reason: ProviderHedgeSuppressionReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderHedgeSuppressionReason {
+    /// Concurrent paid attempts cannot be reserved and projected atomically by the current USD
+    /// owner, so the runtime executes exactly one physical request instead.
+    PositiveUsdCeiling,
+}
+
+/// Bounded, content-free truth for exactly one physical provider-route attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRouteAttemptAccounting {
+    pub version: ProviderRouteAttemptAccountingVersion,
+    /// SHA-256 identity of the exact runtime/governor route. A digest is used because provider and
+    /// model identifiers are operator-controlled and may themselves contain paths or secrets.
+    pub route_id: String,
+    /// One-based physical request ordinal within the logical provider turn.
+    pub physical_attempt: u32,
+    /// Exact pre-dispatch reservation copied from the durable intent. The terminal's known cost
+    /// may not exceed it; unknown outcomes remain fail-closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_reservation_microusd: Option<u64>,
+    pub usage: ProviderRouteUsageTruth,
+    pub cost: ProviderRouteCostTruth,
+}
+
+impl ProviderRouteAttemptAccounting {
+    pub const ROUTE_ID_BYTES: usize = ProviderRouteAttemptIdentity::ROUTE_ID_BYTES;
+
+    pub fn identity(&self) -> ProviderRouteAttemptIdentity {
+        ProviderRouteAttemptIdentity {
+            version: self.version,
+            route_id: self.route_id.clone(),
+            physical_attempt: self.physical_attempt,
+            max_cost_reservation_microusd: self.max_cost_reservation_microusd,
+        }
+    }
+
+    /// Honest terminal for a process/transport boundary that dispatched after this identity was
+    /// durable but could not observe any authoritative response or billing outcome.
+    pub fn outcome_unobservable(identity: ProviderRouteAttemptIdentity) -> Self {
+        Self {
+            version: identity.version,
+            route_id: identity.route_id,
+            physical_attempt: identity.physical_attempt,
+            max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+            usage: ProviderRouteUsageTruth::Unknown {
+                reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable,
+            },
+            cost: ProviderRouteCostTruth::Unknown {
+                reason: ProviderRouteCostUnknownReason::OutcomeUnobservable,
+            },
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.identity().validate()?;
+        match (&self.usage, &self.cost) {
+            (ProviderRouteUsageTruth::NotDispatched, ProviderRouteCostTruth::NotDispatched) => {}
+            (ProviderRouteUsageTruth::NotDispatched, _)
+            | (_, ProviderRouteCostTruth::NotDispatched) => {
+                return Err("provider route attempt not-dispatched truth must be paired");
+            }
+            (ProviderRouteUsageTruth::Unknown { .. }, ProviderRouteCostTruth::Known { .. }) => {
+                return Err("known provider route cost requires known complete usage");
+            }
+            (
+                ProviderRouteUsageTruth::Known { usage },
+                ProviderRouteCostTruth::Known {
+                    amount_microusd,
+                    rate_card_digest,
+                    projection,
+                },
+            ) => {
+                if rate_card_digest.len() != 71
+                    || !rate_card_digest.starts_with("sha256:")
+                    || !rate_card_digest[7..]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err("known provider route cost has an invalid rate-card digest");
+                }
+                if let Some(projection) = projection
+                    && (projection.amount_microusd != *amount_microusd
+                        || projection.rate_card_digest != *rate_card_digest
+                        || projection.usage != *usage)
+                {
+                    return Err(
+                        "known provider route cost proof does not match its terminal summary",
+                    );
+                }
+                if self
+                    .max_cost_reservation_microusd
+                    .is_some_and(|reserved| *amount_microusd > reserved)
+                {
+                    return Err("known provider route cost exceeds its pre-dispatch reservation");
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -345,6 +834,8 @@ pub enum EventKind {
     Phase { phase: Phase },
     /// A turn began.
     TurnStart,
+    /// Content-free provider governor decision made before any physical route effect.
+    ProviderGovernorDecision { decision: ProviderGovernorDecision },
     /// Exactly one bounded, content-free selection for one live harness-policy opportunity.
     PolicyDecision { evidence: PolicyDecisionEvidence },
     /// Terminal aggregate joined to the ordered policy opportunities in one turn or run.
@@ -408,6 +899,11 @@ pub enum EventKind {
         capability: Capability,
         arguments: serde_json::Value,
         workspace: String,
+        /// Exact content-free identity for a physical provider request. `None` is accepted while
+        /// decoding historical records, but the production mint boundary requires it exactly for
+        /// `tool == "provider"` and forbids it for every other effect class.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
     },
     /// Runtime dispatch or recovery could not prove a terminal outcome for an admitted intent.
     /// It is never retried automatically. A future authenticated broker reconciliation may append
@@ -416,6 +912,8 @@ pub enum EventKind {
         id: EffectId,
         tool: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_route_attempt: Option<ProviderRouteAttemptAccounting>,
     },
     /// Proven successful terminal for a brokered effect that is **not** a registry tool call:
     /// provider requests, lifecycle hooks, subagent spawns, verifier oracle runs, workspace
@@ -443,6 +941,8 @@ pub enum EventKind {
         tool: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_route_attempt: Option<ProviderRouteAttemptAccounting>,
     },
     /// Proven **failed** terminal for a brokered effect. The distinction from
     /// [`EventKind::EffectUnknown`] is the whole point of the boundary: `EffectFailed` means the
@@ -460,6 +960,8 @@ pub enum EventKind {
         reason: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_route_attempt: Option<ProviderRouteAttemptAccounting>,
     },
     /// The model turn completed, with usage by cache class.
     ///
@@ -683,6 +1185,13 @@ pub enum EventKind {
         workflow_id: String,
         event: WorkflowEvent,
     },
+    /// Durable, typed verifier policy receipt. This is separate from physical verify effects and
+    /// from free-form notices so resume can restore quarantines and auditors can reproduce quorum
+    /// reduction without parsing operator prose.
+    VerificationPolicy {
+        version: VerificationPolicyEventVersion,
+        event: VerificationPolicyEvent,
+    },
     /// The run ended.
     Done { outcome: String },
     /// Forward-compatibility: an event kind this build does not recognize (written by a newer
@@ -725,28 +1234,10 @@ impl EventKind {
             Self::SubagentFinishedV2 { .. } => {
                 Err("subagent_finished_v2 tag must carry version v2")
             }
-            Self::TunablesSnapshot {
-                version: crate::RunGenesisTunablesVersion::V1,
-                snapshot:
-                    crate::RunGenesisTunablesSnapshot {
-                        version: crate::RunGenesisTunablesVersion::V1,
-                        ..
-                    },
-                ..
-            } => Ok(()),
-            Self::TunablesSnapshot { .. } => Err("tunables_snapshot V1 tag must carry version v1"),
-            Self::TunablesSnapshotV2 {
-                version: crate::RunGenesisTunablesVersion::V2,
-                snapshot:
-                    crate::RunGenesisTunablesSnapshotV2 {
-                        version: crate::RunGenesisTunablesVersion::V2,
-                        ..
-                    },
-                ..
-            } => Ok(()),
-            Self::TunablesSnapshotV2 { .. } => {
-                Err("tunables_snapshot_v2 tag must carry version v2")
-            }
+            // The event and its nested snapshot use distinct one-variant enums for V1 and V2.
+            // Serde therefore rejects a mismatched marker before an `EventKind` can exist, while
+            // preserving the published V1 enum's exact reachable Rust identity.
+            Self::TunablesSnapshot { .. } | Self::TunablesSnapshotV2 { .. } => Ok(()),
             Self::PolicyBundleSnapshot {
                 version: crate::RunGenesisPolicyBundleVersion::V1,
                 snapshot:
@@ -780,6 +1271,38 @@ fn workflow_event_is_v1_compatible(event: &WorkflowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_snapshot_identity_is_exact_content_free_and_distinguishes_absence() {
+        let context = DurableEnvironmentContext {
+            text: "branch=feature/private-path".into(),
+            trust: crate::Trust::Workspace,
+        };
+        let identity = context.content_free_identity();
+        assert!(identity.present);
+        assert_eq!(identity.canonical_bytes, context.text.len());
+        assert!(identity.matches(Some(&context)));
+        assert_eq!(identity.digest_sha256.len(), 64);
+        assert!(!format!("{identity:?}").contains(&context.text));
+
+        let absent = EnvironmentSnapshotIdentity::from_optional(None);
+        let empty = DurableEnvironmentContext {
+            text: String::new(),
+            trust: crate::Trust::Trusted,
+        }
+        .content_free_identity();
+        assert!(!absent.present);
+        assert_ne!(absent.digest_sha256, empty.digest_sha256);
+        assert_ne!(
+            identity.digest_sha256,
+            DurableEnvironmentContext {
+                text: context.text,
+                trust: crate::Trust::Trusted,
+            }
+            .content_free_identity()
+            .digest_sha256
+        );
+    }
 
     /// #103's whole honesty claim, at the wire. A turn that produced no stream item must be
     /// distinguishable from one whose first token arrived instantly, and `0` cannot carry that

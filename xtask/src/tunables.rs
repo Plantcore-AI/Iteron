@@ -94,7 +94,7 @@ fn render_markdown() -> Result<String> {
     )?;
     writeln!(
         out,
-        "Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine iteron StrategySlot bindings, exact source provenance, implementation status, a tagged and bounded value domain, source-controlled external-constraint projection/relation/action, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls. Invalid, unattested, unresolved, or rejected active entries fail atomically; explanation output is bounded and redacted.\n"
+        "Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine iteron StrategySlot bindings, exact source provenance, implementation status, a typed runtime binding (production adapter, concrete owner, getter and evidence projection, or fixed authority), a tagged and bounded value domain, source-controlled external-constraint projection/relation/action, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls. Invalid, unattested, unresolved, or rejected active entries fail atomically; explanation output is bounded and redacted.\n"
     )?;
     writeln!(
         out,
@@ -131,11 +131,11 @@ fn render_markdown() -> Result<String> {
     writeln!(out, "\n## Families\n")?;
     writeln!(
         out,
-        "| # | Stable ID | Semantic key | Domain | Structured value domain | Default | Source / trust / locator | Requirements | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
+        "| # | Stable ID | Semantic key | Domain | Structured value domain | Default | Source / trust / locator | Requirements | SWE | TB 2.1 | Optimization | Status | StrategySlot | Runtime binding |"
     )?;
     writeln!(
         out,
-        "|---:|---|---|---|---|---|---|---|---|---|---|---|---|"
+        "|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     )?;
     for family in registry {
         render_family(&mut out, family)?;
@@ -202,9 +202,10 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
         Some(value) => serde_json::to_string(&value)?,
         None => resolver_name(family.default.resolver),
     };
+    let runtime_binding = serde_json::to_string(&family.runtime_binding)?;
     writeln!(
         out,
-        "| {} | `{}` | `{}` | `{}` | {} | `{}`: {} | {} | {} | `{}` | `{}` | `{}` | `{}` | {} |",
+        "| {} | `{}` | `{}` | `{}` | {} | `{}`: {} | {} | {} | `{}` | `{}` | `{}` | `{}` | {} | `{}` |",
         family.ordinal,
         family.id,
         family.semantic_key,
@@ -223,6 +224,7 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
             .map(|slot| format!("`{slot}`"))
             .collect::<Vec<_>>()
             .join(", "),
+        escape_cell(&runtime_binding),
     )?;
     Ok(())
 }
@@ -512,6 +514,9 @@ mod tests {
         assert!(rendered.contains("integer [1..86400] seconds"));
         assert!(rendered.contains("## Authority boundary"));
         assert!(rendered.contains("`provider_connect_tls_timeout`"));
+        assert!(rendered.contains("Runtime binding"));
+        assert!(rendered.contains("provider_selection"));
+        assert!(rendered.contains("run_genesis_tunables_v2"));
     }
 
     #[test]

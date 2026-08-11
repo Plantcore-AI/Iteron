@@ -70,10 +70,34 @@ impl Agent {
             .map(|remaining| remaining.as_secs().max(1))
             .unwrap_or(300);
         let remaining_turns = self.remaining_inference_turns();
+        if remaining_turns < self.execution_policy.admission.minimum_remaining_turns
+            || remaining_wall
+                < self
+                    .execution_policy
+                    .admission
+                    .minimum_remaining_wall_seconds
+        {
+            return Err(
+                "subagent was not started: pinned child-admission floor is not satisfied".into(),
+            );
+        }
+        // The agent definition remains the invariant ceiling and the single authoritative
+        // admission calculation.  The pinned execution policy may only narrow that proven budget;
+        // it cannot widen turns, tokens, wall time, or error tolerance beyond the kernel owner.
         let Some(budget) = iteron_agents::subagent_budget(
             remaining_turns,
             remaining_wall,
             self.remaining_provider_tokens(),
+        ) else {
+            return Err(
+                "subagent was not started: writer-first reserve left no safe child budget".into(),
+            );
+        };
+        let Some(budget) = self.execution_policy.direct_child_allocation.allocate(
+            remaining_turns,
+            remaining_wall,
+            self.remaining_provider_tokens(),
+            &budget,
         ) else {
             return Err(
                 "subagent was not started: writer-first reserve left no safe child budget".into(),
@@ -109,7 +133,7 @@ impl Agent {
         let tunables_pin = self
             .tunables_pin_snapshot()
             .map_err(|error| error.public_summary())?;
-        let tunables_resolution_digest = tunables_pin.resolution_digest_sha256().to_owned();
+        let tunables_config_digest = format!("sha256:{}", tunables_pin.resolution_digest_sha256());
         let sub_dir = self.subagent_directory();
         let rollout = match Rollout::open(&sub_dir, &sub_run, self.rollout.tenant().clone()) {
             Ok(r) => r,
@@ -164,14 +188,13 @@ impl Agent {
         sub.sensitive_env_names = self.sensitive_env_names.clone();
         // Hooks are resolved once from trusted operator configuration at the composition root.
         // Children inherit that exact value; they never re-read ambient or repository config.
-        sub.hooks = self.hooks.clone();
+        sub.install_hooks(self.hooks.clone())
+            .map_err(|error| error.public_summary())?;
         sub.hook_effect_journal = self.hook_effect_journal.clone();
+        sub.composition_environment_context = self.composition_environment_context.clone();
+        sub.environment_context = self.composition_environment_context.clone();
         sub.delegation_depth = self.delegation_depth.saturating_add(1);
-        let child_effort = if self.effort == iteron_protocol::Effort::Ultracode {
-            iteron_protocol::Effort::Max
-        } else {
-            self.effort
-        };
+        let child_effort = self.execution_policy.subagent_effort;
         sub.bypass_permissions = self.bypass_permissions;
         sub.configure_initial_runtime_policy(
             child_effort,
@@ -189,7 +212,7 @@ impl Agent {
             &parent_run,
             self.workspace.display().to_string(),
             created_at,
-            tunables_resolution_digest,
+            tunables_config_digest,
             Some(agent_definition_tag),
         )
         .map_err(|error| error.public_summary())?;
@@ -248,7 +271,7 @@ impl Agent {
             .map_err(|error| error.public_summary())?;
         let (result, child_outcome, error_code, error_detail) = match outcome {
             Ok(Outcome::Done) => {
-                let s = strict_utf8_head(sub.last_assistant_text.trim(), 16 * 1024);
+                let s = bounded_child_report(self.execution_policy, &sub.last_assistant_text);
                 if s.is_empty() {
                     (
                         Err("subagent completed without a summary".into()),

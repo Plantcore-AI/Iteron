@@ -522,7 +522,21 @@ pub(super) async fn apply_control(
                 route,
                 fresh,
             } = *request;
-            match agent.adopt_run(rollout) {
+            let adoption = if fresh {
+                let created_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                agent.adopt_fresh_run(
+                    rollout,
+                    agent.workspace.display().to_string(),
+                    created_at,
+                    None,
+                )
+            } else {
+                agent.adopt_run(rollout)
+            };
+            match adoption {
                 Ok(adopted) => {
                     events.run_id = Some(iteron_protocol::RunId(adopted.run_id.clone()));
                     events.record_lifecycle(
@@ -530,14 +544,13 @@ pub(super) async fn apply_control(
                         None,
                         None,
                         LifecyclePayload {
-                            outcome_code: Some(if fresh { "forked" } else { "resumed" }.into()),
+                            outcome_code: Some(if fresh { "created" } else { "resumed" }.into()),
                             ..LifecyclePayload::default()
                         },
                     );
-                    // The adopted transcript IS this session's transcript now, so the next
-                    // submission must continue it. Leaving `started` false would send it down
-                    // `Agent::run`, which starts from nothing and would silently discard the
-                    // history this adoption just took a writer lock on.
+                    // A resumed transcript must continue at its next turn. A newly created tab has
+                    // only its sealed genesis, so its first submission deliberately enters
+                    // `Agent::run`; that path appends the first turn but does not append genesis.
                     *started = !fresh;
                     // The side conversation writes into its own journal, minted from the run that
                     // opened it. It does not travel to another run; the next `/side` opens a fresh
@@ -554,42 +567,20 @@ pub(super) async fn apply_control(
                     } = *route;
                     // The journal is already swapped. Whatever happens to the route from here, the
                     // answer reports the adopted identity, because that is where the session is.
-                    let genesis_error = fresh
-                        .then(|| {
-                            let created_at = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|duration| duration.as_secs())
-                                .unwrap_or(0);
-                            agent.record_genesis(
-                                agent.workspace.display().to_string(),
-                                created_at,
-                                "in-process-session-v1".into(),
-                                None,
-                            )
-                        })
-                        .transpose()
-                        .err();
-                    let blocked = if let Some(error) = genesis_error {
-                        Some(format!(
-                            "session {} was created but its genesis could not be recorded: {}",
-                            adopted.run_id,
-                            error.public_summary()
-                        ))
-                    } else {
-                        match agent.record_adopted_model_selection(
-                            provider,
-                            provider_id,
-                            model_id,
-                            catalog_digest,
-                            capability_digest,
-                        ) {
-                            Ok(()) => {
-                                agent.model_context_window = context_window_tokens;
-                                agent.model_max_output_tokens = max_output_tokens;
-                                // Usage belongs to the turn that produced it, on the run that produced
-                                // it. Nothing carries across an adoption.
-                                agent.ledger.last_turn_usage = None;
-                                agent.bind_selected_rate_card().err().map(|error| {
+                    let blocked = match agent.record_adopted_model_selection(
+                        provider,
+                        provider_id,
+                        model_id,
+                        catalog_digest,
+                        capability_digest,
+                    ) {
+                        Ok(()) => {
+                            agent.model_context_window = context_window_tokens;
+                            agent.model_max_output_tokens = max_output_tokens;
+                            // Usage belongs to the turn that produced it, on the run that produced
+                            // it. Nothing carries across an adoption.
+                            agent.ledger.last_turn_usage = None;
+                            agent.bind_selected_rate_card().err().map(|error| {
                                 format!(
                                     "session {} was adopted but its rate card could not be bound, \
                                      so this process cannot continue it: {}. Restart with `iteron \
@@ -599,21 +590,27 @@ pub(super) async fn apply_control(
                                     adopted.run_id
                                 )
                             })
-                            }
-                            // The transcript was adopted and the route was not. The kernel refuses
-                            // every provider request in that state rather than dispatching against a
-                            // route the record does not carry, so this says restart rather than
-                            // pretending the session is usable.
-                            Err(error) => Some(format!(
-                                "session {} was adopted but its route could not be recorded, so this \
-                             process cannot continue it: {error}. Restart with `iteron --resume {}`.",
-                                adopted.run_id, adopted.run_id
-                            )),
                         }
+                        // The transcript was adopted and the route was not. The kernel refuses
+                        // every provider request in that state rather than dispatching against a
+                        // route the record does not carry, so this says restart rather than
+                        // pretending the session is usable.
+                        Err(error) => Some(format!(
+                            "session {} was adopted but its route could not be recorded, so this \
+                             process cannot continue it: {error}. Restart with `iteron --resume {}`.",
+                            adopted.run_id, adopted.run_id
+                        )),
                     };
                     ControlReply::Adopted {
                         adopted: Box::new(adopted),
                         snapshot: Box::new(snapshot_of(agent)),
+                        tunables_checkpoint: Box::new(
+                            agent
+                                .tunables_checkpoint()
+                                .expect("a successfully adopted run has a validated checkpoint")
+                                .clone(),
+                        ),
+                        compaction_trigger_tokens: agent.compaction.trigger_tokens,
                         blocked,
                     }
                 }
@@ -694,6 +691,7 @@ pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
         last_turn_usage: agent.ledger.last_turn_usage,
         unadmitted_steers: agent.take_unadmitted_steers(),
         permission_rules: agent.permission_rules().clone(),
+        runtime_policy: agent.runtime_policy_overlay(),
         ledger_summary: agent.ledger.summary(),
         rate_limit: agent
             .last_rate_limit()

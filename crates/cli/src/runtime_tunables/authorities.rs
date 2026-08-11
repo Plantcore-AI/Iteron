@@ -39,6 +39,7 @@ pub(crate) struct AuthorityFactsInput<'a> {
     pub profile: RuntimeProfile,
     /// Content-free benchmark attempt identifier, when one is explicitly active.
     pub benchmark_scope_digest_sha256: Option<&'a str>,
+    pub binary_media_policy: &'a crate::image_input::BinaryMediaInspectionPolicy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,6 +54,8 @@ pub(crate) enum AuthorityFactError {
 pub(crate) fn collect_runtime_authorities(
     input: AuthorityFactsInput<'_>,
 ) -> Result<RuntimeAuthoritySet, AuthorityFactError> {
+    let effecting = crate::runtime::effecting_tool_admission_policy();
+    let signal = iteron_sandbox::process_signal_kill_escalation_policy();
     let operator = digest(
         "operator",
         &(
@@ -60,6 +63,8 @@ pub(crate) fn collect_runtime_authorities(
             input.permission_mode,
             input.permission_rules,
             input.bypass_permissions,
+            input.binary_media_policy,
+            effecting,
         ),
     )?;
     let mut authorities = RuntimeAuthoritySet::new(operator)?;
@@ -96,11 +101,17 @@ pub(crate) fn collect_runtime_authorities(
         ),
         (
             ExternalCeiling::ToolBudget,
-            digest("tool_budget", &registry_specs)?,
+            digest(
+                "tool_budget",
+                &(&registry_specs, input.binary_media_policy.max_input_bytes()),
+            )?,
         ),
         (
             ExternalCeiling::ProcessBudget,
-            digest("process_budget", &process_surface)?,
+            digest(
+                "process_budget",
+                &(&process_surface, effecting.max_concurrency),
+            )?,
         ),
         (ExternalCeiling::VerificationFloor, verification),
         (
@@ -118,7 +129,16 @@ pub(crate) fn collect_runtime_authorities(
             ExternalCeiling::BenchmarkProtocol,
             digest(
                 "benchmark_protocol",
-                &(input.profile, input.benchmark_scope_digest_sha256),
+                &(
+                    input.profile,
+                    input.benchmark_scope_digest_sha256,
+                    (
+                        iteron_sandbox::ProcessSignalKillEscalationPolicy::ID,
+                        signal.term_grace_milliseconds,
+                        signal.post_kill_reap_seconds,
+                    ),
+                    iteron_verify::verification_failure_taxonomy(),
+                ),
             )?,
         ),
     ] {

@@ -132,6 +132,35 @@ fn fixture(path: &str, version: u32) -> Value {
     json!({ "path": path, "format": "json", "schema_version": version })
 }
 
+#[test]
+fn d13_14_schema_surface_inventory_remains_bounded_at_160() {
+    let template = contract(
+        1,
+        1,
+        vec![field("version", None)],
+        vec![fixture(V1, 1)],
+        Vec::new(),
+    )["surfaces"][0]
+        .clone();
+    let surfaces = (0..=160)
+        .map(|index| {
+            let mut surface = template.clone();
+            surface["id"] = json!(format!("protocol.bound-{index}"));
+            surface
+        })
+        .collect::<Vec<_>>();
+    let value = json!({
+        "schema_version": 1,
+        "release_ordinal": 1,
+        "minimum_deprecation_releases": 1,
+        "surfaces": surfaces,
+    });
+    let encoded = serde_json::to_vec(&value).unwrap();
+    let parsed = manifest::parse_contract(&encoded, "surface-bound fixture").unwrap();
+    let error = manifest::validate_contract_shape(&parsed).unwrap_err();
+    assert!(error.to_string().contains("1..=160 surfaces"));
+}
+
 const V1: &str = "governance/schema-compat/fixtures/test/v1.json";
 const V1_ALT: &str = "governance/schema-compat/fixtures/test/v1-alt.json";
 const V2: &str = "governance/schema-compat/fixtures/test/v2.json";

@@ -116,9 +116,23 @@ impl RecordPolicyRunProjector {
         }
         let projector =
             PolicyEvidenceRunProjector::new(vec![fixture], self.training_policy.clone())?;
-        projector
+        let projected = projector
             .project(rollout_digest)
-            .map_err(RecordPolicyProjectionError::Contract)
+            .map_err(RecordPolicyProjectionError::Contract)?;
+        let Some(envelope) = projected else {
+            return Ok(None);
+        };
+
+        // The production seam never hands an unregistered in-memory copy to training. Persist it
+        // through the shared record content graph, then read it back through the trajectory
+        // tombstone/lineage gate. This also gives revocation a real production trajectory writer,
+        // reader, and source lineage caller rather than a merely available helper API.
+        let directory = self.runs_dir.join(".derivatives").join("trajectories");
+        let mut registry = self.open_trajectory_registry(&directory)?;
+        registry.ingest(&envelope)?;
+        Ok(registry
+            .get_by_run(&spec.run_id)?
+            .map(|registered| registered.envelope))
     }
 }
 
@@ -178,9 +192,9 @@ fn build_fixture(
                 })?;
             }
             EventKind::PolicyBundleSnapshot { snapshot, .. } => {
-                iteron_record::validate_policy_bundle_snapshot(snapshot).map_err(|_| {
-                    RecordPolicyProjectionError::PolicyCheckpoint(spec.run_id.0.clone())
-                })?;
+                iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot).map_err(
+                    |_| RecordPolicyProjectionError::PolicyCheckpoint(spec.run_id.0.clone()),
+                )?;
                 set_unique(&mut policy_snapshot, snapshot.clone()).map_err(|_| {
                     RecordPolicyProjectionError::PolicyCheckpoint(spec.run_id.0.clone())
                 })?;

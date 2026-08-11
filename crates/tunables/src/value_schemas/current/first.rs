@@ -23,7 +23,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         "effort",
         Enum,
         finite_enum_domain!("low", "medium", "high", "xhigh", "max", "ultracode"),
-        [external_rule!("$", ProviderCapability)]
+        [external_rule!("$", OperatorAuthority)]
     ),
     scalar_schema!(
         "max_turns",
@@ -219,7 +219,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "safety_margin",
                 true,
-                decimal_domain!(0, 0, 1, 0, 4, "ratio")
+                decimal_domain!(0, 0, 0, 0, 0, "ratio")
             )
         ],
         []
@@ -241,7 +241,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         ],
         [
             external_rule!("max_output_tokens", ParentTokens),
-            external_rule!("effort", ProviderCapability)
+            external_domain_rule!("effort", ParentTokens)
         ]
     ),
     scalar_schema!(
@@ -260,7 +260,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         ],
         [
             less_equal_rule!("per_file_bytes", "total_bytes"),
-            external_rule!("total_bytes", ContextWindow)
+            external_rule!("total_bytes", ToolBudget)
         ]
     ),
     scalar_schema!(

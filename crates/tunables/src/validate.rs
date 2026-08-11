@@ -12,9 +12,13 @@ mod source;
 #[path = "validate/value.rs"]
 mod value;
 
+pub(crate) fn path_is_required_integer(domain: crate::StructuredValueDomain, path: &str) -> bool {
+    value::path_is_required_integer(domain, path)
+}
+
 /// Stable identities retired because they duplicate another semantic family.
 const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth", "workflow_spawn_cap"];
-const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 198;
+const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 196;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -58,6 +62,10 @@ pub enum RegistryError {
     InvalidStrategySlots(&'static str),
     #[error("family `{0}` has an invalid value schema: {1}")]
     InvalidValueDomain(&'static str, &'static str),
+    #[error("resolved-set rule `{0}` is invalid: {1}")]
+    InvalidResolvedSetRule(&'static str, &'static str),
+    #[error("resolved-set rule ID `{0}` is duplicated")]
+    DuplicateResolvedSetRule(&'static str),
     #[error("registry has {actual} external constraint policies; expected exactly {expected}")]
     WrongExternalConstraintPolicyCount { expected: usize, actual: usize },
     #[error("family `{family}` repeats external constraint policy `{field}` / {ceiling:?}")]
@@ -70,6 +78,8 @@ pub enum RegistryError {
     InvalidScalarCatalog(&'static str),
     #[error("family `{0}` has an inconsistent optimization class/search phase")]
     InvalidOptimization(&'static str),
+    #[error("family `{0}` has no complete canonical runtime binding")]
+    InvalidRuntimeBinding(&'static str),
     #[error("family `{0}` assigns learnable optimization to invariant authority")]
     LearnableInvariant(&'static str),
     #[error("family `{0}` claims implemented code but cites only the registry")]
@@ -164,11 +174,46 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
         source::validate(family)?;
         validate_default(family)?;
         validate_requirements_and_slots(family)?;
+        validate_runtime_binding(family)?;
         value::validate_family_value(family)?;
         validate_optimization(family)?;
     }
+    crate::resolved_set_rules::validate_registry(registry)?;
     validate_external_constraint_policies(registry)?;
     Ok(())
+}
+
+fn validate_runtime_binding(family: &crate::Family) -> Result<(), RegistryError> {
+    use crate::{EvidenceProjectionId, RuntimeBindingSpec};
+
+    let valid = match (family.implementation_status, family.runtime_binding) {
+        (
+            ImplementationStatus::Full,
+            RuntimeBindingSpec::Effective {
+                strategy_slot,
+                evidence: EvidenceProjectionId::RunGenesisTunablesV2,
+                ..
+            },
+        ) => family.strategy_slots.contains(&strategy_slot),
+        (
+            ImplementationStatus::FixedHidden,
+            RuntimeBindingSpec::Fixed {
+                evidence: EvidenceProjectionId::RunGenesisTunablesV2,
+                ..
+            },
+        ) => true,
+        // The published registry is complete. `Unbound` exists solely so adversarial fixtures can
+        // construct an invalid family and prove this gate fails closed.
+        (ImplementationStatus::Partial | ImplementationStatus::Missing, _)
+        | (_, RuntimeBindingSpec::Unbound { .. })
+        | (ImplementationStatus::Full, RuntimeBindingSpec::Fixed { .. })
+        | (ImplementationStatus::FixedHidden, RuntimeBindingSpec::Effective { .. }) => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(RegistryError::InvalidRuntimeBinding(family.id))
+    }
 }
 
 fn validate_external_constraint_policies(registry: &[crate::Family]) -> Result<(), RegistryError> {
@@ -394,13 +439,23 @@ fn validate_requirements_and_slots(family: &crate::Family) -> Result<(), Registr
     if family.strategy_slots.is_empty() || slots.len() != family.strategy_slots.len() {
         return Err(RegistryError::InvalidStrategySlots(family.id));
     }
-    let provider_derived = family.domain == crate::Domain::Provider
-        || matches!(
-            family.default.resolver,
-            DefaultResolver::ModelMetadata { .. } | DefaultResolver::ProviderCapability { .. }
-        )
-        || value::has_provider_ceiling(family.value_schema);
-    if provider_derived && family.requirements.provider == ProviderRequirement::None {
+    let provider_resolved = matches!(
+        family.default.resolver,
+        DefaultResolver::ModelMetadata { .. } | DefaultResolver::ProviderCapability { .. }
+    );
+    let externally_clamped = value::has_provider_ceiling(family.value_schema);
+    // A provider-owned policy may remain active without a capable route when the schema requires
+    // exact ProviderCapability ceiling evidence. That is how `prompt_cache=false` stays an
+    // auditable runtime value on an incapable route. Dynamic provider/model lookup still needs a
+    // route. A Full provider-domain family with neither a route nor an external clamp is invalid;
+    // a FixedHidden family may instead be a local transport/runtime invariant whose physical
+    // owner is attested by the fixed-authority binding rather than by provider capability.
+    if family.requirements.provider == ProviderRequirement::None
+        && (provider_resolved
+            || (family.domain == crate::Domain::Provider
+                && family.implementation_status != ImplementationStatus::FixedHidden
+                && !externally_clamped))
+    {
         return Err(RegistryError::InvalidProviderRequirement(family.id));
     }
     Ok(())
@@ -434,6 +489,7 @@ fn validate_optimization(family: &crate::Family) -> Result<(), RegistryError> {
 #[cfg(test)]
 mod tests {
     use super::{RegistryError, validate_semantic_ownership};
+    use crate::{DecimalValue, TunableValue, TunableValueField};
 
     #[test]
     fn retired_workflow_spawn_cap_identity_and_alias_are_rejected_without_a_digest() {
@@ -450,6 +506,88 @@ mod tests {
         assert!(matches!(
             validate_semantic_ownership(&[reintroduced_alias]),
             Err(RegistryError::SemanticDuplicate("workflow_spawn_cap"))
+        ));
+    }
+
+    #[test]
+    fn canonical_memory_map_rules_validate_defaults_before_registry_digesting() {
+        const ZERO_HYBRID: [TunableValueField; 2] = [
+            TunableValueField {
+                name: "lexical",
+                value: TunableValue::Decimal {
+                    value: DecimalValue {
+                        coefficient: 0,
+                        scale: 0,
+                    },
+                },
+            },
+            TunableValueField {
+                name: "structural",
+                value: TunableValue::Decimal {
+                    value: DecimalValue {
+                        coefficient: 0,
+                        scale: 0,
+                    },
+                },
+            },
+        ];
+        const FRACTIONAL_BM25_LIMIT: [TunableValueField; 3] = [
+            TunableValueField {
+                name: "k1",
+                value: TunableValue::Decimal {
+                    value: DecimalValue {
+                        coefficient: 12,
+                        scale: 1,
+                    },
+                },
+            },
+            TunableValueField {
+                name: "b",
+                value: TunableValue::Decimal {
+                    value: DecimalValue {
+                        coefficient: 75,
+                        scale: 2,
+                    },
+                },
+            },
+            TunableValueField {
+                name: "recall_limit",
+                value: TunableValue::Decimal {
+                    value: DecimalValue {
+                        coefficient: 325,
+                        scale: 1,
+                    },
+                },
+            },
+        ];
+
+        let mut hybrid = *crate::families()
+            .iter()
+            .find(|family| family.id == "hybrid_retrieval_fusion_weights")
+            .unwrap();
+        assert!(super::value::validate_family_value(&hybrid).is_ok());
+        hybrid.default.value = Some(TunableValue::Map {
+            entries: &ZERO_HYBRID,
+        });
+        assert!(matches!(
+            super::value::validate_family_value(&hybrid),
+            Err(RegistryError::InvalidValueDomain(
+                "hybrid_retrieval_fusion_weights",
+                _
+            ))
+        ));
+
+        let mut bm25 = *crate::families()
+            .iter()
+            .find(|family| family.id == "bm25")
+            .unwrap();
+        assert!(super::value::validate_family_value(&bm25).is_ok());
+        bm25.default.value = Some(TunableValue::Map {
+            entries: &FRACTIONAL_BM25_LIMIT,
+        });
+        assert!(matches!(
+            super::value::validate_family_value(&bm25),
+            Err(RegistryError::InvalidValueDomain("bm25", _))
         ));
     }
 }

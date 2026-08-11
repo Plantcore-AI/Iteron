@@ -39,10 +39,10 @@ mod validation_support;
 pub use reducer::{ApplyReceipt, Snapshot, TaskDag};
 pub use store::TaskDagStore;
 pub use types::{
-    Actor, Attempt, AttemptCompletion, AttemptDisposition, AttemptId, AttemptSpec, AttemptState,
-    BudgetUsage, Command, CommandId, Completion, Config, DeliveryState, JoinId, JoinPolicy,
-    JoinSpec, JoinState, Limits, MessageId, MessageKind, Task, TaskBudget, TaskId, TaskMessage,
-    TaskSpec, TaskState,
+    Actor, Attempt, AttemptAssignment, AttemptCompletion, AttemptDisposition, AttemptId,
+    AttemptRetryCause, AttemptSpec, AttemptState, BudgetUsage, Command, CommandId, Completion,
+    Config, DeliveryState, JoinId, JoinPolicy, JoinSpec, JoinState, Limits, MessageId, MessageKind,
+    Task, TaskBudget, TaskId, TaskMessage, TaskSpec, TaskState,
 };
 
 #[derive(Debug, thiserror::Error)]

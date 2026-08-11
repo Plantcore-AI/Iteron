@@ -18,13 +18,6 @@ pub enum TunablesCheckpoint {
 }
 
 impl TunablesCheckpoint {
-    pub fn version(&self) -> RunGenesisTunablesVersion {
-        match self {
-            Self::V1(_) => RunGenesisTunablesVersion::V1,
-            Self::V2(_) => RunGenesisTunablesVersion::V2,
-        }
-    }
-
     pub fn snapshot_digest_sha256(&self) -> &str {
         match self {
             Self::V1(snapshot) => &snapshot.snapshot_digest_sha256,

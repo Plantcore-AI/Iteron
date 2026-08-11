@@ -29,6 +29,9 @@ pub enum ContextSourceClass {
     TranscriptUser,
     TranscriptAssistant,
     TranscriptTool,
+    /// Result of the typed `lsp_query` tool, joined by its exact tool-use identity rather than by
+    /// substring or payload inspection.
+    LspResult,
     CompactionSummary,
     ImageAttachment,
     FileAttachment,
@@ -148,6 +151,8 @@ pub struct ContextTotals {
     pub duplicate_tokens: u64,
     pub reclaimable_tokens: u64,
     pub tool_schema_tokens: u64,
+    pub tool_result_tokens: u64,
+    pub lsp_result_tokens: u64,
     pub attachment_tokens: u64,
 }
 

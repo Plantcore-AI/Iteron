@@ -12,9 +12,15 @@ use std::collections::BTreeSet;
 
 pub const POLICY_DECISION_EVIDENCE_SCHEMA_VERSION: u16 = 1;
 pub const POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION: u16 = 1;
+/// The closed action vocabulary consumed by policy-evidence schema v1. Adding an action to an
+/// existing slot is a schema change: introduce a new vocabulary type/version instead of accepting
+/// an arbitrary string through the v1 constructor.
+pub const POLICY_ACTION_VOCABULARY_VERSION: u16 = 1;
 pub const MAX_POLICY_ACTIONS: usize = 256;
 pub const MAX_POLICY_MACHINE_ID_BYTES: usize = 192;
 const ORDERED_OPPORTUNITIES_DOMAIN: &[u8] = b"core-policy-opportunities-v1\0";
+const ORDERED_HARNESS_ERRORS_DOMAIN: &[u8] = b"core-policy-harness-errors-v1\0";
+const MAX_POLICY_HARNESS_ERRORS: u32 = 1_000_000;
 
 /// Canonical, order-sensitive commitment shared by the live recorder and offline projection.
 /// Keeping the algorithm in the protocol prevents a trajectory projector from accepting a join
@@ -71,6 +77,116 @@ pub struct PolicyOpportunityId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PolicyActionId(pub String);
+
+/// Closed, content-free action vocabulary for [`PolicyDecisionEvidence`] schema v1.
+///
+/// These variants describe a strategy decision class. Candidate identities (models, paths,
+/// prompts, tool arguments, or memory contents) belong only in bounded feature commitments and
+/// must never be encoded into an action label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyActionV1 {
+    ContextMaterialize,
+    ToolPolicyPureCandidate,
+    ToolPolicyEffectCandidate,
+    MemoryNoRecall,
+    MemoryRecall,
+    RouterDirect,
+    RouterFanOut,
+    PlannerDirectPlan,
+    PlannerFanPlan,
+    CollaborationBoundedWidth,
+    CollaborationSerial,
+    SchedulerBoundedPlan,
+    SchedulerSinglePermit,
+    VerifierStrongWorkspacePlan,
+    ModelRouterBoundParentRoute,
+    ModelRouterRouteCandidate,
+    ModelRouterPreAttestedRoute,
+}
+
+impl PolicyActionV1 {
+    const fn slot(self) -> &'static str {
+        match self {
+            Self::ContextMaterialize => "core/context",
+            Self::ToolPolicyPureCandidate | Self::ToolPolicyEffectCandidate => "core/tool_policy",
+            Self::MemoryNoRecall | Self::MemoryRecall => "core/memory",
+            Self::RouterDirect | Self::RouterFanOut => "core/router",
+            Self::PlannerDirectPlan | Self::PlannerFanPlan => "core/planner",
+            Self::CollaborationBoundedWidth | Self::CollaborationSerial => "core/collaboration",
+            Self::SchedulerBoundedPlan | Self::SchedulerSinglePermit => "core/scheduler",
+            Self::VerifierStrongWorkspacePlan => "core/verifier",
+            Self::ModelRouterBoundParentRoute
+            | Self::ModelRouterRouteCandidate
+            | Self::ModelRouterPreAttestedRoute => "core/model_router",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextMaterialize => "materialize",
+            Self::ToolPolicyPureCandidate => "pure_candidate",
+            Self::ToolPolicyEffectCandidate => "effect_candidate",
+            Self::MemoryNoRecall => "no_recall",
+            Self::MemoryRecall => "recall",
+            Self::RouterDirect => "direct",
+            Self::RouterFanOut => "fan_out",
+            Self::PlannerDirectPlan => "direct_plan",
+            Self::PlannerFanPlan => "fan_plan",
+            Self::CollaborationBoundedWidth => "bounded_width",
+            Self::CollaborationSerial => "serial",
+            Self::SchedulerBoundedPlan => "bounded_plan",
+            Self::SchedulerSinglePermit => "single_permit",
+            Self::VerifierStrongWorkspacePlan => "strong_workspace_plan",
+            Self::ModelRouterBoundParentRoute => "bound_parent_route",
+            Self::ModelRouterRouteCandidate => "route_candidate",
+            Self::ModelRouterPreAttestedRoute => "pre_attested_route",
+        }
+    }
+
+    fn parse(slot: &SlotId, value: &str) -> Option<Self> {
+        const ACTIONS: [PolicyActionV1; 17] = [
+            PolicyActionV1::ContextMaterialize,
+            PolicyActionV1::ToolPolicyPureCandidate,
+            PolicyActionV1::ToolPolicyEffectCandidate,
+            PolicyActionV1::MemoryNoRecall,
+            PolicyActionV1::MemoryRecall,
+            PolicyActionV1::RouterDirect,
+            PolicyActionV1::RouterFanOut,
+            PolicyActionV1::PlannerDirectPlan,
+            PolicyActionV1::PlannerFanPlan,
+            PolicyActionV1::CollaborationBoundedWidth,
+            PolicyActionV1::CollaborationSerial,
+            PolicyActionV1::SchedulerBoundedPlan,
+            PolicyActionV1::SchedulerSinglePermit,
+            PolicyActionV1::VerifierStrongWorkspacePlan,
+            PolicyActionV1::ModelRouterBoundParentRoute,
+            PolicyActionV1::ModelRouterRouteCandidate,
+            PolicyActionV1::ModelRouterPreAttestedRoute,
+        ];
+        ACTIONS
+            .into_iter()
+            .find(|action| action.slot() == slot.as_persisted_str() && action.as_str() == value)
+    }
+}
+
+impl PolicyActionId {
+    pub fn for_slot(slot: &SlotId, action: PolicyActionV1) -> Result<Self, PolicyEvidenceError> {
+        if action.slot() != slot.as_persisted_str() {
+            return Err(PolicyEvidenceError::InvalidActionForSlot);
+        }
+        Ok(Self(action.as_str().to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn validate_for_slot(&self, slot: &SlotId) -> Result<(), PolicyEvidenceError> {
+        PolicyActionV1::parse(slot, &self.0)
+            .map(|_| ())
+            .ok_or(PolicyEvidenceError::InvalidActionForSlot)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,10 +257,13 @@ impl PolicyDecisionEvidence {
         }
         let mut actions = BTreeSet::new();
         for action in &self.eligible_actions {
-            validate_machine_id("action_id", &action.0)?;
+            action.validate_for_slot(&self.slot)?;
             if !actions.insert(action) {
                 return Err(PolicyEvidenceError::InvalidActionSet);
             }
+        }
+        if let Some(selected) = &self.selected_action {
+            selected.validate_for_slot(&self.slot)?;
         }
         match self.disposition {
             PolicyDecisionDisposition::Selected => {
@@ -215,6 +334,227 @@ pub enum PolicyVerifierOutcome {
     Cancelled,
 }
 
+/// Closed, low-cardinality error taxonomy emitted by the runtime. Free-form provider/tool text is
+/// never a policy-evidence label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyHarnessErrorCode {
+    ProviderError,
+    RecordError,
+    RouteError,
+    ProviderNoticeLimit,
+    BudgetError,
+    SubmissionError,
+    PricingError,
+    PermissionError,
+    RuntimePolicyError,
+    EffectUnknown,
+    EffectError,
+    IdentityExhausted,
+    OpaqueProviderRetries,
+    ContextError,
+    AgentCatalogError,
+    TunablesError,
+    ToolingPolicyError,
+    ExecutionPolicyError,
+    ToolOutputSpillError,
+    McpLifecycleError,
+    PolicyEvidenceError,
+    DelegationError,
+    WorkflowError,
+    OperatorDrain,
+    BudgetMaxTurns,
+    BudgetMaxTokens,
+    BudgetMaxUsd,
+    BudgetMaxWallSecs,
+    BudgetVerifyAttempts,
+    OperatorInterrupted,
+    ConsecutiveToolErrors,
+    HarnessFailure,
+}
+
+impl PolicyHarnessErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderError => "provider_error",
+            Self::RecordError => "record_error",
+            Self::RouteError => "route_error",
+            Self::ProviderNoticeLimit => "provider_notice_limit",
+            Self::BudgetError => "budget_error",
+            Self::SubmissionError => "submission_error",
+            Self::PricingError => "pricing_error",
+            Self::PermissionError => "permission_error",
+            Self::RuntimePolicyError => "runtime_policy_error",
+            Self::EffectUnknown => "effect_unknown",
+            Self::EffectError => "effect_error",
+            Self::IdentityExhausted => "identity_exhausted",
+            Self::OpaqueProviderRetries => "opaque_provider_retries",
+            Self::ContextError => "context_error",
+            Self::AgentCatalogError => "agent_catalog_error",
+            Self::TunablesError => "tunables_error",
+            Self::ToolingPolicyError => "tooling_policy_error",
+            Self::ExecutionPolicyError => "execution_policy_error",
+            Self::ToolOutputSpillError => "tool_output_spill_error",
+            Self::McpLifecycleError => "mcp_lifecycle_error",
+            Self::PolicyEvidenceError => "policy_evidence_error",
+            Self::DelegationError => "delegation_error",
+            Self::WorkflowError => "workflow_error",
+            Self::OperatorDrain => "operator_drain",
+            Self::BudgetMaxTurns => "budget_max_turns",
+            Self::BudgetMaxTokens => "budget_max_tokens",
+            Self::BudgetMaxUsd => "budget_max_usd",
+            Self::BudgetMaxWallSecs => "budget_max_wall_secs",
+            Self::BudgetVerifyAttempts => "budget_verify_attempts",
+            Self::OperatorInterrupted => "operator_interrupted",
+            Self::ConsecutiveToolErrors => "consecutive_tool_errors",
+            Self::HarnessFailure => "harness_failure",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        const CODES: [PolicyHarnessErrorCode; 32] = [
+            PolicyHarnessErrorCode::ProviderError,
+            PolicyHarnessErrorCode::RecordError,
+            PolicyHarnessErrorCode::RouteError,
+            PolicyHarnessErrorCode::ProviderNoticeLimit,
+            PolicyHarnessErrorCode::BudgetError,
+            PolicyHarnessErrorCode::SubmissionError,
+            PolicyHarnessErrorCode::PricingError,
+            PolicyHarnessErrorCode::PermissionError,
+            PolicyHarnessErrorCode::RuntimePolicyError,
+            PolicyHarnessErrorCode::EffectUnknown,
+            PolicyHarnessErrorCode::EffectError,
+            PolicyHarnessErrorCode::IdentityExhausted,
+            PolicyHarnessErrorCode::OpaqueProviderRetries,
+            PolicyHarnessErrorCode::ContextError,
+            PolicyHarnessErrorCode::AgentCatalogError,
+            PolicyHarnessErrorCode::TunablesError,
+            PolicyHarnessErrorCode::ToolingPolicyError,
+            PolicyHarnessErrorCode::ExecutionPolicyError,
+            PolicyHarnessErrorCode::ToolOutputSpillError,
+            PolicyHarnessErrorCode::McpLifecycleError,
+            PolicyHarnessErrorCode::PolicyEvidenceError,
+            PolicyHarnessErrorCode::DelegationError,
+            PolicyHarnessErrorCode::WorkflowError,
+            PolicyHarnessErrorCode::OperatorDrain,
+            PolicyHarnessErrorCode::BudgetMaxTurns,
+            PolicyHarnessErrorCode::BudgetMaxTokens,
+            PolicyHarnessErrorCode::BudgetMaxUsd,
+            PolicyHarnessErrorCode::BudgetMaxWallSecs,
+            PolicyHarnessErrorCode::BudgetVerifyAttempts,
+            PolicyHarnessErrorCode::OperatorInterrupted,
+            PolicyHarnessErrorCode::ConsecutiveToolErrors,
+            PolicyHarnessErrorCode::HarnessFailure,
+        ];
+        CODES.into_iter().find(|code| code.as_str() == value)
+    }
+}
+
+/// A single closed error code, or an order-sensitive commitment to multiple turn errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PolicyHarnessOutcomeId(String);
+
+impl PolicyHarnessOutcomeId {
+    pub fn single(code: PolicyHarnessErrorCode) -> Self {
+        Self(code.as_str().to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Revalidate the historical string-shaped wire field at the durable admission boundary.
+    pub fn from_persisted(
+        value: &str,
+        scope: PolicyOutcomeScope,
+    ) -> Result<Self, PolicyEvidenceError> {
+        let outcome = Self(value.to_owned());
+        outcome.validate_for_scope(scope)?;
+        Ok(outcome)
+    }
+
+    /// Return the closed turn-level code carried by this outcome. Aggregate run outcomes do not
+    /// have a single code and therefore return `None`.
+    pub fn single_code(&self) -> Option<PolicyHarnessErrorCode> {
+        PolicyHarnessErrorCode::parse(&self.0)
+    }
+
+    fn multiple(count: u32, digest: &[u8; 32]) -> Self {
+        Self(format!("multiple:{count}:{}", encode_lower_hex(digest)))
+    }
+
+    fn validate_for_scope(&self, scope: PolicyOutcomeScope) -> Result<(), PolicyEvidenceError> {
+        if self.single_code().is_some() {
+            return Ok(());
+        }
+        if scope != PolicyOutcomeScope::Run {
+            return Err(PolicyEvidenceError::InvalidHarnessOutcome);
+        }
+        let mut parts = self.0.split(':');
+        let valid = parts.next() == Some("multiple")
+            && parts
+                .next()
+                .and_then(|count| count.parse::<u32>().ok())
+                .is_some_and(|count| (2..=MAX_POLICY_HARNESS_ERRORS).contains(&count))
+            && parts
+                .next()
+                .is_some_and(|digest| validate_digest(digest).is_ok())
+            && parts.next().is_none();
+        valid
+            .then_some(())
+            .ok_or(PolicyEvidenceError::InvalidHarnessOutcome)
+    }
+}
+
+/// Shared order-sensitive aggregate used by the live writer, replay, and offline projector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyHarnessErrorJoinDigest {
+    count: u32,
+    digest: [u8; 32],
+    first: Option<PolicyHarnessErrorCode>,
+}
+
+impl Default for PolicyHarnessErrorJoinDigest {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            digest: Sha256::digest(ORDERED_HARNESS_ERRORS_DOMAIN).into(),
+            first: None,
+        }
+    }
+}
+
+impl PolicyHarnessErrorJoinDigest {
+    pub fn append(&mut self, code: PolicyHarnessErrorCode) -> Result<(), PolicyEvidenceError> {
+        if self.count >= MAX_POLICY_HARNESS_ERRORS {
+            return Err(PolicyEvidenceError::TooManyHarnessErrors);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(ORDERED_HARNESS_ERRORS_DOMAIN);
+        hasher.update(self.digest);
+        hasher.update(self.count.to_le_bytes());
+        hasher.update(code.as_str().as_bytes());
+        self.digest = hasher.finalize().into();
+        self.first.get_or_insert(code);
+        self.count += 1;
+        Ok(())
+    }
+
+    pub fn outcome(&self) -> Option<PolicyHarnessOutcomeId> {
+        match (self.count, self.first) {
+            (0, _) => None,
+            (1, Some(code)) => Some(PolicyHarnessOutcomeId::single(code)),
+            (_, Some(_)) => Some(PolicyHarnessOutcomeId::multiple(self.count, &self.digest)),
+            (_, None) => None,
+        }
+    }
+}
+
 /// Aggregate terminal truth joined to selections by `(run_id, turn_id)` and a commitment to the
 /// exact ordered opportunity identities observed in that scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,7 +594,7 @@ impl PolicyOutcomeEvidence {
             return Err(PolicyEvidenceError::TooManyOpportunities);
         }
         if let Some(code) = &self.harness_error_code {
-            validate_machine_id("harness_error_code", code)?;
+            PolicyHarnessOutcomeId::from_persisted(code, self.scope)?;
         }
         Ok(())
     }
@@ -266,10 +606,13 @@ pub enum PolicyEvidenceError {
     InvalidMachineId(&'static str),
     InvalidDigest,
     InvalidActionSet,
+    InvalidActionForSlot,
     InvalidSelection,
     InvalidPropensity,
     InvalidOutcomeScope,
+    InvalidHarnessOutcome,
     TooManyOpportunities,
+    TooManyHarnessErrors,
 }
 
 impl std::fmt::Display for PolicyEvidenceError {
@@ -283,10 +626,17 @@ impl std::fmt::Display for PolicyEvidenceError {
             Self::InvalidActionSet => {
                 "eligible action set is empty, duplicated, or outside its bound"
             }
+            Self::InvalidActionForSlot => {
+                "policy action is not in the closed vocabulary for its strategy slot"
+            }
             Self::InvalidSelection => "selected action and decision disposition disagree",
             Self::InvalidPropensity => "propensity is outside 1..=1,000,000 ppm",
             Self::InvalidOutcomeScope => "turn/run outcome scope and turn identity disagree",
+            Self::InvalidHarnessOutcome => {
+                "harness outcome is outside the closed error taxonomy or aggregate format"
+            }
             Self::TooManyOpportunities => "outcome opportunity count exceeds its bound",
+            Self::TooManyHarnessErrors => "harness-error aggregate count exceeds its bound",
         };
         formatter.write_str(message)
     }
@@ -348,8 +698,20 @@ mod tests {
             turn_id: Some(TurnId(1)),
             slot: SlotId("core/router".into()),
             policy: identity(),
-            eligible_actions: vec![PolicyActionId("direct".into())],
-            selected_action: Some(PolicyActionId("direct".into())),
+            eligible_actions: vec![
+                PolicyActionId::for_slot(
+                    &SlotId("core/router".into()),
+                    PolicyActionV1::RouterDirect,
+                )
+                .unwrap(),
+            ],
+            selected_action: Some(
+                PolicyActionId::for_slot(
+                    &SlotId("core/router".into()),
+                    PolicyActionV1::RouterDirect,
+                )
+                .unwrap(),
+            ),
             disposition: PolicyDecisionDisposition::Selected,
             selected_score_micros: None,
             propensity_ppm: Some(1_000_000),
@@ -364,13 +726,23 @@ mod tests {
         evidence.selected_action = Some(PolicyActionId("orchestrated".into()));
         assert_eq!(
             evidence.validate(),
-            Err(PolicyEvidenceError::InvalidSelection)
+            Err(PolicyEvidenceError::InvalidActionForSlot)
+        );
+
+        evidence.selected_action = Some(PolicyActionId("/private/operator-prompt".into()));
+        assert_eq!(
+            evidence.validate(),
+            Err(PolicyEvidenceError::InvalidActionForSlot)
+        );
+        assert_eq!(
+            PolicyActionId::for_slot(&SlotId("core/router".into()), PolicyActionV1::MemoryRecall,),
+            Err(PolicyEvidenceError::InvalidActionForSlot)
         );
     }
 
     #[test]
     fn outcome_scope_is_joinable_and_content_free() {
-        let outcome = PolicyOutcomeEvidence {
+        let mut outcome = PolicyOutcomeEvidence {
             schema_version: POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
             scope: PolicyOutcomeScope::Turn,
             run_id: RunId("run-1".into()),
@@ -392,6 +764,11 @@ mod tests {
         for forbidden in ["prompt", "source", "path", "memory", "arguments"] {
             assert!(!encoded.contains(forbidden));
         }
+        outcome.harness_error_code = Some("/private/operator-prompt".into());
+        assert_eq!(
+            outcome.validate(),
+            Err(PolicyEvidenceError::InvalidHarnessOutcome)
+        );
     }
 
     #[test]
@@ -426,5 +803,33 @@ mod tests {
         assert!(left.matches(&evidence));
         evidence.opportunity_count += 1;
         assert!(!left.matches(&evidence));
+    }
+
+    #[test]
+    fn harness_outcome_is_closed_and_run_aggregate_is_order_sensitive() {
+        let mut left = PolicyHarnessErrorJoinDigest::default();
+        left.append(PolicyHarnessErrorCode::ProviderError).unwrap();
+        left.append(PolicyHarnessErrorCode::RecordError).unwrap();
+        let mut right = PolicyHarnessErrorJoinDigest::default();
+        right.append(PolicyHarnessErrorCode::RecordError).unwrap();
+        right.append(PolicyHarnessErrorCode::ProviderError).unwrap();
+        assert_ne!(left.outcome(), right.outcome());
+
+        let aggregate = left.outcome().unwrap();
+        assert_eq!(aggregate.single_code(), None);
+        assert_eq!(
+            aggregate.validate_for_scope(PolicyOutcomeScope::Run),
+            Ok(())
+        );
+        assert_eq!(
+            aggregate.validate_for_scope(PolicyOutcomeScope::Turn),
+            Err(PolicyEvidenceError::InvalidHarnessOutcome)
+        );
+
+        let arbitrary = PolicyHarnessOutcomeId("/private/operator-prompt".into());
+        assert_eq!(
+            arbitrary.validate_for_scope(PolicyOutcomeScope::Run),
+            Err(PolicyEvidenceError::InvalidHarnessOutcome)
+        );
     }
 }

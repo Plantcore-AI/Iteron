@@ -8,16 +8,49 @@ use iteron_protocol::{
     MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
     MAX_RUN_GENESIS_TUNABLES_V2_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_DEPTH,
     MAX_RUN_GENESIS_TUNABLES_V2_NODES, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
-    RunGenesisTunableEntryV2, RunGenesisTunableState, RunGenesisTunablesSnapshotV2,
-    RunGenesisTunablesVersion,
+    RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
+    RunGenesisTunableState, RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion,
 };
 use iteron_tunables::{
-    EntryOutcome, EntryState, ResolutionReport, ResolutionSource, ResolutionValue,
+    EntryOutcome, EntryState, FixedAuthorityAttestation, FixedAuthorityId, ResolutionReport,
+    ResolutionSource, ResolutionValue, RuntimeBindingSpec, fixed_authority_value_digest_sha256,
 };
 use serde::Serialize;
 
 const LEGACY_EFFECTIVE_CANONICALIZATION: &str = "core-tunables-effective-json-v1";
 const EFFECTIVE_CANONICALIZATION: &str = "iteron-tunables-effective-json-v1";
+
+fn protocol_fixed_authority(authority: FixedAuthorityId) -> RunGenesisFixedAuthorityIdV2 {
+    match authority {
+        FixedAuthorityId::StrategyInvariant => RunGenesisFixedAuthorityIdV2::StrategyInvariant,
+        FixedAuthorityId::OperatorBoundary => RunGenesisFixedAuthorityIdV2::OperatorBoundary,
+        FixedAuthorityId::GovernedArtifactBoundary => {
+            RunGenesisFixedAuthorityIdV2::GovernedArtifactBoundary
+        }
+        FixedAuthorityId::RuntimeInvariant => RunGenesisFixedAuthorityIdV2::RuntimeInvariant,
+        FixedAuthorityId::KernelInvariant => RunGenesisFixedAuthorityIdV2::KernelInvariant,
+        FixedAuthorityId::ProviderDiscoveryBootstrap => {
+            RunGenesisFixedAuthorityIdV2::ProviderDiscoveryBootstrap
+        }
+        FixedAuthorityId::OperatorPromptInput => RunGenesisFixedAuthorityIdV2::OperatorPromptInput,
+        FixedAuthorityId::GovernedCatalogMaterialization => {
+            RunGenesisFixedAuthorityIdV2::GovernedCatalogMaterialization
+        }
+        FixedAuthorityId::ChildOverlayMaterialization => {
+            RunGenesisFixedAuthorityIdV2::ChildOverlayMaterialization
+        }
+        FixedAuthorityId::McpConfigurationMaterialization => {
+            RunGenesisFixedAuthorityIdV2::McpConfigurationMaterialization
+        }
+    }
+}
+
+fn fixed_binding(attestation: &FixedAuthorityAttestation) -> RunGenesisFixedAuthorityBindingV2 {
+    RunGenesisFixedAuthorityBindingV2 {
+        authority: protocol_fixed_authority(attestation.authority),
+        owner_value_digest_sha256: attestation.owner_value_digest_sha256.clone(),
+    }
+}
 
 #[derive(Serialize)]
 struct SnapshotPayloadV2<'a> {
@@ -138,6 +171,17 @@ impl JsonBudget {
                 invalid("V2 projections may not contain floating-point values")
             }
             serde_json::Value::String(value) if sha256_field && is_sha256(value) => Ok(()),
+            // Resolver reports carry a closed `RouteIdentity` inside capability-inactive
+            // explanations.  A content-addressed route revision is a machine identifier, not
+            // interaction content; the ordinary free-text scrubber intentionally masks its
+            // 64-hex suffix.  Admit it only at the typed route field and only through the same
+            // bounded machine-id validator used by the checkpoint envelope. Credential-shaped
+            // or unbounded values still fail this gate.
+            serde_json::Value::String(value)
+                if field == Some("route_revision") && safe_id(value) =>
+            {
+                Ok(())
+            }
             serde_json::Value::String(value) => validate_projection_text(value),
             serde_json::Value::Array(values) => values.iter().try_for_each(|value| {
                 self.observe_field(None, value, depth.saturating_add(1), sha256_field)
@@ -241,6 +285,77 @@ pub(super) fn effective_digest_from_report(
     })
 }
 
+fn validated_report_fixed_attestations<'a>(
+    report: &'a ResolutionReport,
+) -> Result<std::collections::BTreeMap<&'a str, &'a FixedAuthorityAttestation>, TunablesSnapshotError>
+{
+    if report.fixed_authority_attestations.len() > iteron_tunables::EXPECTED_FAMILY_COUNT {
+        return invalid("resolver report fixed-authority inventory exceeds its family bound");
+    }
+    let mut attestations = std::collections::BTreeMap::new();
+    for attestation in &report.fixed_authority_attestations {
+        if !safe_id(&attestation.family_id)
+            || !is_sha256(&attestation.owner_value_digest_sha256)
+            || attestations
+                .insert(attestation.family_id.as_str(), attestation)
+                .is_some()
+        {
+            return invalid("resolver report has an invalid or duplicate fixed-authority binding");
+        }
+    }
+    for (entry, family) in report.entries.iter().zip(iteron_tunables::families()) {
+        let observed = attestations.get(family.id).copied();
+        match (family.runtime_binding, entry.outcome.state()) {
+            (RuntimeBindingSpec::Fixed { authority, .. }, EntryState::Effective) => {
+                let Some(attestation) = observed else {
+                    return invalid("an effective fixed report entry lacks its authority binding");
+                };
+                let Some(value) = entry.effective.as_ref() else {
+                    return invalid("an effective fixed report entry lacks its value");
+                };
+                let expected = fixed_authority_value_digest_sha256(family.id, authority, value)
+                    .map_err(|_| TunablesSnapshotError::Invalid {
+                        reason: "a report fixed-authority digest could not be recomputed",
+                    })?;
+                if attestation.authority != authority
+                    || attestation.owner_value_digest_sha256 != expected
+                {
+                    return invalid("a report fixed-authority binding disagrees with its value");
+                }
+            }
+            (RuntimeBindingSpec::Fixed { .. }, _) => {
+                if observed.is_some() {
+                    return invalid(
+                        "a non-effective fixed report entry carries an authority binding",
+                    );
+                }
+            }
+            (RuntimeBindingSpec::Effective { .. }, _) => {
+                if observed.is_some() {
+                    return invalid("a Full report entry carries a fixed-authority binding");
+                }
+            }
+            (RuntimeBindingSpec::Unbound { .. }, _) => {
+                return invalid("a report entry uses unbound runtime metadata");
+            }
+        }
+    }
+    if attestations.len()
+        != report
+            .entries
+            .iter()
+            .zip(iteron_tunables::families())
+            .filter(|(entry, family)| {
+                entry.outcome.state() == EntryState::Effective
+                    && matches!(family.runtime_binding, RuntimeBindingSpec::Fixed { .. })
+            })
+            .count()
+    {
+        return invalid("resolver report fixed-authority bindings are not bijective");
+    }
+    Ok(attestations)
+}
+
 /// Validate all V2 bounds and independently recompute both effective and checkpoint commitments.
 pub fn validate_tunables_snapshot_v2(
     snapshot: &RunGenesisTunablesSnapshotV2,
@@ -295,6 +410,15 @@ pub fn validate_tunables_snapshot_v2(
         {
             return invalid("V2 entry identity, order, or uniqueness is invalid");
         }
+        let Some(family) = iteron_tunables::families().get(index) else {
+            return invalid("V2 entry has no canonical family binding");
+        };
+        if entry.ordinal != family.ordinal
+            || entry.family_id != family.id
+            || entry.semantic_key != family.semantic_key
+        {
+            return invalid("V2 entry identity disagrees with the canonical registry");
+        }
         let effective = entry.effective_value.is_some();
         let inactive = entry.inactive_reason.is_some();
         if effective != (entry.state == RunGenesisTunableState::Effective)
@@ -303,6 +427,49 @@ pub fn validate_tunables_snapshot_v2(
             || entry.ceiling_adjustments.len() > MAX_RUN_GENESIS_TUNABLE_CEILINGS
         {
             return invalid("V2 entry state and explanation fields are inconsistent");
+        }
+        match (family.runtime_binding, entry.state) {
+            (RuntimeBindingSpec::Fixed { authority, .. }, RunGenesisTunableState::Effective) => {
+                let Some(binding) = entry.fixed_authority_binding.as_ref() else {
+                    return invalid("an effective fixed V2 entry lacks its authority binding");
+                };
+                if binding.authority != protocol_fixed_authority(authority)
+                    || !is_sha256(&binding.owner_value_digest_sha256)
+                {
+                    return invalid("a V2 fixed-authority identity is invalid");
+                }
+                let value = entry
+                    .effective_value
+                    .clone()
+                    .map(serde_json::from_value::<ResolutionValue>)
+                    .transpose()
+                    .map_err(|_| TunablesSnapshotError::Invalid {
+                        reason: "a V2 fixed-authority value is not canonical",
+                    })?
+                    .ok_or(TunablesSnapshotError::Invalid {
+                        reason: "an effective fixed V2 entry has no value",
+                    })?;
+                let expected = fixed_authority_value_digest_sha256(family.id, authority, &value)
+                    .map_err(|_| TunablesSnapshotError::Invalid {
+                        reason: "a V2 fixed-authority digest could not be recomputed",
+                    })?;
+                if binding.owner_value_digest_sha256 != expected {
+                    return invalid("a V2 fixed-authority digest disagrees with its value");
+                }
+            }
+            (RuntimeBindingSpec::Fixed { .. }, _) => {
+                if entry.fixed_authority_binding.is_some() {
+                    return invalid("an inactive fixed V2 entry carries an authority binding");
+                }
+            }
+            (RuntimeBindingSpec::Effective { .. }, _) => {
+                if entry.fixed_authority_binding.is_some() {
+                    return invalid("a Full V2 entry carries a fixed-authority binding");
+                }
+            }
+            (RuntimeBindingSpec::Unbound { .. }, _) => {
+                return invalid("a V2 entry uses unbound runtime metadata");
+            }
         }
         if entry.profile_applied {
             let Some(profile_digest) = snapshot.profile_digest_sha256.as_deref() else {
@@ -346,6 +513,7 @@ pub(super) fn snapshot_v2_from_report(
     if effective_digest_from_report(report)? != report.effective_digest_sha256 {
         return invalid("resolver report effective digest does not match its effective values");
     }
+    let fixed_attestations = validated_report_fixed_attestations(report)?;
     let entries = report
         .entries
         .iter()
@@ -395,6 +563,9 @@ pub(super) fn snapshot_v2_from_report(
                 }
                 _ => None,
             };
+            let fixed_authority_binding = fixed_attestations
+                .get(entry.family_id)
+                .map(|attestation| fixed_binding(attestation));
             Ok(RunGenesisTunableEntryV2 {
                 ordinal: entry.ordinal,
                 family_id: entry.family_id.to_owned(),
@@ -405,6 +576,7 @@ pub(super) fn snapshot_v2_from_report(
                 profile_applied,
                 ceiling_adjustments,
                 inactive_reason,
+                fixed_authority_binding,
             })
         })
         .collect::<Result<Vec<_>, TunablesSnapshotError>>()?;

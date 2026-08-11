@@ -376,7 +376,7 @@ async fn spawn_macos_pipes(
 
 #[cfg(unix)]
 fn configure_pipes(process: &mut tokio::process::Command, conf: &Confinement) {
-    crate::confine_env_with_exact(process, &conf.sensitive_env_names);
+    crate::apply_confinement_environment(process, conf);
     process
         .env("TERM", "dumb")
         .env("PAGER", "cat")

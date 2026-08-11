@@ -58,37 +58,23 @@ pub(super) fn apply(
         ),
     }
 
-    let effort_active = capabilities.contains(&CapabilityRequirement::ProviderReasoningControl)
-        && capabilities.contains(&CapabilityRequirement::AgentSpawn)
-        && input.model_capabilities.semantic_effort == Some(true);
-    if effort_active {
-        add_domain(
-            builder,
-            report,
-            134,
-            "per_agent_effort_thinking",
-            "$",
-            ExternalCeiling::ProviderCapability,
-            Effort::ALL.into_iter().map(|effort| en(effort.label())),
-        )?;
-        add_domain(
-            builder,
-            report,
-            134,
-            "per_agent_effort_thinking",
-            "$",
-            ExternalCeiling::ParentTokens,
-            Effort::ALL
-                .into_iter()
-                .filter(|effort| {
-                    input
-                        .budget
-                        .max_tokens
-                        .is_none_or(|tokens| u64::from(effort.thinking_budget()) <= tokens)
-                })
-                .map(|effort| en(effort.label())),
-        )?;
-    }
+    add_domain(
+        builder,
+        report,
+        134,
+        "per_agent_effort_thinking",
+        "$",
+        ExternalCeiling::ParentTokens,
+        Effort::ALL
+            .into_iter()
+            .filter(|effort| {
+                input
+                    .budget
+                    .max_tokens
+                    .is_none_or(|tokens| u64::from(effort.thinking_budget()) <= tokens)
+            })
+            .map(|effort| en(effort.label())),
+    )?;
 
     match input.authorities.operator_tool_profiles {
         Some(profiles) => add_domain(

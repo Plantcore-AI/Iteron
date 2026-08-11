@@ -58,6 +58,7 @@ pub(super) fn visit_content_fields<E>(
                 visit_environment(instructions.get_mut("environment"), &mut visit)?;
             }
         }
+        "checkpoint" => member(event, "tree_ref", "checkpoint", &mut visit)?,
         "subagent_spawned" => member(event, "agent", "agent_label", &mut visit)?,
         "subagent_finished" | "subagent_finished_v2" => {
             member(event, "error_detail", "workflow_error", &mut visit)?;

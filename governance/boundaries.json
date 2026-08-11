@@ -291,7 +291,8 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/record/src/cache_io.rs" },
-        { "kind": "file", "path": "crates/record/src/session.rs" }
+        { "kind": "file", "path": "crates/record/src/session.rs" },
+        { "kind": "file", "path": "crates/record/src/session_private_cache.rs" }
       ],
       "contracts": ["fork-aware-replay", "tenant-scoped-session"],
       "checks": ["cargo test -p iteron-record session --locked"]
@@ -574,6 +575,7 @@
       "paths": [
         { "kind": "file", "path": "crates/tools/Cargo.toml" },
         { "kind": "file", "path": "crates/tools/src/edit.rs" },
+        { "kind": "file", "path": "crates/tools/src/execution_policy.rs" },
         { "kind": "file", "path": "crates/tools/src/fs_tools.rs" },
         { "kind": "file", "path": "crates/tools/src/fs_tools_tests.rs" },
         { "kind": "file", "path": "crates/tools/src/git.rs" },
@@ -738,6 +740,7 @@
         { "kind": "file", "path": "crates/cli/src/plugin_runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "tree", "path": "crates/cli/src/providers" },
         { "kind": "file", "path": "crates/cli/src/route.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/agent_config.rs" },
@@ -761,6 +764,7 @@
         { "kind": "file", "path": "crates/cli/src/runtime/orchestration_route.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/orchestration_run.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/permission_policy.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/private_attachments.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/policy_evidence.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/policy_evidence_recorder.rs" },
         { "kind": "tree", "path": "crates/cli/src/runtime/policy_evidence_recorder" },
@@ -769,9 +773,11 @@
         { "kind": "file", "path": "crates/cli/src/runtime/provider_governor_state.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/provider_hedge.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/provider_route.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/route_attempt_accounting.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/resume.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/route_state.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/route_validation.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/runtime_policy_overlay.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/session_spawn_ledger.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/side_conversation.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/strategy_ports.rs" },
@@ -1361,7 +1367,7 @@
       },
       "iteron-record": {
         "normal": ["iteron-obs", "iteron-protocol", "iteron-tunables"],
-        "dev": [],
+        "dev": ["iteron-tunables"],
         "build": []
       },
       "iteron-sandbox": {

@@ -55,9 +55,9 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("failed_action_dedup"), // 37 failed_action_dedup
     derived_default!("pure_memo_cache"),     // 38 pure_memo_cache
     literal_default!(object_value!(
-        "timeout_seconds" => integer_value!(120),
-        "stdout_max_bytes" => integer_value!(262_144),
-        "stderr_max_bytes" => integer_value!(262_144),
+        "timeout_seconds" => integer_value!(3_600),
+        "stdout_max_bytes" => integer_value!(8_388_608),
+        "stderr_max_bytes" => integer_value!(8_388_608),
     )), // 39 shell_timeout_output
     derived_default!("read_file_limits"),    // 40 read_file_limits
     derived_default!("list_dir_limits"),     // 41 list_dir_limits

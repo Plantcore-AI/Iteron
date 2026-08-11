@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 /// Hard ceilings remain code-owned even when the session selects a smaller runtime policy.
 pub const MAX_BACKGROUND_JOBS: usize = 16;
 pub const MAX_IDLE_STALL_MILLISECONDS: u64 = 86_400_000;
 pub const MAX_STDIN_POLL_MILLISECONDS: u64 = 60_000;
+pub const MAX_CHILD_ENV_ENTRIES: usize = 4_096;
+pub const MAX_CHILD_ENV_BYTES: usize = 1_048_576;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +56,111 @@ pub struct ProcessRuntimePolicy {
     pub max_background_jobs: usize,
     pub idle_stall_milliseconds: u64,
     pub stdin_wait: InteractiveStdinWaitPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessCwdScope {
+    Job,
+}
+
+impl ProcessCwdScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Job => "job",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProcessCwdPolicy {
+    pub scope: ProcessCwdScope,
+    pub initial_cwd: PathBuf,
+    pub preserve_changes: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ChildProcessEnvironmentPolicy {
+    pub reuse: bool,
+    pub max_entries: usize,
+    pub max_bytes: usize,
+    pub blocked_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProcessLaunchPolicy {
+    pub cwd: ProcessCwdPolicy,
+    pub environment: ChildProcessEnvironmentPolicy,
+}
+
+/// The immutable launch owner installed before the first process effect. Environment values are
+/// deliberately kept out of serde/debug evidence: the checkpoint records only the bounded policy,
+/// while this private snapshot is the value actually inherited by every child in the session.
+#[derive(Clone)]
+pub(crate) struct InstalledProcessLaunchPolicy {
+    pub policy: ProcessLaunchPolicy,
+    pub child_environment: Vec<(OsString, OsString)>,
+}
+
+impl ProcessLaunchPolicy {
+    pub fn owner(workspace: &Path) -> Result<Self, ProcessPolicyError> {
+        Self::new(
+            ProcessCwdPolicy {
+                scope: ProcessCwdScope::Job,
+                initial_cwd: workspace.to_path_buf(),
+                preserve_changes: true,
+            },
+            ChildProcessEnvironmentPolicy {
+                reuse: true,
+                max_entries: MAX_CHILD_ENV_ENTRIES,
+                max_bytes: MAX_CHILD_ENV_BYTES,
+                blocked_names: Vec::new(),
+            },
+        )
+    }
+
+    pub fn new(
+        cwd: ProcessCwdPolicy,
+        mut environment: ChildProcessEnvironmentPolicy,
+    ) -> Result<Self, ProcessPolicyError> {
+        if !cwd.initial_cwd.is_absolute() || !cwd.preserve_changes {
+            return Err(ProcessPolicyError::CwdPolicy);
+        }
+        if environment.max_entries > MAX_CHILD_ENV_ENTRIES
+            || environment.max_bytes > MAX_CHILD_ENV_BYTES
+        {
+            return Err(ProcessPolicyError::EnvironmentPolicy);
+        }
+        environment.blocked_names.sort();
+        environment.blocked_names.dedup();
+        if environment.blocked_names.len() > MAX_CHILD_ENV_ENTRIES
+            || environment.blocked_names.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 256
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+        {
+            return Err(ProcessPolicyError::EnvironmentPolicy);
+        }
+        Ok(Self { cwd, environment })
+    }
+
+    pub fn validate_root(&self, root: &Path) -> Result<(), ProcessPolicyError> {
+        let root = root
+            .canonicalize()
+            .map_err(|_| ProcessPolicyError::CwdPolicy)?;
+        let configured = self
+            .cwd
+            .initial_cwd
+            .canonicalize()
+            .map_err(|_| ProcessPolicyError::CwdPolicy)?;
+        if root != configured {
+            return Err(ProcessPolicyError::CwdPolicy);
+        }
+        Ok(())
+    }
 }
 
 impl ProcessRuntimePolicy {
@@ -120,6 +229,12 @@ pub enum ProcessPolicyError {
     DisabledWithCapacity,
     #[error("an enabled process backend must admit at least one background job")]
     EnabledWithoutCapacity,
+    #[error("process cwd policy must bind the absolute job workspace and preserve its changes")]
+    CwdPolicy,
+    #[error("child process environment policy exceeds its bounded owner envelope")]
+    EnvironmentPolicy,
+    #[error("process launch policy was already installed for this registry")]
+    LaunchPolicyAlreadyInstalled,
 }
 
 #[cfg(test)]

@@ -29,9 +29,13 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         3,
         finite_enum_domain!("k1", "b", "recall_limit"),
         crate::FieldDomain::Scalar {
-            domain: decimal_domain!(0, 0, 1000, 0, 4, "number")
+            domain: decimal_domain!(0, 0, 4096, 0, 6, "number")
         },
-        []
+        [
+            map_entry_domain_rule!("k1", decimal_domain!(1, 3, 1000, 0, 3, "number")),
+            map_entry_domain_rule!("b", decimal_domain!(0, 0, 1, 0, 6, "ratio")),
+            map_entry_domain_rule!("recall_limit", decimal_domain!(1, 0, 4096, 0, 0, "items"))
+        ]
     ),
     scalar_schema!(
         "skill_listing_budget",
@@ -107,13 +111,13 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "output_max_bytes",
                 true,
-                int_domain!(1, 16_777_216, "bytes")
+                int_domain!(512, 16_777_216, "bytes")
             ),
             scalar_field!("max_lines", true, int_domain!(1, 1_000_000, "lines"))
         ],
         [
             less_equal_rule!("output_max_bytes", "source_max_bytes"),
-            external_rule!("output_max_bytes", ContextWindow)
+            external_rule!("output_max_bytes", ToolBudget)
         ]
     ),
     object_schema!(
@@ -124,10 +128,10 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "output_max_bytes",
                 true,
-                int_domain!(1, 16_777_216, "bytes")
+                int_domain!(256, 16_777_216, "bytes")
             )
         ],
-        [external_rule!("output_max_bytes", ContextWindow)]
+        [external_rule!("output_max_bytes", ToolBudget)]
     ),
     object_schema!(
         "glob_limits",
@@ -137,10 +141,10 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "output_max_bytes",
                 true,
-                int_domain!(1, 16_777_216, "bytes")
+                int_domain!(256, 16_777_216, "bytes")
             )
         ],
-        [external_rule!("output_max_bytes", ContextWindow)]
+        [external_rule!("output_max_bytes", ToolBudget)]
     ),
     object_schema!(
         "grep_limits",
@@ -169,7 +173,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!("max_depth", true, int_domain!(0, 128, "levels")),
             scalar_field!("max_tokens", true, int_domain!(1, 1_000_000, "tokens"))
         ],
-        [external_rule!("max_tokens", ContextWindow)]
+        [external_rule!("max_tokens", ToolBudget)]
     ),
     object_schema!(
         "git_limits",
@@ -195,13 +199,17 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
     object_schema!(
         "web_fetch_limits",
         [
-            scalar_field!("body_max_bytes", true, int_domain!(1, 16_777_216, "bytes")),
+            scalar_field!(
+                "body_max_bytes",
+                true,
+                int_domain!(1_000, 16_777_216, "bytes")
+            ),
             scalar_field!("max_redirects", true, int_domain!(0, 32, "redirects")),
             scalar_field!("timeout_seconds", true, int_domain!(1, 300, "seconds")),
             scalar_field!("max_lines", true, int_domain!(1, 100_000, "lines"))
         ],
         [
-            external_rule!("body_max_bytes", ContextWindow),
+            external_rule!("body_max_bytes", ToolBudget),
             external_rule!("timeout_seconds", ParentWall)
         ]
     ),
@@ -232,13 +240,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             ),
             scalar_field!("total_bytes", true, int_domain!(1, 2_097_152, "bytes"))
         ],
-        [
-            sum_rule!(
-                ["command_output_bytes", "oracle_output_bytes"],
-                "total_bytes"
-            ),
-            external_rule!("total_bytes", ContextWindow)
-        ]
+        [external_rule!("total_bytes", ToolBudget)]
     ),
     scalar_schema!(
         "verifier_timeout",
@@ -265,7 +267,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         ],
         [
             external_rule!("max_output_tokens", ParentTokens),
-            external_rule!("thinking_tokens", ProviderCapability)
+            external_rule!("thinking_tokens", RunBudget)
         ]
     ),
     scalar_schema!(
@@ -294,11 +296,22 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             external_rule!("minimum_remaining_wall_seconds", ParentWall)
         ]
     ),
-    scalar_schema!(
+    object_schema!(
         "writer_fan_turn_split",
-        Ratio,
-        decimal_domain!(0, 0, 1, 0, 6, "ratio"),
-        [external_rule!("$", ParentTurns)]
+        [
+            scalar_field!("writer_numerator", true, int_domain!(0, 1_000, "parts")),
+            scalar_field!("writer_denominator", true, int_domain!(1, 1_000, "parts")),
+            scalar_field!(
+                "minimum_writer_turns",
+                true,
+                int_domain!(1, 1_000_000, "turns")
+            ),
+            scalar_field!("strictly_dominant", true, bool_domain!())
+        ],
+        [
+            less_equal_rule!("writer_numerator", "writer_denominator"),
+            external_rule!("minimum_writer_turns", ParentTurns)
+        ]
     ),
     scalar_schema!(
         "worker_min_turns",
@@ -306,11 +319,21 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         int_domain!(1, 1_000_000, "turns"),
         [external_rule!("$", ParentTurns)]
     ),
-    scalar_schema!(
+    object_schema!(
         "wall_split",
-        Ratio,
-        decimal_domain!(0, 0, 1, 0, 6, "ratio"),
-        [external_rule!("$", ParentWall)]
+        [
+            scalar_field!("fan_numerator", true, int_domain!(0, 1_000, "parts")),
+            scalar_field!("fan_denominator", true, int_domain!(1, 1_000, "parts")),
+            scalar_field!(
+                "minimum_fan_seconds",
+                true,
+                int_domain!(1, 86_400, "seconds")
+            )
+        ],
+        [
+            less_equal_rule!("fan_numerator", "fan_denominator"),
+            external_rule!("minimum_fan_seconds", ParentWall)
+        ]
     ),
     scalar_schema!(
         "token_split",

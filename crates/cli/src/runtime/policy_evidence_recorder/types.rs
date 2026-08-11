@@ -1,8 +1,9 @@
 use iteron_protocol::policy_evidence::PolicyEvidenceError;
 use iteron_protocol::slot::SlotId;
 use iteron_protocol::{
-    PolicyActionId, PolicyDecisionDisposition, PolicyOpportunityId, PolicyRuntimeIdentity,
-    PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TurnId,
+    PolicyActionId, PolicyDecisionDisposition, PolicyHarnessErrorJoinDigest,
+    PolicyHarnessOutcomeId, PolicyOpportunityId, PolicyRuntimeIdentity, PolicyTerminalOutcome,
+    PolicyVerifierOutcome, RunId, TurnId,
 };
 
 pub(crate) const FROZEN_POLICY_SLOT_COUNT: usize = 9;
@@ -112,16 +113,19 @@ pub(crate) struct PolicyOutcomeInput {
     pub output_tokens: Option<u64>,
     pub latency_us: u64,
     pub verifier: PolicyVerifierOutcome,
-    pub harness_error_code: Option<String>,
+    pub harness_error_code: Option<PolicyHarnessOutcomeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PolicyRunAggregate {
     pub terminal: PolicyTerminalOutcome,
     pub quality_micros: Option<i64>,
+    pub cost_microusd: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     pub latency_us: u64,
     pub verifier: PolicyVerifierOutcome,
-    pub has_harness_error: bool,
+    pub harness_errors: PolicyHarnessErrorJoinDigest,
     pub completed_turns: u32,
 }
 
@@ -130,9 +134,12 @@ impl Default for PolicyRunAggregate {
         Self {
             terminal: PolicyTerminalOutcome::Succeeded,
             quality_micros: None,
+            cost_microusd: Some(0),
+            input_tokens: Some(0),
+            output_tokens: Some(0),
             latency_us: 0,
             verifier: PolicyVerifierOutcome::NotRun,
-            has_harness_error: false,
+            harness_errors: PolicyHarnessErrorJoinDigest::default(),
             completed_turns: 0,
         }
     }
@@ -198,7 +205,7 @@ impl std::fmt::Display for PolicyEvidenceRecorderError {
                 write!(
                     formatter,
                     "selected policy action was not eligible: {}",
-                    action.0
+                    action.as_str()
                 )
             }
             Self::PendingOpportunities => {

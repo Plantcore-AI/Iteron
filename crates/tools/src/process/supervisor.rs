@@ -1,6 +1,8 @@
 use super::actor::{StopControl, WriteControl, spawn_actor};
 use super::output::OutputRing;
-use super::policy::{PersistentBackendSelection, ProcessRuntimePolicy};
+use super::policy::{
+    InstalledProcessLaunchPolicy, PersistentBackendSelection, ProcessRuntimePolicy,
+};
 use super::types::{
     ActionError, JobId, JobShared, JobState, ProcessHealth, ProcessSnapshot, ProcessSummary,
     WriteReceipt, lock,
@@ -84,9 +86,13 @@ impl Supervisor {
         command: &str,
         rows: u16,
         cols: u16,
-        sensitive_env_names: Vec<String>,
+        launch: InstalledProcessLaunchPolicy,
     ) -> Result<ProcessSnapshot, ActionError> {
         let _start = self.start_gate.lock().await;
+        launch
+            .policy
+            .validate_root(root)
+            .map_err(|error| ActionError::Definite(error.to_string()))?;
         let policy = self.policy();
         if policy.backend == PersistentBackendSelection::Disabled {
             return Err(ActionError::Definite(
@@ -94,9 +100,9 @@ impl Supervisor {
             ));
         }
         let id = self.reserve_id(policy.max_background_jobs)?;
-        let mut confinement = Confinement::egress_off(root);
+        let mut confinement = Confinement::egress_off(&launch.policy.cwd.initial_cwd);
         confinement.timeout_secs = MAX_JOB_RUNTIME_SECS;
-        confinement.sensitive_env_names = sensitive_env_names;
+        confinement.child_environment = Some(launch.child_environment);
         let window = WindowSize::new(rows, cols)
             .map_err(|error| ActionError::Definite(error.to_string()))?;
         let process = spawn_confined_pty_process(command, &confinement, window)

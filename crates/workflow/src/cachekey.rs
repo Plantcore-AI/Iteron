@@ -26,7 +26,7 @@ pub fn agent_key(
     agent_type: Option<&str>,
 ) -> String {
     agent_key_with_execution(
-        prompt, label, phase, schema, model, effort, agent_type, None,
+        prompt, label, phase, schema, model, effort, agent_type, None, None,
     )
 }
 
@@ -43,6 +43,7 @@ pub(crate) fn agent_key_with_execution(
     effort: Option<&str>,
     agent_type: Option<&str>,
     speculative_siblings: Option<usize>,
+    dependency_indices: Option<&[usize]>,
 ) -> String {
     let input = serde_json::json!({
         "prompt": prompt,
@@ -58,6 +59,11 @@ pub(crate) fn agent_key_with_execution(
         && let Some(object) = input.as_object_mut()
     {
         object.insert("speculativeSiblings".into(), siblings.into());
+    }
+    if let Some(dependencies) = dependency_indices.filter(|dependencies| !dependencies.is_empty())
+        && let Some(object) = input.as_object_mut()
+    {
+        object.insert("dependsOn".into(), serde_json::json!(dependencies));
     }
     let mut canonical = String::new();
     canonicalize(&input, &mut canonical);

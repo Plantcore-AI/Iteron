@@ -5,13 +5,15 @@
 //! neither path gets to rediscover a default from `Budget`, `CompactionPolicy`, or config.
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
-use iteron_protocol::{Budget, Capability, Effort, PermissionMode, PermissionRules, Verdict};
+use iteron_protocol::{
+    Budget, Capability, Effort, PermissionMode, PermissionRules, Verdict,
+    capability_set::CapabilitySet,
+};
 use iteron_sched::BackoffPolicy;
-use iteron_tunables::{DecimalValue, ResolutionValue};
+use iteron_tunables::{DecimalValue, ResolutionValue, RuntimeGetterId};
 
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveCoreSettings {
-    pub profile: iteron_tunables::RuntimeProfile,
     pub provider_id: String,
     pub model_id: String,
     pub base_url: String,
@@ -22,17 +24,28 @@ pub(crate) struct EffectiveCoreSettings {
     pub permission_rules: PermissionRules,
     pub bypass_permissions: bool,
     pub retry: BackoffPolicy,
+    pub token_estimator: iteron_ctx::TokenEstimatorPolicy,
     pub compaction: iteron_ctx::CompactionPolicy,
     pub verify_command: Option<String>,
     pub verification: iteron_verify::VerificationRuntimePolicy,
-    pub prompt_cache_enabled: bool,
     pub memory_enabled: bool,
     pub session_spawn_cap: usize,
     pub deferred_tool_eager_limit: Option<usize>,
+    /// Exact model context authority captured in family 96. `None` means the owner was unknown at
+    /// genesis; resume must not replace it with a newly discovered machine value.
+    pub model_context_window: Option<u64>,
+    /// Exact provider response cap captured in family 19 after all parent ceilings were applied.
+    pub request_output_cap: Option<u32>,
     pub context_budget: iteron_ctx::ContextBudgetPolicy,
     pub context_materialization: iteron_ctx::ContextMaterializationPolicy,
     pub provider_governor: crate::config::ResolvedProviderGovernorConfig,
     pub mcp: super::effective_mcp::EffectiveMcpSettings,
+    pub mcp_exposure: super::effective_mcp::McpCapabilityExposure,
+    pub execution: super::execution_policy::ExecutionRuntimePolicy,
+    pub session_isolation: crate::session_isolation::SessionIsolationPolicy,
+    pub app_server_queue: crate::app_server::AppServerQueuePolicy,
+    pub binary_media: crate::image_input::BinaryMediaInspectionPolicy,
+    pub multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +72,10 @@ pub(crate) enum EffectiveCoreError {
 
 impl EffectiveCoreSettings {
     pub(crate) fn decode(view: &EffectiveTunablesView) -> Result<Self, EffectiveCoreError> {
+        view.with_getter(RuntimeGetterId::EffectiveCore, || Self::decode_inner(view))
+    }
+
+    fn decode_inner(view: &EffectiveTunablesView) -> Result<Self, EffectiveCoreError> {
         let budget = Budget {
             max_turns: u32v(view.integer("max_turns")?, "max_turns")?,
             max_usd: optional_decimal(view, "max_usd")?.map(decimal_to_f64),
@@ -81,32 +98,67 @@ impl EffectiveCoreSettings {
         let permission_mode = PermissionMode::parse(mode_label)
             .ok_or_else(|| unknown("permission_mode", mode_label))?;
 
-        let (context_budget, context_materialization) = decode_context_policies(view)?;
-        let provider_governor = super::effective_provider::decode(view)?;
+        let (context_budget, context_materialization, model_context_window) =
+            decode_context_policies(view)?;
+        let request_output_cap = optional_integer(view, "request_output_cap")?
+            .map(|value| u32v(value, "request_output_cap"))
+            .transpose()?;
+        let (allow_code, permission_rules) = decode_governance(view)?;
+        let prompt_cache_enabled = optional_boolean(view, "prompt_cache")?.unwrap_or(false);
+        let provider_governor = constrain_prompt_cache(
+            super::effective_provider::decode(view)?,
+            prompt_cache_enabled,
+        );
         let mcp = super::effective_mcp::EffectiveMcpSettings::decode(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        let mcp_exposure = super::effective_mcp::McpCapabilityExposure::decode(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        let execution = super::effective_execution::decode(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0)
+            && execution.workflow.max_concurrency != 1
+        {
+            return Err(EffectiveCoreError::InvalidBudget(
+                "a positive USD ceiling requires checkpointed workflow max_concurrency=1 until signed per-attempt reservations are available"
+                    .into(),
+            ));
+        }
+        let app_server_queue = super::effective_app_server::decode(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        let binary_media = super::effective_binary_media::decode(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        let multimodal_decode = super::effective_binary_media::decode_multimodal(view)
+            .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
+        let profile = view.runtime_profile()?;
+        let isolation_label = view.enumeration("session_isolation_profile")?;
+        let session_isolation =
+            crate::session_isolation::SessionIsolationPolicy::from_label(isolation_label)
+                .ok_or_else(|| unknown("session_isolation_profile", isolation_label))?;
+        session_isolation
+            .validate_profile(profile)
             .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
         let verify_command = optional_text(view, "verify_command")?;
         let verification = decode_verification(view, verify_command.as_deref())?;
+        let token_estimator = decode_token_estimator(view)?;
         Ok(Self {
-            profile: view.runtime_profile()?,
             provider_id: view.enumeration("provider")?.to_owned(),
             model_id: view.enumeration("model")?.to_owned(),
             base_url: view.text("base_url")?.to_owned(),
             effort,
             budget,
-            allow_code: view.boolean("allow_code")?,
+            allow_code,
             permission_mode,
-            permission_rules: decode_permission_rules(view)?,
+            permission_rules,
             bypass_permissions: view.boolean("bypass_permissions")?,
             retry: BackoffPolicy {
                 base_ms: u64v(view.integer("retry_backoff_base")?, "retry_backoff_base")?,
                 cap_ms: u64v(view.integer("retry_backoff_cap")?, "retry_backoff_cap")?,
                 max_attempts: u32v(view.integer("retry_max_attempts")?, "retry_max_attempts")?,
             },
+            token_estimator,
             compaction: decode_compaction(view)?,
             verify_command,
             verification,
-            prompt_cache_enabled: optional_boolean(view, "prompt_cache")?.unwrap_or(false),
             memory_enabled: view.boolean("memory_enable")?,
             session_spawn_cap: usizev(
                 view.integer("per_session_spawn_cap")?,
@@ -116,10 +168,18 @@ impl EffectiveCoreSettings {
                 .map(|value| usizev(value, "deferred_discovery_threshold"))
                 .transpose()?
                 .filter(|value| *value > 0),
+            model_context_window,
+            request_output_cap,
             context_budget,
             context_materialization,
             provider_governor,
             mcp,
+            mcp_exposure,
+            execution,
+            session_isolation,
+            app_server_queue,
+            binary_media,
+            multimodal_decode,
         })
     }
 
@@ -142,6 +202,89 @@ impl EffectiveCoreSettings {
         }
         Ok(())
     }
+
+    /// Prove that today's adapter can execute the immutable route ceilings without allowing its
+    /// newly discovered metadata to replace them. Capability growth is harmless but still runs at
+    /// the checkpoint value; capability loss below a recorded ceiling is a pre-effect refusal.
+    pub(crate) fn verify_model_capability_ceiling(
+        &self,
+        live_context_window: Option<u64>,
+        live_output_cap: Option<u32>,
+    ) -> Result<(), EffectiveCoreError> {
+        verify_model_capability_ceiling(
+            self.model_context_window,
+            self.request_output_cap,
+            live_context_window,
+            live_output_cap,
+        )
+    }
+
+    /// Intersect the caller's already-admitted authority with the immutable family-9 gate.
+    ///
+    /// `allow_code=true` deliberately returns the caller's ceiling unchanged: a boolean grant in
+    /// the tunables checkpoint is never itself authority. `false` removes only CodeExecuting and
+    /// is therefore inherited by every child through the ordinary parent-ceiling copy paths.
+    pub(crate) fn constrain_authority_ceiling(&self, ceiling: CapabilitySet) -> CapabilitySet {
+        constrain_code_execution_authority(self.allow_code, ceiling)
+    }
+}
+
+fn verify_model_capability_ceiling(
+    required_context_window: Option<u64>,
+    required_output_cap: Option<u32>,
+    live_context_window: Option<u64>,
+    live_output_cap: Option<u32>,
+) -> Result<(), EffectiveCoreError> {
+    if required_context_window
+        .is_some_and(|required| live_context_window.is_none_or(|live| live < required))
+    {
+        return Err(EffectiveCoreError::UnknownValue {
+            family: "context_window_override_reserve",
+            value: "live provider no longer attests the checkpoint context window".into(),
+        });
+    }
+    if required_output_cap
+        .is_some_and(|required| live_output_cap.is_none_or(|live| live < required))
+    {
+        return Err(EffectiveCoreError::UnknownValue {
+            family: "request_output_cap",
+            value: "live provider no longer attests the checkpoint response cap".into(),
+        });
+    }
+    Ok(())
+}
+
+fn constrain_code_execution_authority(allow_code: bool, ceiling: CapabilitySet) -> CapabilitySet {
+    if allow_code {
+        return ceiling;
+    }
+    ceiling.intersect(CapabilitySet::from_iter_capabilities([
+        Capability::ReadOnly,
+        Capability::ReversibleLocal,
+        Capability::TrustMutating,
+        Capability::IrreversibleExternal,
+    ]))
+}
+
+pub(crate) fn constrain_prompt_cache(
+    mut provider: crate::config::ResolvedProviderGovernorConfig,
+    prompt_cache_enabled: bool,
+) -> crate::config::ResolvedProviderGovernorConfig {
+    if !prompt_cache_enabled {
+        // Family 23 is the outer, route-construction gate. Family 158 may choose TTL,
+        // breakpoint, invalidation and scope only inside that gate; it cannot turn caching back on
+        // for an adapter instance the operator built with caching disabled.
+        provider.controls.prompt_cache = iteron_provider::PromptCacheControl::default();
+    }
+    provider
+}
+
+fn decode_governance(
+    view: &EffectiveTunablesView,
+) -> Result<(bool, PermissionRules), EffectiveCoreError> {
+    let allow_code = view.boolean("allow_code")?;
+    let permission_rules = decode_permission_rules(view)?;
+    Ok((allow_code, permission_rules))
 }
 
 fn decode_verification(
@@ -149,8 +292,9 @@ fn decode_verification(
     configured_command: Option<&str>,
 ) -> Result<iteron_verify::VerificationRuntimePolicy, EffectiveCoreError> {
     use iteron_verify::{
-        FlakyQuarantinePolicy, VerificationCheckpointPolicy, VerificationQuorumPolicy,
-        VerificationRestorePolicy, VerificationRollbackMode, VerificationRuntimePolicy,
+        FlakyQuarantinePolicy, UnknownVerificationRetryAction, VerificationCheckpointPolicy,
+        VerificationFailureClass, VerificationQuorumPolicy, VerificationRestorePolicy,
+        VerificationRetryPolicy, VerificationRollbackMode, VerificationRuntimePolicy,
         VerificationSelectionMode,
     };
 
@@ -284,11 +428,9 @@ fn decode_verification(
                 mode: rollback,
                 paths: optional_text_list_field(fields, "selective_restore_scope", "paths")?
                     .unwrap_or_default(),
-                require_operator_confirmation: boolean_field(
-                    fields,
-                    "selective_restore_scope",
-                    "require_operator_confirmation",
-                )?,
+                // Confirmation is not a serializable tunable. It is a hard runtime invariant;
+                // the restore seam additionally requires one exact durable operator approval.
+                require_operator_confirmation: true,
             }
         }
         None => VerificationRestorePolicy {
@@ -297,7 +439,48 @@ fn decode_verification(
         },
     };
 
+    let feedback = decode_verification_feedback(view)?;
+    let verifier_timeout_secs = optional_integer(view, "verifier_timeout")?
+        .map(|value| u64v(value, "verifier_timeout"))
+        .transpose()?
+        .unwrap_or(iteron_verify::DEFAULT_VERIFIER_TIMEOUT_SECS);
+    let retry = match optional_object(view, "retry_eligibility_policy")? {
+        Some(fields) => {
+            let eligible_classes =
+                text_list_field(fields, "retry_eligibility_policy", "eligible_classes")?
+                    .into_iter()
+                    .map(|class| match class.as_str() {
+                        "verification.test_failure" => Ok(VerificationFailureClass::TestFailure),
+                        "verification.timed_out" => Ok(VerificationFailureClass::TimedOut),
+                        "verification.infrastructure_failure" => {
+                            Ok(VerificationFailureClass::InfrastructureFailure)
+                        }
+                        "verification.cancelled" => Ok(VerificationFailureClass::Cancelled),
+                        other => Err(unknown("retry_eligibility_policy", other)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+            VerificationRetryPolicy {
+                eligible_classes,
+                max_attempts: u32::try_from(integer_field(
+                    fields,
+                    "retry_eligibility_policy",
+                    "max_attempts",
+                )?)
+                .map_err(|_| EffectiveCoreError::Range {
+                    family: "retry_eligibility_policy",
+                })?,
+                unknown: match enum_field(fields, "retry_eligibility_policy", "unknown")? {
+                    "stop" => UnknownVerificationRetryAction::Stop,
+                    "operator" => UnknownVerificationRetryAction::Operator,
+                    other => return Err(unknown("retry_eligibility_policy", other)),
+                },
+            }
+        }
+        None => VerificationRetryPolicy::default(),
+    };
+
     let policy = VerificationRuntimePolicy {
+        verifier_timeout_secs,
         selection,
         required_commands,
         max_commands,
@@ -305,11 +488,49 @@ fn decode_verification(
         quorum,
         checkpoint,
         restore,
+        feedback,
+        retry,
     };
     policy
         .validate()
         .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
     Ok(policy)
+}
+
+pub(crate) fn decode_verification_feedback(
+    view: &EffectiveTunablesView,
+) -> Result<iteron_verify::VerificationFeedbackTailPolicy, EffectiveCoreError> {
+    view.with_getter(RuntimeGetterId::VerificationFeedback, || {
+        decode_verification_feedback_inner(view)
+    })
+}
+
+fn decode_verification_feedback_inner(
+    view: &EffectiveTunablesView,
+) -> Result<iteron_verify::VerificationFeedbackTailPolicy, EffectiveCoreError> {
+    let feedback_fields = view.object("verifier_feedback_tails")?;
+    Ok(iteron_verify::VerificationFeedbackTailPolicy {
+        command_output_bytes: usizev(
+            integer_field(
+                feedback_fields,
+                "verifier_feedback_tails",
+                "command_output_bytes",
+            )?,
+            "verifier_feedback_tails",
+        )?,
+        oracle_output_bytes: usizev(
+            integer_field(
+                feedback_fields,
+                "verifier_feedback_tails",
+                "oracle_output_bytes",
+            )?,
+            "verifier_feedback_tails",
+        )?,
+        total_bytes: usizev(
+            integer_field(feedback_fields, "verifier_feedback_tails", "total_bytes")?,
+            "verifier_feedback_tails",
+        )?,
+    })
 }
 
 fn decode_context_policies(
@@ -318,6 +539,7 @@ fn decode_context_policies(
     (
         iteron_ctx::ContextBudgetPolicy,
         iteron_ctx::ContextMaterializationPolicy,
+        Option<u64>,
     ),
     EffectiveCoreError,
 > {
@@ -326,17 +548,16 @@ fn decode_context_policies(
         integer_field(trigger, "compaction_trigger", "output_reserve_tokens")?,
         "compaction_trigger",
     )?;
-    let (window, output_reserve, verification_reserve, component_overrides) =
+    let (window, model_context_window, output_reserve, verification_reserve, component_overrides) =
         match view.optional_value("context_window_override_reserve") {
             Some(ResolutionValue::Object { fields }) => {
-                let window = usizev(
-                    integer_field(
-                        fields,
-                        "context_window_override_reserve",
-                        "model_window_tokens",
-                    )?,
+                let window_value = integer_field(
+                    fields,
                     "context_window_override_reserve",
+                    "model_window_tokens",
                 )?;
+                let window = usizev(window_value, "context_window_override_reserve")?;
+                let model_context_window = u64v(window_value, "context_window_override_reserve")?;
                 let output = u32v(
                     integer_field(
                         fields,
@@ -353,7 +574,13 @@ fn decode_context_policies(
                     )?,
                     "context_window_override_reserve",
                 )?;
-                (window, output, verification, Some(fields))
+                (
+                    window,
+                    Some(model_context_window),
+                    output,
+                    verification,
+                    Some(fields),
+                )
             }
             Some(_) => {
                 return Err(EffectiveViewError::WrongType {
@@ -368,6 +595,7 @@ fn decode_context_policies(
                     "compaction_trigger",
                 )?
                 .saturating_add(usize::try_from(fallback_output_reserve).unwrap_or(usize::MAX)),
+                None,
                 fallback_output_reserve,
                 0,
                 None,
@@ -397,6 +625,7 @@ fn decode_context_policies(
         .unwrap_or(0);
 
     let memory = view.object("memory_budgets")?;
+    let instruction_discovery = decode_instruction_discovery(view)?;
     let materialization = iteron_ctx::ContextMaterializationPolicy {
         max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
         memory: iteron_ctx::MemBudget {
@@ -422,6 +651,7 @@ fn decode_context_policies(
             view.integer("skill_listing_budget")?,
             "skill_listing_budget",
         )?,
+        instruction_discovery,
     }
     .validate()
     .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
@@ -461,7 +691,32 @@ fn decode_context_policies(
     budget
         .validate_for_window(window)
         .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
-    Ok((budget, materialization))
+    Ok((budget, materialization, model_context_window))
+}
+
+fn decode_instruction_discovery(
+    view: &EffectiveTunablesView,
+) -> Result<iteron_ctx::InstructionDiscoveryPolicy, EffectiveCoreError> {
+    let fields = view.object("instruction_discovery_render")?;
+    iteron_ctx::InstructionDiscoveryPolicy::try_new(
+        usizev(
+            integer_field(fields, "instruction_discovery_render", "max_depth")?,
+            "instruction_discovery_render",
+        )?,
+        usizev(
+            integer_field(fields, "instruction_discovery_render", "max_files")?,
+            "instruction_discovery_render",
+        )?,
+        usizev(
+            integer_field(fields, "instruction_discovery_render", "per_file_bytes")?,
+            "instruction_discovery_render",
+        )?,
+        usizev(
+            integer_field(fields, "instruction_discovery_render", "total_bytes")?,
+            "instruction_discovery_render",
+        )?,
+    )
+    .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))
 }
 
 fn estimated_tokens_for_byte_ceiling(bytes: usize) -> usize {
@@ -562,6 +817,24 @@ fn parse_capability(value: &str) -> Result<Capability, EffectiveCoreError> {
     }
 }
 
+fn decode_token_estimator(
+    view: &EffectiveTunablesView,
+) -> Result<iteron_ctx::TokenEstimatorPolicy, EffectiveCoreError> {
+    let family = "token_estimator";
+    let fields = view.object(family)?;
+    if decimal_ppm(decimal_field(fields, family, "safety_margin")?, family)? != 0 {
+        return Err(EffectiveCoreError::InvalidBudget(
+            "the checkpointed token estimator safety margin is not physically implemented".into(),
+        ));
+    }
+    match enum_field(fields, family, "estimator")? {
+        iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID => {
+            Ok(iteron_ctx::TokenEstimatorPolicy::RouteAwareV2)
+        }
+        other => Err(unknown(family, other)),
+    }
+}
+
 fn decode_compaction(
     view: &EffectiveTunablesView,
 ) -> Result<iteron_ctx::CompactionPolicy, EffectiveCoreError> {
@@ -576,6 +849,33 @@ fn decode_compaction(
         view.integer("compaction_keep_recent")?,
         "compaction_keep_recent",
     )?;
+    let adaptive_family = "compaction_adaptive";
+    let adaptive = view.object(adaptive_family)?;
+    let adaptive_ratio = decimal_ppm(
+        decimal_field(adaptive, adaptive_family, "usable_window_ratio")?,
+        adaptive_family,
+    )?;
+    let adaptive_keep_recent = usizev(
+        integer_field(adaptive, adaptive_family, "keep_recent_messages")?,
+        adaptive_family,
+    )?;
+    let adaptive_output_reserve = u32v(
+        integer_field(adaptive, adaptive_family, "output_reserve_tokens")?,
+        adaptive_family,
+    )?;
+    let trigger_output_reserve = u32v(
+        integer_field(trigger, family, "output_reserve_tokens")?,
+        family,
+    )?;
+    if adaptive_ratio != 800_000
+        || adaptive_keep_recent != keep_recent
+        || adaptive_output_reserve != trigger_output_reserve
+    {
+        return Err(EffectiveCoreError::InvalidBudget(
+            "compaction adaptive owner disagrees with its physical 4/5 trigger, recent tail, or output reserve"
+                .into(),
+        ));
+    }
     let mut policy = iteron_ctx::CompactionPolicy::default();
     policy.trigger_tokens = fallback;
     policy.keep_recent = keep_recent;
@@ -861,5 +1161,186 @@ fn unknown(family: &'static str, value: &str) -> EffectiveCoreError {
     EffectiveCoreError::UnknownValue {
         family,
         value: value.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod memory_schema_agreement_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn decimal(coefficient: i64, scale: u8) -> ResolutionValue {
+        ResolutionValue::Decimal {
+            value: DecimalValue { coefficient, scale },
+        }
+    }
+
+    #[test]
+    fn canonical_memory_values_decode_without_a_later_runtime_rejection() {
+        let values = BTreeMap::from([
+            (
+                "bm25".to_owned(),
+                ResolutionValue::Map {
+                    entries: BTreeMap::from([
+                        ("b".to_owned(), decimal(75, 2)),
+                        ("k1".to_owned(), decimal(12, 1)),
+                        ("recall_limit".to_owned(), decimal(32, 0)),
+                    ]),
+                },
+            ),
+            (
+                "hybrid_retrieval_fusion_weights".to_owned(),
+                ResolutionValue::Map {
+                    entries: BTreeMap::from([
+                        ("lexical".to_owned(), decimal(5, 1)),
+                        ("structural".to_owned(), decimal(5, 1)),
+                    ]),
+                },
+            ),
+        ]);
+        let policy = decode_memory_retrieval(&EffectiveTunablesView::from_test_values(values))
+            .expect("every canonical resolver-accepted memory value must decode");
+        assert_eq!(policy.bm25_k1_milli, 1_200);
+        assert_eq!(policy.bm25_b_ppm, 750_000);
+        assert_eq!(policy.recall_limit, 32);
+        assert_eq!(policy.lexical_weight_ppm, 500_000);
+        assert_eq!(policy.structural_weight_ppm, 500_000);
+        assert_eq!(policy.vector_weight_ppm, 0);
+        assert_eq!(policy.reranker_weight_ppm, 0);
+    }
+
+    #[test]
+    fn allow_code_is_an_outer_authority_gate_even_when_inner_rules_say_auto() {
+        let all = CapabilitySet::from_iter_capabilities([
+            Capability::ReadOnly,
+            Capability::ReversibleLocal,
+            Capability::CodeExecuting,
+            Capability::TrustMutating,
+            Capability::IrreversibleExternal,
+        ]);
+        assert_eq!(constrain_code_execution_authority(true, all), all);
+        let denied = constrain_code_execution_authority(false, all);
+        assert!(!denied.contains(Capability::CodeExecuting));
+        assert!(denied.contains(Capability::ReadOnly));
+        assert!(denied.contains(Capability::IrreversibleExternal));
+
+        let contradictory = EffectiveTunablesView::from_test_values(BTreeMap::from([
+            (
+                "allow_code".to_owned(),
+                ResolutionValue::Boolean { value: false },
+            ),
+            (
+                "permission_rules".to_owned(),
+                ResolutionValue::Map {
+                    entries: BTreeMap::from([(
+                        "capability:code_executing".to_owned(),
+                        ResolutionValue::Enum {
+                            value: "allow".to_owned(),
+                        },
+                    )]),
+                },
+            ),
+        ]));
+        let (allow_code, inner_rules) = decode_governance(&contradictory).unwrap();
+        assert!(!allow_code);
+        assert_eq!(
+            inner_rules.cap_rule(Capability::CodeExecuting),
+            Some(Verdict::Auto),
+            "the family-11 checkpoint remains exact rather than being rewritten in memory"
+        );
+        assert!(
+            !constrain_code_execution_authority(allow_code, all)
+                .contains(Capability::CodeExecuting),
+            "the independent family-9 authority ceiling wins before permission rules are read"
+        );
+
+        let narrowed = EffectiveTunablesView::from_test_values(BTreeMap::from([
+            (
+                "allow_code".to_owned(),
+                ResolutionValue::Boolean { value: false },
+            ),
+            (
+                "permission_rules".to_owned(),
+                ResolutionValue::Map {
+                    entries: BTreeMap::new(),
+                },
+            ),
+        ]));
+        assert!(matches!(decode_governance(&narrowed), Ok((false, _))));
+    }
+
+    #[test]
+    fn prompt_cache_route_gate_can_only_disable_family_158_controls() {
+        use iteron_provider::{
+            CacheBreakpoint, CacheScope, GovernorPolicy, PromptCacheControl,
+            ProviderRequestControls,
+        };
+
+        let configured = crate::config::ResolvedProviderGovernorConfig {
+            fallback_routes: Vec::new(),
+            policy: GovernorPolicy::default(),
+            controls: ProviderRequestControls {
+                prompt_cache: PromptCacheControl {
+                    ttl_seconds: 300,
+                    breakpoint: CacheBreakpoint::Rolling,
+                    invalidate_on_tool_change: true,
+                    scope: CacheScope::Tenant,
+                },
+                ..ProviderRequestControls::default()
+            },
+        };
+        let enabled = constrain_prompt_cache(configured.clone(), true);
+        assert_eq!(
+            enabled.controls.prompt_cache,
+            configured.controls.prompt_cache
+        );
+
+        let disabled = constrain_prompt_cache(configured, false);
+        assert_eq!(
+            disabled.controls.prompt_cache,
+            PromptCacheControl::default(),
+            "family 158 cannot re-enable cache controls outside the family-23 route gate"
+        );
+    }
+
+    #[test]
+    fn checkpoint_model_limits_are_execution_values_and_live_capabilities_only_narrow_admission() {
+        assert!(
+            verify_model_capability_ceiling(
+                Some(120_000),
+                Some(8_192),
+                Some(120_000),
+                Some(8_192),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_model_capability_ceiling(
+                Some(120_000),
+                Some(8_192),
+                Some(256_000),
+                Some(16_384),
+            )
+            .is_ok(),
+            "a larger live capability must not replace or reject the pinned lower execution value"
+        );
+        assert!(matches!(
+            verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(64_000), Some(8_192),),
+            Err(EffectiveCoreError::UnknownValue {
+                family: "context_window_override_reserve",
+                ..
+            })
+        ));
+        assert!(matches!(
+            verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,),
+            Err(EffectiveCoreError::UnknownValue {
+                family: "request_output_cap",
+                ..
+            })
+        ));
+        assert!(
+            verify_model_capability_ceiling(None, None, Some(256_000), Some(16_384)).is_ok(),
+            "newly discovered capabilities cannot activate a family absent at genesis"
+        );
     }
 }

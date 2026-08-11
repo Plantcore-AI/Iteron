@@ -149,19 +149,29 @@ impl ErasureState {
         matches!(self, Self::Verified | Self::Failed)
     }
 
-    fn permits(self, next: Self) -> bool {
-        match self {
-            Self::Requested => matches!(next, Self::Quiescing | Self::Failed),
-            Self::Quiescing => matches!(next, Self::Tombstoned | Self::Failed),
-            Self::Tombstoned => {
-                matches!(
-                    next,
-                    Self::Shredded | Self::Propagating | Self::Verified | Self::Failed
-                )
-            }
-            Self::Shredded => matches!(next, Self::Propagating | Self::Verified | Self::Failed),
-            Self::Propagating => matches!(next, Self::Verified | Self::Failed),
-            Self::Verified | Self::Failed => false,
+    fn permits(self, operation: ErasureOperationKind, next: Self) -> bool {
+        if next == Self::Failed {
+            return !self.is_terminal();
+        }
+        match operation {
+            // Exact deletion and retention unlink journals but never claim that a content key was
+            // shredded or that a derivative graph was propagated. Keeping their graphs separate
+            // makes such a receipt impossible to mint even through direct protocol API use.
+            ErasureOperationKind::ExactSession | ErasureOperationKind::RetentionPrune => matches!(
+                (self, next),
+                (Self::Requested, Self::Quiescing)
+                    | (Self::Quiescing, Self::Tombstoned)
+                    | (Self::Tombstoned, Self::Verified)
+            ),
+            // Content revocation must cross every destructive durability boundary in order.
+            ErasureOperationKind::ContentRevocation => matches!(
+                (self, next),
+                (Self::Requested, Self::Quiescing)
+                    | (Self::Quiescing, Self::Tombstoned)
+                    | (Self::Tombstoned, Self::Shredded)
+                    | (Self::Shredded, Self::Propagating)
+                    | (Self::Propagating, Self::Verified)
+            ),
         }
     }
 }
@@ -201,6 +211,24 @@ pub struct ErasurePropagationCoverage {
     pub datasets: bool,
     pub evaluator_inputs: bool,
     pub candidate_stores: bool,
+}
+
+impl ErasurePropagationCoverage {
+    pub fn is_complete(&self) -> bool {
+        self.session_projections
+            && self.indexes
+            && self.prompt_history
+            && self.attachments
+            && self.tool_artifacts
+            && self.checkpoints
+            && self.memory_context
+            && self.exports
+            && self.telemetry_debug
+            && self.trajectories
+            && self.datasets
+            && self.evaluator_inputs
+            && self.candidate_stores
+    }
 }
 
 /// Bounded, content-free proof attached only to a verified receipt.
@@ -291,7 +319,7 @@ impl ErasureReceipt {
         if self.state.is_terminal() {
             return Err(ErasureValidationError::TerminalReceipt);
         }
-        if !self.state.permits(next)
+        if !self.state.permits(self.request.target.kind(), next)
             || matches!(next, ErasureState::Verified | ErasureState::Failed)
         {
             return Err(ErasureValidationError::Transition);
@@ -308,7 +336,10 @@ impl ErasureReceipt {
         if self.state.is_terminal() {
             return Err(ErasureValidationError::TerminalReceipt);
         }
-        if !self.state.permits(ErasureState::Verified) {
+        if !self
+            .state
+            .permits(self.request.target.kind(), ErasureState::Verified)
+        {
             return Err(ErasureValidationError::Transition);
         }
         self.verification = Some(verification);
@@ -323,6 +354,12 @@ impl ErasureReceipt {
     ) -> Result<(), ErasureValidationError> {
         if self.state.is_terminal() {
             return Err(ErasureValidationError::TerminalReceipt);
+        }
+        if !self
+            .state
+            .permits(self.request.target.kind(), ErasureState::Failed)
+        {
+            return Err(ErasureValidationError::Transition);
         }
         self.failure = Some(failure);
         self.set_state(ErasureState::Failed, updated_at_unix_ms);
@@ -340,19 +377,21 @@ impl ErasureReceipt {
         let terminal_shape = match self.state {
             ErasureState::Verified => {
                 self.failure.is_none()
-                    && matches!(
-                        (self.request.target.kind(), self.verification.as_ref()),
+                    && match (self.request.target.kind(), self.verification.as_ref()) {
                         (
                             ErasureOperationKind::ExactSession,
-                            Some(ErasureVerification::ExactSessionAbsent)
-                        ) | (
+                            Some(ErasureVerification::ExactSessionAbsent),
+                        ) => true,
+                        (
                             ErasureOperationKind::RetentionPrune,
-                            Some(ErasureVerification::RetentionApplied { .. })
-                        ) | (
+                            Some(ErasureVerification::RetentionApplied { .. }),
+                        ) => true,
+                        (
                             ErasureOperationKind::ContentRevocation,
-                            Some(ErasureVerification::ContentRevoked { .. })
-                        )
-                    )
+                            Some(ErasureVerification::ContentRevoked { coverage, .. }),
+                        ) => coverage.is_complete(),
+                        _ => false,
+                    }
             }
             ErasureState::Failed => self.verification.is_none() && self.failure.is_some(),
             _ => self.verification.is_none() && self.failure.is_none(),

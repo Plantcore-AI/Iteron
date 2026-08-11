@@ -217,7 +217,13 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             ),
             scalar_field!("private_storage", true, bool_domain!())
         ],
-        [less_equal_rule!("visible_max_bytes", "spill_max_bytes")]
+        [
+            less_equal_rule!("visible_max_bytes", "spill_max_bytes"),
+            crate::CrossFieldRule::Equals {
+                field: "private_storage",
+                value: crate::RuleValue::Boolean { value: true },
+            }
+        ]
     ),
     object_schema!(
         "oauth_auth_lifecycle_policy",
@@ -225,7 +231,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "credential_mode",
                 true,
-                finite_enum_domain!("disabled", "bearer", "refresh_token", "mixed")
+                finite_enum_domain!("bearer", "refresh_token", "mixed")
             ),
             scalar_field!("binding_count", true, int_domain!(1, 1024, "bindings")),
             scalar_field!(
@@ -250,11 +256,31 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         ],
         [
             less_equal_rule!("refresh_binding_count", "binding_count"),
-            less_equal_rule!("revocation_binding_count", "binding_count"),
+            less_equal_rule!("revocation_binding_count", "refresh_binding_count"),
+            crate::CrossFieldRule::Requires {
+                if_field: "credential_mode",
+                equals: crate::RuleValue::Enum {
+                    value: "refresh_token"
+                },
+                then_field: "refresh_binding_count",
+            },
+            crate::CrossFieldRule::Requires {
+                if_field: "credential_mode",
+                equals: crate::RuleValue::Enum { value: "mixed" },
+                then_field: "refresh_binding_count",
+            },
+            crate::CrossFieldRule::Equals {
+                field: "revoke_access_after_forbidden",
+                value: crate::RuleValue::Boolean { value: true },
+            },
+            crate::CrossFieldRule::Equals {
+                field: "expiry_skew_seconds",
+                value: crate::RuleValue::Integer { value: 30 },
+            },
             external_rule!("credential_mode", OperatorAuthority)
         ]
     ),
-    object_schema!(
+    object_schema_v3!(
         "resource_prompt_plugin_capability_exposure",
         [
             scalar_field!(
@@ -282,6 +308,22 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 512,
                 true,
                 text_domain!(1, 256, Identifier)
+            ),
+            list_field!(
+                "plugin_binding_ids",
+                true,
+                0,
+                512,
+                true,
+                text_domain!(1, 256, NamespacedId)
+            ),
+            list_field!(
+                "server_binding_ids",
+                true,
+                0,
+                512,
+                true,
+                text_domain!(1, 256, NamespacedId)
             ),
             scalar_field!(
                 "max_visible_bytes",

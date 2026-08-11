@@ -20,11 +20,14 @@ pub(super) struct HedgedProviderDispatch {
     pub result: Result<iteron_provider::TurnResult, KernelError>,
     pub items: Vec<StreamItem>,
     pub scheduled_attempts: u32,
+    /// True only when every scheduled attempt has known cost or proved it never dispatched.
+    pub monetary_followup_safe: bool,
 }
 
 struct PreparedAttempt {
     index: u8,
     ordinal: usize,
+    physical_attempt: u32,
     delay: Duration,
     provider: Arc<dyn Provider>,
     request: TurnRequest,
@@ -44,12 +47,14 @@ enum AttemptTerminal {
     Suppressed {
         index: u8,
         ordinal: usize,
+        physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
     },
     Completed {
         index: u8,
         ordinal: usize,
+        physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
         items: Vec<StreamItem>,
@@ -67,6 +72,29 @@ impl Agent {
             .is_some_and(|governor| governor.policy().hedge.enabled)
     }
 
+    pub(super) fn provider_hedging_for_turn(&mut self, turn: TurnId) -> Result<bool, KernelError> {
+        if !self.provider_hedging_enabled() {
+            return Ok(false);
+        }
+        if self
+            .usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing())
+        {
+            self.emit_durable(
+                turn,
+                EventKind::ProviderGovernorDecision {
+                    decision: iteron_protocol::ProviderGovernorDecision::HedgeSuppressed {
+                        version: iteron_protocol::ProviderGovernorDecisionVersion::V1,
+                        reason: iteron_protocol::ProviderHedgeSuppressionReason::PositiveUsdCeiling,
+                    },
+                },
+            )?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_hedged_provider_turn(
         &mut self,
@@ -78,7 +106,19 @@ impl Agent {
         route_transition: Option<&str>,
         route_retry_index: u32,
         physical_attempt_base: u32,
+        primary_admission_preacquired: bool,
+        mut primary_permit: Option<AttemptPermit>,
     ) -> Result<HedgedProviderDispatch, KernelError> {
+        if self
+            .usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing())
+        {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "provider_governor.hedge",
+                reason: "physical hedging is unavailable under a positive USD ceiling",
+            });
+        }
         let hedge = self
             .provider_governor
             .as_ref()
@@ -102,6 +142,7 @@ impl Agent {
                 result: Err(refusal),
                 items: Vec::new(),
                 scheduled_attempts: 0,
+                monetary_followup_safe: true,
             });
         }
 
@@ -109,10 +150,35 @@ impl Agent {
         let mut prepared = Vec::with_capacity(usize::from(total));
         let mut cancellation = Vec::with_capacity(usize::from(total));
         for index in 0..total {
-            let permit = if index == 0 {
-                self.admit_governed_route_attempt(turn, route_id).await?
+            let permit = if index == 0 && primary_admission_preacquired {
+                primary_permit.take()
+            } else if index == 0 {
+                match self.admit_governed_route_attempt(turn, route_id).await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        self.close_prepared_hedges_without_dispatch(
+                            turn,
+                            route_id,
+                            prepared,
+                            "hedge admission failed before provider dispatch",
+                        )?;
+                        return Err(error);
+                    }
+                }
             } else {
-                let Some(permit) = self.try_admit_optional_hedge(turn, route_id) else {
+                let admitted = match self.try_admit_optional_hedge(turn, route_id) {
+                    Ok(admitted) => admitted,
+                    Err(error) => {
+                        self.close_prepared_hedges_without_dispatch(
+                            turn,
+                            route_id,
+                            prepared,
+                            "hedge admission failed before provider dispatch",
+                        )?;
+                        return Err(error);
+                    }
+                };
+                let Some(permit) = admitted else {
                     continue;
                 };
                 Some(permit)
@@ -126,7 +192,8 @@ impl Agent {
                 .delay
                 .checked_mul(u32::from(index))
                 .unwrap_or(Duration::MAX);
-            let ticket = self.open_kernel_effect(
+            let (objective_score, objective_evidence) = self.objective_rank_evidence(route_id);
+            let ticket = match self.open_kernel_effect(
                 turn,
                 effect_class::EffectClass::Provider,
                 ordinal,
@@ -142,12 +209,27 @@ impl Agent {
                     "route_retry_index": route_retry_index,
                     "hedge_attempt": index,
                     "hedge_delay_ms": u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    "route_objective_score_millionths": objective_score,
+                    "route_objective_evidence": objective_evidence,
                 }),
-            )?;
+            ) {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    drop(permit);
+                    self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "hedge intent preparation failed before provider dispatch",
+                    )?;
+                    return Err(error);
+                }
+            };
             cancellation.push((index, attempt_cancel.clone()));
             prepared.push(PreparedAttempt {
                 index,
                 ordinal,
+                physical_attempt,
                 delay,
                 provider: provider.clone(),
                 request: request.clone(),
@@ -161,6 +243,21 @@ impl Agent {
         }
 
         let scheduled_attempts = u32::try_from(prepared.len()).unwrap_or(u32::MAX);
+        if primary_admission_preacquired
+            && let Err(error) = self.begin_provider_attempt_after_intent(turn)
+        {
+            let closed = self.close_prepared_hedges_without_dispatch(
+                turn,
+                route_id,
+                prepared,
+                "logical provider turn could not become durable before dispatch",
+            );
+            if let Some(budget) = &self.usd_budget {
+                budget.settle_not_dispatched();
+            }
+            closed?;
+            return Err(error);
+        }
         let mut attempts = prepared
             .into_iter()
             .map(|attempt| Box::pin(run_attempt(attempt)) as AttemptFuture)
@@ -168,23 +265,35 @@ impl Agent {
         let mut winner: Option<(u8, iteron_provider::TurnResult, Vec<StreamItem>)> = None;
         let mut errors = BTreeMap::new();
         let mut aggregate = UsageAggregate::default();
+        let mut monetary_followup_safe = true;
 
         while let Some(terminal) = attempts.next().await {
             match terminal {
                 AttemptTerminal::Suppressed {
                     index,
                     ordinal,
+                    physical_attempt,
                     ticket,
                     permit,
                 } => {
+                    let accounting = route_attempt_accounting::not_dispatched_accounting(
+                        route_id,
+                        physical_attempt,
+                    )?;
                     self.settle_kernel_effect(
                         ticket,
-                        effects::Settlement::Definite(effect_failed_terminal(
-                            turn,
-                            effect_class::EffectClass::Provider,
-                            ordinal,
-                            "hedge duplicate was cancelled before provider dispatch",
-                        )),
+                        effects::Settlement::Definite(EventKind::EffectFailed {
+                            id: effect_class::effect_id(
+                                turn,
+                                effect_class::EffectClass::Provider,
+                                ordinal,
+                            ),
+                            tool: effect_class_label(effect_class::EffectClass::Provider)
+                                .to_string(),
+                            reason: "hedge duplicate was cancelled before provider dispatch".into(),
+                            duration_ms: None,
+                            provider_route_attempt: Some(accounting),
+                        }),
                     )?;
                     drop(permit);
                     let _ = index;
@@ -192,17 +301,33 @@ impl Agent {
                 AttemptTerminal::Completed {
                     index,
                     ordinal,
+                    physical_attempt,
                     ticket,
                     permit,
                     items,
                     rate_limit,
                     result,
                 } => {
+                    let accounting = self.route_attempt_accounting(
+                        turn,
+                        route_id,
+                        physical_attempt,
+                        &result,
+                        self.pricing_now(),
+                    )?;
+                    monetary_followup_safe &=
+                        route_attempt_accounting::monetary_followup_safe(&accounting);
                     self.settle_kernel_effect(
                         ticket,
-                        provider_route::provider_settlement(turn, ordinal, &result),
+                        provider_route::provider_settlement(
+                            turn,
+                            ordinal,
+                            &result,
+                            accounting.clone(),
+                        ),
                     )?;
-                    self.observe_governed_route_attempt(turn, route_id, &result, rate_limit);
+                    self.commit_provider_route_charge(turn, &accounting)?;
+                    self.observe_governed_route_attempt(turn, route_id, &result, rate_limit)?;
                     drop(permit);
                     match result {
                         Ok(result) => {
@@ -244,15 +369,58 @@ impl Agent {
             result,
             items,
             scheduled_attempts,
+            monetary_followup_safe,
         })
     }
 
-    fn try_admit_optional_hedge(&self, turn: TurnId, route_id: &str) -> Option<AttemptPermit> {
-        let governor = self.provider_governor.as_ref()?;
+    /// Close every intent prepared for a hedge batch when a later admission or intent append
+    /// fails before the futures are constructed. None of these attempts can have reached a
+    /// provider, so each terminal carries exact `NotDispatched` cost truth instead of relying on
+    /// ticket Drop/crash reconciliation to conservatively manufacture an unknown external effect.
+    fn close_prepared_hedges_without_dispatch(
+        &mut self,
+        turn: TurnId,
+        route_id: &str,
+        prepared: Vec<PreparedAttempt>,
+        reason: &'static str,
+    ) -> Result<(), KernelError> {
+        for attempt in prepared {
+            let accounting = route_attempt_accounting::not_dispatched_accounting(
+                route_id,
+                attempt.physical_attempt,
+            )?;
+            self.settle_kernel_effect(
+                attempt.ticket,
+                effects::Settlement::Definite(EventKind::EffectFailed {
+                    id: effect_class::effect_id(
+                        turn,
+                        effect_class::EffectClass::Provider,
+                        attempt.ordinal,
+                    ),
+                    tool: effect_class_label(effect_class::EffectClass::Provider).to_string(),
+                    reason: reason.into(),
+                    duration_ms: None,
+                    provider_route_attempt: Some(accounting),
+                }),
+            )?;
+            drop(attempt.permit);
+        }
+        Ok(())
+    }
+
+    fn try_admit_optional_hedge(
+        &mut self,
+        turn: TurnId,
+        route_id: &str,
+    ) -> Result<Option<AttemptPermit>, KernelError> {
+        let Some(governor) = self.provider_governor.as_ref() else {
+            return Ok(None);
+        };
         match governor.admit(route_id, Instant::now()) {
             Admission::Admitted(permit) => {
                 self.emit_circuit_transition(turn, permit.transition);
-                Some(permit)
+                self.record_provider_governor_state(turn, route_id, permit.transition, None)?;
+                Ok(Some(permit))
             }
             Admission::Deferred { wait, reason } => {
                 self.lifecycle_event(
@@ -267,7 +435,7 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
-                None
+                Ok(None)
             }
             Admission::Rejected(reason) => {
                 self.lifecycle_event(
@@ -281,7 +449,7 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
-                None
+                Ok(None)
             }
         }
     }
@@ -301,6 +469,7 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
         return AttemptTerminal::Suppressed {
             index: attempt.index,
             ordinal: attempt.ordinal,
+            physical_attempt: attempt.physical_attempt,
             ticket: attempt.ticket,
             permit: attempt.permit,
         };
@@ -331,6 +500,7 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
     AttemptTerminal::Completed {
         index: attempt.index,
         ordinal: attempt.ordinal,
+        physical_attempt: attempt.physical_attempt,
         ticket: attempt.ticket,
         permit: attempt.permit,
         items,

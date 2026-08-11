@@ -232,6 +232,9 @@ pub struct EffectProposal {
  pub arguments: serde_json::Value,
  /// 资源/workspace 出处。
  pub workspace: String,
+ /// provider 请求在物理 dispatch 前持久化的、无内容的精确路由尝试身份；
+ /// 非 provider effect 与历史记录为 None。
+ pub provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
 }
 ```
 

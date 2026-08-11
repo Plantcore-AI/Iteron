@@ -1,11 +1,12 @@
 use iteron_tunables::{
-    ActivationPredicate, CausalPath, ConstraintProjection, ConstraintRelation, ConstraintViolation,
-    CoreStrategySlot, CrossFieldRule, DefaultKind, DefaultResolver, DefaultValueRequirement,
-    EXPECTED_FAMILY_COUNT, ExternalCeiling, ImplementationStatus, InactiveReason,
-    ProviderRequirement, REGISTRY_DIGEST_SHA256, RelevanceLevel, SCALAR_CATALOGS, ScalarDomain,
-    SourceKind, SourceMergePolicy, SourceTrust, StructuredValueDomain, TunableValue,
-    TunableValueField, ValueKind, canonical_artifact, canonical_artifact_json,
-    canonical_payload_json, families, family_semantic_digest, registry_digest, validate_registry,
+    ActivationPredicate, CapabilityRequirement, CausalPath, ConstraintProjection,
+    ConstraintRelation, ConstraintViolation, CoreStrategySlot, CrossFieldRule, DefaultKind,
+    DefaultResolver, DefaultValueRequirement, EXPECTED_FAMILY_COUNT, ExternalCeiling,
+    ImplementationStatus, InactiveReason, ProviderRequirement, REGISTRY_DIGEST_SHA256,
+    RelevanceLevel, SCALAR_CATALOGS, ScalarDomain, SourceKind, SourceMergePolicy, SourceTrust,
+    StructuredValueDomain, TunableValue, TunableValueField, ValueKind, canonical_artifact,
+    canonical_artifact_json, canonical_payload_json, families, family_semantic_digest,
+    registry_digest, validate_registry,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -532,7 +533,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::AnyAdmittedRoute, // 1 provider
     ProviderRequirement::SelectedRoute,    // 2 model
     ProviderRequirement::AnyAdmittedRoute, // 3 base_url
-    ProviderRequirement::SelectedRoute,    // 4 effort
+    ProviderRequirement::None,             // 4 effort
     ProviderRequirement::None,             // 5 max_turns
     ProviderRequirement::None,             // 6 max_usd
     ProviderRequirement::None,             // 7 max_tokens
@@ -551,11 +552,11 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::SelectedRoute,    // 20 effort_reasoning_map
     ProviderRequirement::SelectedRoute,    // 21 thinking_map
     ProviderRequirement::None,             // 22 orchestration_map
-    ProviderRequirement::SelectedRoute,    // 23 prompt_cache
+    ProviderRequirement::None,             // 23 prompt_cache
     ProviderRequirement::None,             // 24 compaction_adaptive
     ProviderRequirement::None,             // 25 compaction_keep_recent
     ProviderRequirement::None,             // 26 token_estimator
-    ProviderRequirement::SelectedRoute,    // 27 summary_profile
+    ProviderRequirement::None,             // 27 summary_profile
     ProviderRequirement::None,             // 28 compaction_failure
     ProviderRequirement::None,             // 29 instruction_discovery_render
     ProviderRequirement::None,             // 30 memory_enable
@@ -580,7 +581,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 49 verifier_feedback_tails
     ProviderRequirement::None,             // 50 verifier_timeout
     ProviderRequirement::None,             // 51 route_topology
-    ProviderRequirement::SelectedRoute,    // 52 decomposition_profile
+    ProviderRequirement::None,             // 52 decomposition_profile
     ProviderRequirement::None,             // 53 fan_breadth
     ProviderRequirement::None,             // 54 admission
     ProviderRequirement::None,             // 55 writer_fan_turn_split
@@ -590,13 +591,13 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 59 fan_concurrency
     ProviderRequirement::None,             // 60 child_ceiling
     ProviderRequirement::None,             // 61 direct_child_allocation
-    ProviderRequirement::SelectedRoute,    // 62 subagent_effort_inheritance
+    ProviderRequirement::None,             // 62 subagent_effort_inheritance
     ProviderRequirement::None,             // 63 report_budget
     ProviderRequirement::None,             // 64 join_reduce
     ProviderRequirement::None,             // 65 workflow_aggregate
     ProviderRequirement::None,             // 66 schema_retry_jitter
-    ProviderRequirement::AnyAdmittedRoute, // 67 provider_connect_tls_timeout
-    ProviderRequirement::SelectedRoute,    // 68 multimodal_input_admission_decode_envelope
+    ProviderRequirement::None,             // 67 provider_connect_tls_timeout
+    ProviderRequirement::None,             // 68 multimodal_input_admission_decode_envelope
     ProviderRequirement::None,             // 69 app_server_sq_eq_backpressure
     ProviderRequirement::AnyAdmittedRoute, // 70 provider_discovery_account_probe_cache_policy
     ProviderRequirement::None,             // 71 operator_prompt_stream
@@ -616,19 +617,19 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 85 web_search_backend_catalog
     ProviderRequirement::AnyAdmittedRoute, // 86 model_fallback_chain
     ProviderRequirement::AnyAdmittedRoute, // 87 failover_eligible_error_taxonomy
-    ProviderRequirement::AnyAdmittedRoute, // 88 route_quality_cost_latency_objective_weights
+    ProviderRequirement::None,             // 88 route_quality_cost_latency_objective_weights
     ProviderRequirement::AnyAdmittedRoute, // 89 provider_health_circuit_breaker_state_policy
     ProviderRequirement::SelectedRoute,    // 90 hedged_request_policy
     ProviderRequirement::SelectedRoute,    // 91 provider_service_tier
     ProviderRequirement::SelectedRoute,    // 92 response_verbosity
     ProviderRequirement::AnyAdmittedRoute, // 93 role_specific_model_map
-    ProviderRequirement::SelectedRoute,    // 94 provider_request_total_deadline
-    ProviderRequirement::SelectedRoute,    // 95 stream_idle_watchdog
+    ProviderRequirement::None,             // 94 provider_request_total_deadline
+    ProviderRequirement::None,             // 95 stream_idle_watchdog
     ProviderRequirement::SelectedRoute,    // 96 context_window_override_reserve
     ProviderRequirement::None,             // 97 system_prefix_budget
     ProviderRequirement::None,             // 98 conversation_history_budget
     ProviderRequirement::None,             // 99 tool_result_history_budget
-    ProviderRequirement::SelectedRoute,    // 100 multimodal_token_budget
+    ProviderRequirement::None,             // 100 multimodal_token_budget
     ProviderRequirement::None,             // 101 auto_compaction_enable
     ProviderRequirement::None,             // 102 compaction_cooldown_hysteresis
     ProviderRequirement::None,             // 103 multi_stage_summary_topology
@@ -646,7 +647,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 115 effecting_tool_concurrency
     ProviderRequirement::None,             // 116 write_set_conflict_admission
     ProviderRequirement::None,             // 117 tool_output_spill_to_disk_policy
-    ProviderRequirement::SelectedRoute,    // 118 binary_media_inspection_routing
+    ProviderRequirement::None,             // 118 binary_media_inspection_routing
     ProviderRequirement::None,             // 119 lsp_server_language_selection
     ProviderRequirement::None,             // 120 lsp_timeout_restart_policy
     ProviderRequirement::None,             // 121 lsp_result_context_budget
@@ -662,7 +663,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 131 verification_quorum_consensus
     ProviderRequirement::None,             // 132 recovery_escalation_policy
     ProviderRequirement::SelectedRoute,    // 133 per_agent_model
-    ProviderRequirement::SelectedRoute,    // 134 per_agent_effort_thinking
+    ProviderRequirement::None,             // 134 per_agent_effort_thinking
     ProviderRequirement::None,             // 135 per_agent_tool_profile
     ProviderRequirement::None,             // 136 per_agent_memory_scope
     ProviderRequirement::None,             // 137 spawn_depth_control
@@ -684,7 +685,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 153 oauth_auth_lifecycle_policy
     ProviderRequirement::None,             // 154 resource_prompt_plugin_capability_exposure
     ProviderRequirement::SelectedRoute,    // 155 request_compression_policy
-    ProviderRequirement::AnyAdmittedRoute, // 156 http_pool_keepalive_idle_policy
+    ProviderRequirement::None,             // 156 http_pool_keepalive_idle_policy
     ProviderRequirement::SelectedRoute,    // 157 rate_limit_aware_admission
     ProviderRequirement::SelectedRoute,    // 158 prompt_cache_ttl_breakpoint_strategy
     ProviderRequirement::None,             // 159 session_isolation_profile
@@ -763,9 +764,17 @@ fn exact_160_entry_contract_is_pinned_per_ordinal() {
             "{}",
             family.id
         );
+        let value_revision = if family.id == "resource_prompt_plugin_capability_exposure" {
+            3
+        } else {
+            1
+        };
         assert_eq!(
             family.value_schema.schema_id,
-            format!("iteron://tunables/families/{}/value-v1", family.id)
+            format!(
+                "iteron://tunables/families/{}/value-v{value_revision}",
+                family.id
+            )
         );
     }
     assert_eq!(semantic_keys.len(), EXPECTED_FAMILY_COUNT);
@@ -966,17 +975,14 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert!(!prompt_cache_schema.contains("breakpoint"));
 
     let prompt_cache_strategy = family("prompt_cache_ttl_breakpoint_strategy");
-    // The runtime-binding work gave this family a real provider-side seam, so it is no longer
-    // `Missing`, and `Unavailable` is reserved for `Missing` entries.
+    // The runtime-binding work gave this family a complete provider-side owner and consumer.
     assert_eq!(
         prompt_cache_strategy.implementation_status,
-        ImplementationStatus::Partial
+        ImplementationStatus::Full
     );
     assert!(matches!(
         prompt_cache_strategy.activation.predicate,
-        ActivationPredicate::RuntimeDerived {
-            seam: "crates/provider/src/controls.rs"
-        }
+        ActivationPredicate::Always
     ));
     // It stopped being registry-only: an operator source now exists, bounded above by a
     // provider-attested ceiling rather than by the operator's own claim.
@@ -1217,7 +1223,7 @@ fn primary_runtime_source_metadata_matches_the_production_composition_root() {
             vec![SourceKind::Cli, SourceKind::Builtin],
         ),
         ("verify_command", vec![SourceKind::Cli]),
-        ("memory_enable", vec![SourceKind::Builtin]),
+        ("memory_enable", vec![SourceKind::Cli, SourceKind::Builtin]),
         (
             "max_consecutive_tool_errors",
             vec![SourceKind::Cli, SourceKind::Builtin],
@@ -1314,8 +1320,20 @@ fn corrections_remove_alias_and_cover_multi_slot_effects() {
     }
     assert_eq!(
         family("provider_connect_tls_timeout").requirements.provider,
-        ProviderRequirement::AnyAdmittedRoute
+        ProviderRequirement::None
     );
+    for id in [
+        "provider_connect_tls_timeout",
+        "provider_request_total_deadline",
+        "stream_idle_watchdog",
+        "http_pool_keepalive_idle_policy",
+    ] {
+        assert_eq!(
+            family(id).requirements.capabilities,
+            &[CapabilityRequirement::RuntimeObservation],
+            "{id} is a local runtime invariant, not a provider-route capability"
+        );
+    }
 }
 
 #[test]
@@ -1328,6 +1346,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
     let mut action_counts = [0usize; 3];
     let nonnumeric_budget_domains = BTreeSet::from([
         ("thinking_map", "$", ExternalCeiling::ParentTokens),
+        ("summary_profile", "effort", ExternalCeiling::ParentTokens),
         ("compaction_failure", "$", ExternalCeiling::ContextWindow),
         ("pure_overlap", "$", ExternalCeiling::ToolBudget),
         (
@@ -1335,7 +1354,6 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
             "$",
             ExternalCeiling::ContextWindow,
         ),
-        ("workflow_graph", "$", ExternalCeiling::RunBudget),
         ("provider_service_tier", "$", ExternalCeiling::ParentCost),
         ("response_verbosity", "$", ExternalCeiling::ParentTokens),
         ("role_specific_model_map", "$", ExternalCeiling::ParentCost),
@@ -1467,11 +1485,11 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         observed_nonnumeric_budget_domains,
         nonnumeric_budget_domains
     );
-    assert_eq!(keys.len(), 198);
-    assert_eq!(whole_value_count, 183);
-    assert_eq!(whole_catalog.len(), 15);
-    assert_eq!(relation_counts, [99, 93, 6]);
-    assert_eq!(action_counts, [99, 23, 76]);
+    assert_eq!(keys.len(), 196);
+    assert_eq!(whole_value_count, 180);
+    assert_eq!(whole_catalog.len(), 16);
+    assert_eq!(relation_counts, [99, 91, 6]);
+    assert_eq!(action_counts, [99, 18, 79]);
     assert_eq!(
         whole_catalog,
         BTreeSet::from([
@@ -1510,6 +1528,12 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
                 78,
                 "mcp_topology_tool_catalog",
                 "transport",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                79,
+                "hooks_map",
+                "command_sha256",
                 ExternalCeiling::OperatorAuthority
             ),
             (
@@ -1566,17 +1590,17 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         counts,
         BTreeMap::from([
             (ExternalCeiling::BenchmarkProtocol, 6),
-            (ExternalCeiling::ContextWindow, 30),
-            (ExternalCeiling::OperatorAuthority, 33),
+            (ExternalCeiling::ContextWindow, 21),
+            (ExternalCeiling::OperatorAuthority, 36),
             (ExternalCeiling::ParentCost, 6),
             (ExternalCeiling::ParentTokens, 10),
             (ExternalCeiling::ParentTurns, 8),
             (ExternalCeiling::ParentWall, 31),
             (ExternalCeiling::ProcessBudget, 6),
-            (ExternalCeiling::ProviderCapability, 23),
+            (ExternalCeiling::ProviderCapability, 18),
             (ExternalCeiling::RunBudget, 19),
             (ExternalCeiling::TenantScope, 8),
-            (ExternalCeiling::ToolBudget, 7),
+            (ExternalCeiling::ToolBudget, 16),
             (ExternalCeiling::VerificationFloor, 11),
         ])
     );
@@ -1584,13 +1608,13 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
 
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
-    // Revision 7 is what the runtime-binding work bought: every family that previously had no
-    // production seam now has one, so `Missing` is empty and 27 families moved up into `Full`.
+    // Revision 10 closes every formerly partial family with an immutable production owner and a
+    // real runtime consumer. `Missing` and `Partial` remain empty; fixed invariants stay hidden.
     for (status, expected) in [
-        (ImplementationStatus::Full, 57),
-        (ImplementationStatus::Partial, 47),
+        (ImplementationStatus::Full, 97),
+        (ImplementationStatus::Partial, 0),
         (ImplementationStatus::Missing, 0),
-        (ImplementationStatus::FixedHidden, 56),
+        (ImplementationStatus::FixedHidden, 63),
     ] {
         assert_eq!(
             families()

@@ -8,11 +8,17 @@ use iteron_provider::{
     GovernorPolicy, HedgePolicy, ObjectiveWeights, PromptCacheControl, ProviderRequestControls,
     RateAdmissionPolicy, RequestCompression, ResponseVerbosity, ServiceTier, UnknownQuotaPolicy,
 };
-use iteron_tunables::{DecimalValue, ResolutionValue};
+use iteron_tunables::{DecimalValue, ResolutionValue, RuntimeGetterId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub(super) fn decode(
+    view: &EffectiveTunablesView,
+) -> Result<ResolvedProviderGovernorConfig, EffectiveCoreError> {
+    view.with_getter(RuntimeGetterId::EffectiveProvider, || decode_inner(view))
+}
+
+fn decode_inner(
     view: &EffectiveTunablesView,
 ) -> Result<ResolvedProviderGovernorConfig, EffectiveCoreError> {
     let fallback_routes = list_enums(view, "model_fallback_chain")?;
@@ -31,6 +37,7 @@ pub(super) fn decode(
         verbosity: parse_verbosity(view.enumeration("response_verbosity")?)?,
         compression: parse_compression(view.enumeration("request_compression_policy")?)?,
         prompt_cache: decode_prompt_cache(view)?,
+        transport: decode_transport(view)?,
         // The immutable hedge policy is itself the request to duplicate provider-only inference;
         // adapter capability validation still independently proves the active route can do so.
         idempotent: policy.hedge.enabled,
@@ -40,6 +47,38 @@ pub(super) fn decode(
         policy,
         controls,
     })
+}
+
+fn decode_transport(
+    view: &EffectiveTunablesView,
+) -> Result<iteron_provider::ProviderTransportTimeoutPolicy, EffectiveCoreError> {
+    let pool_family = "http_pool_keepalive_idle_policy";
+    let pool = view.object(pool_family)?;
+    iteron_provider::ProviderTransportTimeoutPolicy {
+        connect_tls: Duration::from_secs(u64v(
+            view.integer("provider_connect_tls_timeout")?,
+            "provider_connect_tls_timeout",
+        )?),
+        request_total: Duration::from_millis(u64v(
+            view.integer("provider_request_total_deadline")?,
+            "provider_request_total_deadline",
+        )?),
+        stream_idle: Duration::from_millis(u64v(
+            view.integer("stream_idle_watchdog")?,
+            "stream_idle_watchdog",
+        )?),
+        pool_idle: Duration::from_secs(u64v(
+            integer(pool, pool_family, "pool_idle_seconds")?,
+            pool_family,
+        )?),
+        tcp_keepalive: Duration::from_secs(u64v(
+            integer(pool, pool_family, "tcp_keepalive_seconds")?,
+            pool_family,
+        )?),
+        connection_reuse: boolean(pool, pool_family, "connection_reuse")?,
+    }
+    .validate()
+    .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))
 }
 
 fn decode_objectives(view: &EffectiveTunablesView) -> Result<ObjectiveWeights, EffectiveCoreError> {

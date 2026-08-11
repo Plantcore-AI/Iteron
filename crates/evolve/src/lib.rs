@@ -29,6 +29,7 @@ mod evidence;
 pub mod gate;
 mod held_out;
 mod policy_evidence_projection;
+mod private_derivatives;
 mod producer;
 mod promotion;
 mod promotion_auth;
@@ -91,6 +92,7 @@ pub use policy_evidence_projection::{
     POLICY_EVIDENCE_RUN_SCHEMA_VERSION, PolicyEvidenceRunFixture, PolicyEvidenceRunProjector,
     PolicyEvidenceRunProjectorError, PolicyProjectionRewardContext,
 };
+pub use private_derivatives::EvolutionPrivateContentError;
 pub use producer::{
     MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,
     OfflineRuleCandidate, OfflineRuleSearchProducer, OfflineRuleSearchSpec,
@@ -291,6 +293,8 @@ pub enum ContractError {
     MalformedMetricInterval,
     #[error("recorded-run projection failed: {0}")]
     ProjectionFailed(&'static str),
+    #[error("private evolution content is unavailable: {0}")]
+    PrivateContentUnavailable(&'static str),
 }
 
 fn validate_digest(value: &str) -> Result<(), ContractError> {

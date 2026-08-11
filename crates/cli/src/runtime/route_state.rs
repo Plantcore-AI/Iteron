@@ -360,9 +360,9 @@ impl Agent {
         catalog_digest: &str,
         capability_digest: &str,
     ) -> Result<(), KernelError> {
-        let selected_action =
+        let selected_route_identity =
             model_route_action_id(provider_id, model_id, catalog_digest, capability_digest);
-        let previous_action = self.selected_route.as_ref().map(|selected| {
+        let previous_route_identity = self.selected_route.as_ref().map(|selected| {
             model_route_action_id(
                 &selected.route.provider_id,
                 &selected.route.model_id,
@@ -370,14 +370,19 @@ impl Agent {
                 &selected.route.capability_digest,
             )
         });
-        let features = (source, selected_action.as_str(), previous_action.as_deref());
-        let eligible = [selected_action.as_str()];
+        let features = (
+            source,
+            selected_route_identity.as_str(),
+            previous_route_identity.as_deref(),
+        );
+        let eligible = [iteron_protocol::PolicyActionV1::ModelRouterPreAttestedRoute];
 
         // An interactive launch with no selectable model retains a non-executable placeholder so
         // `/model` can repair it. Say that explicitly as a fallback; never feed an empty identity
         // to a strategy or pretend it selected an executable route.
         if model_id.is_empty() {
             let draft = policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                policy_evidence::MODEL_ROUTER_SLOT,
                 &eligible,
                 MODEL_ROUTE_FEATURE_SCHEMA,
                 &features,
@@ -404,8 +409,9 @@ impl Agent {
                 policy_evidence::MODEL_ROUTER_SLOT,
                 turn,
                 policy_evidence::PolicyDecisionDraft::selected(
+                    policy_evidence::MODEL_ROUTER_SLOT,
                     &eligible,
-                    &selected_action,
+                    iteron_protocol::PolicyActionV1::ModelRouterPreAttestedRoute,
                     MODEL_ROUTE_FEATURE_SCHEMA,
                     &features,
                     &"selected_route_must_be_the_single_pre_attested_candidate",
@@ -413,6 +419,7 @@ impl Agent {
             ),
             Ok(_) | Err(_) => {
                 let draft = policy_evidence::PolicyDecisionDraft::abstained(
+                    policy_evidence::MODEL_ROUTER_SLOT,
                     &eligible,
                     MODEL_ROUTE_FEATURE_SCHEMA,
                     &features,
@@ -437,7 +444,8 @@ impl Agent {
         reason: &'static str,
     ) -> Result<(), KernelError> {
         let draft = policy_evidence::PolicyDecisionDraft::abstained(
-            &["route_candidate"],
+            policy_evidence::MODEL_ROUTER_SLOT,
+            &[iteron_protocol::PolicyActionV1::ModelRouterRouteCandidate],
             MODEL_ROUTE_FEATURE_SCHEMA,
             &(source, reason),
             &"no_unattested_or_ineligible_route_may_be_selected",
@@ -545,11 +553,9 @@ impl Agent {
             .collect::<Vec<_>>();
         child.install_fallback_provider_routes(remaining_fallbacks.clone())?;
         if let Some(governor) = &self.provider_governor {
-            child.install_provider_governor(
-                governor.policy().clone(),
-                std::iter::once(current_route_id)
-                    .chain(remaining_fallbacks.iter().map(GovernedProviderRoute::id)),
-            )?;
+            // ProviderGovernor is an Arc-backed session owner. A child clone must retain the
+            // parent's in-flight/quota/circuit state rather than minting an independent ceiling.
+            child.install_shared_provider_governor(governor.clone())?;
         }
         if self.pricing.is_some() && !child.bind_selected_rate_card()? {
             return Err(KernelError::UnpricedUsdCeiling);

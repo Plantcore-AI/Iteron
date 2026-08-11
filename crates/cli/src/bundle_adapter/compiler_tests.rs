@@ -341,14 +341,14 @@ fn alternatives_make_only_narrower_typed_decisions() {
         candidates: vec![
             iteron_ctx::MemoryCandidate {
                 slug: "alpha".into(),
-                text: "alpha beta".into(),
+                text: "alpha beta first".into(),
                 framed_bytes: 16,
                 trust: Trust::Trusted,
                 modified_unix_secs: None,
             },
             iteron_ctx::MemoryCandidate {
                 slug: "beta".into(),
-                text: "alpha beta".into(),
+                text: "alpha beta second".into(),
                 framed_bytes: 16,
                 trust: Trust::Trusted,
                 modified_unix_secs: None,
@@ -484,7 +484,7 @@ fn recorded_genesis_fails_closed_when_a_known_bundle_names_an_unknown_version() 
     let compiled = compile_operator_bundle(Some(&all_alternatives())).unwrap();
     let mut snapshot = compiled.genesis_snapshot().clone();
     snapshot.slots[0].policy.policy_version = "future".into();
-    let snapshot = iteron_record::seal_policy_bundle_snapshot(snapshot)
+    let snapshot = iteron_record::policy_bundle::seal_policy_bundle_snapshot(snapshot)
         .expect("the tampered identity is structurally valid and self-consistent");
     let failure = compile_recorded_bundle(&snapshot)
         .expect_err("resume must require an implementation registered in this build");

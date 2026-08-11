@@ -167,12 +167,35 @@ pub fn repo_outline_for_task(root: &Path, token_budget: usize, query: &str) -> S
     repo_outline_for_task_at_depth(root, 8, token_budget, query)
 }
 
+/// Runtime-bound repository skeleton. The caller supplies the immutable per-run limits; this
+/// function still intersects them with the crate's fixed allocation ceilings.
+pub fn repo_outline_for_task_with_limits(
+    root: &Path,
+    max_files: usize,
+    depth: u8,
+    token_budget: usize,
+    query: &str,
+) -> String {
+    repo_outline_for_task_at_limits(root, max_files, depth, token_budget, query)
+}
+
 pub(crate) fn repo_outline_for_task_at_depth(
     root: &Path,
     depth: u8,
     token_budget: usize,
     query: &str,
 ) -> String {
+    repo_outline_for_task_at_limits(root, MAX_OUTLINE_CODE_FILES, depth, token_budget, query)
+}
+
+fn repo_outline_for_task_at_limits(
+    root: &Path,
+    max_files: usize,
+    depth: u8,
+    token_budget: usize,
+    query: &str,
+) -> String {
+    let max_files = max_files.min(MAX_OUTLINE_CODE_FILES);
     let bounded_query = iteron_protocol::text::head(query, MAX_OUTLINE_QUERY_BYTES);
     let identifiers = query_identifiers(&bounded_query);
     let mut files: Vec<OutlineFile> = Vec::new();
@@ -207,7 +230,7 @@ pub(crate) fn repo_outline_for_task_at_depth(
         if !is_code_file(name) {
             continue;
         }
-        if files.len() >= MAX_OUTLINE_CODE_FILES || source_budget_exhausted {
+        if files.len() >= max_files || source_budget_exhausted {
             bounded_omitted = bounded_omitted.saturating_add(1);
             continue;
         }
@@ -300,7 +323,7 @@ pub(crate) fn repo_outline_for_task_at_depth(
     }
     if bounded_omitted > 0 {
         out.push_str(&format!(
-            "\n[{bounded_omitted} code files omitted at the {MAX_OUTLINE_CODE_FILES}-file / {MAX_OUTLINE_TOTAL_SOURCE_BYTES}-total-source-byte repo-map limits]\n"
+            "\n[{bounded_omitted} code files omitted at the {max_files}-file / {MAX_OUTLINE_TOTAL_SOURCE_BYTES}-total-source-byte repo-map limits]\n"
         ));
     }
     if traversal_limited {

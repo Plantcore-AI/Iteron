@@ -58,6 +58,10 @@ pub(super) fn i64u(value: u64, family: &'static str) -> Result<i64, ProviderProc
     i64::try_from(value).map_err(|_| ProviderProcessFactError::IntegerOverflow(family))
 }
 
+pub(super) fn i64z(value: usize, family: &'static str) -> Result<i64, ProviderProcessFactError> {
+    i64::try_from(value).map_err(|_| ProviderProcessFactError::IntegerOverflow(family))
+}
+
 pub(super) fn upper(
     builder: &mut RuntimeResolutionBuilder,
     family: &str,
@@ -71,6 +75,17 @@ pub(super) fn upper(
         ceiling,
         ConstraintValue::UpperBound { value },
     )?;
+    Ok(())
+}
+
+pub(super) fn exact(
+    builder: &mut RuntimeResolutionBuilder,
+    family: &str,
+    field: &str,
+    ceiling: ExternalCeiling,
+    value: ResolutionValue,
+) -> Result<(), ProviderProcessFactError> {
+    builder.constrain(family, field, ceiling, ConstraintValue::Exact { value })?;
     Ok(())
 }
 

@@ -1175,8 +1175,20 @@ pub struct MemoryRecallProposal {
 
 /// Ephemeral, bounded explanation of one lexical recall decision. Candidate text exists only long
 /// enough for the caller to hash it into content-free evidence; it is never an exporter payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRecallDisposition {
+    /// The pinned slot returned a valid, caller-narrowed recall plan.
+    Selected,
+    /// The pinned slot refused or returned an invalid plan. No body is recalled.
+    Abstained,
+    /// An outer isolation rule prevented the slot from being called at all.
+    NotInvokedScopeDenied,
+}
+
 #[derive(Debug, Clone)]
 pub struct MemoryRecallAudit {
+    /// Whether this audit describes a real slot decision or an outer pre-decision denial.
+    pub disposition: MemoryRecallDisposition,
     pub observation: MemorySlotObservation,
     /// Exact deterministic query used by both materialization and this audit after whitespace
     /// normalization. This is ephemeral; durable evidence stores only its digest and dimensions.
@@ -1847,7 +1859,7 @@ impl FileMemory {
             reference_unix_secs,
             retrieval_policy,
         );
-        let selected = if benchmark_isolated {
+        let (selected, disposition) = if benchmark_isolated {
             for candidate in &observation.candidates {
                 if merge.excluded.len() == MAX_MEMORY_CANDIDATES {
                     merge.dropped_exclusions = merge.dropped_exclusions.saturating_add(1);
@@ -1861,72 +1873,94 @@ impl FileMemory {
                     });
                 }
             }
-            Vec::new()
+            (Vec::new(), MemoryRecallDisposition::NotInvokedScopeDenied)
         } else {
-            MemoryRecallStrategy::select_with(
+            match MemoryRecallStrategy::select_with(
                 slot,
                 &observation,
                 CapabilitySet::only(Capability::ReadOnly),
-            )
-            .map(|proposal| proposal.plan.recalled)
-            .unwrap_or_default()
+            ) {
+                Ok(proposal) => (proposal.plan.recalled, MemoryRecallDisposition::Selected),
+                Err(_) => (Vec::new(), MemoryRecallDisposition::Abstained),
+            }
         };
-        let score_set = memory_retrieval_scores(&observation);
-        let scores_ppm = score_set.combined_ppm.clone();
-        let mut ranked = scores_ppm
-            .iter()
-            .enumerate()
-            .filter(|(_, score)| **score > 0)
-            .map(|(index, score)| (index, *score))
-            .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| {
-            right.1.cmp(&left.1).then_with(|| {
-                observation.candidates[left.0]
-                    .slug
-                    .cmp(&observation.candidates[right.0].slug)
-            })
-        });
-        let mut ranks = vec![0; observation.candidates.len()];
-        for (rank, (index, _)) in ranked.into_iter().enumerate() {
-            ranks[index] = u32::try_from(rank.saturating_add(1)).unwrap_or(u32::MAX);
-        }
-        let selected_indexes = selected
-            .iter()
-            .filter_map(|slug| {
-                observation
-                    .candidates
-                    .iter()
-                    .position(|candidate| &candidate.slug == slug)
-            })
-            .collect::<Vec<_>>();
-        let novelty_deduplicated = observation
-            .candidates
-            .iter()
-            .enumerate()
-            .filter(|(index, candidate)| {
-                !selected.contains(&candidate.slug)
-                    && selected_indexes.iter().any(|selected| {
-                        token_jaccard_ppm(&score_set.docs[*index], &score_set.docs[*selected])
-                            >= observation.retrieval_policy.novelty_dedup_threshold_ppm
-                    })
-            })
-            .map(|(_, candidate)| candidate.slug.clone())
-            .collect();
-        MemoryRecallAudit {
+        memory_recall_audit_from_decision(
+            merge,
             observation,
+            selected,
+            disposition,
             rewritten_query,
             rewrite_count,
-            selected,
-            scores_ppm,
-            lexical_scores_ppm: score_set.lexical_ppm,
-            structural_scores_ppm: score_set.structural_ppm,
-            recency_multipliers_ppm: score_set.recency_ppm,
-            novelty_deduplicated,
-            ranks,
             deduplicated_candidates,
-            excluded_candidates: merge.excluded,
-            dropped_exclusions: merge.dropped_exclusions,
-        }
+        )
+    }
+}
+
+fn memory_recall_audit_from_decision(
+    merge: MergeAudit,
+    observation: MemorySlotObservation,
+    selected: Vec<String>,
+    disposition: MemoryRecallDisposition,
+    rewritten_query: String,
+    rewrite_count: u16,
+    deduplicated_candidates: u32,
+) -> MemoryRecallAudit {
+    let score_set = memory_retrieval_scores(&observation);
+    let scores_ppm = score_set.combined_ppm.clone();
+    let mut ranked = scores_ppm
+        .iter()
+        .enumerate()
+        .filter(|(_, score)| **score > 0)
+        .map(|(index, score)| (index, *score))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right.1.cmp(&left.1).then_with(|| {
+            observation.candidates[left.0]
+                .slug
+                .cmp(&observation.candidates[right.0].slug)
+        })
+    });
+    let mut ranks = vec![0; observation.candidates.len()];
+    for (rank, (index, _)) in ranked.into_iter().enumerate() {
+        ranks[index] = u32::try_from(rank.saturating_add(1)).unwrap_or(u32::MAX);
+    }
+    let selected_indexes = selected
+        .iter()
+        .filter_map(|slug| {
+            observation
+                .candidates
+                .iter()
+                .position(|candidate| &candidate.slug == slug)
+        })
+        .collect::<Vec<_>>();
+    let novelty_deduplicated = observation
+        .candidates
+        .iter()
+        .enumerate()
+        .filter(|(index, candidate)| {
+            !selected.contains(&candidate.slug)
+                && selected_indexes.iter().any(|selected| {
+                    token_jaccard_ppm(&score_set.docs[*index], &score_set.docs[*selected])
+                        >= observation.retrieval_policy.novelty_dedup_threshold_ppm
+                })
+        })
+        .map(|(_, candidate)| candidate.slug.clone())
+        .collect();
+    MemoryRecallAudit {
+        disposition,
+        observation,
+        rewritten_query,
+        rewrite_count,
+        selected,
+        scores_ppm,
+        lexical_scores_ppm: score_set.lexical_ppm,
+        structural_scores_ppm: score_set.structural_ppm,
+        recency_multipliers_ppm: score_set.recency_ppm,
+        novelty_deduplicated,
+        ranks,
+        deduplicated_candidates,
+        excluded_candidates: merge.excluded,
+        dropped_exclusions: merge.dropped_exclusions,
     }
 }
 
@@ -1936,6 +1970,206 @@ fn normalize_memory_query(task: &str) -> String {
 
 fn normalized_memory_title(title: &str) -> String {
     normalize_memory_query(title).to_lowercase()
+}
+
+impl FileMemory {
+    /// Materialize memory and return the explanation of that exact slot call.
+    ///
+    /// The live path must not call a replaceable strategy once to inject bytes and a second time
+    /// to explain them: a stateful strategy could return two different answers, and even the
+    /// baseline used to see a different recall budget on the audit pass. This is therefore the
+    /// single physical `core/memory` decision seam for the filesystem adapter.
+    pub(crate) fn recall_with_slot_policy_at_audited(
+        &self,
+        stores: &[MemStore],
+        task: &str,
+        budget: &MemBudget,
+        slot: &dyn StrategySlot,
+        reference_unix_secs: u64,
+        retrieval_policy: crate::MemoryRetrievalPolicy,
+    ) -> (MemorySegment, MemoryRecallAudit) {
+        let merge = FileMemory::merge_with_audit(stores);
+        let merged = &merge.merged;
+        let deduplicated_candidates = u32::try_from(
+            merge
+                .excluded
+                .iter()
+                .filter(|candidate| matches!(candidate.kind, MemoryRecallExclusionKind::Superseded))
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+
+        // 1. Index block: always injected, bounded to index_bytes, tracking which tiers appear.
+        let mut index_block = String::new();
+        let mut included: Vec<Trust> = Vec::new();
+        let mut shown = 0usize;
+        if !merged.is_empty() {
+            const HEADER: &str =
+                "\n\n--- Memory index (progressive disclosure; read a fact with read_memory) ---\n";
+            const FOOTER: &str = "--- end memory index ---";
+            let index_ceiling = budget.index_bytes.min(budget.total);
+            if HEADER.len().saturating_add(FOOTER.len()) <= index_ceiling {
+                index_block.push_str(HEADER);
+                for (index, candidate) in merged.iter().enumerate() {
+                    let line = candidate.fact_ref.line();
+                    let remaining = merged.len().saturating_sub(index + 1);
+                    let disclosure = (remaining > 0).then(|| {
+                        format!("[{remaining} more index entries omitted to fit the budget]\n")
+                    });
+                    let reserve = FOOTER
+                        .len()
+                        .saturating_add(disclosure.as_ref().map_or(0, String::len));
+                    if index_block
+                        .len()
+                        .saturating_add(line.len())
+                        .saturating_add(reserve)
+                        > index_ceiling
+                    {
+                        break;
+                    }
+                    index_block.push_str(&line);
+                    included.push(candidate.trust);
+                    shown += 1;
+                }
+                if shown < merged.len() {
+                    let disclosure = format!(
+                        "[{} more index entries omitted to fit the budget]\n",
+                        merged.len() - shown
+                    );
+                    if index_block
+                        .len()
+                        .saturating_add(disclosure.len())
+                        .saturating_add(FOOTER.len())
+                        <= index_ceiling
+                    {
+                        index_block.push_str(&disclosure);
+                    }
+                }
+                index_block.push_str(FOOTER);
+            }
+        }
+
+        // 2. The one pure recall decision. The observation uses the exact remaining recall
+        // budget after the index, and that same observation/answer becomes the audit below.
+        let gathered: Vec<(Fact, MemoryCandidate)> = merged
+            .iter()
+            .filter_map(|candidate| {
+                let body = candidate.body.clone()?;
+                let fact = Fact {
+                    slug: candidate.fact_ref.slug.clone(),
+                    title: candidate.fact_ref.title.clone(),
+                    bytes: body.len(),
+                    body,
+                    trust: candidate.trust,
+                };
+                let memory_candidate = MemoryCandidate {
+                    slug: fact.slug.clone(),
+                    text: format!(
+                        "{} {} {}",
+                        candidate.fact_ref.title, candidate.fact_ref.summary, fact.body
+                    ),
+                    framed_bytes: fact.framed().len(),
+                    trust: fact.trust,
+                    modified_unix_secs: candidate.modified_unix_secs,
+                };
+                Some((fact, memory_candidate))
+            })
+            .collect();
+        let rewritten_query = normalize_memory_query(task);
+        let rewrite_count = u16::from(rewritten_query != task);
+        let recall_budget = MemBudget {
+            recall_bytes: budget
+                .recall_bytes
+                .min(budget.total.saturating_sub(index_block.len())),
+            ..*budget
+        };
+        let observation = MemorySlotObservation::baseline_with_policy(
+            &rewritten_query,
+            gathered
+                .iter()
+                .map(|(_, candidate)| candidate.clone())
+                .collect(),
+            &recall_budget,
+            reference_unix_secs,
+            retrieval_policy,
+        );
+        let (selected, disposition) = match MemoryRecallStrategy::select_with(
+            slot,
+            &observation,
+            CapabilitySet::only(Capability::ReadOnly),
+        ) {
+            Ok(proposal) => (proposal.plan.recalled, MemoryRecallDisposition::Selected),
+            Err(_) => (Vec::new(), MemoryRecallDisposition::Abstained),
+        };
+
+        let mut recalled: Vec<Fact> = Vec::new();
+        for slug in &selected {
+            let Some((fact, _)) = gathered.iter().find(|(fact, _)| &fact.slug == slug) else {
+                continue;
+            };
+            included.push(fact.trust);
+            recalled.push(fact.clone());
+        }
+
+        // 3. Fold instruction stores inside the same caller-owned total budget.
+        let mut instructions: Vec<Framed> = Vec::new();
+        let mut instr_used = 0usize;
+        let recall_used = recalled
+            .iter()
+            .map(|fact| fact.framed().len())
+            .sum::<usize>();
+        let instruction_ceiling = budget.instr_bytes.min(
+            budget
+                .total
+                .saturating_sub(index_block.len())
+                .saturating_sub(recall_used),
+        );
+        for store in stores {
+            if store.is_stripped() {
+                continue;
+            }
+            let Some(root) = store.instr_root.as_ref() else {
+                continue;
+            };
+            if let crate::instructions::Instructions::Found { source, content } =
+                crate::instructions::discover(root)
+            {
+                let framed = Framed {
+                    source,
+                    content,
+                    trust: store.trust(),
+                };
+                let cost = framed.render().len();
+                if instr_used.saturating_add(cost) > instruction_ceiling {
+                    continue;
+                }
+                instr_used += cost;
+                included.push(framed.trust);
+                instructions.push(framed);
+            }
+        }
+
+        let governing_trust = Trust::governing(included).unwrap_or(Trust::Trusted);
+        let mut segment = MemorySegment {
+            index_block,
+            recalled,
+            instructions,
+            governing_trust,
+            bytes: 0,
+        };
+        segment.bytes = segment.render().len();
+        debug_assert!(segment.bytes <= budget.total);
+        let audit = memory_recall_audit_from_decision(
+            merge,
+            observation,
+            selected,
+            disposition,
+            rewritten_query,
+            rewrite_count,
+            deduplicated_candidates,
+        );
+        (segment, audit)
+    }
 }
 
 impl MemoryStrategy for FileMemory {
@@ -1969,134 +2203,15 @@ impl MemoryStrategy for FileMemory {
         reference_unix_secs: u64,
         retrieval_policy: crate::MemoryRetrievalPolicy,
     ) -> MemorySegment {
-        let merged = FileMemory::merge(stores);
-
-        // 1. Index block: always injected, bounded to index_bytes, tracking which tiers appear.
-        let mut index_block = String::new();
-        let mut included: Vec<Trust> = Vec::new();
-        let mut shown = 0usize;
-        if !merged.is_empty() {
-            index_block.push_str(
-                "\n\n--- Memory index (progressive disclosure; read a fact with read_memory) ---\n",
-            );
-            for m in &merged {
-                let line = m.fact_ref.line();
-                if index_block.len() + line.len() > budget.index_bytes {
-                    break;
-                }
-                index_block.push_str(&line);
-                included.push(m.trust);
-                shown += 1;
-            }
-            if shown < merged.len() {
-                index_block.push_str(&format!(
-                    "[{} more index entries omitted to fit the budget]\n",
-                    merged.len() - shown
-                ));
-            }
-            index_block.push_str("--- end memory index ---");
-        }
-
-        // 2. Relevance recall. *Which* bodies to inject is a policy decision, so it is taken by
-        //    the `core/memory` slot rather than inline here. This half does only what a slot may
-        //    not: it reads the bodies, prices each one with the caller's own framing, and
-        //    materialises whatever the slot named. The ranking itself moved unchanged into
-        //    `MemoryRecallStrategy::plan_for`.
-        //
-        //    An observation this function cannot form within the slot's bounds recalls nothing.
-        //    The index block and the instructions are still injected; failing closed beats
-        //    injecting an unranked selection, and the bounds sit above what the store layer will
-        //    produce (`MAX_MEMORY_FILES` per store, an 8 KB head cap per body).
-        let gathered: Vec<(Fact, MemoryCandidate)> = merged
-            .iter()
-            .filter(|m| m.body.is_some())
-            .map(|m| {
-                let body = m.body.clone().unwrap_or_default();
-                let fact = Fact {
-                    slug: m.fact_ref.slug.clone(),
-                    title: m.fact_ref.title.clone(),
-                    bytes: body.len(),
-                    body,
-                    trust: m.trust,
-                };
-                let candidate = MemoryCandidate {
-                    slug: fact.slug.clone(),
-                    text: format!("{} {} {}", m.fact_ref.title, m.fact_ref.summary, fact.body),
-                    framed_bytes: fact.framed().len(),
-                    trust: fact.trust,
-                    modified_unix_secs: m.modified_unix_secs,
-                };
-                (fact, candidate)
-            })
-            .collect();
-        let query = normalize_memory_query(task);
-        let observation = MemorySlotObservation::baseline_with_policy(
-            &query,
-            gathered.iter().map(|(_, c)| c.clone()).collect(),
+        self.recall_with_slot_policy_at_audited(
+            stores,
+            task,
             budget,
+            slot,
             reference_unix_secs,
             retrieval_policy,
-        );
-        let selected = MemoryRecallStrategy::select_with(
-            slot,
-            &observation,
-            CapabilitySet::only(Capability::ReadOnly),
         )
-        .map(|proposal| proposal.plan.recalled)
-        .unwrap_or_default();
-
-        let mut recalled: Vec<Fact> = Vec::new();
-        for slug in selected {
-            // `select` already refused any slug outside `gathered`; this stays a filter rather
-            // than an unwrap so a future caller cannot turn a policy bug into a panic.
-            let Some((fact, _)) = gathered.iter().find(|(fact, _)| fact.slug == slug) else {
-                continue;
-            };
-            included.push(fact.trust);
-            recalled.push(fact.clone());
-        }
-
-        // 3. Instructions: discover + frame CLAUDE.md/AGENTS.md from stores that carry a repo root.
-        let mut instructions: Vec<Framed> = Vec::new();
-        let mut instr_used = 0usize;
-        for store in stores {
-            if store.is_stripped() {
-                continue;
-            }
-            let Some(root) = store.instr_root.as_ref() else {
-                continue;
-            };
-            if let crate::instructions::Instructions::Found { source, content } =
-                crate::instructions::discover(root)
-            {
-                let framed = Framed {
-                    source,
-                    content,
-                    trust: store.trust(),
-                };
-                let cost = framed.render().len();
-                if instr_used + cost > budget.instr_bytes {
-                    continue;
-                }
-                instr_used += cost;
-                included.push(framed.trust);
-                instructions.push(framed);
-            }
-        }
-
-        // This builder knows whether the segment is empty. With no injected bytes there is no
-        // lower-trust source in scope, so Trusted is the identity. Other security boundaries must
-        // make their own explicit empty-evidence choice.
-        let governing_trust = Trust::governing(included).unwrap_or(Trust::Trusted);
-        let mut segment = MemorySegment {
-            index_block,
-            recalled,
-            instructions,
-            governing_trust,
-            bytes: 0,
-        };
-        segment.bytes = segment.render().len();
-        segment
+        .0
     }
 
     fn read_fact(&self, stores: &[MemStore], slug: &str) -> Result<Fact, MemError> {
@@ -2755,6 +2870,31 @@ mod tests {
             used <= tight.recall_bytes,
             "recall stays within recall_bytes: {used} <= {}",
             tight.recall_bytes
+        );
+    }
+
+    #[test]
+    fn memory_materialization_never_exceeds_the_one_total_ceiling() {
+        let root = tmp("recall-total-ceiling").join("mem");
+        write_fact(
+            &root,
+            "large",
+            &format!("cache policy {}", "bounded evidence ".repeat(200)),
+        );
+        let store = MemStore::new(root, MemTier::User, true);
+        let budget = MemBudget {
+            index_bytes: 10_000,
+            recall_bytes: 10_000,
+            instr_bytes: 10_000,
+            total: 160,
+        };
+        let segment = FileMemory.recall(&[store], "cache policy", &budget);
+        assert_eq!(segment.bytes(), segment.render().len());
+        assert!(segment.bytes() <= budget.total);
+        assert!(
+            segment.index_block().is_empty()
+                || segment.index_block().ends_with("--- end memory index ---"),
+            "the hard total may omit an index, but must never truncate its provenance frame"
         );
     }
 

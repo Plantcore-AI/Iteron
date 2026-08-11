@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "route_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "physical_attempt": 2,
+  "max_cost_reservation_microusd": 1000,
+  "usage": {
+    "state": "unknown",
+    "reason": "outcome_unobservable"
+  },
+  "cost": {
+    "state": "unknown",
+    "reason": "outcome_unobservable"
+  }
+}

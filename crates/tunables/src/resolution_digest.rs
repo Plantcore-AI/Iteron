@@ -1,4 +1,6 @@
-use crate::resolution_types::{EntryState, ResolutionReport, ResolvedEntry};
+use crate::resolution_types::{
+    EntryState, FixedAuthorityAttestation, ResolutionReport, ResolvedEntry,
+};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -29,6 +31,7 @@ struct ResolutionPayload<'a> {
     input_digest_sha256: &'a str,
     effective_digest_sha256: &'a str,
     profile_digest_sha256: &'a Option<String>,
+    fixed_authority_attestations: &'a [FixedAuthorityAttestation],
     entries: &'a [ResolvedEntry],
 }
 
@@ -61,6 +64,7 @@ pub(crate) fn resolution_digest(report: &ResolutionReport) -> Result<String, Str
         input_digest_sha256: &report.input_digest_sha256,
         effective_digest_sha256: &report.effective_digest_sha256,
         profile_digest_sha256: &report.profile_digest_sha256,
+        fixed_authority_attestations: &report.fixed_authority_attestations,
         entries: &report.entries,
     })
 }

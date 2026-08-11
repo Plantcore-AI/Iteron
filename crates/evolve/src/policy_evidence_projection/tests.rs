@@ -4,8 +4,9 @@ use crate::{
 };
 use iteron_protocol::{
     POLICY_DECISION_EVIDENCE_SCHEMA_VERSION, POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-    PolicyActionId, PolicyDecisionDisposition, PolicyOpportunityId, PolicyOutcomeScope,
-    PolicyRuntimeIdentity, TurnId, slot::SlotId,
+    PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyHarnessErrorCode,
+    PolicyHarnessOutcomeId, PolicyOpportunityId, PolicyOutcomeScope, PolicyRuntimeIdentity, TurnId,
+    slot::SlotId,
 };
 use std::path::PathBuf;
 
@@ -32,18 +33,21 @@ fn identity() -> PolicyRuntimeIdentity {
 }
 
 fn decision(ordinal: u64, turn: u32) -> PolicyDecisionEvidence {
+    let slot = SlotId("core/router".into());
     PolicyDecisionEvidence {
         schema_version: POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
         opportunity_id: PolicyOpportunityId(format!("route:{ordinal}")),
         run_id: RunId("run-policy-1".into()),
         turn_id: Some(TurnId(turn)),
-        slot: SlotId("core/router".into()),
+        slot: slot.clone(),
         policy: identity(),
         eligible_actions: vec![
-            PolicyActionId("direct".into()),
-            PolicyActionId("fan".into()),
+            PolicyActionId::for_slot(&slot, PolicyActionV1::RouterDirect).unwrap(),
+            PolicyActionId::for_slot(&slot, PolicyActionV1::RouterFanOut).unwrap(),
         ],
-        selected_action: Some(PolicyActionId("direct".into())),
+        selected_action: Some(
+            PolicyActionId::for_slot(&slot, PolicyActionV1::RouterDirect).unwrap(),
+        ),
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: Some(-3),
         propensity_ppm: Some(750_000),
@@ -92,8 +96,9 @@ fn joined_outcome(
         } else {
             PolicyVerifierOutcome::TestFailure
         },
-        harness_error_code: (terminal != PolicyTerminalOutcome::Succeeded)
-            .then(|| "turn_failure".into()),
+        harness_error_code: (terminal != PolicyTerminalOutcome::Succeeded).then(|| {
+            PolicyHarnessOutcomeId::single(PolicyHarnessErrorCode::ProviderError).into_string()
+        }),
         outcome_ordinal: ordinal,
     }
 }
@@ -215,6 +220,38 @@ fn missing_duplicate_cross_run_and_join_tampering_fail_closed() {
     assert!(matches!(
         PolicyEvidenceRunProjector::new(vec![bad_join], training_policy()),
         Err(PolicyEvidenceRunProjectorError::OutcomeJoinMismatch)
+    ));
+
+    let mut bad_aggregate = fixture(PolicyTerminalOutcome::Succeeded);
+    let run_outcome = bad_aggregate.outcomes.last_mut().unwrap();
+    run_outcome.cost_microusd = Some(run_outcome.cost_microusd.unwrap() + 1);
+    run_outcome.input_tokens = Some(run_outcome.input_tokens.unwrap() + 1);
+    bad_aggregate.rollout_digest = bad_aggregate.canonical_rollout_digest().unwrap();
+    assert!(matches!(
+        PolicyEvidenceRunProjector::new(vec![bad_aggregate], training_policy()),
+        Err(PolicyEvidenceRunProjectorError::RunAggregateMismatch)
+    ));
+
+    let mut bad_turn_error = fixture(PolicyTerminalOutcome::Failed);
+    bad_turn_error.outcomes[0].harness_error_code =
+        Some(PolicyHarnessOutcomeId::single(PolicyHarnessErrorCode::RecordError).into_string());
+    bad_turn_error.rollout_digest = bad_turn_error.canonical_rollout_digest().unwrap();
+    assert!(matches!(
+        PolicyEvidenceRunProjector::new(vec![bad_turn_error], training_policy()),
+        Err(PolicyEvidenceRunProjectorError::RunAggregateMismatch)
+    ));
+
+    let mut bad_run_error = fixture(PolicyTerminalOutcome::Failed);
+    bad_run_error
+        .outcomes
+        .last_mut()
+        .unwrap()
+        .harness_error_code =
+        Some(PolicyHarnessOutcomeId::single(PolicyHarnessErrorCode::RecordError).into_string());
+    bad_run_error.rollout_digest = bad_run_error.canonical_rollout_digest().unwrap();
+    assert!(matches!(
+        PolicyEvidenceRunProjector::new(vec![bad_run_error], training_policy()),
+        Err(PolicyEvidenceRunProjectorError::RunAggregateMismatch)
     ));
 }
 

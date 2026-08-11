@@ -30,6 +30,8 @@ mod collaboration;
 mod execution_policy;
 mod host;
 mod quorum;
+mod runtime_identity;
+mod schema_retry;
 
 pub mod cachekey;
 pub mod events;
@@ -50,16 +52,20 @@ pub use events::{
     TOOL_SUMMARY_MAX, WorkflowState, fmt_count, fmt_duration, truncate_preview,
 };
 pub use execution_policy::{
-    CleanWriterDisposition, ConflictDisposition, MAX_SPECULATIVE_SIBLINGS, MAX_TASK_ATTEMPTS,
-    SpeculativeSiblingPolicy, SpeculativeWinnerEvidence, TaskFailureAction, TaskRetryPolicy,
+    AgentMessagingTopology, CleanWriterDisposition, ConflictDisposition, MAX_SPECULATIVE_SIBLINGS,
+    MAX_TASK_ATTEMPTS, ReadyTaskTieBreak, SpawnDepthControl, SpeculativeSiblingPolicy,
+    SpeculativeWinnerEvidence, TaskFailureAction, TaskPrioritySchedulingPolicy, TaskRetryPolicy,
     WriterMergePolicy,
 };
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{Meta, extract_meta, strip_meta};
 pub use quorum::{EarlyStopQuorumPolicy, MAX_EARLY_STOP_QUORUM};
+pub use runtime_identity::{WorkflowGraphRuntimeIdentity, workflow_graph_runtime_identity};
 pub use schema::{RETRY_MAX, SchemaValidator};
+pub use schema_retry::SchemaRetryPolicy;
 pub use spawner::{
-    AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner,
+    AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentExecutionClass,
+    AgentOutcome, AgentSpawner,
 };
 
 use std::path::PathBuf;
@@ -162,8 +168,8 @@ pub struct RunSpec {
     pub args: serde_json::Value,
     /// This run's id (journal directory + resume target).
     pub run_id: RunId,
-    /// Base directory under which `<run_id>/journal.jsonl` is written. `None` = in-memory (no
-    /// persistence, no resume).
+    /// Base directory under which `<run_id>/journal.jsonl` and the task-DAG ledger are durably
+    /// written. `None` is an invalid physical-run specification and fails before child dispatch.
     pub workflows_dir: Option<PathBuf>,
     /// A prior run's id whose `journal.jsonl` (under `workflows_dir`) seeds the resume cache.
     pub resume_from: Option<RunId>,
@@ -175,6 +181,8 @@ pub struct RunSpec {
     pub speculative_siblings: SpeculativeSiblingPolicy,
     /// Host-owned retry/reassignment policy for definite negative child terminals.
     pub task_retry: TaskRetryPolicy,
+    /// Host-owned schema-repair attempt and jitter policy.  This is distinct from provider retry.
+    pub schema_retry: SchemaRetryPolicy,
 }
 
 impl RunSpec {
@@ -189,6 +197,7 @@ impl RunSpec {
             early_stop_quorum: EarlyStopQuorumPolicy::default(),
             speculative_siblings: SpeculativeSiblingPolicy::default(),
             task_retry: TaskRetryPolicy::default(),
+            schema_retry: SchemaRetryPolicy::default(),
         }
     }
     pub fn with_args(mut self, args: serde_json::Value) -> RunSpec {
@@ -221,6 +230,10 @@ impl RunSpec {
     }
     pub fn with_task_retry(mut self, policy: TaskRetryPolicy) -> RunSpec {
         self.task_retry = policy;
+        self
+    }
+    pub fn with_schema_retry(mut self, policy: SchemaRetryPolicy) -> RunSpec {
+        self.schema_retry = policy;
         self
     }
 }
@@ -259,6 +272,13 @@ pub struct RunHandle {
     result: Mutex<Option<oneshot::Receiver<anyhow::Result<RunReport>>>>,
 }
 
+/// A physical workflow may not run without a durable intent/terminal authority. This error is
+/// public and downcastable so API callers can distinguish a missing durability root from script,
+/// provider, or child failures without matching presentation text.
+#[derive(Debug, thiserror::Error)]
+#[error("physical workflow execution requires RunSpec.workflows_dir")]
+pub struct WorkflowDurabilityRequired;
+
 impl RunHandle {
     pub fn run_id(&self) -> &RunId {
         &self.run_id
@@ -291,17 +311,16 @@ impl RunHandle {
 
 /// Resolve this run's journal (append sink + resume source) from the [`RunSpec`].
 fn build_journal(spec: &RunSpec) -> anyhow::Result<Arc<Journal>> {
-    match &spec.workflows_dir {
-        Some(dir) => {
-            let path = dir.join(spec.run_id.as_str()).join("journal.jsonl");
-            let resume = spec
-                .resume_from
-                .as_ref()
-                .map(|prior| dir.join(prior.as_str()).join("journal.jsonl"));
-            Ok(Arc::new(Journal::open(Some(path), resume)?))
-        }
-        None => Ok(Arc::new(Journal::in_memory())),
-    }
+    let dir = spec
+        .workflows_dir
+        .as_ref()
+        .ok_or(WorkflowDurabilityRequired)?;
+    let path = dir.join(spec.run_id.as_str()).join("journal.jsonl");
+    let resume = spec
+        .resume_from
+        .as_ref()
+        .map(|prior| dir.join(prior.as_str()).join("journal.jsonl"));
+    Ok(Arc::new(Journal::open(Some(path), resume)?))
 }
 
 /// The workflow runtime. Stateless handle; each run builds its own fresh QuickJS runtime, Governor,
@@ -309,9 +328,9 @@ fn build_journal(spec: &RunSpec) -> anyhow::Result<Arc<Journal>> {
 pub struct WorkflowEngine;
 
 impl WorkflowEngine {
-    /// Run one workflow script to completion and return its (JSON) return value — the original
-    /// blocking, in-memory-journal entry point (no persistence, no resume, no external cancel).
-    /// Preserved verbatim so existing callers/tests are unaffected.
+    /// Legacy convenience entry point. It has no durable-root parameter and therefore refuses
+    /// physical execution. Build a [`RunSpec`], attach [`RunSpec::with_workflows_dir`], and call
+    /// [`WorkflowEngine::execute`] instead.
     ///
     /// Must be awaited inside a multi-thread Tokio runtime (it builds its own `LocalSet` internally).
     pub async fn run(
@@ -320,9 +339,8 @@ impl WorkflowEngine {
         spawner: Arc<dyn AgentSpawner>,
         sink: Arc<dyn ProgressSink>,
     ) -> anyhow::Result<serde_json::Value> {
-        let spec = RunSpec::new(script).with_args(args);
-        let report = Self::execute(spec, spawner, sink).await?;
-        Ok(report.value)
+        let _ = (script, args, spawner, sink);
+        Err(WorkflowDurabilityRequired.into())
     }
 
     /// Run a fully-specified [`RunSpec`] to completion (blocking as a future), returning a full
@@ -336,10 +354,15 @@ impl WorkflowEngine {
         spawner: Arc<dyn AgentSpawner>,
         sink: Arc<dyn ProgressSink>,
     ) -> anyhow::Result<RunReport> {
+        if spec.workflows_dir.is_none() {
+            return Err(WorkflowDurabilityRequired.into());
+        }
         let journal = build_journal(&spec)?;
         let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
             &spec.run_id,
-            spec.workflows_dir.as_deref(),
+            spec.workflows_dir
+                .as_deref()
+                .expect("durability preflight established a workflow root"),
             spec.limits,
         )?);
         let cancel = CancellationToken::new();
@@ -351,6 +374,7 @@ impl WorkflowEngine {
             early_stop_quorum,
             speculative_siblings,
             task_retry,
+            schema_retry,
             ..
         } = spec;
         host::run_core(host::RunCoreRequest {
@@ -361,6 +385,7 @@ impl WorkflowEngine {
             early_stop_quorum,
             speculative_siblings,
             task_retry,
+            schema_retry,
             cancel,
             journal,
             task_dag,
@@ -384,6 +409,15 @@ impl WorkflowEngine {
         let (tx, rx) = oneshot::channel();
         let cancel_thread = cancel.clone();
 
+        if spec.workflows_dir.is_none() {
+            let _ = tx.send(Err(WorkflowDurabilityRequired.into()));
+            return RunHandle {
+                run_id,
+                cancel,
+                result: Mutex::new(Some(rx)),
+            };
+        }
+
         std::thread::Builder::new()
             .name(format!("workflow-{}", run_id.as_str()))
             .spawn(move || {
@@ -391,7 +425,9 @@ impl WorkflowEngine {
                     let journal = build_journal(&spec)?;
                     let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
                         &spec.run_id,
-                        spec.workflows_dir.as_deref(),
+                        spec.workflows_dir
+                            .as_deref()
+                            .expect("durability preflight established a workflow root"),
                         spec.limits,
                     )?);
                     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -405,6 +441,7 @@ impl WorkflowEngine {
                         early_stop_quorum,
                         speculative_siblings,
                         task_retry,
+                        schema_retry,
                         ..
                     } = spec;
                     rt.block_on(host::run_core(host::RunCoreRequest {
@@ -415,6 +452,7 @@ impl WorkflowEngine {
                         early_stop_quorum,
                         speculative_siblings,
                         task_retry,
+                        schema_retry,
                         cancel: cancel_thread,
                         journal,
                         task_dag,

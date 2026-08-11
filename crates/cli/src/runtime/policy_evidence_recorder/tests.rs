@@ -1,7 +1,8 @@
 use super::*;
 use iteron_protocol::{
-    PolicyActionId, PolicyDecisionDisposition, PolicyTerminalOutcome, PolicyVerifierOutcome,
-    TenantId, policy_evidence::PolicyEvidenceError, slot::SlotId,
+    PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyHarnessErrorCode,
+    PolicyHarnessErrorJoinDigest, PolicyHarnessOutcomeId, PolicyTerminalOutcome,
+    PolicyVerifierOutcome, TenantId, policy_evidence::PolicyEvidenceError, slot::SlotId,
 };
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,10 +46,27 @@ fn rollout(label: &str, run: &str) -> (std::path::PathBuf, iteron_record::Rollou
     (root, rollout)
 }
 
-fn decision(action: &str) -> PolicyDecisionInput {
+fn action_for_slot(slot: &str) -> PolicyActionV1 {
+    match slot {
+        "core/context" => PolicyActionV1::ContextMaterialize,
+        "core/tool_policy" => PolicyActionV1::ToolPolicyPureCandidate,
+        "core/memory" => PolicyActionV1::MemoryRecall,
+        "core/router" => PolicyActionV1::RouterDirect,
+        "core/planner" => PolicyActionV1::PlannerDirectPlan,
+        "core/collaboration" => PolicyActionV1::CollaborationBoundedWidth,
+        "core/scheduler" => PolicyActionV1::SchedulerBoundedPlan,
+        "core/verifier" => PolicyActionV1::VerifierStrongWorkspacePlan,
+        "core/model_router" => PolicyActionV1::ModelRouterPreAttestedRoute,
+        other => panic!("no test action for {other}"),
+    }
+}
+
+fn decision(slot: &str, action: PolicyActionV1) -> PolicyDecisionInput {
+    let slot = SlotId(slot.into());
+    let action = PolicyActionId::for_slot(&slot, action).unwrap();
     PolicyDecisionInput {
-        eligible_actions: vec![PolicyActionId(action.into())],
-        selected_action: Some(PolicyActionId(action.into())),
+        eligible_actions: vec![action.clone()],
+        selected_action: Some(action),
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: Some(42),
         propensity_ppm: Some(1_000_000),
@@ -71,18 +89,13 @@ fn outcome() -> PolicyOutcomeInput {
     }
 }
 
-fn aggregate_outcome(recorder: &PolicyEvidenceRecorder) -> PolicyOutcomeInput {
-    let aggregate = recorder.run_aggregate();
-    PolicyOutcomeInput {
-        terminal: aggregate.terminal,
-        quality_micros: aggregate.quality_micros,
-        cost_microusd: Some(15),
-        input_tokens: Some(100),
-        output_tokens: Some(20),
-        latency_us: aggregate.latency_us,
-        verifier: aggregate.verifier,
-        harness_error_code: aggregate.has_harness_error.then(|| "turn_failure".into()),
-    }
+fn failed_outcome(code: PolicyHarnessErrorCode) -> PolicyOutcomeInput {
+    let mut outcome = outcome();
+    outcome.terminal = PolicyTerminalOutcome::Failed;
+    outcome.quality_micros = Some(0);
+    outcome.verifier = PolicyVerifierOutcome::TestFailure;
+    outcome.harness_error_code = Some(PolicyHarnessOutcomeId::single(code));
+    outcome
 }
 
 fn append_selected(
@@ -90,13 +103,12 @@ fn append_selected(
     rollout: &mut iteron_record::Rollout,
     slot: &str,
     turn: TurnId,
-    action: &str,
 ) -> iteron_protocol::PolicyDecisionEvidence {
     let opportunity = recorder
         .begin_opportunity(&SlotId(slot.into()), Some(turn))
         .unwrap();
     recorder
-        .append_decision(rollout, &opportunity, decision(action))
+        .append_decision(rollout, &opportunity, decision(slot, action_for_slot(slot)))
         .unwrap();
     let events = iteron_record::replay(rollout.path()).unwrap();
     let EventKind::PolicyDecision { evidence } = events.last().unwrap().kind.clone() else {
@@ -114,7 +126,7 @@ fn every_frozen_slot_is_durable_unique_and_monotone() {
     let mut previous_timestamp = None;
 
     for (ordinal, slot) in FROZEN_POLICY_SLOT_NAMES.iter().enumerate() {
-        let evidence = append_selected(&mut recorder, &mut rollout, slot, TurnId(7), "baseline");
+        let evidence = append_selected(&mut recorder, &mut rollout, slot, TurnId(7));
         assert!(evidence.opportunity_id.0.len() <= iteron_protocol::MAX_POLICY_MACHINE_ID_BYTES);
         assert!(ids.insert(evidence.opportunity_id.0.clone()));
         assert_eq!(evidence.slot.as_persisted_str(), *slot);
@@ -152,16 +164,19 @@ fn invalid_or_duplicate_decisions_do_not_consume_an_opportunity() {
     let opportunity = recorder
         .begin_opportunity(&SlotId("core/router".into()), Some(TurnId(1)))
         .unwrap();
-    let mut invalid_selection = decision("eligible");
-    invalid_selection.selected_action = Some(PolicyActionId("not-eligible".into()));
+    let mut invalid_selection = decision("core/router", PolicyActionV1::RouterDirect);
+    invalid_selection.selected_action = Some(
+        PolicyActionId::for_slot(&SlotId("core/router".into()), PolicyActionV1::RouterFanOut)
+            .unwrap(),
+    );
     assert!(matches!(
         recorder.append_decision(&mut rollout, &opportunity, invalid_selection),
         Err(PolicyEvidenceRecorderError::SelectedActionNotEligible(_))
     ));
-    let mut invalid_set = decision("eligible");
+    let mut invalid_set = decision("core/router", PolicyActionV1::RouterDirect);
     invalid_set
         .eligible_actions
-        .push(PolicyActionId("eligible".into()));
+        .push(invalid_set.eligible_actions[0].clone());
     assert!(matches!(
         recorder.append_decision(&mut rollout, &opportunity, invalid_set),
         Err(PolicyEvidenceRecorderError::InvalidEvidence(
@@ -169,10 +184,18 @@ fn invalid_or_duplicate_decisions_do_not_consume_an_opportunity() {
         ))
     ));
     recorder
-        .append_decision(&mut rollout, &opportunity, decision("eligible"))
+        .append_decision(
+            &mut rollout,
+            &opportunity,
+            decision("core/router", PolicyActionV1::RouterDirect),
+        )
         .unwrap();
     assert!(matches!(
-        recorder.append_decision(&mut rollout, &opportunity, decision("eligible")),
+        recorder.append_decision(
+            &mut rollout,
+            &opportunity,
+            decision("core/router", PolicyActionV1::RouterDirect),
+        ),
         Err(PolicyEvidenceRecorderError::DuplicateOpportunity(_))
     ));
     drop(rollout);
@@ -188,12 +211,20 @@ fn opportunity_tokens_are_bound_to_one_run_and_recorder() {
         .unwrap();
     let mut other_run = recorder("run-second");
     assert!(matches!(
-        other_run.append_decision(&mut rollout, &token, decision("baseline")),
+        other_run.append_decision(
+            &mut rollout,
+            &token,
+            decision("core/context", PolicyActionV1::ContextMaterialize),
+        ),
         Err(PolicyEvidenceRecorderError::CrossRunOpportunity)
     ));
     let mut same_run_other_recorder = recorder("run-first");
     assert!(matches!(
-        same_run_other_recorder.append_decision(&mut rollout, &token, decision("baseline")),
+        same_run_other_recorder.append_decision(
+            &mut rollout,
+            &token,
+            decision("core/context", PolicyActionV1::ContextMaterialize),
+        ),
         Err(PolicyEvidenceRecorderError::CrossRecorderOpportunity)
     ));
     drop(rollout);
@@ -215,21 +246,24 @@ fn pending_opportunities_block_terminal_outcomes() {
     ));
     let empty_run = recorder.run_join();
     assert!(matches!(
-        recorder.append_run_outcome(&mut rollout, TurnId(1), &empty_run, outcome()),
+        recorder.append_run_outcome(&mut rollout, TurnId(1), &empty_run),
         Err(PolicyEvidenceRecorderError::PendingOpportunities)
     ));
 
     recorder
-        .append_decision(&mut rollout, &opportunity, decision("recall"))
+        .append_decision(
+            &mut rollout,
+            &opportunity,
+            decision("core/memory", PolicyActionV1::MemoryRecall),
+        )
         .unwrap();
     let turn_join = recorder.turn_join(TurnId(1));
     recorder
         .append_turn_outcome(&mut rollout, TurnId(1), &turn_join, outcome())
         .unwrap();
     let run_join = recorder.run_join();
-    let run_outcome = aggregate_outcome(&recorder);
     recorder
-        .append_run_outcome(&mut rollout, TurnId(1), &run_join, run_outcome)
+        .append_run_outcome(&mut rollout, TurnId(1), &run_join)
         .unwrap();
     assert!(recorder.is_run_terminal());
     drop(rollout);
@@ -241,7 +275,7 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
     let run = "run-restore";
     let (root, mut rollout) = rollout("restore", run);
     let mut first = recorder(run);
-    append_selected(&mut first, &mut rollout, "core/router", TurnId(1), "direct");
+    append_selected(&mut first, &mut rollout, "core/router", TurnId(1));
     let turn_one = first.turn_join(TurnId(1));
     first
         .append_turn_outcome(&mut rollout, TurnId(1), &turn_one, outcome())
@@ -261,13 +295,7 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
 
     let mut reopened =
         iteron_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
-    let evidence = append_selected(
-        &mut restored,
-        &mut reopened,
-        "core/context",
-        TurnId(2),
-        "materialize",
-    );
+    let evidence = append_selected(&mut restored, &mut reopened, "core/context", TurnId(2));
     assert_eq!(evidence.decision_ordinal, 1);
     assert_eq!(restored.run_join().opportunity_count, 2);
     drop(reopened);
@@ -279,27 +307,9 @@ fn turn_and_run_outcomes_commit_exact_order_once() {
     let run = "run-outcome-join";
     let (root, mut rollout) = rollout("outcomes", run);
     let mut recorder = recorder(run);
-    append_selected(
-        &mut recorder,
-        &mut rollout,
-        "core/router",
-        TurnId(1),
-        "direct",
-    );
-    append_selected(
-        &mut recorder,
-        &mut rollout,
-        "core/context",
-        TurnId(2),
-        "workspace",
-    );
-    append_selected(
-        &mut recorder,
-        &mut rollout,
-        "core/planner",
-        TurnId(1),
-        "fan",
-    );
+    append_selected(&mut recorder, &mut rollout, "core/router", TurnId(1));
+    append_selected(&mut recorder, &mut rollout, "core/context", TurnId(2));
+    append_selected(&mut recorder, &mut rollout, "core/planner", TurnId(1));
 
     let turn_one = recorder.turn_join(TurnId(1));
     let mut wrong = turn_one.clone();
@@ -317,27 +327,172 @@ fn turn_and_run_outcomes_commit_exact_order_once() {
     ));
     let run_join = recorder.run_join();
     assert!(matches!(
-        recorder.append_run_outcome(&mut rollout, TurnId(2), &run_join, outcome()),
+        recorder.append_run_outcome(&mut rollout, TurnId(2), &run_join),
         Err(PolicyEvidenceRecorderError::MissingTurnOutcome(TurnId(2)))
     ));
     let turn_two = recorder.turn_join(TurnId(2));
     recorder
         .append_turn_outcome(&mut rollout, TurnId(2), &turn_two, outcome())
         .unwrap();
-    let run_outcome = aggregate_outcome(&recorder);
     recorder
-        .append_run_outcome(&mut rollout, TurnId(2), &run_join, run_outcome.clone())
+        .append_run_outcome(&mut rollout, TurnId(2), &run_join)
         .unwrap();
     assert!(matches!(
-        recorder.append_run_outcome(&mut rollout, TurnId(2), &run_join, run_outcome),
+        recorder.append_run_outcome(&mut rollout, TurnId(2), &run_join),
         Err(PolicyEvidenceRecorderError::RunAlreadyTerminal)
     ));
 
-    let serialized =
-        serde_json::to_string(&iteron_record::replay(rollout.path()).unwrap()).unwrap();
+    let replayed = iteron_record::replay(rollout.path()).unwrap();
+    let run_outcome = replayed
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::PolicyOutcome { evidence }
+                if evidence.scope == iteron_protocol::PolicyOutcomeScope::Run =>
+            {
+                Some(evidence)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(run_outcome.cost_microusd, Some(30));
+    assert_eq!(run_outcome.input_tokens, Some(200));
+    assert_eq!(run_outcome.output_tokens, Some(40));
+    assert_eq!(run_outcome.latency_us, 20_000);
+    let serialized = serde_json::to_string(&replayed).unwrap();
     for forbidden in ["prompt", "path", "arguments", "tool_args", "source_text"] {
         assert!(!serialized.contains(forbidden));
     }
+    drop(rollout);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_overflow_is_refused_before_the_second_turn_is_durable() {
+    let run = "run-outcome-overflow";
+    let (root, mut rollout) = rollout("outcome-overflow", run);
+    let mut recorder = recorder(run);
+    let first_join = recorder.turn_join(TurnId(1));
+    let mut first = outcome();
+    first.cost_microusd = Some(u64::MAX);
+    recorder
+        .append_turn_outcome(&mut rollout, TurnId(1), &first_join, first)
+        .unwrap();
+    let durable_before = iteron_record::replay(rollout.path()).unwrap().len();
+
+    let second_join = recorder.turn_join(TurnId(2));
+    assert!(matches!(
+        recorder.append_turn_outcome(&mut rollout, TurnId(2), &second_join, outcome()),
+        Err(PolicyEvidenceRecorderError::ReplayInvariant(
+            "policy cost aggregate overflowed"
+        ))
+    ));
+    assert!(!recorder.is_turn_terminal(TurnId(2)));
+    assert_eq!(
+        iteron_record::replay(rollout.path()).unwrap().len(),
+        durable_before
+    );
+    drop(rollout);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn harness_error_aggregate_is_exact_across_live_restore_and_tamper_checks() {
+    let run = "run-harness-errors";
+    let (root, mut rollout) = rollout("harness-errors", run);
+    let mut recorder = recorder(run);
+    let first_join = recorder.turn_join(TurnId(8));
+    recorder
+        .append_turn_outcome(
+            &mut rollout,
+            TurnId(8),
+            &first_join,
+            failed_outcome(PolicyHarnessErrorCode::ProviderError),
+        )
+        .unwrap();
+    let second_join = recorder.turn_join(TurnId(3));
+    recorder
+        .append_turn_outcome(
+            &mut rollout,
+            TurnId(3),
+            &second_join,
+            failed_outcome(PolicyHarnessErrorCode::RecordError),
+        )
+        .unwrap();
+    let run_join = recorder.run_join();
+    recorder
+        .append_run_outcome(&mut rollout, TurnId(3), &run_join)
+        .unwrap();
+
+    let path = rollout.path().to_path_buf();
+    let events = iteron_record::replay_timed(&path).unwrap();
+    let run_outcome = events
+        .iter()
+        .find_map(|timed| match &timed.event.kind {
+            EventKind::PolicyOutcome { evidence }
+                if evidence.scope == iteron_protocol::PolicyOutcomeScope::Run =>
+            {
+                Some(evidence)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut expected = PolicyHarnessErrorJoinDigest::default();
+    expected
+        .append(PolicyHarnessErrorCode::ProviderError)
+        .unwrap();
+    expected
+        .append(PolicyHarnessErrorCode::RecordError)
+        .unwrap();
+    assert_eq!(
+        run_outcome.harness_error_code,
+        expected.outcome().map(PolicyHarnessOutcomeId::into_string)
+    );
+    let restored =
+        PolicyEvidenceRecorder::restore(RunId(run.into()), digest('f'), bindings(), &events)
+            .unwrap();
+    assert!(restored.is_run_terminal());
+
+    let mut turn_tampered = events.clone();
+    let turn = turn_tampered
+        .iter_mut()
+        .find_map(|timed| match &mut timed.event.kind {
+            EventKind::PolicyOutcome { evidence }
+                if evidence.scope == iteron_protocol::PolicyOutcomeScope::Turn =>
+            {
+                Some(evidence)
+            }
+            _ => None,
+        })
+        .unwrap();
+    turn.harness_error_code =
+        Some(PolicyHarnessOutcomeId::single(PolicyHarnessErrorCode::ContextError).into_string());
+    assert!(matches!(
+        PolicyEvidenceRecorder::restore(RunId(run.into()), digest('f'), bindings(), &turn_tampered,),
+        Err(PolicyEvidenceRecorderError::ReplayInvariant(
+            "run outcome does not aggregate its terminal turn evidence"
+        ))
+    ));
+
+    let mut run_tampered = events;
+    let run_evidence = run_tampered
+        .iter_mut()
+        .find_map(|timed| match &mut timed.event.kind {
+            EventKind::PolicyOutcome { evidence }
+                if evidence.scope == iteron_protocol::PolicyOutcomeScope::Run =>
+            {
+                Some(evidence)
+            }
+            _ => None,
+        })
+        .unwrap();
+    run_evidence.harness_error_code =
+        Some(PolicyHarnessOutcomeId::single(PolicyHarnessErrorCode::ContextError).into_string());
+    assert!(matches!(
+        PolicyEvidenceRecorder::restore(RunId(run.into()), digest('f'), bindings(), &run_tampered,),
+        Err(PolicyEvidenceRecorderError::ReplayInvariant(
+            "run outcome does not aggregate its terminal turn evidence"
+        ))
+    ));
     drop(rollout);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -347,7 +502,7 @@ fn graceful_close_begins_a_new_policy_run_while_crash_restore_keeps_the_open_one
     let run = RunId("run-segments".into());
     let (root, mut rollout) = rollout("segments", &run.0);
     let mut first = recorder(&run.0);
-    append_selected(&mut first, &mut rollout, "core/router", TurnId(1), "direct");
+    append_selected(&mut first, &mut rollout, "core/router", TurnId(1));
     let path = rollout.path().to_path_buf();
     drop(rollout);
 
@@ -363,9 +518,8 @@ fn graceful_close_begins_a_new_policy_run_while_crash_restore_keeps_the_open_one
         .append_turn_outcome(&mut reopened, TurnId(1), &turn_join, outcome())
         .unwrap();
     let run_join = crash_restored.run_join();
-    let run_outcome = aggregate_outcome(&crash_restored);
     crash_restored
-        .append_run_outcome(&mut reopened, TurnId(1), &run_join, run_outcome)
+        .append_run_outcome(&mut reopened, TurnId(1), &run_join)
         .unwrap();
     drop(reopened);
 

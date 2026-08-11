@@ -38,7 +38,11 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("initial_cwd", true, text_domain!(1, 4096, Path)),
             scalar_field!("preserve_changes", true, bool_domain!())
         ],
-        [external_rule!("initial_cwd", TenantScope)]
+        [
+            external_rule!("scope", OperatorAuthority),
+            external_rule!("initial_cwd", TenantScope),
+            external_rule!("preserve_changes", OperatorAuthority)
+        ]
     ),
     object_schema!(
         "child_process_environment_reuse",
@@ -318,8 +322,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 100_000,
                 true,
                 text_domain!(1, 4096, Path)
-            ),
-            scalar_field!("require_operator_confirmation", true, bool_domain!())
+            )
         ],
         [external_rule!("paths", OperatorAuthority)]
     ),
@@ -354,10 +357,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "per_agent_effort_thinking",
         Enum,
         finite_enum_domain!("low", "medium", "high", "xhigh", "max", "ultracode"),
-        [
-            external_rule!("$", ProviderCapability),
-            external_domain_rule!("$", ParentTokens)
-        ]
+        [external_domain_rule!("$", ParentTokens)]
     ),
     map_schema!(
         "per_agent_tool_profile",

@@ -100,6 +100,7 @@
 /crates/cli/src/image_input/** @fr0m-scratch
 /crates/cli/src/mcp/** @fr0m-scratch
 /crates/cli/src/prompt_history/** @fr0m-scratch
+/crates/cli/src/providers/** @fr0m-scratch
 /crates/cli/src/runtime/** @fr0m-scratch
 /crates/cli/src/runtime_tunables/** @fr0m-scratch
 /crates/cli/src/theme/** @fr0m-scratch
@@ -227,10 +228,12 @@
 /crates/record/src/redact.rs @fr0m-scratch
 /crates/record/src/resolved_fixture.rs @fr0m-scratch
 /crates/record/src/session.rs @fr0m-scratch
+/crates/record/src/session_private_cache.rs @fr0m-scratch
 /crates/record/src/tunables.rs @fr0m-scratch
 /crates/record/src/tunables_tests.rs @fr0m-scratch
 /crates/tools/src/edit.rs @fr0m-scratch
 /crates/tools/src/egress.rs @fr0m-scratch
+/crates/tools/src/execution_policy.rs @fr0m-scratch
 /crates/tools/src/fs_tools.rs @fr0m-scratch
 /crates/tools/src/fs_tools_tests.rs @fr0m-scratch
 /crates/tools/src/git.rs @fr0m-scratch
@@ -293,13 +296,16 @@
 /crates/cli/src/runtime/policy_evidence.rs @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence_recorder.rs @fr0m-scratch
 /crates/cli/src/runtime/pricing.rs @fr0m-scratch
+/crates/cli/src/runtime/private_attachments.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_accounting.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_governor_state.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_hedge.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_route.rs @fr0m-scratch
 /crates/cli/src/runtime/resume.rs @fr0m-scratch
+/crates/cli/src/runtime/route_attempt_accounting.rs @fr0m-scratch
 /crates/cli/src/runtime/route_state.rs @fr0m-scratch
 /crates/cli/src/runtime/route_validation.rs @fr0m-scratch
+/crates/cli/src/runtime/runtime_policy_overlay.rs @fr0m-scratch
 /crates/cli/src/runtime/session_spawn_ledger.rs @fr0m-scratch
 /crates/cli/src/runtime/side_conversation.rs @fr0m-scratch
 /crates/cli/src/runtime/strategy_ports.rs @fr0m-scratch

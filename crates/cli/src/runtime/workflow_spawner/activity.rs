@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use iteron_protocol::Phase;
-use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome};
+use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 
 use super::worktree::WriterWorktree;
 use super::{KernelSpawner, safe_agent_refusal};
-use crate::runtime::{UiEvent, ui_workflow_label, usage_tokens};
+use crate::runtime::{UiEvent, bounded_child_report, ui_workflow_label, usage_tokens};
 
 fn workflow_child_activity(event: &UiEvent) -> Option<String> {
     match event {
@@ -50,8 +50,13 @@ impl KernelSpawner {
             Err(error) => return AgentOutcome::null(error.to_string()),
         };
         let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
-        let writer_requested =
-            call.agent_type.as_deref() == Some(iteron_agents::ISOLATED_WRITER_NAME);
+        // Authority comes from the pinned catalog definition, never from one magic display name.
+        // Keep this identical to the pre-speculation classification so every definition carrying
+        // write authority receives a host-owned worktree and no read-only alias can obtain one.
+        let writer_requested = matches!(
+            <KernelSpawner as AgentSpawner>::execution_class(self, &call),
+            iteron_workflow::AgentExecutionClass::IsolatedWriter
+        );
         // Hold one session-wide lane for the complete writer transaction. A second writer cannot
         // observe or merge across the first one's partially settled state.
         let _writer_lane = if writer_requested {
@@ -137,7 +142,8 @@ impl KernelSpawner {
             // output). This mirrors the kernel's own investigator distillation, which treats every
             // `Ok(_)` outcome as carrying a report and only degrades on an empty one.
             Ok(iteron_protocol::Outcome::Done) => {
-                let text = child.last_assistant_text().trim().to_string();
+                let text =
+                    bounded_child_report(child.execution_policy, child.last_assistant_text());
                 if text.is_empty() {
                     AgentOutcome::Null {
                         reason: Some("subagent completed without a report".into()),
@@ -242,8 +248,10 @@ impl KernelSpawner {
 
         if let Err(error) = worktree
             .verify(
+                &receipt,
                 self.cx.verify_command.as_deref(),
                 &self.cx.sensitive_env_names,
+                self.cx.verification_feedback.oracle_output_bytes,
             )
             .await
         {
@@ -251,7 +259,7 @@ impl KernelSpawner {
             *result = AgentOutcome::null(error.public_summary());
             return;
         }
-        match worktree.merge().await {
+        match worktree.merge(&receipt).await {
             Ok(()) => {
                 if let AgentOutcome::Text {
                     last_tool_summary, ..
@@ -260,7 +268,6 @@ impl KernelSpawner {
                     let digest = receipt
                         .patch_digest_sha256
                         .as_deref()
-                        .and_then(|value| value.get(..19))
                         .unwrap_or("sha256:unknown");
                     *last_tool_summary = Some(format!(
                         "verified + merged isolated patch · {} bytes · {digest}",
@@ -278,7 +285,7 @@ impl KernelSpawner {
     /// Convert the planner's untrusted line list into a harness-authored JSON task list. This is
     /// deliberately inside the spawner boundary: QuickJS never gets raw model control-flow data,
     /// and the pinned `core/planner` seat can narrow/reorder but cannot invent a leaf.
-    fn normalize_ultracode_plan(
+    pub(crate) fn normalize_ultracode_plan(
         &self,
         child: &mut super::Agent,
         outcome: AgentOutcome,
@@ -322,8 +329,16 @@ impl KernelSpawner {
                     "direct_plan"
                 };
                 let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::selected(
-                    &["direct_plan", "fan_plan"],
-                    action,
+                    crate::runtime::policy_evidence::PLANNER_SLOT,
+                    &[
+                        iteron_protocol::PolicyActionV1::PlannerDirectPlan,
+                        iteron_protocol::PolicyActionV1::PlannerFanPlan,
+                    ],
+                    if action == "fan_plan" {
+                        iteron_protocol::PolicyActionV1::PlannerFanPlan
+                    } else {
+                        iteron_protocol::PolicyActionV1::PlannerDirectPlan
+                    },
                     "iteron:planner-features-v1",
                     &(
                         config.class,
@@ -343,7 +358,11 @@ impl KernelSpawner {
             }
             Err(error) => {
                 let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::abstained(
-                    &["direct_plan", "fan_plan"],
+                    crate::runtime::policy_evidence::PLANNER_SLOT,
+                    &[
+                        iteron_protocol::PolicyActionV1::PlannerDirectPlan,
+                        iteron_protocol::PolicyActionV1::PlannerFanPlan,
+                    ],
                     "iteron:planner-features-v1",
                     &(config.class, config.max_leaves, &evidence_leaves),
                     &"invalid_plans_fail_closed",
@@ -612,6 +631,7 @@ mod tests {
         context.budget.max_turns = 12;
         context.budget.max_tokens = Some(100);
         context.budget.max_wall_secs = 60;
+        super::super::tests::pin_context(root, &mut context);
         context
     }
 

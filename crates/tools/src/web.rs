@@ -26,18 +26,20 @@
 //! Redirects: same-host redirects are followed; a **cross-host** redirect is NOT auto-followed —
 //! it is returned so the operator/model can decide (never silently egress to a different origin).
 
-use crate::{Registry, ToolError, boxfut, err_result};
+use crate::{Registry, ToolError, WebFetchPolicy, boxfut, err_result};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+
+/// Physical maximum admitted by `web_search` before a backend request is built.
+pub const WEB_SEARCH_RESULT_CAP: usize = 10;
 
 /// Default output cap and line cap — bounded invariant #1. Raised from 100 KB / 1500 lines
 /// (owner-directed 2026-08-05): a single API reference or changelog page routinely exceeds both,
 /// and a page truncated mid-document is a wrong answer rather than a short one.
+#[cfg(test)]
 const DEFAULT_MAX_BYTES: usize = 1_000_000;
+#[cfg(test)]
 const MAX_LINES: usize = 15_000;
-/// Overall request timeout and same-host redirect hop cap. 15 s was short enough that slow origins
-/// failed as errors rather than as slow successes.
-const TIMEOUT_SECS: u64 = 60;
-const MAX_REDIRECTS: usize = 5;
+const SEARCH_TIMEOUT_SECS: u64 = 60;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
     "iteron/",
@@ -47,6 +49,7 @@ const USER_AGENT: &str = concat!(
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     let fetch_egress = r.egress_allow_policy_handle();
+    let fetch_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "web_fetch".into(),
@@ -61,7 +64,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 "type":"object",
                 "properties":{
                     "url":{"type":"string","description":"absolute http(s) URL to fetch"},
-                    "max_bytes":{"type":"integer","description":"optional cap on returned text bytes (default ~100000)"}
+                    "max_bytes":{"type":"integer","description":"optional cap on returned text bytes, bounded by the run's pinned web_fetch_limits policy"}
                 },
                 "required":["url"]
             }),
@@ -70,15 +73,20 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, _root| {
             let egress = fetch_egress.clone();
+            let policy = fetch_policy.get().copied();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy else {
+                    return err_result(id, "web_fetch: runtime policy was not installed".into());
+                };
                 let url = call.input.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
                 let max_bytes = call
                     .input
                     .get("max_bytes")
                     .and_then(|x| x.as_u64())
-                    .map(|v| (v as usize).clamp(1_000, 2_000_000))
-                    .unwrap_or(DEFAULT_MAX_BYTES);
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+                    .unwrap_or(policy.web_fetch.body_max_bytes)
+                    .clamp(1_000, policy.web_fetch.body_max_bytes);
                 let parsed = match validate_url(url) {
                     Ok(u) => u,
                     // Input validation error: harness-generated, no egress happened -> Workspace.
@@ -93,7 +101,13 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         ),
                     );
                 }
-                match fetch_and_render(parsed, max_bytes).await {
+                match fetch_and_render_with_policy(
+                    parsed,
+                    max_bytes,
+                    policy.web_fetch,
+                )
+                .await
+                {
                     // ALL web-derived output is Untrusted (ADR-007), even the redirect notice
                     // (its target URL is attacker-controlled data).
                     Ok(content) => ToolResult {
@@ -149,7 +163,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .input
                     .get("count")
                     .and_then(|x| x.as_u64())
-                    .map(|v| (v as usize).clamp(1, 10))
+                    .map(|v| (v as usize).clamp(1, WEB_SEARCH_RESULT_CAP))
                     .unwrap_or(5);
                 if query.is_empty() {
                     return err_result(id, "web_search: empty query".into());
@@ -315,10 +329,14 @@ fn same_host(a: &reqwest::Url, b: &reqwest::Url) -> bool {
 // Fetch + render (the network path)
 // ---------------------------------------------------------------------------------------------
 
-/// GET `start`, following same-host redirects (up to `MAX_REDIRECTS`), returning the rendered,
+/// GET `start`, following same-host redirects up to the pinned policy, returning the rendered,
 /// bounded, UNTRUSTED-framed text. A cross-host redirect is NOT followed — a notice naming the
 /// target is returned instead.
-async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<String, String> {
+async fn fetch_and_render_with_policy(
+    start: reqwest::Url,
+    out_byte_cap: usize,
+    policy: WebFetchPolicy,
+) -> Result<String, String> {
     use reqwest::header::{CONTENT_TYPE, LOCATION};
 
     // Reuse the workspace's HTTP stack (reqwest). Automatic redirects are OFF so we can enforce the
@@ -326,7 +344,7 @@ async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<St
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(policy.timeout_seconds))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -356,8 +374,8 @@ async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<St
                 .join(loc)
                 .map_err(|e| format!("bad redirect target `{loc}`: {e}"))?;
             if same_host(&current, &next) {
-                if hops >= MAX_REDIRECTS {
-                    return Err(format!("too many redirects (> {MAX_REDIRECTS})"));
+                if hops >= policy.max_redirects {
+                    return Err(format!("too many redirects (> {})", policy.max_redirects));
                 }
                 hops += 1;
                 current = next;
@@ -380,9 +398,7 @@ async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<St
 
         // Read the body with a hard cap so a huge/endless response can't exhaust memory. The raw
         // cap is a multiple of the output cap (HTML markup is stripped away), clamped sane.
-        let raw_cap = out_byte_cap
-            .saturating_mul(16)
-            .clamp(out_byte_cap, 8_000_000);
+        let raw_cap = policy.body_max_bytes;
         let (bytes, download_truncated) = read_body_capped(resp, raw_cap).await?;
         let raw = String::from_utf8_lossy(&bytes);
 
@@ -394,7 +410,7 @@ async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<St
             strip_dangerous_unicode(&raw)
         };
 
-        let (bounded, truncated) = bound_text(&rendered, MAX_LINES, out_byte_cap);
+        let (bounded, truncated) = bound_text(&rendered, policy.max_lines, out_byte_cap);
         return Ok(frame_web(
             current.as_str(),
             status.as_u16(),
@@ -403,6 +419,19 @@ async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<St
             truncated || download_truncated,
         ));
     }
+}
+
+#[cfg(test)]
+async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<String, String> {
+    fetch_and_render_with_policy(
+        start,
+        out_byte_cap,
+        WebFetchPolicy {
+            body_max_bytes: DEFAULT_MAX_BYTES,
+            ..crate::ObservationToolPolicy::default().web_fetch
+        },
+    )
+    .await
 }
 
 /// Read a streamed response body, stopping once `cap` bytes are buffered. Returns the bytes and
@@ -448,7 +477,11 @@ async fn brave_search(key: &str, query: &str, count: usize) -> Result<String, St
     .map_err(|e| format!("build query: {e}"))?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(
+            crate::ObservationToolPolicy::default()
+                .web_fetch
+                .timeout_seconds,
+        ))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -552,7 +585,7 @@ impl SearchBackend {
 fn search_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| format!("http client: {e}"))
@@ -730,7 +763,7 @@ fn parse_exa_results(json: &str, count: usize) -> Result<Vec<(String, String, St
 async fn zhipu_search(key: &str, query: &str, count: usize) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| format!("http client: {e}"))?;

@@ -35,7 +35,7 @@
 //! conversion with it has to as well.
 
 use crate::capability_set::CapabilitySet;
-use crate::event::EventKind;
+use crate::event::{EventKind, ProviderRouteAttemptIdentity};
 use crate::ids::EffectId;
 use crate::tool::Capability;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,10 @@ pub struct EffectProposal {
     pub arguments: Value,
     /// Workspace root the effect is scoped to.
     pub workspace: String,
+    /// Content-free pre-dispatch identity for a physical provider request. Historical intents may
+    /// decode without it; [`Self::validate`] requires it exactly for newly minted provider effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
 }
 
 impl EffectProposal {
@@ -89,6 +93,7 @@ impl EffectProposal {
         capability: Capability,
         arguments: Value,
         workspace: String,
+        provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
     ) -> Self {
         Self {
             id,
@@ -97,6 +102,7 @@ impl EffectProposal {
             admitted: CapabilitySet::only(capability),
             arguments,
             workspace,
+            provider_route_attempt,
         }
     }
 
@@ -153,6 +159,18 @@ impl EffectProposal {
                  first (abi.md 4.3(b)2, issue #16)",
             );
         }
+        match (self.tool.as_str(), &self.provider_route_attempt) {
+            ("provider", Some(identity)) => identity.validate()?,
+            ("provider", None) => {
+                return Err(
+                    "a provider effect must durably identify its exact physical route attempt before dispatch",
+                );
+            }
+            (_, Some(_)) => {
+                return Err("only a provider effect may carry a provider route attempt identity");
+            }
+            (_, None) => {}
+        }
         Ok(())
     }
 
@@ -184,6 +202,7 @@ impl EffectProposal {
                 capability,
                 arguments,
                 workspace,
+                provider_route_attempt,
             } => Some(Self::from_event_fields(
                 id.clone(),
                 tool_use_id.clone(),
@@ -191,6 +210,7 @@ impl EffectProposal {
                 *capability,
                 arguments.clone(),
                 workspace.clone(),
+                provider_route_attempt.clone(),
             )),
             _ => None,
         }
@@ -226,6 +246,7 @@ mod tests {
             capability: Capability::ReversibleLocal,
             arguments: json!({ "path": "src/main.rs" }),
             workspace: "/repo".into(),
+            provider_route_attempt: None,
         }
     }
 
@@ -244,6 +265,36 @@ mod tests {
             before,
             "promoting the proposal must not perturb the write-ahead log format"
         );
+    }
+
+    #[test]
+    fn provider_attempt_identity_round_trips_losslessly_and_is_required_only_for_provider() {
+        let identity = crate::ProviderRouteAttemptIdentity {
+            version: crate::ProviderRouteAttemptAccountingVersion::V1,
+            route_id: format!("sha256:{}", "a".repeat(64)),
+            physical_attempt: 2,
+            max_cost_reservation_microusd: None,
+        };
+        let event = EventKind::EffectIntent {
+            id: EffectId("fx1-pv-00000001-0000".into()),
+            tool_use_id: "hx1-pv-00000001-0000".into(),
+            tool: "provider".into(),
+            capability: Capability::IrreversibleExternal,
+            arguments: json!({"messages": 1}),
+            workspace: "/repo".into(),
+            provider_route_attempt: Some(identity.clone()),
+        };
+        let proposal = EffectProposal::try_from_event(&event).expect("provider intent");
+        assert_eq!(proposal.provider_route_attempt, Some(identity));
+        assert!(proposal.validate().is_ok());
+
+        let mut missing = proposal.clone();
+        missing.provider_route_attempt = None;
+        assert!(missing.validate().is_err());
+
+        let mut wrong_class = proposal;
+        wrong_class.tool = "checkpoint".into();
+        assert!(wrong_class.validate().is_err());
     }
 
     #[test]
@@ -273,6 +324,7 @@ mod tests {
             capability: Capability::ReversibleLocal,
             arguments: json!({}),
             workspace: "/repo".into(),
+            provider_route_attempt: None,
         };
         let decoded = EffectProposal::try_from_event(&legacy);
         assert!(
@@ -345,6 +397,7 @@ mod tests {
             capability: Capability::ReversibleLocal,
             arguments: arguments_of_serialised_len(MAX_EFFECT_ARGUMENTS_BYTES + 1),
             workspace: "/repo".into(),
+            provider_route_attempt: None,
         };
         assert!(EffectProposal::try_from_event(&oversized).is_some());
     }
@@ -363,6 +416,7 @@ mod tests {
             id: EffectId("effect-2".into()),
             tool: "write_file".into(),
             reason: "no terminal observed".into(),
+            provider_route_attempt: None,
         };
         assert!(EffectProposal::try_from_event(&other).is_none());
     }

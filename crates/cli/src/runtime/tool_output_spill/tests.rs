@@ -1,5 +1,8 @@
 use super::*;
-use iteron_protocol::Trust;
+use iteron_protocol::{
+    ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, ErasureRequest, ErasureScopeId,
+    ErasureState, ErasureTarget, Trust,
+};
 
 fn result(content: &str) -> ToolResult {
     ToolResult {
@@ -52,16 +55,30 @@ fn oversized_output_is_private_content_addressed_and_visibly_bounded() {
 
 #[test]
 fn aggregate_capacity_never_writes_a_partial_or_leaks_the_rejected_tail() {
-    let policy = ToolOutputSpillPolicy::new(8, 16, ToolOutputSpillCleanup::RunEnd).unwrap();
+    let policy = ToolOutputSpillPolicy::new(128, 256, ToolOutputSpillCleanup::RunEnd).unwrap();
     let store = ToolOutputSpillStore::create(policy).unwrap();
-    let first = store.apply(result("abcdefghijkl"));
-    let second = store.apply(result("SECRET-SECOND-OUTPUT"));
+    let first_raw = "a".repeat(160);
+    let second_raw = format!("SECRET-SECOND-OUTPUT{}", "b".repeat(140));
+    let first = store.apply(result(&first_raw));
+    let second = store.apply(result(&second_raw));
 
     assert!(first.spilled);
     assert!(!second.spilled, "aggregate overflow is refused");
-    assert_eq!(store.retained_bytes(), 12);
+    assert_eq!(store.retained_bytes(), first_raw.len());
     assert!(!second.result.content.contains("SECRET-SECOND-OUTPUT"));
     assert_eq!(store.retained_count(), 1);
+}
+
+#[test]
+fn preview_too_small_for_a_complete_digest_never_advertises_a_partial_handle() {
+    let policy = ToolOutputSpillPolicy::new(64, 4096, ToolOutputSpillCleanup::RunEnd).unwrap();
+    let store = ToolOutputSpillStore::create(policy).unwrap();
+    let managed = store.apply(result(&"private spill".repeat(20)));
+
+    assert!(!managed.spilled);
+    assert!(managed.result.is_error);
+    assert!(!managed.result.content.contains("sha256:"));
+    assert_eq!(store.retained_count(), 0);
 }
 
 #[test]
@@ -86,9 +103,9 @@ fn tool_end_cleanup_is_lease_scoped_for_deduplicated_concurrent_results() {
 
 #[test]
 fn later_lifecycle_boundary_cleans_a_missed_earlier_boundary() {
-    let policy = ToolOutputSpillPolicy::new(8, 1024, ToolOutputSpillCleanup::TurnEnd).unwrap();
+    let policy = ToolOutputSpillPolicy::new(128, 1024, ToolOutputSpillCleanup::TurnEnd).unwrap();
     let store = ToolOutputSpillStore::create(policy).unwrap();
-    let _managed = store.apply(result("private result"));
+    let _managed = store.apply(result(&"private result".repeat(20)));
 
     store.cleanup(ToolOutputSpillCleanup::ToolEnd).unwrap();
     assert_eq!(store.retained_count(), 1);
@@ -98,24 +115,23 @@ fn later_lifecycle_boundary_cleans_a_missed_earlier_boundary() {
 
 #[test]
 fn dropping_store_removes_private_root() {
-    let policy = ToolOutputSpillPolicy::new(8, 1024, ToolOutputSpillCleanup::RunEnd).unwrap();
+    let policy = ToolOutputSpillPolicy::new(128, 1024, ToolOutputSpillCleanup::RunEnd).unwrap();
     let store = ToolOutputSpillStore::create(policy).unwrap();
     let root = store.root();
-    let _managed = store.apply(result("private result"));
+    let _managed = store.apply(result(&"private result".repeat(20)));
     drop(store);
     assert!(!root.exists());
 }
 
 #[cfg(unix)]
 #[test]
-fn store_directory_and_artifact_are_private() {
+fn store_directory_is_private_and_backing_paths_are_never_exposed() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let policy = ToolOutputSpillPolicy::new(160, 1024, ToolOutputSpillCleanup::RunEnd).unwrap();
     let store = ToolOutputSpillStore::create(policy).unwrap();
     let managed = store.apply(result(&"private result".repeat(12)));
     let handle = handle_from(&managed.result.content);
-    let path = store.artifact_path(&handle).unwrap();
 
     assert_eq!(
         std::fs::metadata(store.root())
@@ -125,8 +141,50 @@ fn store_directory_and_artifact_are_private() {
             & 0o777,
         0o700
     );
-    assert_eq!(
-        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(store.artifact_path(&handle), None);
+}
+
+#[test]
+fn advertised_spill_digest_is_the_durable_content_revocation_target() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "core-tool-spill-revoke-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let tenant = iteron_protocol::TenantId::default();
+    let run = iteron_protocol::RunId("tool-spill-revocation-owner".into());
+    let policy = ToolOutputSpillPolicy::new(192, 4096, ToolOutputSpillCleanup::RunEnd).unwrap();
+    let store = ToolOutputSpillStore::create_for_run(policy, &root, tenant.clone(), run).unwrap();
+    let raw = "private spill content".repeat(20);
+    let managed = store.apply(result(&raw));
+    let advertised = handle_from(&managed.result.content);
+    let digest = ErasureContentDigest::new(advertised).unwrap();
+    iteron_record::content_store::guard_private_content(&root, &tenant, &digest).unwrap();
+
+    // Model a process crash after publication: the durable reference survives, while the owner
+    // lease is released so the idempotent erasure state machine can recover it.
+    let _ = store.abandon_for_recovery();
+    let receipt = iteron_record::erasure::execute_erasure(
+        &root,
+        ErasureRequest {
+            operation_id: ErasureOperationId::new("revoke-visible-spill-handle").unwrap(),
+            authority_id: ErasureAuthorityId::new("caller-is-not-authority").unwrap(),
+            target: ErasureTarget::ContentRevocation {
+                scope_id: ErasureScopeId::new(tenant.0.clone()).unwrap(),
+                content_digest: digest.clone(),
+            },
+            requested_at_unix_ms: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(receipt.state(), ErasureState::Verified);
+    assert!(matches!(
+        iteron_record::content_store::guard_private_content(&root, &tenant, &digest),
+        Err(iteron_record::ContentStoreError::Revoked { .. })
+    ));
+    std::fs::remove_dir_all(root).unwrap();
 }

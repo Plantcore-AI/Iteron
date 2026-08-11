@@ -2,7 +2,6 @@
 
 use crate::context_materialization::AuditedGrantBuilder;
 use crate::context_strategy::MAX_CONTEXT_OUTLINE_DEPTH;
-use crate::instructions::framed;
 use crate::memory::{
     FileMemory, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy, MemoryStrategy,
 };
@@ -166,6 +165,7 @@ impl ContextPort for DefaultContextPort {
         let memory_reference_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
+        let mut memory_audit = None;
 
         for selector in &plan.request.selectors {
             match selector {
@@ -186,7 +186,7 @@ impl ContextPort for DefaultContextPort {
                 }
                 ContextSelector::Instructions { scope } => {
                     let home_core = input.home_dir.as_deref().map(|home| home::path(home, ""));
-                    let bundle = crate::instructions::discover_hierarchy_scope(
+                    let bundle = crate::instructions::discover_hierarchy_scope_with_policy(
                         home_core.as_deref(),
                         &workspace,
                         if input.active_dir.as_os_str().is_empty() {
@@ -195,11 +195,10 @@ impl ContextPort for DefaultContextPort {
                             &input.active_dir
                         },
                         *scope,
+                        input.materialization.instruction_discovery,
                     );
-                    let mut rendered = String::new();
-                    for source in bundle.sources() {
-                        rendered.push_str(&framed(&source.source, &source.content));
-                    }
+                    let rendered =
+                        bundle.render_with_policy(input.materialization.instruction_discovery);
                     builder.push(rendered, Trust::Untrusted, ContextSource::Instructions);
                 }
                 ContextSelector::MemoryKeys { keys } => {
@@ -231,7 +230,7 @@ impl ContextPort for DefaultContextPort {
             && input.memory_benchmark_scope.is_none()
             && builder.remaining_bytes() > 0
         {
-            let segment = FileMemory.recall_with_slot_policy_at(
+            let (segment, exact_audit) = FileMemory.recall_with_slot_policy_at_audited(
                 &stores,
                 &plan.task,
                 &input.materialization.memory,
@@ -239,6 +238,7 @@ impl ContextPort for DefaultContextPort {
                 memory_reference_unix_secs,
                 input.materialization.memory_retrieval,
             );
+            memory_audit = Some(exact_audit);
             if !segment.is_empty() {
                 builder.push(
                     segment.render(),
@@ -271,8 +271,8 @@ impl ContextPort for DefaultContextPort {
         grant
             .validate_for(&plan.request)
             .map_err(|reason| ContextPortError(reason.into()))?;
-        let memory_audit = plan.recall_memory.then(|| {
-            FileMemory::audit_recall_with_slot_in_scope_and_policy_at(
+        if plan.recall_memory && input.memory_benchmark_scope.is_some() {
+            memory_audit = Some(FileMemory::audit_recall_with_slot_in_scope_and_policy_at(
                 &stores,
                 &plan.task,
                 &input.materialization.memory,
@@ -280,8 +280,8 @@ impl ContextPort for DefaultContextPort {
                 input.memory_benchmark_scope.is_some(),
                 memory_reference_unix_secs,
                 input.materialization.memory_retrieval,
-            )
-        });
+            ));
+        }
         Ok((grant, memory_audit, audit))
     }
 }
@@ -363,11 +363,15 @@ fn memory_stores(workspace: &Path, home_dir: Option<&Path>) -> Vec<MemStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContextSlotObservation, ContextStrategy};
+    use crate::{ContextSlotObservation, ContextStrategy, MemoryRecallDisposition, MemoryStore};
     use iteron_protocol::Capability;
     use iteron_protocol::capability_set::CapabilitySet;
     use iteron_protocol::context::{ContextSource, RequestId};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -497,6 +501,83 @@ mod tests {
             );
         }
         grant.validate_for(&plan.request).unwrap();
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn live_memory_materialization_and_audit_share_one_physical_slot_decision() {
+        struct RefusingMemorySlot {
+            slot: SlotId,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl StrategySlot for RefusingMemorySlot {
+            fn slot(&self) -> &SlotId {
+                &self.slot
+            }
+
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                SlotOutcome {
+                    admitted: CapabilitySet::none(),
+                    decision: serde_json::Value::Null,
+                }
+            }
+        }
+
+        let workspace = temp_workspace();
+        MemoryStore::at(&workspace)
+            .add("single physical memory decision fixture")
+            .unwrap();
+        let mut observation = ContextSlotObservation::baseline(RequestId(29), "memory decision");
+        observation.include_outline = false;
+        observation.instruction_scopes.clear();
+        observation.include_environment = false;
+        observation.transcript_turns = 0;
+        observation.include_skills = false;
+        observation.recall_memory = true;
+        let plan = ContextStrategy::default()
+            .select(&observation, CapabilitySet::only(Capability::ReadOnly))
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let slot = RefusingMemorySlot {
+            slot: SlotId("core/memory".into()),
+            calls: calls.clone(),
+        };
+        let input = ContextPortInput {
+            workspace: workspace.clone(),
+            active_dir: workspace.clone(),
+            materialization: crate::ContextMaterializationPolicy::default(),
+            ..ContextPortInput::default()
+        };
+
+        let (_, audit, _) = DefaultContextPort
+            .resolve_with_decision_audit(&plan, &input, &slot)
+            .unwrap();
+        let audit = audit.expect("a live recall has one exact audit");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(audit.disposition, MemoryRecallDisposition::Abstained);
+        assert!(audit.selected.is_empty());
+
+        let (_, isolated_audit, _) = DefaultContextPort
+            .resolve_with_decision_audit(
+                &plan,
+                &ContextPortInput {
+                    memory_benchmark_scope: Some([7; 32]),
+                    ..input
+                },
+                &slot,
+            )
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "outer scope denial must not invent a slot decision"
+        );
+        assert_eq!(
+            isolated_audit.unwrap().disposition,
+            MemoryRecallDisposition::NotInvokedScopeDenied
+        );
         let _ = std::fs::remove_dir_all(workspace);
     }
 }

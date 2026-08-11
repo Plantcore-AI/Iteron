@@ -2,26 +2,39 @@
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
 use iteron_tools::{
-    EgressAllowPolicy, InteractiveStdinWaitPolicy, LspLanguageRoute, LspRecoveryPolicy,
-    LspRuntimePolicy, PersistentBackendSelection, ProcessRuntimePolicy, Registry,
+    ChildProcessEnvironmentPolicy, EgressAllowPolicy, InteractiveStdinWaitPolicy, LspLanguageRoute,
+    LspRecoveryPolicy, LspRuntimePolicy, PersistentBackendSelection, ProcessCwdPolicy,
+    ProcessCwdScope, ProcessLaunchPolicy, ProcessRuntimePolicy, Registry,
 };
-use iteron_tunables::ResolutionValue;
+use iteron_tunables::{ResolutionValue, RuntimeGetterId};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EffectiveToolingSettings {
     pub egress_allow: Option<EgressAllowPolicy>,
+    pub observation: iteron_tools::ObservationToolPolicy,
     pub process: ProcessRuntimePolicy,
+    pub process_launch: ProcessLaunchPolicy,
     pub lsp: Option<LspRuntimePolicy>,
     pub tool_output_spill: crate::runtime::tool_output_spill::ToolOutputSpillPolicy,
+    pub tool_result_cache_ttl_seconds: u64,
 }
 
 impl EffectiveToolingSettings {
     pub(crate) fn decode(view: &EffectiveTunablesView) -> Result<Self, EffectiveToolingError> {
+        view.with_getter(RuntimeGetterId::EffectiveTooling, || {
+            Self::decode_inner(view)
+        })
+    }
+
+    fn decode_inner(view: &EffectiveTunablesView) -> Result<Self, EffectiveToolingError> {
         let egress_allow = view
             .optional_value("egress_allow")
             .map(decode_egress_allow)
             .transpose()?;
+        let observation = super::effective_observation_tools::decode(view)
+            .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))?;
         let backend = match view.enumeration("persistent_pty_backend")? {
             "disabled" => PersistentBackendSelection::Disabled,
             "one_shot" => PersistentBackendSelection::OneShot,
@@ -58,6 +71,44 @@ impl EffectiveToolingSettings {
             },
         )
         .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))?;
+        let cwd = view.object("process_cwd_continuity")?;
+        let scope = match object_enum(cwd, "process_cwd_continuity", "scope")? {
+            "job" => ProcessCwdScope::Job,
+            value => return Err(unknown("process_cwd_continuity", value)),
+        };
+        let environment = view.object("child_process_environment_reuse")?;
+        let process_launch = ProcessLaunchPolicy::new(
+            ProcessCwdPolicy {
+                scope,
+                initial_cwd: PathBuf::from(object_text(
+                    cwd,
+                    "process_cwd_continuity",
+                    "initial_cwd",
+                )?),
+                preserve_changes: object_bool(cwd, "process_cwd_continuity", "preserve_changes")?,
+            },
+            ChildProcessEnvironmentPolicy {
+                reuse: object_bool(environment, "child_process_environment_reuse", "reuse")?,
+                max_entries: usizev(
+                    object_i64(
+                        environment,
+                        "child_process_environment_reuse",
+                        "max_entries",
+                    )?,
+                    "child_process_environment_reuse",
+                )?,
+                max_bytes: usizev(
+                    object_i64(environment, "child_process_environment_reuse", "max_bytes")?,
+                    "child_process_environment_reuse",
+                )?,
+                blocked_names: object_text_list(
+                    environment,
+                    "child_process_environment_reuse",
+                    "blocked_names",
+                )?,
+            },
+        )
+        .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))?;
 
         let routes = view.optional_value("lsp_server_language_selection");
         let recovery = view.optional_value("lsp_timeout_restart_policy");
@@ -70,17 +121,33 @@ impl EffectiveToolingSettings {
             _ => return Err(EffectiveToolingError::IncompleteLspPolicy),
         };
         let tool_output_spill = decode_tool_output_spill_policy(view)?;
+        let tool_result_cache_ttl_seconds = u64v(
+            view.integer("tool_result_cache_ttl")?,
+            "tool_result_cache_ttl",
+        )?;
         Ok(Self {
             egress_allow,
+            observation,
             process,
+            process_launch,
             lsp,
             tool_output_spill,
+            tool_result_cache_ttl_seconds,
         })
     }
 
     pub(crate) fn install(&self, registry: &Registry) -> Result<(), EffectiveToolingError> {
         registry
+            .install_observation_tool_policy(self.observation)
+            .map_err(|error| EffectiveToolingError::Install(error.to_string()))?;
+        registry
             .install_egress_allow_policy(self.egress_allow.clone())
+            .map_err(|error| EffectiveToolingError::Install(error.to_string()))?;
+        registry
+            .install_tool_result_cache_ttl(self.tool_result_cache_ttl_seconds)
+            .map_err(|error| EffectiveToolingError::Install(error.to_string()))?;
+        registry
+            .install_process_launch_policy(self.process_launch.clone())
             .map_err(|error| EffectiveToolingError::Install(error.to_string()))?;
         if let Some(control) = registry.process_control() {
             control
@@ -93,6 +160,32 @@ impl EffectiveToolingSettings {
                 .map_err(|error| EffectiveToolingError::Install(error.message))?,
             (Some(_), None) => return Err(EffectiveToolingError::IncompleteLspPolicy),
             (None, _) => {}
+        }
+        Ok(())
+    }
+
+    /// Adoption cannot reinstall process-scoped owners. It must prove that the historical pin is
+    /// byte-for-byte compatible with the already-live registry before swapping journals.
+    pub(crate) fn verify_installed(
+        &self,
+        registry: &Registry,
+    ) -> Result<(), EffectiveToolingError> {
+        if registry.installed_observation_tool_policy() != Some(self.observation)
+            || registry.installed_egress_allow_policy() != Some(self.egress_allow.clone())
+            || registry.tool_result_cache_ttl_seconds() != self.tool_result_cache_ttl_seconds
+            || registry.installed_process_launch_policy() != Some(self.process_launch.clone())
+            || registry
+                .process_control()
+                .is_some_and(|control| control.policy() != self.process)
+            || match (registry.lsp_control(), &self.lsp) {
+                (Some(control), Some(policy)) => control.policy() != *policy,
+                (Some(_), None) => true,
+                (None, _) => false,
+            }
+        {
+            return Err(EffectiveToolingError::Install(
+                "adopted tooling checkpoint differs from the live process owner".into(),
+            ));
         }
         Ok(())
     }

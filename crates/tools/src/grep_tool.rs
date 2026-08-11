@@ -16,9 +16,6 @@ const MAX_GREP_ENTRIES: usize = 50_000;
 /// Owner-directed 2026-08-05: 100 matches was below the size of an ordinary answer ("every call
 /// site of X" in this workspace routinely exceeds it), so the cap was reached on searches whose
 /// results were then silently incomplete. Raised an order of magnitude; still bounded.
-const MAX_GREP_MATCHES: usize = 1_000;
-const MAX_GREP_SNIPPET_BYTES: usize = 1_024;
-const MAX_GREP_OUTPUT_BYTES: usize = 512 * 1024;
 const GREP_NOTICE_RESERVE_BYTES: usize = 1_024;
 const MAX_REGEX_COMPILED_BYTES: usize = 1024 * 1024;
 const MAX_GITIGNORE_FILES: usize = 128;
@@ -75,25 +72,23 @@ struct SearchResult {
 }
 
 impl SearchResult {
-    fn push_hit(&mut self, hit: String) -> bool {
+    fn push_hit(&mut self, hit: String, policy: crate::GrepPolicy) -> bool {
         let added = hit.len().saturating_add(usize::from(!self.hits.is_empty()));
-        if self.hits.len() >= MAX_GREP_MATCHES
+        if self.hits.len() >= policy.max_matches
             || self.hit_bytes.saturating_add(added)
-                > MAX_GREP_OUTPUT_BYTES.saturating_sub(GREP_NOTICE_RESERVE_BYTES)
+                > policy
+                    .output_max_bytes
+                    .saturating_sub(GREP_NOTICE_RESERVE_BYTES)
         {
             self.results_capped = true;
             return false;
         }
         self.hit_bytes += added;
         self.hits.push(hit);
-        if self.hits.len() == MAX_GREP_MATCHES {
-            self.results_capped = true;
-            return false;
-        }
         true
     }
 
-    fn render(self, pattern: &str) -> String {
+    fn render(self, pattern: &str, policy: crate::GrepPolicy) -> String {
         let mut output = if self.hits.is_empty() {
             format!("no matches for `{pattern}`")
         } else {
@@ -101,7 +96,8 @@ impl SearchResult {
         };
         if self.results_capped {
             output.push_str(&format!(
-                "\n[results capped at {MAX_GREP_MATCHES} matches / {MAX_GREP_OUTPUT_BYTES} output bytes; narrow the search]"
+                "\n[results capped at {} matches / {} output bytes; narrow the search]",
+                policy.max_matches, policy.output_max_bytes
             ));
         }
         if self.skipped_files > 0 {
@@ -127,8 +123,11 @@ impl SearchResult {
                 "\n[repository traversal stopped at the {MAX_GREP_ENTRIES}-entry limit]"
             ));
         }
-        debug_assert!(output.len() <= MAX_GREP_OUTPUT_BYTES);
-        output
+        if output.len() > policy.output_max_bytes {
+            iteron_protocol::text::head(&output, policy.output_max_bytes)
+        } else {
+            output
+        }
     }
 }
 
@@ -172,6 +171,7 @@ struct IgnoreBudget {
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+    let policy_cell = registry.observation_tool_policy_handle();
     registry.push_tool(
         ToolSpec {
             name: "grep".into(),
@@ -195,9 +195,16 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy_cell = policy_cell.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy_cell.get().copied().map(|policy| policy.grep) else {
+                    return err_result(
+                        id,
+                        "grep refused: immutable observation-tool policy was not installed".into(),
+                    );
+                };
                 let pattern = call
                     .input
                     .get("pattern")
@@ -223,8 +230,10 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     Err(error) => return err_result(id, error),
                 };
                 let pattern = pattern.to_owned();
-                match tokio::task::spawn_blocking(move || search(&root, &base, &matcher)).await {
-                    Ok(Ok(result)) => ok_result(id, result.render(&pattern)),
+                match tokio::task::spawn_blocking(move || search(&root, &base, &matcher, policy))
+                    .await
+                {
+                    Ok(Ok(result)) => ok_result(id, result.render(&pattern, policy)),
                     Ok(Err(error)) => err_result(id, error),
                     Err(error) => err_result(id, format!("grep worker failed: {error}")),
                 }
@@ -233,7 +242,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     )
 }
 
-fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, String> {
+fn search(
+    root: &Path,
+    base: &Path,
+    matcher: &Matcher,
+    policy: crate::GrepPolicy,
+) -> Result<SearchResult, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("grep cannot canonicalize workspace root: {error}"))?;
@@ -346,9 +360,9 @@ fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, S
             if !matcher.is_match(line) {
                 continue;
             }
-            let snippet = iteron_protocol::text::head(line.trim(), MAX_GREP_SNIPPET_BYTES);
+            let snippet = iteron_protocol::text::head(line.trim(), policy.snippet_max_bytes);
             let hit = format!("{}:{}: {snippet}", relative, line_index + 1);
-            if !result.push_hit(hit) {
+            if !result.push_hit(hit, policy) {
                 break 'files;
             }
         }

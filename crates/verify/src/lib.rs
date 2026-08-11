@@ -20,12 +20,19 @@ pub mod runtime_policy;
 pub mod select;
 pub mod strategy;
 
-pub use oracle::{Oracle, OracleStrength, TestOracle, Verdict, VerificationOutcome};
+pub use oracle::{
+    Oracle, OracleStrength, TestOracle, Verdict, VerificationFailureTaxonomyEntry,
+    VerificationOutcome, classify_verification_failure, verification_failure_taxonomy,
+};
 pub use runtime_policy::{
-    FlakyQuarantinePolicy, MAX_PHYSICAL_VERIFIER_RUNS, MAX_VERIFICATION_COMMANDS,
-    VerificationCheckpointPolicy, VerificationConsensus, VerificationPolicyError,
-    VerificationQuorumPolicy, VerificationRestorePolicy, VerificationRollbackMode,
+    DEFAULT_VERIFICATION_REPAIR_ATTEMPTS, DEFAULT_VERIFIER_TIMEOUT_SECS, FlakyQuarantinePolicy,
+    MAX_PHYSICAL_VERIFIER_RUNS, MAX_VERIFICATION_COMMANDS, MAX_VERIFICATION_FEEDBACK_BYTES,
+    UnknownVerificationRetryAction, VerificationCheckpointPolicy, VerificationConsensus,
+    VerificationFailureClass, VerificationFeedbackTailPolicy, VerificationPolicyError,
+    VerificationQuorumPolicy, VerificationRecoveryAction, VerificationRecoveryEscalationPolicy,
+    VerificationRestorePolicy, VerificationRetryPolicy, VerificationRollbackMode,
     VerificationRuntimePolicy, VerificationSelectionMode, verification_consensus,
+    verification_recovery_escalation_policy,
 };
 pub use select::{Candidate, Selection};
 pub use strategy::{

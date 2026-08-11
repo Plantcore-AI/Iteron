@@ -7,8 +7,9 @@ use crate::{
     validate_collection, validate_digest, validate_nonempty_string,
 };
 use iteron_protocol::{
-    PolicyDecisionEvidence, PolicyOpportunityJoinDigest, PolicyOutcomeEvidence, PolicyOutcomeScope,
-    PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TenantId,
+    PolicyActionId, PolicyDecisionEvidence, PolicyHarnessErrorJoinDigest, PolicyHarnessOutcomeId,
+    PolicyOpportunityJoinDigest, PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyTerminalOutcome,
+    PolicyVerifierOutcome, RunId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -239,7 +240,14 @@ impl PolicyEvidenceRunFixture {
             }
         }
         let run = run.ok_or(PolicyEvidenceRunProjectorError::InvalidOutcomeOrder)?;
-        validate_run_aggregate(turns.values().copied(), run)?;
+        // Outcome ordinal is the durable join order. Turn ids need not be monotonic, so deriving
+        // the harness-error commitment from the BTreeMap would silently reorder evidence.
+        validate_run_aggregate(
+            self.outcomes
+                .iter()
+                .filter(|outcome| outcome.scope == PolicyOutcomeScope::Turn),
+            run,
+        )?;
         Ok(ValidatedJoin {
             turn_outcomes: turns,
             run_outcome: run,
@@ -433,7 +441,7 @@ fn candidate_set_digest(decision: &PolicyDecisionEvidence) -> String {
     let mut actions: Vec<&str> = decision
         .eligible_actions
         .iter()
-        .map(|action| action.0.as_str())
+        .map(PolicyActionId::as_str)
         .collect();
     actions.sort_unstable();
     let mut hasher = Sha256::new();
@@ -452,9 +460,12 @@ fn validate_run_aggregate<'a>(
 ) -> Result<(), PolicyEvidenceRunProjectorError> {
     let mut terminal = PolicyTerminalOutcome::Succeeded;
     let mut quality = None;
+    let mut cost = Some(0_u64);
+    let mut input_tokens = Some(0_u64);
+    let mut output_tokens = Some(0_u64);
     let mut latency = 0_u64;
     let mut verifier = PolicyVerifierOutcome::NotRun;
-    let mut harness_error = false;
+    let mut harness_errors = PolicyHarnessErrorJoinDigest::default();
     let mut count = 0_u32;
     for turn in turns {
         if terminal_rank(turn.terminal) > terminal_rank(terminal) {
@@ -467,22 +478,56 @@ fn validate_run_aggregate<'a>(
                 .zip(turn.quality_micros)
                 .map(|(left, right)| left.min(right))
         };
-        latency = latency.saturating_add(turn.latency_us);
+        cost = checked_optional_sum(cost, turn.cost_microusd)?;
+        input_tokens = checked_optional_sum(input_tokens, turn.input_tokens)?;
+        output_tokens = checked_optional_sum(output_tokens, turn.output_tokens)?;
+        latency = latency
+            .checked_add(turn.latency_us)
+            .ok_or(PolicyEvidenceRunProjectorError::RunAggregateMismatch)?;
         if verifier_rank(turn.verifier) > verifier_rank(verifier) {
             verifier = turn.verifier;
         }
-        harness_error |= turn.harness_error_code.is_some();
-        count = count.saturating_add(1);
+        if let Some(outcome) = &turn.harness_error_code {
+            let code = PolicyHarnessOutcomeId::from_persisted(outcome, turn.scope)
+                .map_err(|_| PolicyEvidenceRunProjectorError::RunAggregateMismatch)?
+                .single_code()
+                .ok_or(PolicyEvidenceRunProjectorError::RunAggregateMismatch)?;
+            harness_errors
+                .append(code)
+                .map_err(|_| PolicyEvidenceRunProjectorError::RunAggregateMismatch)?;
+        }
+        count = count
+            .checked_add(1)
+            .ok_or(PolicyEvidenceRunProjectorError::RunAggregateMismatch)?;
     }
     if run.terminal != terminal
         || run.quality_micros != quality
+        || run.cost_microusd != cost
+        || run.input_tokens != input_tokens
+        || run.output_tokens != output_tokens
         || run.latency_us != latency
         || run.verifier != verifier
-        || run.harness_error_code.is_some() != harness_error
+        || run.harness_error_code
+            != harness_errors
+                .outcome()
+                .map(PolicyHarnessOutcomeId::into_string)
     {
         return Err(PolicyEvidenceRunProjectorError::RunAggregateMismatch);
     }
     Ok(())
+}
+
+fn checked_optional_sum(
+    left: Option<u64>,
+    right: Option<u64>,
+) -> Result<Option<u64>, PolicyEvidenceRunProjectorError> {
+    match (left, right) {
+        (Some(left), Some(right)) => left
+            .checked_add(right)
+            .map(Some)
+            .ok_or(PolicyEvidenceRunProjectorError::RunAggregateMismatch),
+        (None, _) | (_, None) => Ok(None),
+    }
 }
 
 const fn terminal_rank(value: PolicyTerminalOutcome) -> u8 {

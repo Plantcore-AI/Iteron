@@ -275,7 +275,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 11,
+      "current_version": 12,
       "version_field": null,
       "fixtures": [
         {
@@ -337,6 +337,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-policy-bundle-v11.jsonl",
           "format": "jsonl",
           "schema_version": 11
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-verification-policy-v12.jsonl",
+          "format": "jsonl",
+          "schema_version": 12
         }
       ],
       "fields": [
@@ -1071,7 +1076,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 7,
+      "current_version": 8,
       "version_field": null,
       "fixtures": [
         {
@@ -1108,6 +1113,11 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-policy-bundle-v7.json",
           "format": "json",
           "schema_version": 7
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-verification-policy-v8.json",
+          "format": "json",
+          "schema_version": 8
         }
       ],
       "fields": [
@@ -1169,6 +1179,33 @@
         }
       ],
       "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.provider_governor_decision",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "provider_governor_decision"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "decision",
+          "introduced_release": 1
+        },
         {
           "name": "kind",
           "introduced_release": 1
@@ -1411,7 +1448,7 @@
     },
     {
       "id": "record.event-kind.effect_intent",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1422,6 +1459,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
@@ -1442,6 +1484,10 @@
           "introduced_release": 1
         },
         {
+          "name": "provider_route_attempt",
+          "introduced_release": 1
+        },
+        {
           "name": "tool",
           "introduced_release": 1
         },
@@ -1458,7 +1504,7 @@
     },
     {
       "id": "record.event-kind.effect_unknown",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1469,6 +1515,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
@@ -1478,6 +1529,10 @@
         },
         {
           "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "provider_route_attempt",
           "introduced_release": 1
         },
         {
@@ -1586,7 +1641,7 @@
     },
     {
       "id": "record.event-kind.effect_done",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1602,6 +1657,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -1618,6 +1678,10 @@
           "introduced_release": 1
         },
         {
+          "name": "provider_route_attempt",
+          "introduced_release": 1
+        },
+        {
           "name": "tool",
           "introduced_release": 1
         }
@@ -1626,7 +1690,7 @@
     },
     {
       "id": "record.event-kind.effect_failed",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1642,6 +1706,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -1655,6 +1724,10 @@
         },
         {
           "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "provider_route_attempt",
           "introduced_release": 1
         },
         {
@@ -2509,6 +2582,37 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.event-kind.verification_policy",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "verification_policy"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-verification-policy-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "event",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-kind.done",
       "current_version": 1,
       "version_field": null,
@@ -2979,6 +3083,23 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.named.run-genesis-fixed-authority-binding-v2",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-fixed-authority-binding-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "authority", "introduced_release": 1 },
+        { "name": "owner_value_digest_sha256", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.named.run-genesis-tunable-entry-v2",
       "current_version": 1,
       "version_field": null,
@@ -2993,6 +3114,7 @@
         { "name": "ceiling_adjustments", "introduced_release": 1 },
         { "name": "effective_value", "introduced_release": 1, "optional": true },
         { "name": "family_id", "introduced_release": 1 },
+        { "name": "fixed_authority_binding", "introduced_release": 1, "optional": true },
         { "name": "inactive_reason", "introduced_release": 1, "optional": true },
         { "name": "ordinal", "introduced_release": 1 },
         { "name": "profile_applied", "introduced_release": 1 },
@@ -3268,6 +3390,34 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.named.provider-route-attempt-identity",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-provider-route-attempt-identity-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "max_cost_reservation_microusd", "introduced_release": 1, "optional": true },
+        { "name": "physical_attempt", "introduced_release": 1 },
+        { "name": "route_id", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.provider-route-attempt-accounting",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-provider-route-attempt-accounting-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "cost", "introduced_release": 1 },
+        { "name": "max_cost_reservation_microusd", "introduced_release": 1, "optional": true },
+        { "name": "physical_attempt", "introduced_release": 1 },
+        { "name": "route_id", "introduced_release": 1 },
+        { "name": "usage", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.named.workflow-task-evidence",
       "current_version": 1,
       "version_field": null,
@@ -3467,13 +3617,17 @@
     },
     {
       "id": "abi.effect-proposal",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
-      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/effect-proposal-v1.json", "format": "json", "schema_version": 1 }],
+      "fixtures": [
+        { "path": "governance/schema-compat/fixtures/abi/effect-proposal-v1.json", "format": "json", "schema_version": 1 },
+        { "path": "governance/schema-compat/fixtures/abi/effect-proposal-v2.json", "format": "json", "schema_version": 2 }
+      ],
       "fields": [
         { "name": "admitted", "introduced_release": 1 },
         { "name": "arguments", "introduced_release": 1 },
         { "name": "id", "introduced_release": 1 },
+        { "name": "provider_route_attempt", "introduced_release": 1, "optional": true },
         { "name": "tool", "introduced_release": 1 },
         { "name": "tool_use_id", "introduced_release": 1 },
         { "name": "workspace", "introduced_release": 1 }

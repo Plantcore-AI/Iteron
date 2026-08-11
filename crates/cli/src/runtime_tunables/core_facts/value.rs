@@ -1,66 +1,25 @@
 use super::*;
 
-pub(super) fn activate_core_seams(
-    builder: &mut RuntimeResolutionBuilder,
-    input: &CoreFactsInput<'_>,
-) -> Result<(), CoreFactError> {
-    let retry = owner_digest(
-        "retry",
-        &(
-            input.retry.base_ms,
-            input.retry.cap_ms,
-            input.retry.max_attempts,
+pub(super) fn instruction_discovery_value() -> Result<ResolutionValue, CoreFactError> {
+    let owner = iteron_ctx::InstructionDiscoveryPolicy::owner();
+    Ok(object([
+        (
+            "max_depth",
+            int(i64u(owner.max_depth, "instruction_discovery_render")?),
         ),
-    )?;
-    for family in [
-        "retry_backoff_base",
-        "retry_backoff_cap",
-        "retry_max_attempts",
-    ] {
-        builder.activate(
-            family,
-            "crates/cli/src/config/retry.rs",
-            true,
-            retry.clone(),
-        )?;
-    }
-    builder.activate(
-        "summary_profile",
-        "crates/ctx/src/compact.rs",
-        true,
-        owner_digest("summary", &(SUMMARY_OUTPUT_TOKENS, "low", 0_u32, true))?,
-    )?;
-    builder.activate(
-        "instruction_discovery_render",
-        "crates/ctx/src/instructions.rs",
-        true,
-        owner_digest(
-            "instructions",
-            &(
-                INSTRUCTION_MAX_DEPTH,
-                INSTRUCTION_MAX_FILES,
-                INSTRUCTION_PER_FILE_BYTES,
-                INSTRUCTION_TOTAL_BYTES,
-            ),
-        )?,
-    )?;
-    let mem = MemBudget::default();
-    builder.activate(
-        "memory_budgets",
-        "crates/ctx/src/memory.rs",
-        true,
-        owner_digest(
-            "memory_budget",
-            &(
-                mem.recall_bytes,
-                mem.index_bytes,
-                mem.instr_bytes,
-                MEMORY_FACT_BYTES,
-                mem.total,
-            ),
-        )?,
-    )?;
-    Ok(())
+        (
+            "max_files",
+            int(i64u(owner.max_files, "instruction_discovery_render")?),
+        ),
+        (
+            "per_file_bytes",
+            int(i64u(owner.per_file_bytes, "instruction_discovery_render")?),
+        ),
+        (
+            "total_bytes",
+            int(i64u(owner.total_bytes, "instruction_discovery_render")?),
+        ),
+    ]))
 }
 
 pub(super) fn verify_route(input: &CoreFactsInput<'_>) -> Result<(), CoreFactError> {
@@ -77,6 +36,23 @@ pub(super) fn declare(
     value: ResolutionValue,
 ) -> Result<(), CoreFactError> {
     builder.declare(family, source(origin), value)?;
+    Ok(())
+}
+
+/// Sample the immutable embedded owner before admitting an authorized override. A non-Builtin
+/// source may narrow/replace according to its canonical merge policy; a Builtin value that differs
+/// from the literal is deliberately sent through `declare` so the builder rejects the drift.
+pub(super) fn literal_with_override(
+    builder: &mut RuntimeResolutionBuilder,
+    family: &str,
+    literal: ResolutionValue,
+    origin: ConfigOrigin,
+    value: ResolutionValue,
+) -> Result<(), CoreFactError> {
+    builder.attest_literal_owner(family, literal.clone())?;
+    if origin != ConfigOrigin::Builtin || value != literal {
+        declare(builder, family, origin, value)?;
+    }
     Ok(())
 }
 

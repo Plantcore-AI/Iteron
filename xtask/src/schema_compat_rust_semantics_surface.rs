@@ -1,7 +1,7 @@
 use super::super::super::manifest::{Contract, Surface};
 use super::graph::{
-    ProtocolGraph, SourceView, file_attribute_fingerprints, import_fingerprints,
-    module_fingerprints,
+    ProtocolGraph, ScopeBinding, SourceView, file_attribute_fingerprints, identifier_occurrences,
+    import_bindings, module_bindings, semantic_item,
 };
 use super::serde_attrs::{
     attributes as serde_attributes, flag as serde_flag, rename as serde_rename,
@@ -59,7 +59,7 @@ pub(super) fn compare_surfaces(
         .map(|surface| (surface.id.as_str(), surface))
         .collect::<BTreeMap<_, _>>();
     let mut compared_enum_containers = BTreeSet::new();
-    let mut standalone_imports = BTreeSet::new();
+    let mut standalone_scopes = BTreeSet::new();
 
     for old_surface in &previous.surfaces {
         let new_surface = candidate_surfaces
@@ -80,11 +80,12 @@ pub(super) fn compare_surfaces(
             continue;
         }
         if let Some((path, item_name)) = standalone_named_surface(&old_surface.id) {
-            compare_standalone_imports_once(
+            compare_standalone_scope_once(
                 path,
+                item_name,
                 base_view,
                 candidate_view,
-                &mut standalone_imports,
+                &mut standalone_scopes,
             )?;
             let base_file = base_view.parse_file(path)?;
             let candidate_file = candidate_view.parse_file(path)?;
@@ -117,11 +118,12 @@ pub(super) fn compare_surfaces(
         .iter()
         .any(|surface| surface.id == "kernel.diagnostic")
     {
-        compare_standalone_imports_once(
+        compare_standalone_scope_once(
             KERNEL_SOURCE,
+            "KernelDiagnostic",
             base_view,
             candidate_view,
-            &mut standalone_imports,
+            &mut standalone_scopes,
         )?;
         let base = base_view.parse_file(KERNEL_SOURCE)?;
         let current = candidate_view.parse_file(KERNEL_SOURCE)?;
@@ -431,27 +433,79 @@ fn unique_type<'a>(file: &'a syn::File, expected: &str) -> Result<&'a syn::Item>
     Ok(item)
 }
 
-fn compare_standalone_imports_once(
+fn compare_standalone_scope_once(
     path: &str,
+    item_name: &str,
     base_view: SourceView<'_>,
     candidate_view: SourceView<'_>,
     compared: &mut BTreeSet<String>,
 ) -> Result<()> {
-    if !compared.insert(path.to_owned()) {
+    if !compared.insert(format!("{path}::{item_name}")) {
         return Ok(());
     }
     let base = base_view.parse_file(path)?;
     let current = candidate_view.parse_file(path)?;
-    if import_fingerprints(&base) != import_fingerprints(&current) {
-        bail!("managed schema source '{path}' changed its import bindings");
-    }
-    if module_fingerprints(&base) != module_fingerprints(&current) {
-        bail!("managed schema source '{path}' changed its module declarations");
-    }
-    if file_attribute_fingerprints(&base) != file_attribute_fingerprints(&current) {
-        bail!("managed schema source '{path}' changed its file-level attributes");
+    match standalone_scope_drift(&base, &current, item_name)? {
+        Some(StandaloneScopeDrift::Import) => bail!(
+            "managed schema source '{path}' changed an import binding its '{item_name}' surface relies on"
+        ),
+        Some(StandaloneScopeDrift::Module) => bail!(
+            "managed schema source '{path}' changed a module binding its '{item_name}' surface relies on"
+        ),
+        Some(StandaloneScopeDrift::FileAttribute) => {
+            bail!("managed schema source '{path}' changed its file-level attributes")
+        }
+        None => {}
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StandaloneScopeDrift {
+    Import,
+    Module,
+    FileAttribute,
+}
+
+/// Compare only the file-scope bindings a standalone managed type can resolve through.
+///
+/// `record.rollout` and `kernel.diagnostic` live beside substantial non-schema code. Freezing
+/// every import and module in those files made an unrelated additive module indistinguishable
+/// from redirecting a wire type. The protocol graph already uses name-reachable bindings; apply
+/// the same conservative rule here. Glob, anonymous, attributed, and otherwise unknowable
+/// bindings still report `names = None` and therefore remain frozen unconditionally.
+fn standalone_scope_drift(
+    base: &syn::File,
+    current: &syn::File,
+    item_name: &str,
+) -> Result<Option<StandaloneScopeDrift>> {
+    let mut referenced = BTreeSet::new();
+    identifier_occurrences(
+        semantic_item(unique_type(base, item_name)?).as_str(),
+        &mut referenced,
+    );
+    identifier_occurrences(
+        semantic_item(unique_type(current, item_name)?).as_str(),
+        &mut referenced,
+    );
+
+    let fingerprints = |bindings: Vec<ScopeBinding>| {
+        bindings
+            .into_iter()
+            .filter(|binding| binding.reaches(&referenced))
+            .map(|binding| binding.fingerprint)
+            .collect::<BTreeSet<_>>()
+    };
+    if fingerprints(import_bindings(base)) != fingerprints(import_bindings(current)) {
+        return Ok(Some(StandaloneScopeDrift::Import));
+    }
+    if fingerprints(module_bindings(base)) != fingerprints(module_bindings(current)) {
+        return Ok(Some(StandaloneScopeDrift::Module));
+    }
+    if file_attribute_fingerprints(base) != file_attribute_fingerprints(current) {
+        return Ok(Some(StandaloneScopeDrift::FileAttribute));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

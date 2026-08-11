@@ -279,7 +279,7 @@ pub(super) async fn handle_sessions_command(
                 std::process::id(),
                 crate::erasure_now_unix_ms()
             );
-            let request = iteron_record::authorize_local_erasure(&runs).and_then(|authority| {
+            let request = iteron_record::erasure::authorize_local_erasure(&runs).and_then(|authority| {
                 Ok(iteron_protocol::ErasureRequest {
                     operation_id: iteron_protocol::ErasureOperationId::new(operation_id.clone())?,
                     authority_id: authority.id().clone(),
@@ -292,7 +292,7 @@ pub(super) async fn handle_sessions_command(
                     },
                 })
             });
-            match request.and_then(|request| iteron_record::execute_erasure(&runs, request)) {
+            match request.and_then(|request| iteron_record::erasure::execute_erasure(&runs, request)) {
                 Ok(receipt) if receipt.state() == iteron_protocol::ErasureState::Verified => {
                     let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
                     if std::fs::symlink_metadata(&hook_journal).is_ok() {
@@ -401,10 +401,17 @@ pub(super) async fn create_fresh_session(
         Some(app_server::ControlReply::Adopted {
             adopted,
             snapshot,
+            tunables_checkpoint,
+            compaction_trigger_tokens,
             blocked,
         }) => {
             clear_transcript_for_adoption(app);
-            session.adopt_run(adopted.rollout_path.clone(), (*snapshot).clone());
+            session.adopt_run(
+                adopted.rollout_path.clone(),
+                *tunables_checkpoint,
+                compaction_trigger_tokens,
+                (*snapshot).clone(),
+            );
             app.session_name = "New session".into();
             app.mode = snapshot.mode;
             app.effort = snapshot.effort;

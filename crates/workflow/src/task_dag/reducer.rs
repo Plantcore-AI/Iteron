@@ -125,10 +125,13 @@ impl TaskDag {
     }
 
     pub fn ready_tasks(&self) -> Vec<TaskId> {
-        self.tasks
+        let mut ready = self
+            .tasks
             .iter()
             .filter_map(|(id, task)| matches!(task.state, TaskState::Ready).then_some(*id))
-            .collect()
+            .collect::<Vec<_>>();
+        crate::TaskPrioritySchedulingPolicy::owner().order_ready(&mut ready);
+        ready
     }
 
     pub fn pending_messages(&self, task: TaskId) -> Result<Vec<&TaskMessage>, DagError> {

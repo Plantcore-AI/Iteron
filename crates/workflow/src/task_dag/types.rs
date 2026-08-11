@@ -216,6 +216,11 @@ impl BudgetReservation {
 #[serde(deny_unknown_fields)]
 pub struct TaskSpec {
     pub id: TaskId,
+    /// Stable workflow declaration identity. `None` is retained only for historical/general DAG
+    /// callers; the production workflow adapter always persists `Some(index)` and reconstructs
+    /// dependency resolution from it on reopen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration_index: Option<u32>,
     pub parent: Option<TaskId>,
     pub dependencies: Vec<TaskId>,
     pub label: String,
@@ -273,7 +278,50 @@ pub struct AttemptSpec {
     pub task: TaskId,
     pub retry_ordinal: u32,
     pub sibling_ordinal: u32,
+    /// Version zero represents historical logs written before explicit lineage existed. The
+    /// production adapter writes version one and the reducer enforces its complete predecessor
+    /// contract. Keeping zero readable avoids turning an upgrade into log corruption.
+    #[serde(default)]
+    pub lineage_version: u8,
+    /// The exact terminal attempt whose evidence caused this retry group. Every sibling in a
+    /// retry group names the same predecessor; an initial group has no predecessor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<AttemptId>,
+    #[serde(default)]
+    pub assignment: AttemptAssignment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_cause: Option<AttemptRetryCause>,
+    /// Canonical digest of the complete durable predecessor terminal. The reducer recomputes this
+    /// value at registration; callers cannot substitute a digest of transient prompt text or
+    /// schema diagnostics. `retry_cause` records why that terminal was not logically sufficient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_evidence_digest: Option<String>,
     pub input_digest: String,
+}
+
+/// Controller-owned assignment lineage for one physical attempt. This is deliberately separate
+/// from `retry_ordinal`: a replay can distinguish retrying the same assignee policy from selecting
+/// a fresh assignee without inferring intent from prompt text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptAssignment {
+    Initial,
+    RetrySame,
+    Reassigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptRetryCause {
+    NegativeTerminal,
+    ChildFailure,
+    SchemaValidation,
+}
+
+impl Default for AttemptAssignment {
+    fn default() -> Self {
+        Self::Initial
+    }
 }
 
 /// Why a physical attempt was (or was not) selected by the controller.

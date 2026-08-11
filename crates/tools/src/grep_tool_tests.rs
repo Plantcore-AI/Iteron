@@ -32,6 +32,14 @@ fn grep_call(id: &str, pattern: &str, regex: bool) -> ToolUse {
     }
 }
 
+fn registry(root: &Path) -> Registry {
+    let registry = Registry::read_only(root).unwrap();
+    registry
+        .install_observation_tool_policy(crate::ObservationToolPolicy::default())
+        .unwrap();
+    registry
+}
+
 #[tokio::test]
 async fn d3_08_g1_regex_finds_a_match_ten_directories_deep() {
     let root = TestRoot::new("deep-regex");
@@ -45,7 +53,7 @@ async fn d3_08_g1_regex_finds_a_match_ten_directories_deep() {
         "fn ordinary() {}\nfn deeply_nested_test() {}\n",
     )
     .unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = registry(&root.0);
 
     let first = registry
         .dispatch(grep_call("regex-1", r"fn \w+_test", true))
@@ -70,7 +78,7 @@ async fn d3_08_g2_multi_gigabyte_file_is_skipped_before_reading() {
     let huge = std::fs::File::create(root.0.join("huge.log")).unwrap();
     huge.set_len(3 * 1024 * 1024 * 1024).unwrap();
     std::fs::write(root.0.join("small.txt"), "needle stays reachable\n").unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = registry(&root.0);
 
     let result = registry.dispatch(grep_call("huge", "needle", false)).await;
 
@@ -82,7 +90,12 @@ async fn d3_08_g2_multi_gigabyte_file_is_skipped_before_reading() {
     );
     assert!(result.content.contains("1 files skipped"));
     assert!(result.content.contains("per-file limit"));
-    assert!(result.content.len() <= MAX_GREP_OUTPUT_BYTES);
+    assert!(
+        result.content.len()
+            <= crate::ObservationToolPolicy::default()
+                .grep
+                .output_max_bytes
+    );
 }
 
 #[tokio::test]
@@ -102,7 +115,7 @@ async fn d3_08_g3_repo_gitignore_and_default_vendor_filters_are_honored() {
         .unwrap();
     }
     std::fs::write(root.0.join("visible.txt"), "forbidden-match visible\n").unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = registry(&root.0);
 
     let result = registry
         .dispatch(grep_call("ignore", "forbidden-match", false))
@@ -118,35 +131,76 @@ async fn d3_08_g3_repo_gitignore_and_default_vendor_filters_are_honored() {
 #[tokio::test]
 async fn d3_08_g4_match_cap_is_explicit_and_output_is_bounded() {
     let root = TestRoot::new("cap");
-    let content = (0..MAX_GREP_MATCHES + 20)
+    let max_matches = crate::ObservationToolPolicy::default().grep.max_matches;
+    let content = (0..max_matches + 20)
         .map(|index| format!("needle-{index}\n"))
         .collect::<String>();
     std::fs::write(root.0.join("many.txt"), content).unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = registry(&root.0);
 
     let result = registry
         .dispatch(grep_call("cap", r"needle-\d+", true))
         .await;
 
     assert!(!result.is_error, "{}", result.content);
-    assert_eq!(
-        result.content.matches("many.txt:").count(),
-        MAX_GREP_MATCHES
-    );
+    assert_eq!(result.content.matches("many.txt:").count(), max_matches);
     assert!(
         result
             .content
-            .contains(&format!("results capped at {MAX_GREP_MATCHES} matches")),
+            .contains(&format!("results capped at {max_matches} matches")),
         "{}",
         result.content
     );
-    assert!(result.content.len() <= MAX_GREP_OUTPUT_BYTES);
+    assert!(
+        result.content.len()
+            <= crate::ObservationToolPolicy::default()
+                .grep
+                .output_max_bytes
+    );
+}
+
+#[tokio::test]
+async fn pinned_match_limit_distinguishes_exact_boundary_from_n_plus_one() {
+    let root = TestRoot::new("pinned-boundary");
+    std::fs::write(
+        root.0.join("matches.txt"),
+        "exact one\nexact two\noverflow one\noverflow two\noverflow three\n",
+    )
+    .unwrap();
+
+    let unpinned = Registry::read_only(&root.0).unwrap();
+    let refused = unpinned
+        .dispatch(grep_call("unpinned", "exact", false))
+        .await;
+    assert!(refused.is_error);
+    assert!(refused.content.contains("policy was not installed"));
+
+    let pinned = Registry::read_only(&root.0).unwrap();
+    let mut policy = crate::ObservationToolPolicy::default();
+    policy.grep.max_matches = 2;
+    pinned.install_observation_tool_policy(policy).unwrap();
+
+    let exact = pinned.dispatch(grep_call("exact", "exact", false)).await;
+    assert!(!exact.is_error, "{}", exact.content);
+    assert_eq!(exact.content.matches("matches.txt:").count(), 2);
+    assert!(
+        !exact.content.contains("results capped"),
+        "{}",
+        exact.content
+    );
+
+    let overflow = pinned
+        .dispatch(grep_call("overflow", "overflow", false))
+        .await;
+    assert!(!overflow.is_error, "{}", overflow.content);
+    assert_eq!(overflow.content.matches("matches.txt:").count(), 2);
+    assert!(overflow.content.contains("results capped at 2 matches"));
 }
 
 #[tokio::test]
 async fn invalid_or_unbounded_regex_is_rejected_before_traversal() {
     let root = TestRoot::new("invalid-regex");
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = registry(&root.0);
 
     let invalid = registry.dispatch(grep_call("invalid", "(", true)).await;
     assert!(invalid.is_error);

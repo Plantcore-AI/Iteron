@@ -1,11 +1,47 @@
 use super::value::{boolv, en, memory_mode, object, replay_policy, session_profile, text};
 use super::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport, ExtensionGapReason, FactLayer,
-    GapImpact, McpTransport, OAuthLifecycleMode,
+    GapImpact, McpTransport, OAuthLifecycleMode, ReplayOwnerObservation,
 };
 use crate::config::McpTransportConfig;
-use iteron_tunables::{RuntimeResolutionBuilder, SourceKind};
+use iteron_tunables::{FixedAuthorityId, RuntimeResolutionBuilder, SourceKind};
 use std::collections::BTreeSet;
+
+use crate::runtime_tunables::fixed_artifacts::FixedAuthoritySample;
+
+/// Re-sample fixed orchestration owners that are immutable in the running binary. Budget/run-limit
+/// derived values (spawn depth and priority width) are reconstructed from V2 and excluded here.
+pub(crate) fn live_fixed_authority_samples() -> Vec<FixedAuthoritySample> {
+    let writer = iteron_workflow::WriterMergePolicy::default();
+    let replay = iteron_record::replay_divergence_detection_policy();
+    vec![
+        FixedAuthoritySample {
+            family: "writer_worktree_isolation_mode",
+            authority: FixedAuthorityId::RuntimeInvariant,
+            value: writer_isolation_value(writer),
+        },
+        FixedAuthoritySample {
+            family: "merge_conflict_arbitration",
+            authority: FixedAuthorityId::StrategyInvariant,
+            value: merge_conflict_arbitration_value(writer),
+        },
+        FixedAuthoritySample {
+            family: "inter_agent_messaging_topology",
+            authority: FixedAuthorityId::StrategyInvariant,
+            value: messaging_topology_owner_value(),
+        },
+        FixedAuthoritySample {
+            family: "replay_divergence_detection_policy",
+            authority: FixedAuthorityId::RuntimeInvariant,
+            value: replay_policy(ReplayOwnerObservation {
+                verify_hash_chain: replay.verify_hash_chain(),
+                verify_identity_scope: replay.verify_identity_scope(),
+                verify_effect_terminals: replay.verify_effect_terminals(),
+                fail_closed: replay.fail_closed(),
+            }),
+        },
+    ]
+}
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -13,6 +49,39 @@ pub(super) fn apply(
     report: &mut ExtensionFactsReport,
 ) -> Result<(), ExtensionFactError> {
     add_child_defaults(builder, input, report)?;
+
+    let spawn_depth = iteron_workflow::SpawnDepthControl::owner();
+    builder.attest_fixed_authority(
+        "spawn_depth_control",
+        FixedAuthorityId::StrategyInvariant,
+        super::value::int(i64::from(
+            spawn_depth.max_depth().min(input.budget.max_turns.min(64)),
+        )),
+    )?;
+    report.mark(137, "spawn_depth_control", FactLayer::Default);
+
+    let priority = iteron_workflow::TaskPrioritySchedulingPolicy::owner();
+    builder.attest_fixed_authority(
+        "task_priority_scheduling",
+        FixedAuthorityId::StrategyInvariant,
+        object([
+            (
+                "priority_levels",
+                super::value::int(super::value::i64u(
+                    priority
+                        .priority_levels()
+                        .min(input.run_limits.max_agent_calls().min(256)),
+                    "task_priority_scheduling",
+                )?),
+            ),
+            ("tie_break", en(priority.tie_break().label())),
+            (
+                "dependency_ready_only",
+                boolv(priority.dependency_ready_only()),
+            ),
+        ]),
+    )?;
+    report.mark(139, "task_priority_scheduling", FactLayer::Default);
 
     builder.observe_default(
         "per_session_spawn_cap",
@@ -22,9 +91,8 @@ pub(super) fn apply(
         )?),
     )?;
     report.mark(138, "per_session_spawn_cap", FactLayer::Default);
-    builder.declare(
+    builder.attest_literal_owner(
         "early_stop_quorum_policy",
-        SourceKind::Builtin,
         object([
             (
                 "minimum_evidence",
@@ -44,9 +112,8 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(142, "early_stop_quorum_policy", FactLayer::Default);
-    builder.declare(
+    builder.attest_literal_owner(
         "speculative_sibling_count",
-        SourceKind::Builtin,
         super::value::int(super::value::i64u(
             input.speculative_siblings.max_siblings(),
             "speculative_sibling_count",
@@ -78,24 +145,41 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(141, "speculative_sibling_cancellation", FactLayer::Default);
+    let writer_isolation = writer_isolation_value(input.writer_merge);
     builder.declare(
         "writer_worktree_isolation_mode",
         SourceKind::Builtin,
-        boolv(input.writer_merge.writer_worktree_isolation()),
+        writer_isolation.clone(),
+    )?;
+    builder.attest_fixed_authority(
+        "writer_worktree_isolation_mode",
+        FixedAuthorityId::RuntimeInvariant,
+        writer_isolation,
     )?;
     report.mark(143, "writer_worktree_isolation_mode", FactLayer::Default);
+    let merge_conflict_arbitration = merge_conflict_arbitration_value(input.writer_merge);
     builder.observe_default(
         "merge_conflict_arbitration",
-        object([
-            ("on_clean", en(input.writer_merge.on_clean().label())),
-            ("on_conflict", en(input.writer_merge.on_conflict().label())),
-            (
-                "require_verification",
-                boolv(input.writer_merge.require_verification()),
-            ),
-        ]),
+        merge_conflict_arbitration.clone(),
+    )?;
+    builder.attest_fixed_authority(
+        "merge_conflict_arbitration",
+        FixedAuthorityId::StrategyInvariant,
+        merge_conflict_arbitration,
     )?;
     report.mark(144, "merge_conflict_arbitration", FactLayer::Default);
+    if input
+        .authorities
+        .operator_messaging_topologies
+        .is_some_and(|topologies| topologies.contains(&super::MessagingTopology::ParentMediated))
+    {
+        builder.attest_fixed_authority(
+            "inter_agent_messaging_topology",
+            FixedAuthorityId::StrategyInvariant,
+            messaging_topology_owner_value(),
+        )?;
+        report.mark(145, "inter_agent_messaging_topology", FactLayer::Default);
+    }
     builder.observe_default(
         "task_retry_reassignment_policy",
         object([
@@ -116,49 +200,89 @@ pub(super) fn apply(
     report.mark(146, "task_retry_reassignment_policy", FactLayer::Default);
     let stdio = input.mcp_deadlines.stdio();
     let http = input.mcp_deadlines.http();
-    builder.observe_default(
+    let parent_wall_milliseconds = input
+        .budget
+        .max_wall_secs
+        .saturating_mul(1_000)
+        .min(iteron_mcp::MAX_MCP_DEADLINE_MILLISECONDS);
+    let startup_default = object([
+        (
+            "stdio_milliseconds",
+            super::value::int(super::value::i64v(
+                stdio.startup_milliseconds(),
+                "per_server_startup_deadline",
+            )?),
+        ),
+        (
+            "http_milliseconds",
+            super::value::int(super::value::i64v(
+                http.startup_milliseconds(),
+                "per_server_startup_deadline",
+            )?),
+        ),
+    ]);
+    builder.observe_default("per_server_startup_deadline", startup_default)?;
+    builder.attest_fixed_authority(
         "per_server_startup_deadline",
+        FixedAuthorityId::StrategyInvariant,
         object([
             (
                 "stdio_milliseconds",
                 super::value::int(super::value::i64v(
-                    stdio.startup_milliseconds(),
+                    stdio.startup_milliseconds().min(parent_wall_milliseconds),
                     "per_server_startup_deadline",
                 )?),
             ),
             (
                 "http_milliseconds",
                 super::value::int(super::value::i64v(
-                    http.startup_milliseconds(),
+                    http.startup_milliseconds().min(parent_wall_milliseconds),
                     "per_server_startup_deadline",
                 )?),
             ),
         ]),
     )?;
     report.mark(150, "per_server_startup_deadline", FactLayer::Default);
-    builder.observe_default(
+    let tool_default = object([
+        (
+            "stdio_milliseconds",
+            super::value::int(super::value::i64v(
+                stdio.tool_call_milliseconds(),
+                "per_tool_mcp_deadline",
+            )?),
+        ),
+        (
+            "http_milliseconds",
+            super::value::int(super::value::i64v(
+                http.tool_call_milliseconds(),
+                "per_tool_mcp_deadline",
+            )?),
+        ),
+    ]);
+    builder.observe_default("per_tool_mcp_deadline", tool_default)?;
+    builder.attest_fixed_authority(
         "per_tool_mcp_deadline",
+        FixedAuthorityId::StrategyInvariant,
         object([
             (
                 "stdio_milliseconds",
                 super::value::int(super::value::i64v(
-                    stdio.tool_call_milliseconds(),
+                    stdio.tool_call_milliseconds().min(parent_wall_milliseconds),
                     "per_tool_mcp_deadline",
                 )?),
             ),
             (
                 "http_milliseconds",
                 super::value::int(super::value::i64v(
-                    http.tool_call_milliseconds(),
+                    http.tool_call_milliseconds().min(parent_wall_milliseconds),
                     "per_tool_mcp_deadline",
                 )?),
             ),
         ]),
     )?;
     report.mark(151, "per_tool_mcp_deadline", FactLayer::Default);
-    builder.declare(
+    builder.attest_literal_owner(
         "mcp_result_cap_spill_policy",
-        SourceKind::Builtin,
         object([
             (
                 "visible_max_bytes",
@@ -179,9 +303,8 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(152, "mcp_result_cap_spill_policy", FactLayer::Default);
-    builder.declare(
+    builder.attest_literal_owner(
         "deferred_discovery_threshold",
-        SourceKind::Builtin,
         super::value::int(super::value::i64u(
             iteron_tools::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT,
             "deferred_discovery_threshold",
@@ -216,8 +339,69 @@ pub(super) fn apply(
     add_oauth_lifecycle(builder, input, report)?;
     add_capability_exposure(builder, input, report)?;
     add_session_and_replay(builder, input, report)?;
+    let pool = iteron_provider::provider_http_pool_policy();
+    let pool_default = object([
+        (
+            "pool_idle_seconds",
+            super::value::int(super::value::i64v(
+                pool.pool_idle.as_secs(),
+                "http_pool_keepalive_idle_policy",
+            )?),
+        ),
+        (
+            "tcp_keepalive_seconds",
+            super::value::int(super::value::i64v(
+                pool.tcp_keepalive.as_secs(),
+                "http_pool_keepalive_idle_policy",
+            )?),
+        ),
+        ("connection_reuse", boolv(pool.connection_reuse)),
+    ]);
+    builder.attest_literal_owner("http_pool_keepalive_idle_policy", pool_default.clone())?;
+    builder.attest_fixed_authority(
+        "http_pool_keepalive_idle_policy",
+        FixedAuthorityId::StrategyInvariant,
+        object([
+            (
+                "pool_idle_seconds",
+                super::value::int(super::value::i64v(
+                    pool.pool_idle.as_secs().min(input.budget.max_wall_secs),
+                    "http_pool_keepalive_idle_policy",
+                )?),
+            ),
+            (
+                "tcp_keepalive_seconds",
+                super::value::int(super::value::i64v(
+                    pool.tcp_keepalive.as_secs(),
+                    "http_pool_keepalive_idle_policy",
+                )?),
+            ),
+            ("connection_reuse", boolv(pool.connection_reuse)),
+        ]),
+    )?;
+    report.mark(156, "http_pool_keepalive_idle_policy", FactLayer::Default);
     add_provider_governor(builder, input, report)?;
     Ok(())
+}
+
+fn writer_isolation_value(
+    policy: iteron_workflow::WriterMergePolicy,
+) -> iteron_tunables::ResolutionValue {
+    boolv(policy.writer_worktree_isolation())
+}
+
+fn merge_conflict_arbitration_value(
+    policy: iteron_workflow::WriterMergePolicy,
+) -> iteron_tunables::ResolutionValue {
+    object([
+        ("on_clean", en(policy.on_clean().label())),
+        ("on_conflict", en(policy.on_conflict().label())),
+        ("require_verification", boolv(policy.require_verification())),
+    ])
+}
+
+fn messaging_topology_owner_value() -> iteron_tunables::ResolutionValue {
+    en(iteron_workflow::AgentMessagingTopology::owner().label())
 }
 
 fn add_provider_governor(
@@ -323,7 +507,42 @@ fn add_capability_exposure(
         .filter(|name| name.ends_with("__prompts_list") || name.ends_with("__prompts_get"))
         .cloned()
         .collect::<Vec<_>>();
-    if resources.is_empty() && prompts.is_empty() {
+    let mut plugin_bindings = BTreeSet::new();
+    let mut server_bindings = BTreeSet::new();
+    for server in input.configured_mcp {
+        server_bindings.insert(
+            server
+                .runtime_binding_id()
+                .map_err(|_| ExtensionFactError::EvidenceEncoding)?,
+        );
+        if let Some(identity) = server
+            .origin
+            .plugin_binding_id(&server.name)
+            .map_err(|_| ExtensionFactError::EvidenceEncoding)?
+        {
+            plugin_bindings.insert(identity);
+        }
+    }
+    // Runtime-observed exposure may replace this disabled baseline, but that observation cannot
+    // impersonate the embedded owner. Execute the fixed disabled owner seam first on every path.
+    builder.attest_literal_owner(
+        "resource_prompt_plugin_capability_exposure",
+        object([
+            ("resource_discovery", en("disabled")),
+            ("prompt_discovery", en("disabled")),
+            ("resource_tool_ids", super::value::list(std::iter::empty())),
+            ("prompt_tool_ids", super::value::list(std::iter::empty())),
+            ("plugin_binding_ids", super::value::list(std::iter::empty())),
+            ("server_binding_ids", super::value::list(std::iter::empty())),
+            ("max_visible_bytes", super::value::int(0)),
+        ]),
+    )?;
+    if input.configured_mcp.is_empty() {
+        report.mark(
+            154,
+            "resource_prompt_plugin_capability_exposure",
+            FactLayer::Default,
+        );
         return Ok(());
     }
     builder.declare(
@@ -355,9 +574,29 @@ fn add_capability_exposure(
                 super::value::list(prompts.iter().map(|name| text(name))),
             ),
             (
+                "plugin_binding_ids",
+                super::value::list(
+                    plugin_bindings
+                        .iter()
+                        .map(|identity| text(identity.as_str())),
+                ),
+            ),
+            (
+                "server_binding_ids",
+                super::value::list(
+                    server_bindings
+                        .iter()
+                        .map(|identity| text(identity.as_str())),
+                ),
+            ),
+            (
                 "max_visible_bytes",
                 super::value::int(super::value::i64u(
-                    input.mcp_result_policy.visible_max_bytes(),
+                    if resources.is_empty() && prompts.is_empty() {
+                        0
+                    } else {
+                        input.mcp_result_policy.visible_max_bytes()
+                    },
                     "resource_prompt_plugin_capability_exposure",
                 )?),
             ),
@@ -376,6 +615,29 @@ fn add_child_defaults(
     input: &ExtensionFactsInput<'_>,
     report: &mut ExtensionFactsReport,
 ) -> Result<(), ExtensionFactError> {
+    let memory_value = input
+        .child_overlay
+        .and_then(|child| child.memory_scope.as_ref())
+        .map_or_else(
+            || object([("mode", en("isolated")), ("inherit_parent", boolv(false))]),
+            |memory| {
+                if let Some(scope_id) = memory.scope_id.as_deref() {
+                    object([
+                        ("mode", en(memory_mode(memory.mode))),
+                        ("scope_id", text(scope_id)),
+                        ("inherit_parent", boolv(memory.inherit_parent)),
+                    ])
+                } else {
+                    object([
+                        ("mode", en(memory_mode(memory.mode))),
+                        ("inherit_parent", boolv(memory.inherit_parent)),
+                    ])
+                }
+            },
+        );
+    builder.attest_literal_owner("per_agent_memory_scope", memory_value)?;
+    report.mark(136, "per_agent_memory_scope", FactLayer::Default);
+
     let Some(child) = input.child_overlay else {
         for (ordinal, family) in [
             (133, "per_agent_model"),
@@ -407,22 +669,6 @@ fn add_child_defaults(
     )?;
     report.mark(135, "per_agent_tool_profile", FactLayer::Default);
 
-    if let Some(memory) = &child.memory_scope {
-        let value = if let Some(scope_id) = memory.scope_id.as_deref() {
-            object([
-                ("mode", en(memory_mode(memory.mode))),
-                ("scope_id", text(scope_id)),
-                ("inherit_parent", boolv(memory.inherit_parent)),
-            ])
-        } else {
-            object([
-                ("mode", en(memory_mode(memory.mode))),
-                ("inherit_parent", boolv(memory.inherit_parent)),
-            ])
-        };
-        builder.declare("per_agent_memory_scope", SourceKind::Builtin, value)?;
-        report.mark(136, "per_agent_memory_scope", FactLayer::Default);
-    }
     Ok(())
 }
 
@@ -431,6 +677,14 @@ fn add_mcp_transport(
     input: &ExtensionFactsInput<'_>,
     report: &mut ExtensionFactsReport,
 ) -> Result<(), ExtensionFactError> {
+    let default_transport = McpTransportConfig::default();
+    builder.attest_literal_owner(
+        "mcp_transport_selection",
+        super::value::list([en(match default_transport {
+            McpTransportConfig::Stdio => "stdio",
+            McpTransportConfig::Http => "http",
+        })]),
+    )?;
     let transports = input
         .configured_mcp
         .iter()
@@ -526,18 +780,23 @@ fn add_session_and_replay(
     input: &ExtensionFactsInput<'_>,
     report: &mut ExtensionFactsReport,
 ) -> Result<(), ExtensionFactError> {
-    builder.declare(
+    builder.observe_default(
         "session_isolation_profile",
-        SourceKind::Builtin,
         en(session_profile(input.session_profile)),
     )?;
     report.mark(159, "session_isolation_profile", FactLayer::Default);
 
     if input.replay_owner.fail_closed {
+        let owner = replay_policy(input.replay_owner);
         builder.declare(
             "replay_divergence_detection_policy",
             SourceKind::Builtin,
-            replay_policy(input.replay_owner),
+            owner.clone(),
+        )?;
+        builder.attest_fixed_authority(
+            "replay_divergence_detection_policy",
+            FixedAuthorityId::RuntimeInvariant,
+            owner,
         )?;
         report.mark(
             160,

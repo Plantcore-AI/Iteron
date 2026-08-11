@@ -2,9 +2,11 @@ use super::*;
 use crate::{Rollout, replay};
 use iteron_protocol::{Effort, Event, EventKind, RunId, Seq, TenantId, TurnId};
 use iteron_tunables::{
-    Adjustment, AdjustmentKind, EntryOutcome, EvidenceSubject, ExternalCeiling, InactiveCause,
+    Adjustment, AdjustmentKind, CapabilityRequirement, DefaultResolver, EntryOutcome,
+    EvidenceSubject, ExternalCeiling, FixedAuthorityAttestation, FixedAuthorityId, InactiveCause,
     InactiveReason, ResolutionProvenance, ResolutionReport, ResolutionSource, ResolutionValue,
-    ResolvedEntry, SourceKind, SourceTrust, families,
+    ResolvedEntry, RouteIdentity, SourceKind, SourceTrust, canonical_embedded_default, families,
+    fixed_authority_value_digest_sha256,
 };
 
 fn report() -> ResolutionReport {
@@ -61,8 +63,46 @@ fn report() -> ResolutionReport {
         effective_digest_sha256: String::new(),
         resolution_digest_sha256: "c".repeat(64),
         profile_digest_sha256: Some("e".repeat(64)),
+        fixed_authority_attestations: Vec::new(),
         entries,
     };
+    report.effective_digest_sha256 = snapshot_v2::effective_digest_from_report(&report).unwrap();
+    report
+}
+
+fn report_with_effective_fixed_authority() -> ResolutionReport {
+    let mut report = report();
+    let family = families()
+        .iter()
+        .find(|family| family.id == "provider_discovery_account_probe_cache_policy")
+        .expect("fixed bootstrap family");
+    let value = canonical_embedded_default(family.id).expect("embedded bootstrap value");
+    let entry = report
+        .entries
+        .iter_mut()
+        .find(|entry| entry.family_id == family.id)
+        .expect("complete report entry");
+    entry.requested = Some(value.clone());
+    entry.effective = Some(value.clone());
+    entry.provenance = Some(ResolutionProvenance {
+        source: ResolutionSource::Default {
+            resolver_id: "iteron://tunables/resolvers/literal-v1".to_owned(),
+            evidence_digest_sha256: None,
+            subject: None,
+            fallback: false,
+        },
+    });
+    entry.outcome = EntryOutcome::Effective;
+    report.fixed_authority_attestations = vec![FixedAuthorityAttestation {
+        family_id: family.id.to_owned(),
+        authority: FixedAuthorityId::ProviderDiscoveryBootstrap,
+        owner_value_digest_sha256: fixed_authority_value_digest_sha256(
+            family.id,
+            FixedAuthorityId::ProviderDiscoveryBootstrap,
+            &value,
+        )
+        .expect("fixed authority digest"),
+    }];
     report.effective_digest_sha256 = snapshot_v2::effective_digest_from_report(&report).unwrap();
     report
 }
@@ -142,6 +182,120 @@ fn v2_reconstructs_effective_and_explanation_truth_and_fails_closed_on_tamper() 
     }));
     assert_eq!(
         validate_tunables_snapshot_v2(&credential),
+        Err(TunablesSnapshotError::Invalid {
+            reason: "a V2 projection contains unbounded, control, or credential-shaped text"
+        })
+    );
+}
+
+#[test]
+fn v2_fixed_authority_binding_is_bijective_and_rejects_missing_duplicate_and_tamper() {
+    let report = report_with_effective_fixed_authority();
+    let snapshot = snapshot_v2::snapshot_v2_from_report(&report)
+        .expect("exact fixed authority projects into V2");
+    validate_tunables_snapshot_v2(&snapshot).expect("exact fixed binding validates");
+    let fixed = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == "provider_discovery_account_probe_cache_policy")
+        .and_then(|entry| entry.fixed_authority_binding.as_ref())
+        .expect("effective fixed family carries one binding");
+    assert_eq!(fixed.owner_value_digest_sha256.len(), 64);
+
+    let mut missing_report = report.clone();
+    missing_report.fixed_authority_attestations.clear();
+    assert!(snapshot_v2::snapshot_v2_from_report(&missing_report).is_err());
+
+    let mut duplicate_report = report.clone();
+    duplicate_report
+        .fixed_authority_attestations
+        .push(duplicate_report.fixed_authority_attestations[0].clone());
+    assert!(snapshot_v2::snapshot_v2_from_report(&duplicate_report).is_err());
+
+    let fixed_index = snapshot
+        .entries
+        .iter()
+        .position(|entry| entry.family_id == "provider_discovery_account_probe_cache_policy")
+        .expect("fixed entry index");
+    let mut wrong_authority = snapshot.clone();
+    wrong_authority.entries[fixed_index]
+        .fixed_authority_binding
+        .as_mut()
+        .expect("binding")
+        .authority = iteron_protocol::RunGenesisFixedAuthorityIdV2::RuntimeInvariant;
+    assert!(validate_tunables_snapshot_v2(&wrong_authority).is_err());
+
+    let mut tampered_digest = snapshot;
+    tampered_digest.entries[fixed_index]
+        .fixed_authority_binding
+        .as_mut()
+        .expect("binding")
+        .owner_value_digest_sha256 = "f".repeat(64);
+    assert!(validate_tunables_snapshot_v2(&tampered_digest).is_err());
+}
+
+#[test]
+fn public_resolved_fixture_projects_to_a_content_free_v2_snapshot() {
+    let resolved = crate::resolved_fixture::resolved();
+    let snapshot = snapshot_v2::snapshot_v2_from_report(resolved.report())
+        .expect("the public production fixture must project to V2");
+    validate_tunables_snapshot_v2(&snapshot)
+        .expect("the public production fixture must remain content-free");
+}
+
+#[test]
+fn public_resolved_fixture_uses_the_exact_embedded_value_for_builtin_literals() {
+    let input = crate::resolved_fixture::input();
+    for declared in input.declared_values {
+        let family = families()
+            .iter()
+            .find(|family| family.id == declared.family)
+            .expect("fixture family is canonical");
+        if declared.source == SourceKind::Builtin
+            && matches!(family.default.resolver, DefaultResolver::Literal)
+        {
+            assert_eq!(
+                declared.value,
+                canonical_embedded_default(family.id)
+                    .expect("a literal family has an embedded value"),
+                "{} must not manufacture a second Builtin literal",
+                family.id
+            );
+        }
+    }
+}
+
+#[test]
+fn typed_route_revision_content_address_survives_but_credential_text_does_not() {
+    let mut report = report();
+    report.entries[3].outcome = EntryOutcome::Inactive {
+        cause: InactiveCause::CapabilitiesMissing {
+            route: Some(RouteIdentity {
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                route_revision: format!("sha256:{}", "a".repeat(64)),
+                catalog_digest_sha256: "b".repeat(64),
+            }),
+            capabilities: vec![CapabilityRequirement::ProviderReasoningControl],
+        },
+    };
+    report.effective_digest_sha256 = snapshot_v2::effective_digest_from_report(&report).unwrap();
+    let snapshot = snapshot_v2::snapshot_v2_from_report(&report)
+        .expect("a typed content-addressed route revision is content-free identity");
+    validate_tunables_snapshot_v2(&snapshot).unwrap();
+
+    let EntryOutcome::Inactive {
+        cause: InactiveCause::CapabilitiesMissing {
+            route: Some(route), ..
+        },
+    } = &mut report.entries[3].outcome
+    else {
+        unreachable!()
+    };
+    route.route_revision = format!("sk-{}", "x".repeat(80));
+    report.effective_digest_sha256 = snapshot_v2::effective_digest_from_report(&report).unwrap();
+    assert_eq!(
+        snapshot_v2::snapshot_v2_from_report(&report),
         Err(TunablesSnapshotError::Invalid {
             reason: "a V2 projection contains unbounded, control, or credential-shaped text"
         })

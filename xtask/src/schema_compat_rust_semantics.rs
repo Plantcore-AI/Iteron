@@ -9,8 +9,8 @@ mod surface;
 
 use super::super::manifest::Contract;
 use anyhow::{Context, Result, bail};
-use graph::{ProtocolGraph, SourceView, TypeKind};
-use std::collections::BTreeSet;
+use graph::{ProtocolGraph, SourceView, TypeKind, identifier_occurrences};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Compare source semantics with the trusted Git base after both contracts have been validated.
@@ -47,8 +47,9 @@ pub(super) fn compare(
         previous,
         candidate,
     )?;
-    let binding_paths = compare_reachable_protocol_types(&base_graph, &candidate_graph, previous)?;
-    compare_protocol_bindings(&base_graph, &candidate_graph, &binding_paths)?;
+    let binding_references =
+        compare_reachable_protocol_types(&base_graph, &candidate_graph, previous)?;
+    compare_protocol_bindings(&base_graph, &candidate_graph, &binding_references)?;
     functions::compare_critical_functions(base_view, candidate_view)
 }
 
@@ -73,35 +74,17 @@ fn managed_surface(id: &str) -> bool {
 fn compare_protocol_bindings(
     base: &ProtocolGraph,
     candidate: &ProtocolGraph,
-    binding_paths: &BTreeSet<String>,
+    binding_references: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<()> {
-    let current_imports = candidate.imports();
-    let base_modules = base.modules();
-    let current_modules = candidate.modules();
-    for (path, old_imports) in base.imports() {
-        if !binding_paths.contains(&path) {
-            continue;
-        }
-        let new_imports = current_imports
-            .get(&path)
-            .with_context(|| format!("candidate protocol graph removed base module '{path}'"))?;
-        if &old_imports != new_imports {
+    for (path, referenced) in binding_references {
+        if base.imports_reaching(path, referenced)?
+            != candidate.imports_reaching(path, referenced)?
+        {
             bail!("protocol module '{path}' changed its import/re-export bindings");
         }
-        // A new `pub mod` cannot redirect an existing binding: index_items already rejects a
-        // repeated Rust type name and compare_reachable_protocol_types already rejects shadowing,
-        // so addition is safe. Removal, rename, visibility and #[path] changes stay fatal.
-        let base_declarations = base_modules.get(&path).cloned().unwrap_or_default();
-        let current_declarations: BTreeSet<String> = current_modules
-            .get(&path)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        if !base_declarations
-            .iter()
-            .all(|declaration| current_declarations.contains(declaration))
-        {
+        let base_modules = base.module_fingerprints(path)?;
+        let candidate_modules = candidate.module_fingerprints(path)?;
+        if !base_modules.is_subset(&candidate_modules) {
             bail!("protocol module '{path}' removed or changed a module declaration");
         }
     }
@@ -144,7 +127,7 @@ fn compare_reachable_protocol_types(
     base: &ProtocolGraph,
     candidate: &ProtocolGraph,
     previous: &Contract,
-) -> Result<BTreeSet<String>> {
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let mut surfaced = BTreeSet::from([
         "SqEnvelope".to_owned(),
         "EqEnvelope".to_owned(),
@@ -171,7 +154,7 @@ fn compare_reachable_protocol_types(
         "StopReasonCode".to_owned(),
     ]);
     let mut visited = BTreeSet::new();
-    let mut binding_paths = BTreeSet::from(["crates/protocol/src/lib.rs".to_owned()]);
+    let mut binding_references = BTreeMap::<String, BTreeSet<String>>::new();
     while let Some(name) = pending.pop_first() {
         if !visited.insert(name.clone()) {
             continue;
@@ -188,7 +171,10 @@ fn compare_reachable_protocol_types(
             .types
             .get(&name)
             .with_context(|| format!("candidate protocol graph removed reachable type '{name}'"))?;
-        binding_paths.insert(old.path.clone());
+        identifier_occurrences(
+            &old.fingerprint,
+            binding_references.entry(old.path.clone()).or_default(),
+        );
         if old.path != current.path || old.kind != current.kind {
             bail!("reachable protocol type '{name}' changed its source identity");
         }
@@ -203,7 +189,7 @@ fn compare_reachable_protocol_types(
         }
         pending.extend(old.references.iter().cloned());
     }
-    Ok(binding_paths)
+    Ok(binding_references)
 }
 
 #[cfg(test)]

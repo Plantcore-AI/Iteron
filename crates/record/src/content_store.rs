@@ -1,9 +1,11 @@
 //! Tenant-scoped encrypted content-addressed storage shared by records and large artifacts.
 
+mod coverage;
 mod crypto;
 mod derivative;
 mod encoding;
 mod fields;
+mod lineage;
 mod model;
 mod references;
 mod revocation;
@@ -12,9 +14,13 @@ mod storage;
 pub use derivative::PrivateContentDerivativeStore;
 pub use model::{
     ContentReferenceSurface, MAX_PRIVATE_CONTENT_BYTES, MAX_PRIVATE_CONTENT_PREVIEW_BYTES,
-    PrivateContentClass, PrivateContentHandle, PrivateContentRetention,
+    PrivateContentClass, PrivateContentHandle, PrivateContentNamespace, PrivateContentRetention,
+    PrivateContentSource,
 };
-pub use references::{guard_private_content_for_run, retain_private_content_references};
+pub use references::{
+    guard_private_content_for_run, private_content_sources_for_run,
+    retain_private_content_references,
+};
 pub(crate) use revocation::ContentRevocationGuard;
 
 use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
@@ -128,7 +134,7 @@ pub fn put_private_content(
 
 /// Store content owned by a non-record derivative while binding it to the same revocation graph.
 #[allow(clippy::too_many_arguments)]
-pub fn put_private_content_at_surface(
+fn put_private_content_at_surface(
     runs_dir: &Path,
     tenant: &TenantId,
     run: &RunId,
@@ -139,6 +145,33 @@ pub fn put_private_content_at_surface(
     bytes: &[u8],
     preview_bytes: usize,
 ) -> Result<PrivateContentHandle, ContentStoreError> {
+    put_private_content_at_surface_with_sources(
+        runs_dir,
+        tenant,
+        run,
+        seq,
+        class,
+        surface,
+        retention,
+        bytes,
+        preview_bytes,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn put_private_content_at_surface_with_sources(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    run: &RunId,
+    seq: Seq,
+    class: PrivateContentClass,
+    surface: ContentReferenceSurface,
+    retention: PrivateContentRetention,
+    bytes: &[u8],
+    preview_bytes: usize,
+    sources: &[PrivateContentSource],
+) -> Result<PrivateContentHandle, ContentStoreError> {
     if preview_bytes > MAX_PRIVATE_CONTENT_PREVIEW_BYTES {
         return Err(ContentStoreError::InvalidPreviewBound);
     }
@@ -147,9 +180,30 @@ pub fn put_private_content_at_surface(
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
     let _lock = lock_store(&layout)?;
+    if sources.len() > model::MAX_CONTENT_LINEAGE_EDGES {
+        return Err(ContentStoreError::ReferenceBound {
+            max: model::MAX_CONTENT_LINEAGE_EDGES,
+        });
+    }
+    let mut sources = sources.to_vec();
+    sources.sort();
+    sources.dedup();
+    for source in &sources {
+        references::verify_source_owner_locked(&layout, source)?;
+        ensure_available_locked(&layout, &source.digest)?;
+    }
     let digest = digest_bytes(bytes);
     store_locked(&layout, &digest, bytes)?;
-    write_edge_locked(
+    // Lineage is durable before the serving reference. A crash can therefore leave an
+    // unreachable conservative descendant, never a readable derivative with missing sources.
+    let lineage = match lineage::publish_locked(&layout, &sources, run, &digest, seq, surface) {
+        Ok(lineage) => lineage,
+        Err(error) => {
+            remove_unreferenced_material_locked(&layout, &digest)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_edge_locked(
         &layout,
         &digest,
         run,
@@ -158,7 +212,11 @@ pub fn put_private_content_at_surface(
         class_label(class),
         surface,
         retention,
-    )?;
+    ) {
+        lineage.rollback()?;
+        remove_unreferenced_material_locked(&layout, &digest)?;
+        return Err(error);
+    }
     Ok(PrivateContentHandle {
         digest,
         byte_len: u32::try_from(bytes.len()).map_err(|_| ContentStoreError::ContentTooLarge {
@@ -167,6 +225,27 @@ pub fn put_private_content_at_surface(
         class,
         preview: bounded_preview(bytes, preview_bytes),
     })
+}
+
+fn remove_unreferenced_material_locked(
+    layout: &Layout,
+    digest: &ErasureContentDigest,
+) -> Result<(), ContentStoreError> {
+    let reference_dir = layout.object_path(&layout.refs, digest);
+    let referenced = match std::fs::read_dir(&reference_dir) {
+        Ok(mut entries) => entries.next().transpose()?.is_some(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if referenced {
+        return Ok(());
+    }
+    remove_if_present(&layout.object_path(&layout.keys, digest))?;
+    crate_sync_dir(&layout.keys)?;
+    remove_if_present(&layout.object_path(&layout.blobs, digest))?;
+    crate_sync_dir(&layout.blobs)?;
+    let _ = std::fs::remove_dir(&reference_dir);
+    Ok(())
 }
 
 fn read_private_content_at_reference(
@@ -180,6 +259,16 @@ fn read_private_content_at_reference(
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
     let _store_lock = lock_store(&layout)?;
+    read_private_content_at_reference_locked(&layout, owner, seq, surface, handle)
+}
+
+fn read_private_content_at_reference_locked(
+    layout: &Layout,
+    owner: &RunId,
+    seq: Seq,
+    surface: ContentReferenceSurface,
+    handle: &PrivateContentHandle,
+) -> Result<Vec<u8>, ContentStoreError> {
     let run_dir = layout.run_reference_dir(owner);
     let entries = std::fs::read_dir(&run_dir).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -221,7 +310,33 @@ fn read_private_content_at_reference(
             reason: "reference_missing",
         });
     }
-    load_bytes(&layout, &handle.digest)
+    // A derivative is available only while every durable source edge is available. This is the
+    // crash-safe half of propagation: a root tombstone immediately closes reads even if a process
+    // died before it could tombstone or unlink the derivative itself.
+    for source in lineage::sources_for_reference(&layout, owner, &handle.digest, seq, surface)? {
+        references::verify_source_owner_locked(&layout, &source)?;
+        load_bytes(&layout, &source.digest)?;
+    }
+    load_bytes(layout, &handle.digest)
+}
+
+fn private_content_sources_at_reference(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    owner: &RunId,
+    seq: Seq,
+    surface: ContentReferenceSurface,
+    handle: &PrivateContentHandle,
+) -> Result<Vec<PrivateContentSource>, ContentStoreError> {
+    let layout = Layout::new(runs_dir, tenant);
+    ensure_layout(&layout)?;
+    let _store_lock = lock_store(&layout)?;
+    let sources = lineage::sources_for_reference(&layout, owner, &handle.digest, seq, surface)?;
+    for source in &sources {
+        references::verify_source_owner_locked(&layout, source)?;
+        load_bytes(&layout, &source.digest)?;
+    }
+    Ok(sources)
 }
 
 pub fn guard_private_content(
@@ -231,32 +346,6 @@ pub fn guard_private_content(
 ) -> Result<(), ContentStoreError> {
     let _ = load_bytes(&Layout::new(runs_dir, tenant), digest)?;
     Ok(())
-}
-
-pub fn register_private_content_reference(
-    runs_dir: &Path,
-    tenant: &TenantId,
-    digest: &ErasureContentDigest,
-    run: &RunId,
-    seq: Seq,
-    surface: ContentReferenceSurface,
-    retention: PrivateContentRetention,
-) -> Result<(), ContentStoreError> {
-    crate::validate_run_id(run).map_err(|_| ContentStoreError::Corrupt)?;
-    let layout = Layout::new(runs_dir, tenant);
-    ensure_layout(&layout)?;
-    let _lock = lock_store(&layout)?;
-    ensure_available_locked(&layout, digest)?;
-    write_edge_locked(
-        &layout,
-        digest,
-        run,
-        seq,
-        0,
-        surface.label(),
-        surface,
-        retention,
-    )
 }
 
 pub fn private_content_digest(bytes: &[u8]) -> ErasureContentDigest {
@@ -338,10 +427,18 @@ impl ExactRunContentRelease {
             digests.insert(edge.digest);
         }
         let mut owners = std::collections::BTreeSet::new();
+        let revocations = read_state(&layout)?;
         for digest in digests {
-            for edge in read_edges(&layout, &digest)? {
-                if edge.run_id != *run && edge.surface != ContentReferenceSurface::RecordField {
-                    owners.insert(edge.run_id.0);
+            // Content-address equality alone is not derivation authority. Only an explicit durable
+            // source→derivative edge can retain this run. Prompt-history v3 entries do publish
+            // such edges, so a live history derivative correctly blocks exact deletion until its
+            // source content is revoked (or the owning history manifest releases it).
+            for edge in lineage::descendants(&layout, &digest)? {
+                if edge.source_owner == *run
+                    && edge.derivative_owner != *run
+                    && revocations.tombstone(&edge.derivative_digest).is_none()
+                {
+                    owners.insert(edge.derivative_owner.0);
                 }
             }
         }
@@ -467,6 +564,7 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
             .file_name()
             .ok_or(ContentStoreError::Corrupt)?
             .to_owned();
+        lineage::remove_for_reference_locked(layout, &edge)?;
         let digest_dir = layout.object_path(&layout.refs, &edge.digest);
         remove_if_present(&digest_dir.join(edge_id))?;
         remove_if_present(&run_edge)?;
@@ -491,32 +589,6 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
     })
 }
 
-/// Production coverage, not an inventory of possible enum variants.
-///
-/// Session projections and the session index persist content-bearing titles and reject stale
-/// material whenever the tenant revocation generation changes. Prompt history persists only
-/// encrypted handles and hydrates through `load_bytes`. Other namespaces remain false until a
-/// production writer, source-to-derivative lineage, and every production read path all use the same
-/// durable gate. In particular, the trajectory registry now has a gated handle store, but its
-/// record-backed opener has no production caller and transformed source lineage is not yet durable.
-pub(crate) fn guarded_derivative_coverage() -> iteron_protocol::ErasurePropagationCoverage {
-    iteron_protocol::ErasurePropagationCoverage {
-        session_projections: true,
-        indexes: true,
-        prompt_history: true,
-        attachments: false,
-        tool_artifacts: false,
-        checkpoints: false,
-        memory_context: false,
-        exports: false,
-        telemetry_debug: false,
-        trajectories: false,
-        datasets: false,
-        evaluator_inputs: false,
-        candidate_stores: false,
-    }
-}
-
 pub(crate) fn externalize_event_payload(
     runs_dir: &Path,
     tenant: &TenantId,
@@ -524,11 +596,28 @@ pub(crate) fn externalize_event_payload(
     seq: Seq,
     payload: &mut serde_json::Value,
 ) -> Result<(), ContentStoreError> {
+    // A workspace checkpoint is a derivative of every record field admitted before its effect.
+    // Capture the bounded source inventory before taking the store mutex, then revalidate it under
+    // that mutex below. The checkpoint event itself is not yet a source and cannot create a cycle.
+    let checkpoint_sources = payload
+        .get("kind")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|event| event.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|kind| *kind == "checkpoint")
+        .map(|_| private_content_sources_for_run(runs_dir, tenant, run))
+        .transpose()?
+        .unwrap_or_default();
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
     let _lock = lock_store(&layout)?;
+    for source in &checkpoint_sources {
+        references::verify_source_owner_locked(&layout, source)?;
+        ensure_available_locked(&layout, &source.digest)?;
+    }
     let mut ordinal = 0u16;
     fields::visit_content_fields(payload, |field_class, value| {
+        let semantic_namespace = semantic_namespace(field_class, value);
         let (bytes, encoding) = encoding::encode(value)?;
         ensure_content_bound(&bytes)?;
         let digest = digest_bytes(&bytes);
@@ -543,6 +632,40 @@ pub(crate) fn externalize_event_payload(
             ContentReferenceSurface::RecordField,
             PrivateContentRetention::Session,
         )?;
+        if let Some(namespace) = semantic_namespace {
+            let surface = namespace.surface();
+            // Publish all checkpoint lineage before its serving semantic reference. A crash can
+            // leave conservative lineage and the record-field root, but never a readable
+            // Checkpoint derivative missing one source. An ordinary reference failure rolls the
+            // lineage back; the not-yet-appended event cannot expose the conservative root.
+            let lineage = if surface == ContentReferenceSurface::Checkpoint {
+                Some(lineage::publish_locked(
+                    &layout,
+                    &checkpoint_sources,
+                    run,
+                    &digest,
+                    seq,
+                    surface,
+                )?)
+            } else {
+                None
+            };
+            if let Err(error) = write_edge_locked(
+                &layout,
+                &digest,
+                run,
+                seq,
+                ordinal,
+                field_class,
+                surface,
+                PrivateContentRetention::Session,
+            ) {
+                if let Some(lineage) = lineage {
+                    lineage.rollback()?;
+                }
+                return Err(error);
+            }
+        }
         ordinal = ordinal
             .checked_add(1)
             .ok_or(ContentStoreError::ReferenceBound {
@@ -562,6 +685,119 @@ pub(crate) fn externalize_event_payload(
         return Err(ContentStoreError::Corrupt);
     }
     Ok(())
+}
+
+fn semantic_namespace(
+    field_class: &str,
+    value: &serde_json::Value,
+) -> Option<PrivateContentNamespace> {
+    if field_class == "message_text"
+        && value
+            .as_str()
+            .is_some_and(|text| text.contains("<attached-file path=\""))
+    {
+        let namespace = PrivateContentNamespace::Attachment;
+        debug_assert!(
+            registered_semantic_writer(namespace)
+                .is_some_and(|writer| writer.accepts_field_class(field_class))
+        );
+        return Some(namespace);
+    }
+    let namespace = match field_class {
+        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error"
+        | "artifact_locator" => PrivateContentNamespace::ToolArtifact,
+        "memory_context" | "instructions" | "environment" => PrivateContentNamespace::MemoryContext,
+        "checkpoint" => PrivateContentNamespace::Checkpoint,
+        "message_text" | "message_thinking" | "model_text" | "model_thinking"
+        | "provider_state" | "operator_notice" | "workspace_path" | "session_tag"
+        | "agent_label" | "workflow_error" | "workflow_name" | "workflow_task" => {
+            PrivateContentNamespace::SessionProjection
+        }
+        _ => return None,
+    };
+    debug_assert!(
+        registered_semantic_writer(namespace)
+            .is_some_and(|writer| writer.accepts_field_class(field_class))
+    );
+    Some(namespace)
+}
+
+fn session_projection_semantic_class(class: &str) -> bool {
+    matches!(
+        class,
+        "message_text"
+            | "message_thinking"
+            | "model_text"
+            | "model_thinking"
+            | "provider_state"
+            | "operator_notice"
+            | "workspace_path"
+            | "session_tag"
+            | "agent_label"
+            | "workflow_error"
+            | "workflow_name"
+            | "workflow_task"
+    )
+}
+
+fn attachment_semantic_class(class: &str) -> bool {
+    class == "message_text"
+}
+
+fn tool_artifact_semantic_class(class: &str) -> bool {
+    matches!(
+        class,
+        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error" | "artifact_locator"
+    )
+}
+
+fn checkpoint_semantic_class(class: &str) -> bool {
+    class == "checkpoint"
+}
+
+fn memory_context_semantic_class(class: &str) -> bool {
+    matches!(class, "memory_context" | "instructions" | "environment")
+}
+
+fn registered_semantic_writer(
+    namespace: PrivateContentNamespace,
+) -> Option<coverage::WriterRegistration> {
+    let accepts = match namespace {
+        PrivateContentNamespace::SessionProjection => session_projection_semantic_class,
+        PrivateContentNamespace::Attachment => attachment_semantic_class,
+        PrivateContentNamespace::ToolArtifact => tool_artifact_semantic_class,
+        PrivateContentNamespace::Checkpoint => checkpoint_semantic_class,
+        PrivateContentNamespace::MemoryContext => memory_context_semantic_class,
+        PrivateContentNamespace::SessionIndex
+        | PrivateContentNamespace::PromptHistory
+        | PrivateContentNamespace::Export
+        | PrivateContentNamespace::Trajectory
+        | PrivateContentNamespace::Dataset
+        | PrivateContentNamespace::EvaluatorInput
+        | PrivateContentNamespace::CandidateStore => return None,
+    };
+    Some(coverage::WriterRegistration::semantic(namespace, accepts))
+}
+
+fn registered_read_gate(
+    writer: coverage::WriterRegistration,
+) -> Option<coverage::ReadGateRegistration> {
+    if writer.derivative_class().is_some() {
+        return derivative::registered_read_gate(writer);
+    }
+    registered_semantic_writer(writer.namespace())
+        .map(|_| coverage::ReadGateRegistration::new(writer, verify_semantic_read_gate))
+}
+
+fn verify_semantic_read_gate(
+    layout: &Layout,
+    edge: &ReferenceEdge,
+    class: Option<PrivateContentClass>,
+) -> Result<Vec<u8>, ContentStoreError> {
+    if class.is_some() {
+        return Err(ContentStoreError::InvalidDerivativeHandle);
+    }
+    load_bytes(layout, &edge.digest)
 }
 
 pub(crate) fn hydrate_event_payload(
@@ -618,6 +854,8 @@ fn bounded_preview(bytes: &[u8], limit: usize) -> Option<String> {
 fn class_label(class: PrivateContentClass) -> &'static str {
     match class {
         PrivateContentClass::Transcript => "transcript",
+        PrivateContentClass::SessionProjection => "session_projection",
+        PrivateContentClass::SessionIndex => "session_index",
         PrivateContentClass::ModelThinking => "model_thinking",
         PrivateContentClass::ToolOutput => "tool_output",
         PrivateContentClass::ToolArguments => "tool_arguments",

@@ -53,13 +53,16 @@ mod permission_policy;
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
 mod pricing;
+mod private_attachments;
 mod provider_accounting;
 mod provider_governor_state;
 mod provider_hedge;
 mod provider_route;
 mod resume;
+mod route_attempt_accounting;
 mod route_state;
 mod route_validation;
+mod runtime_policy_overlay;
 mod session_spawn_ledger;
 mod side_conversation;
 mod strategy_ports;
@@ -136,9 +139,30 @@ use transcript::{merge_adjacent_user_message, project_messages_from_events, reco
 pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
+pub(crate) type RuntimeBudgetHealth = operator_status::RuntimeBudgetHealth;
+pub(crate) type RuntimePolicyObservation = runtime_policy_overlay::RuntimePolicyObservation;
+pub(crate) type RuntimePolicyOverlayHandle = runtime_policy_overlay::RuntimePolicyOverlayHandle;
+pub(crate) type RuntimePolicyOverlaySnapshot = runtime_policy_overlay::RuntimePolicyOverlaySnapshot;
+pub(crate) type RuntimePolicyValue<T> = runtime_policy_overlay::RuntimePolicyValue<T>;
+pub(crate) type FailedActionCache = failed_action_cache::FailedActionCache;
+pub(crate) const FAILED_ACTION_CACHE_MAX_IDENTITIES: usize = failed_action_cache::MAX_IDENTITIES;
+
+pub(crate) const fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy
+{
+    deferred_tools::effecting_tool_admission_policy()
+}
+
+pub(crate) fn governed_workflow_limits(
+    budget: &Budget,
+    limits: iteron_workflow::RunLimits,
+) -> Result<iteron_workflow::RunLimits, &'static str> {
+    workflow_spawner::governed_workflow_limits(budget, limits)
+}
+
 /// A failing strong oracle may return control to the model only this many times per run.
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
-const MAX_VERIFY_ATTEMPTS: u32 = 3;
+#[cfg(test)]
+const MAX_VERIFY_ATTEMPTS: u32 = iteron_verify::DEFAULT_VERIFICATION_REPAIR_ATTEMPTS;
 /// How often a mid-stream provider turn re-checks the cooperative interrupt flag. Matches the
 /// bounded cancellation-poll cadence used for child-agent and verification cancellation; it caps
 /// the latency between an operator interrupt and the in-flight stream being dropped.
@@ -170,6 +194,7 @@ const INTERRUPTED_STREAM_MARKER: &str =
 const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
 const IMAGE_INPUT_UNSUPPORTED_REASON: &str =
     "the selected model has no verified image-input capability; attachments were not submitted";
+const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
 const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
@@ -178,6 +203,9 @@ pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Core runtime notification — not an operator instruction]";
 pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
     "[Core runtime memory-added — operator-authored]";
+/// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
+/// narrow this per opportunity, but it cannot expand beyond this owner value.
+pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
 
 /// Events a UI (the TUI) renders. The kernel sends these to an optional channel so a front-end
 /// can display the run live without the kernel writing to stdout.
@@ -520,6 +548,13 @@ fn truncate_tail(s: &str, max: usize) -> String {
     iteron_protocol::text::tail(s, max)
 }
 
+pub(crate) fn bounded_child_report(
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+    report: &str,
+) -> String {
+    strict_utf8_head(report.trim(), policy.report_budget_bytes)
+}
+
 /// Build the `ToolEnd` UI event from a completed `ToolResult`: correlate by the tool_use id and
 /// carry the scrubbed+bounded output so the TUI can render a collapsible result card (ADR-015).
 fn tool_end_ui(tu: &ToolUse, r: &ToolResult) -> UiEvent {
@@ -694,6 +729,7 @@ where
         capability,
         audit_arguments,
         workspace: effect_workspace(workspace),
+        provider_route_attempt: None,
     };
     effects::broker_effect(rollout, admissions, brokered, execute).await
 }
@@ -814,6 +850,7 @@ fn effect_done_terminal(
         // all seven classes are timed at the same two points by the same clock. A number minted
         // here would be scoped to whatever this caller happened to wrap.
         duration_ms: None,
+        provider_route_attempt: None,
     }
 }
 
@@ -831,6 +868,7 @@ fn effect_failed_terminal(
         reason: strict_utf8_head(reason, EFFECT_REASON_MAX_BYTES),
         // See `effect_done_terminal`: the boundary owns the measurement.
         duration_ms: None,
+        provider_route_attempt: None,
     }
 }
 
@@ -986,28 +1024,37 @@ fn allocate_orchestration(
     remaining_turns: u32,
     task_count: usize,
     remaining_wall_secs: u64,
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
 ) -> Option<OrchestrationAllocation> {
-    if task_count == 0 || remaining_turns < 6 || remaining_wall_secs < 3 {
+    let fan_breadth = policy.fan_breadth?;
+    let worker_min_turns = policy.worker_min_turns?.max(1);
+    let child_ceiling = policy.child_ceiling?;
+    if task_count == 0
+        || remaining_turns < policy.admission.minimum_remaining_turns
+        || remaining_wall_secs < policy.admission.minimum_remaining_wall_seconds
+    {
         return None;
     }
-    // Half-plus-one keeps the writer strictly dominant while relaxing the old two-thirds reserve.
-    let initial_writer_reserve = ((remaining_turns / 2).saturating_add(1))
-        .max(4)
-        .min(remaining_turns);
+    let initial_writer_reserve = policy.writer_fan_turn_split.writer_reserve(remaining_turns);
     let fan_available = remaining_turns.saturating_sub(initial_writer_reserve);
-    // Admit as many distinct investigators as the fan turn budget can each fund with >=2 turns,
-    // capped by FAN_CAP. Wall-clock is bounded separately by the concurrency permit count.
+    // Admit as many distinct investigators as the pinned fan/worker controls allow. Wall-clock is
+    // bounded separately by the concurrency permit count.
     let active_workers = task_count
-        .min(iteron_agents::FAN_CAP)
-        .min((fan_available / 2) as usize);
+        .min(fan_breadth)
+        .min((fan_available / worker_min_turns) as usize);
     if active_workers == 0 {
         return None;
     }
     // Each admitted worker may reach the per-worker ceiling, but the aggregate never exceeds the
     // fan half — so the writer reserve is preserved even though workers run concurrently.
-    let ceiling = iteron_agents::subagent_budget_ceiling().max_turns;
+    let ceiling = child_ceiling.max_turns;
     let fan_turns = fan_available.min((active_workers as u32).saturating_mul(ceiling));
-    let fan_wall_secs = (remaining_wall_secs / 3).max(1);
+    let fan_wall_secs = policy
+        .wall_split
+        .fan_share
+        .floor_u64(remaining_wall_secs)
+        .max(policy.wall_split.minimum_fan_seconds)
+        .min(remaining_wall_secs);
     Some(OrchestrationAllocation {
         fan_turns,
         writer_turns_reserved: remaining_turns.saturating_sub(fan_turns),
@@ -1100,11 +1147,12 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
 /// concurrency, `LIFETIME_CAP` lifetime), so the in-turn path adopts them instead of inventing a
 /// narrower pair. Cost stays bounded where it belongs: the per-child turn/token ceilings above and
 /// the aggregate USD budget shared with the parent.
-fn in_turn_workflow_budget() -> Result<iteron_kernel::ports::WorkflowRunBudget, &'static str> {
-    let defaults = iteron_workflow::RunLimits::default();
+fn in_turn_workflow_budget(
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+) -> Result<iteron_kernel::ports::WorkflowRunBudget, &'static str> {
     iteron_kernel::ports::WorkflowRunBudget::new(
-        defaults.max_concurrency(),
-        defaults.max_agent_calls(),
+        policy.workflow.max_concurrency,
+        policy.workflow.max_calls,
     )
 }
 
@@ -1176,14 +1224,41 @@ fn sha256_hex(content: &str) -> String {
         .collect()
 }
 
+/// Bind every workflow control from the run's immutable execution policy.  This tiny composition
+/// seam is shared by ordinary and resumed workflow preparation; neither may inherit `RunSpec`
+/// defaults that were not present in the run checkpoint.
+fn apply_workflow_execution_policy(
+    spec: iteron_workflow::RunSpec,
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+) -> iteron_workflow::RunSpec {
+    spec.with_early_stop_quorum(policy.early_stop_quorum)
+        .with_speculative_siblings(policy.speculative_siblings)
+        .with_task_retry(policy.task_retry)
+        .with_schema_retry(policy.schema_retry)
+}
+
 #[cfg(test)]
 mod orchestration_allocation_tests {
     use super::*;
 
+    fn policy() -> crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy {
+        crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
+            iteron_protocol::Effort::Ultracode,
+            &Budget {
+                max_turns: 59,
+                max_usd: None,
+                max_tokens: Some(101),
+                max_wall_secs: 900,
+                max_consecutive_tool_errors: 3,
+            },
+            iteron_workflow::RunLimits::default(),
+        )
+    }
+
     #[test]
     fn writer_is_reserved_before_fan_and_workers_have_two_turns() {
         // Writer keeps half-plus-one (30 of 59); the fan gets the rest and stays strictly smaller.
-        let allocation = allocate_orchestration(59, 6, 900).expect("viable fan");
+        let allocation = allocate_orchestration(59, 6, 900, policy()).expect("viable fan");
         assert_eq!(allocation.writer_turns_reserved, 30);
         assert_eq!(allocation.fan_turns, 29);
         assert!(allocation.writer_turns_reserved > allocation.fan_turns);
@@ -1195,9 +1270,71 @@ mod orchestration_allocation_tests {
 
     #[test]
     fn tiny_budget_bypasses_fan_instead_of_starving_writer() {
-        assert!(allocate_orchestration(5, 6, 900).is_none());
-        assert!(allocate_orchestration(59, 0, 900).is_none());
-        assert!(allocate_orchestration(59, 6, 2).is_none());
+        assert!(allocate_orchestration(5, 6, 900, policy()).is_none());
+        assert!(allocate_orchestration(59, 0, 900, policy()).is_none());
+        assert!(allocate_orchestration(59, 6, 2, policy()).is_none());
+    }
+
+    #[test]
+    fn pinned_execution_policy_changes_real_allocation_report_and_engine_limits() {
+        let mut custom = policy();
+        custom.writer_fan_turn_split.writer_share =
+            crate::runtime_tunables::execution_policy::ExactRatio::new(2, 3).unwrap();
+        custom.report_budget_bytes = 5;
+        custom.workflow.max_calls = 7;
+        custom.workflow.max_concurrency = 2;
+        custom.early_stop_quorum =
+            iteron_workflow::EarlyStopQuorumPolicy::new(2, 1, false).unwrap();
+        custom.speculative_siblings =
+            iteron_workflow::SpeculativeSiblingPolicy::new(7, std::time::Duration::from_secs(9))
+                .unwrap();
+        custom.task_retry = iteron_workflow::TaskRetryPolicy::new(
+            3,
+            iteron_workflow::TaskFailureAction::RetrySame,
+            false,
+        )
+        .unwrap();
+
+        let allocation = allocate_orchestration(60, 6, 90, custom).unwrap();
+        assert_eq!(allocation.writer_turns_reserved, 40);
+        assert_eq!(allocation.fan_turns, 20);
+        assert_eq!(allocation.fan_wall_secs, 30);
+        assert_eq!(bounded_child_report(custom, "abcdefgh"), "ab…");
+        let engine = in_turn_workflow_budget(custom).unwrap();
+        assert_eq!(engine.max_agent_calls(), 7);
+        assert_eq!(engine.max_concurrency(), 2);
+
+        let child = custom
+            .direct_child_allocation
+            .allocate(60, 90, Some(100), &iteron_agents::subagent_budget_ceiling())
+            .unwrap();
+        assert_eq!(child.max_turns, 29);
+        assert_eq!(child.max_tokens, Some(50));
+        assert_eq!(child.max_wall_secs, 30);
+
+        let spec = apply_workflow_execution_policy(
+            iteron_workflow::RunSpec::new("export default async () => null"),
+            custom,
+        );
+        assert_eq!(spec.early_stop_quorum, custom.early_stop_quorum);
+        assert_eq!(spec.speculative_siblings, custom.speculative_siblings);
+        assert_eq!(spec.task_retry, custom.task_retry);
+        custom.per_agent_effort = iteron_protocol::Effort::Medium;
+        assert_eq!(
+            custom
+                .admit_child_effort(Some(iteron_protocol::Effort::Low))
+                .unwrap(),
+            iteron_protocol::Effort::Low
+        );
+        assert!(
+            custom
+                .admit_child_effort(Some(iteron_protocol::Effort::High))
+                .is_err()
+        );
+        assert_eq!(
+            custom.per_agent_memory,
+            crate::runtime_tunables::execution_policy::ChildMemoryPolicy::Isolated
+        );
     }
 
     #[test]
@@ -1229,7 +1366,7 @@ mod orchestration_allocation_tests {
 
     #[test]
     fn an_in_turn_workflow_never_collapses_to_a_single_agent() {
-        let budget = in_turn_workflow_budget().expect("in-turn aggregate budget");
+        let budget = in_turn_workflow_budget(policy()).expect("in-turn aggregate budget");
         // The regression: the aggregate ceiling used to be `remaining_turns / per_child_turns`,
         // and `per_child_turns` is `min(child_ceiling, remaining_turns)` — so the quotient was 1
         // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
@@ -1380,6 +1517,36 @@ fn ui_approval_arguments(value: &serde_json::Value) -> serde_json::Value {
     }
     retained.insert("_truncated_for_ui".into(), serde_json::Value::Bool(true));
     serde_json::Value::Object(retained)
+}
+
+/// Preserve the internally-generated structural digests that bind a verification rollback
+/// approval while continuing to scrub every operator-controlled string (notably paths).  The
+/// generic scanner intentionally masks long hex strings because arbitrary tool arguments may
+/// contain credentials; these four fields are different: they are computed by the checkpoint and
+/// verification-policy owners, and the operator must see the exact identities being approved.
+/// A model cannot reach this projection through a registered tool -- `verification_rollback` is
+/// an internal pseudo-tool used only by the verification runtime.
+fn ui_verification_rollback_arguments(value: &serde_json::Value) -> Option<serde_json::Value> {
+    fn exact_hex(value: &serde_json::Value, lengths: &[usize]) -> Option<String> {
+        let value = value.as_str()?;
+        (lengths.contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| value.to_owned())
+    }
+
+    let source = value.as_object()?;
+    let mut projected = ui_approval_arguments(value).as_object()?.clone();
+    for (field, lengths) in [
+        ("checkpoint_tree_ref", &[40_usize, 64_usize][..]),
+        ("live_workspace_tree_ref", &[40_usize, 64_usize][..]),
+        ("policy_digest_sha256", &[64_usize][..]),
+        ("scope_digest_sha256", &[64_usize][..]),
+    ] {
+        projected.insert(
+            field.to_owned(),
+            serde_json::Value::String(exact_hex(source.get(field)?, lengths)?),
+        );
+    }
+    Some(serde_json::Value::Object(projected))
 }
 
 #[cfg(test)]
@@ -1586,11 +1753,14 @@ enum DurableAppendFault {
     ContextInjection,
     Notice,
     TurnStart,
+    EffectIntent,
     ToolDone,
     ToolPolicyDecision,
     SubagentFinished,
     UsdCeiling,
     TurnCeiling,
+    GenesisPolicyTail,
+    AdoptProjection,
 }
 
 /// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
@@ -1683,6 +1853,9 @@ pub struct Agent {
     /// provenance and become authoritative only after the enclosing ContextInjection is durable.
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
+    /// Exact fresh-run environment retained after the live proposal is consumed so resumed
+    /// parents and every child can reproduce the same immutable environment identity.
+    composition_environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
     /// One compaction per top-level submission. Set by whichever path took it — the emergency
     /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
@@ -1732,9 +1905,25 @@ pub struct Agent {
     /// Immutable verification selection/quorum/quarantine/recovery policy decoded from the same
     /// run-genesis tunables checkpoint as `verify_command`.
     verification_policy: iteron_verify::VerificationRuntimePolicy,
+    /// Immutable routing, child-allocation, report, and workflow aggregate owner decoded from the
+    /// same run checkpoint. The unpinned constructor starts fail-closed.
+    execution_policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+    /// SQ/EQ capacities and overflow semantics decoded before the resident actor is wired.
+    app_server_queue_policy: crate::app_server::AppServerQueuePolicy,
+    /// Executable MIME-to-inspector table decoded from the same immutable checkpoint.
+    binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy,
+    /// Count, raw-byte, dimension, frame, and decoder-work limits pinned at run genesis.
+    multimodal_decode_envelope: crate::image_input::MultimodalDecodeEnvelope,
+    /// Content-free identities of executable hooks, workflow graph semantics, and the exact
+    /// optional environment proposal decoded from the same immutable checkpoint.
+    effective_content:
+        Option<crate::runtime_tunables::effective_content::EffectiveContentIdentities>,
     /// Content-free command digests quarantined after contradictory physical verifier outcomes.
-    /// Expiry is session-local; the decision and duration remain durable lifecycle evidence.
-    verification_quarantine: std::collections::BTreeMap<String, Instant>,
+    /// Absolute deadlines come from typed rollout receipts, so resume never restarts or silently
+    /// extends the quarantine window.
+    verification_quarantine: std::collections::BTreeMap<String, u64>,
+    /// Lazy replay guard for the typed quarantine receipts in the currently-owned rollout.
+    verification_quarantine_restored: bool,
     latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
     last_workspace_checkpoint_turn: Option<u32>,
     /// Most recent pre-submission workspace state eligible for an operator-authorised verification
@@ -1804,8 +1993,8 @@ pub struct Agent {
     interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Queue-owned interrupt request, for embedders that use SQ without an out-of-band atomic.
     interrupt_requested: bool,
-    /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow runs
-    /// inline. 16 mirrors the workflow concurrency default.
+    /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow waits
+    /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
     /// One non-refilling child-spawn ceiling for the resident session. Workflow-local RunLimits
     /// remain a second, narrower guard and never replace this owner.
@@ -1848,6 +2037,10 @@ pub struct Agent {
     mcp_runtime: Option<crate::mcp::McpRuntimeControl>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
     effort: iteron_protocol::Effort,
+    /// Event-position provenance for the mutable policy overlay. Values remain owned by the
+    /// ordinary runtime fields; this records only which successful WAL commit (or verified replay)
+    /// made each value effective, so status surfaces cannot confuse genesis with live state.
+    runtime_policy_provenance: runtime_policy_overlay::RuntimePolicyProvenance,
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
     /// into the stable system prefix (REC-INJECT). (Modular memory — R5, ADR-011 seam.)
     pub memory_workspace: Option<std::path::PathBuf>,
@@ -1962,6 +2155,8 @@ pub struct Agent {
     failed_actions: failed_action_cache::FailedActionCache,
     /// Lifecycle hooks (R5), loaded from the USER config only (trust-by-origin). Empty by default.
     pub hooks: Hooks,
+    /// One-shot guard for installing the exact hook catalog named by the tunables checkpoint.
+    hooks_runtime_installed: bool,
     /// Session-scoped, content-free command journal. The main rollout brokers the logical Hook
     /// chain; this sidecar additionally brackets every individual external command with fsync.
     hook_effect_journal: Option<hooks::journal::HookEffectJournal>,
@@ -2100,15 +2295,32 @@ impl Agent {
                     .unwrap_or_else(Instant::now),
             );
         }
+        // Keep an encrypted Attachment reference alive from SQ admission through the durable user
+        // Message and every provider request spawned by this submission. The adapter hydrates the
+        // provider copy through the same tombstone gate and releases only its exact handles when
+        // this run returns; older file-attachment edges on the run are untouched.
+        let staged_images = private_attachments::InvocationImages::stage(
+            self.rollout.path().parent().ok_or_else(|| {
+                KernelError::ContextResolution("record store resolution failed".into())
+            })?,
+            self.rollout.tenant().clone(),
+            self.rollout.run_id().clone(),
+            TurnId(self.seq_turn),
+            &input_images,
+        )
+        .map_err(|_| {
+            KernelError::ContextResolution("private image attachment storage failed".into())
+        })?;
+        let input_images = staged_images.images();
         let orchestrate = allow_orchestration
             && self.effort.profile().orchestration
                 == iteron_protocol::OrchestrationMode::Orchestrated
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
-            self.run_orchestrated(task, &input_images).await
+            self.run_orchestrated(task, input_images).await
         } else {
-            self.drive_with_images(task, &input_images).await
+            self.drive_with_images(task, input_images).await
         };
         if orchestrate {
             // The guard is scoped to one top-level run. Leaving it set made every later follow-up
@@ -2409,7 +2621,9 @@ impl Agent {
             // A declared capability is the route's own documented ceiling, so it is used as
             // declared. 8192 remains the conservative default for an UNKNOWN capability only —
             // clamping the declared value froze every provider at that default (I-02).
-            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+            let request_max_tokens = self
+                .model_max_output_tokens
+                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction
             // actually rewrote the transcript underneath it.
@@ -2645,7 +2859,11 @@ impl Agent {
                 input_images: input_images.to_vec(),
                 tools: tool_specs,
                 max_tokens: request_max_tokens,
-                cache_system: true, // stable prefix cached (ADR-002)
+                // Family 23 is the outer gate and family 158 supplies the exact breakpoint. Keep
+                // the legacy adapter bit consistent with the pinned typed control: Anthropic
+                // deliberately treats `cache_system=true` + `breakpoint=None` as Rolling, so a
+                // hard-coded true here would silently re-enable a disabled cache on the wire.
+                cache_system: self.provider_cache_system_enabled(),
                 thinking_budget: self.effort.thinking_budget(),
                 reasoning_effort: self.effort.reasoning_effort(),
                 controls: self.provider_controls,
@@ -2655,7 +2873,8 @@ impl Agent {
             // The append is the provider-effect intent. It must be durable before any adapter is
             // entered; failure returns with zero network calls and leaves the in-memory ledger
             // unchanged.
-            let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
+            let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+            let usd_attempt = admission.attempt_guard;
 
             // Open the provider effect BEFORE the mid-stream pure-tool machinery takes its borrow
             // of the registry. That borrow lives across the dispatch, so `&mut self` is unavailable
@@ -2669,15 +2888,16 @@ impl Agent {
                 .iter()
                 .position(|route| route.id() == active_provider_route)
                 .map_or(0, |index| index.saturating_add(1));
-            let use_hedge = self.provider_hedging_enabled();
+            let use_hedge = admission.use_hedge;
             let mut physical_attempt = if use_hedge { 0 } else { 1 };
             let mut route_transition_reason: Option<&'static str> = None;
-            let mut provider_route_permit = if provider_refusal.is_none() && !use_hedge {
-                self.admit_governed_route_attempt(turn_id, &active_provider_route)
-                    .await?
-            } else {
-                None
-            };
+            let mut provider_route_permit = admission.primary_route_permit;
+            if provider_refusal.is_some() {
+                drop(provider_route_permit.take());
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+            }
             self.lifecycle_event(
                 if provider_refusal.is_some() {
                     "model.route_rejected"
@@ -2700,8 +2920,10 @@ impl Agent {
                 (Some(_), _) | (None, true) => None,
                 (None, false) => {
                     provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    let (objective_score, objective_evidence) =
+                        self.objective_rank_evidence(&active_provider_route);
                     let broker_started = Instant::now();
-                    let ticket = self.open_kernel_effect(
+                    let ticket = match self.open_kernel_effect(
                         turn_id,
                         provider_class,
                         provider_ordinal,
@@ -2715,13 +2937,46 @@ impl Agent {
                             "max_tokens": req.max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": 0,
+                            "route_objective_score_millionths": objective_score,
+                            "route_objective_evidence": objective_evidence,
                         }),
-                    )?;
+                    ) {
+                        Ok(ticket) => ticket,
+                        Err(error) => {
+                            drop(provider_route_permit.take());
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            return Err(error);
+                        }
+                    };
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                     Some(ticket)
                 }
             };
+            if provider_refusal.is_none()
+                && !use_hedge
+                && let Err(error) = self.begin_provider_attempt_after_intent(turn_id)
+            {
+                let ticket = provider_ticket
+                    .take()
+                    .expect("non-hedged provider intent was opened immediately above");
+                let settlement = self.close_provider_intent_without_dispatch(
+                    turn_id,
+                    provider_ordinal,
+                    &active_provider_route,
+                    physical_attempt,
+                    ticket,
+                    "logical provider turn could not become durable before dispatch",
+                );
+                drop(provider_route_permit.take());
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                settlement?;
+                return Err(error);
+            }
             if provider_refusal.is_none() {
                 agent_loop.transition(AgentLoopState::StreamingModel)?;
                 self.observe_memory_provider_exposure(turn_id);
@@ -2759,6 +3014,7 @@ impl Agent {
             // vetoes one — silently cost the whole session its concurrent read dispatch.
             let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty()
                 || !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            let pure_overlap_enabled = self.registry.pure_overlap_enabled();
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
             // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
             // inline list, so a thirty-read turn keeps the full concurrency for all thirty rather
@@ -2832,6 +3088,8 @@ impl Agent {
                             route_transition_reason,
                             retry_index,
                             physical_attempt,
+                            physical_attempt == 0,
+                            provider_route_permit.take(),
                         )
                         .await?,
                     )
@@ -2841,6 +3099,9 @@ impl Agent {
                 if let Some(dispatch) = &hedged_dispatch {
                     physical_attempt = physical_attempt.saturating_add(dispatch.scheduled_attempts);
                 }
+                let mut monetary_followup_safe = hedged_dispatch
+                    .as_ref()
+                    .is_none_or(|dispatch| dispatch.monetary_followup_safe);
                 let hedged_this_attempt = hedged_dispatch.is_some();
                 let result = {
                     let mut on_item = |item: StreamItem| {
@@ -2960,8 +3221,16 @@ impl Agent {
                                             "effect_candidate"
                                         };
                                         policy_evidence::PolicyDecisionDraft::selected(
-                                            &["pure_candidate", "effect_candidate"],
-                                            action,
+                                            policy_evidence::TOOL_POLICY_SLOT,
+                                            &[
+                                                iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate,
+                                                iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate,
+                                            ],
+                                            if action == "pure_candidate" {
+                                                iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate
+                                            } else {
+                                                iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate
+                                            },
                                             "iteron:tool-policy-features-v1",
                                             &(
                                                 &tu,
@@ -2972,7 +3241,11 @@ impl Agent {
                                         )
                                     }
                                     Err(_) => policy_evidence::PolicyDecisionDraft::abstained(
-                                        &["pure_candidate", "effect_candidate"],
+                                        policy_evidence::TOOL_POLICY_SLOT,
+                                        &[
+                                            iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate,
+                                            iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate,
+                                        ],
                                         "iteron:tool-policy-features-v1",
                                         &(&tu, argument_trust),
                                         &"invalid_or_unknown_tools_are_not_eligible",
@@ -2992,7 +3265,7 @@ impl Agent {
                                 let is_pure = proposal
                                     .as_ref()
                                     .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                if is_pure && !hook_gates_reads {
+                                if is_pure && pure_overlap_enabled && !hook_gates_reads {
                                     let proposal =
                                         proposal.expect("checked pure tool-policy proposal");
                                     let tu_ui = proposal.intent.call.clone();
@@ -3085,10 +3358,24 @@ impl Agent {
                 };
                 let single_dispatched = provider_ticket.is_some();
                 if let Some(ticket) = provider_ticket.take() {
-                    let settlement =
-                        provider_route::provider_settlement(turn_id, provider_ordinal, &result);
+                    let accounting = self.route_attempt_accounting(
+                        turn_id,
+                        &active_provider_route,
+                        physical_attempt,
+                        &result,
+                        usd_attempt.projected_at_unix_secs(),
+                    )?;
+                    monetary_followup_safe =
+                        route_attempt_accounting::monetary_followup_safe(&accounting);
+                    let settlement = provider_route::provider_settlement(
+                        turn_id,
+                        provider_ordinal,
+                        &result,
+                        accounting.clone(),
+                    );
                     let broker_started = Instant::now();
                     self.settle_kernel_effect(ticket, settlement)?;
+                    self.commit_provider_route_charge(turn_id, &accounting)?;
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                 }
@@ -3098,7 +3385,7 @@ impl Agent {
                         &active_provider_route,
                         &result,
                         attempt_rate_limit,
-                    );
+                    )?;
                 }
                 drop(provider_route_permit.take());
                 route_transition_reason = None;
@@ -3110,6 +3397,11 @@ impl Agent {
                     provider_route::retryable_pre_stream_provider_error(&result, emitted)
                     && retry_index.saturating_add(1) < self.retry_policy.max_attempts
                 {
+                    if let Err(error) =
+                        self.admit_followup_after_route_attempt_set(monetary_followup_safe)
+                    {
+                        break Err(error);
+                    }
                     let jitter_delay = iteron_sched::full_jitter(
                         &self.retry_policy,
                         retry_index,
@@ -3153,20 +3445,28 @@ impl Agent {
                     retry_index = retry_index.saturating_add(1);
                 } else if let Some(error) = result.as_ref().err()
                     && let Some(failover_class) = self.admitted_failover(error, emitted)
-                    && let Some(index) = self
-                        .fallback_provider_routes
-                        .iter()
-                        .enumerate()
-                        .skip(fallback_index)
-                        .find(|(_, route)| route.admits_request(&req))
-                        .map(|(index, _)| index)
+                    && let Some(index) = provider_governor_state::next_admitted_fallback_index(
+                        &self.fallback_provider_routes,
+                        fallback_index,
+                        &req,
+                    )
                 {
+                    if !monetary_followup_safe {
+                        self.mark_usd_unknown();
+                        break Err(KernelError::UnpricedUsdCeiling);
+                    }
+                    if self.usd_budget_exhausted() {
+                        break Err(KernelError::InferenceBudgetExhausted("max_usd"));
+                    }
                     fallback_index = index.saturating_add(1);
                     let next =
                         self.activate_fallback_provider_route(turn_id, index, failover_class)?;
                     provider_for_stream = next.provider.clone();
                     active_provider_route = next.id();
                     req.model = next.route.model_id;
+                    if let Err(error) = self.admit_followup_after_route_attempt_set(true) {
+                        break Err(error);
+                    }
                     retry_index = 0;
                     retry_jitter = iteron_sched::backoff::Jitter::new();
                     route_transition_reason = Some(failover_class.label());
@@ -3177,10 +3477,20 @@ impl Agent {
                     provider_route_permit = self
                         .admit_governed_route_attempt(turn_id, &active_provider_route)
                         .await?;
+                    if let Some(refusal) = self.provider_dispatch_refusal() {
+                        drop(provider_route_permit.take());
+                        if let Some(budget) = &self.usd_budget {
+                            budget.settle_not_dispatched();
+                        }
+                        break Err(refusal);
+                    }
+                    self.reserve_provider_followup_if_needed(&req)?;
                     physical_attempt = physical_attempt.saturating_add(1);
                     provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    let (objective_score, objective_evidence) =
+                        self.objective_rank_evidence(&active_provider_route);
                     let broker_started = Instant::now();
-                    provider_ticket = Some(self.open_kernel_effect(
+                    provider_ticket = match self.open_kernel_effect(
                         turn_id,
                         provider_class,
                         provider_ordinal,
@@ -3194,8 +3504,19 @@ impl Agent {
                             "max_tokens": req.max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": retry_index,
+                            "route_objective_score_millionths": objective_score,
+                            "route_objective_evidence": objective_evidence,
                         }),
-                    )?);
+                    ) {
+                        Ok(ticket) => Some(ticket),
+                        Err(error) => {
+                            drop(provider_route_permit.take());
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            break Err(error);
+                        }
+                    };
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                 }
@@ -3240,7 +3561,10 @@ impl Agent {
             let turn_res = match provider_result {
                 Ok(result) => result,
                 Err(error) => {
-                    self.mark_usd_unknown();
+                    // Physical route terminals already committed exact Known/Unknown cost truth
+                    // before this branch. A proven provider failure (or a proved pre-dispatch
+                    // refusal) must not be reclassified as unknown merely because it is returned
+                    // to the logical turn.
                     // A streaming adapter can fail after emitting a complete pure tool call.
                     // Dropping JoinHandles would detach those reads and let work outlive the
                     // failed turn. Abort *and await* them before crossing the turn boundary.
@@ -3268,7 +3592,9 @@ impl Agent {
                 }
             };
             if let Some(error) = tool_contract_error {
-                self.mark_usd_unknown();
+                // The provider route terminal already committed its exact physical charge. A
+                // malformed tool projection invalidates the semantic turn, not the billing
+                // receipt, so preserve the known monetary state while failing the turn.
                 for (_, _, handle, _) in pure.drain(..) {
                     handle.abort();
                     let _ = handle.await;
@@ -3304,7 +3630,8 @@ impl Agent {
                 .map(|(_, tool)| tool)
                 .ne(returned_tools.iter())
             {
-                self.mark_usd_unknown();
+                // Stream/transcript disagreement is a provider contract failure after an exact
+                // physical terminal. It cannot erase or weaken that already-verified charge.
                 for (_, _, handle, _) in pure.drain(..) {
                     handle.abort();
                     let _ = handle.await;
@@ -3499,13 +3826,14 @@ impl Agent {
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
                             agent_loop.transition(AgentLoopState::Verifying)?;
+                            let max_verify_attempts = self.verification_policy.retry.max_attempts;
                             // Defensive guard for re-entry with an already-exhausted Agent. A
                             // configured strong oracle that has not passed must never be bypassed
                             // merely because its attempt counter reached the ceiling.
-                            if self.verify_attempts >= MAX_VERIFY_ATTEMPTS {
+                            if self.verify_attempts >= max_verify_attempts {
                                 self.verification_repair_exhausted(turn_id);
                                 let notice = format!(
-                                    "verify gate: `{cmd}` did not pass within {MAX_VERIFY_ATTEMPTS} attempts; stopping"
+                                    "verify gate: `{cmd}` did not pass within {max_verify_attempts} attempts; stopping"
                                 );
                                 self.emit(
                                     turn_id,
@@ -3542,8 +3870,9 @@ impl Agent {
                                     self.append_policy_decision(
                                         verifier_opportunity,
                                         policy_evidence::PolicyDecisionDraft::selected(
-                                            &["strong_workspace_plan"],
-                                            "strong_workspace_plan",
+                                            policy_evidence::VERIFIER_SLOT,
+                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
+                                            iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan,
                                             "iteron:verifier-features-v1",
                                             &(&verifier_observation, proposal.plan),
                                             &"verification_may_only_strengthen_caller_floors",
@@ -3555,7 +3884,8 @@ impl Agent {
                                     self.append_policy_decision(
                                         verifier_opportunity,
                                         policy_evidence::PolicyDecisionDraft::abstained(
-                                            &["strong_workspace_plan"],
+                                            policy_evidence::VERIFIER_SLOT,
+                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
                                             "iteron:verifier-features-v1",
                                             &verifier_observation,
                                             &"invalid_verifier_plans_fail_closed",
@@ -3594,6 +3924,8 @@ impl Agent {
                                 return self.finish_drained(turn_id);
                             }
                             let detail = truncate_tail(&verdict.detail, 3000);
+                            let failure_classification =
+                                iteron_verify::classify_verification_failure(verdict.outcome);
                             match verdict.outcome {
                                 iteron_verify::VerificationOutcome::Pass => {
                                     self.verification_repair_completed(turn_id);
@@ -3608,15 +3940,43 @@ impl Agent {
                                     )));
                                 }
                                 iteron_verify::VerificationOutcome::TestFailure => {
-                                    let rolled_back = self.rollback_after_verification_failure()?;
+                                    let failure_class = failure_classification
+                                        .expect(
+                                            "every non-pass oracle outcome has a taxonomy entry",
+                                        )
+                                        .class();
+                                    let recovery =
+                                        iteron_verify::verification_recovery_escalation_policy()
+                                            .decide(
+                                                &self.verification_policy.retry,
+                                                failure_class,
+                                                self.verify_attempts,
+                                            );
+                                    if recovery
+                                        == iteron_verify::VerificationRecoveryAction::StopIneligible
+                                    {
+                                        self.emit(
+                                            turn_id,
+                                            EventKind::Notice {
+                                                text: format!(
+                                                    "verify gate: `{cmd}` test failure is not retry-eligible under the immutable policy; stopping"
+                                                ),
+                                            },
+                                        );
+                                        return self.finish(turn_id, Outcome::HarnessError);
+                                    }
+                                    let rolled_back =
+                                        self.rollback_after_verification_failure().await?;
                                     // Only a real candidate/test failure consumes the bounded
                                     // model-fix allowance. Harness faults must never masquerade as
                                     // three bad candidate attempts.
                                     self.verify_attempts = self.verify_attempts.saturating_add(1);
-                                    if self.verify_attempts >= MAX_VERIFY_ATTEMPTS {
+                                    if recovery
+                                        == iteron_verify::VerificationRecoveryAction::StopExhausted
+                                    {
                                         self.verification_repair_exhausted(turn_id);
                                         let notice = format!(
-                                            "verify gate: `{cmd}` test failure on attempt {} of {MAX_VERIFY_ATTEMPTS}; ceiling reached, stopping",
+                                            "verify gate: `{cmd}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
                                             self.verify_attempts
                                         );
                                         self.emit(
@@ -3631,6 +3991,11 @@ impl Agent {
                                             Outcome::BudgetExhausted("verify_attempts"),
                                         );
                                     }
+
+                                    debug_assert_eq!(
+                                        recovery,
+                                        iteron_verify::VerificationRecoveryAction::RetryReplan
+                                    );
 
                                     self.verification_repair_started(turn_id);
 
@@ -4610,11 +4975,13 @@ impl Agent {
             {
                 break;
             }
-            // Only a DECLARED path can be proven not to collide, so only a declared collision stops
-            // the group. A call that names no path (a bash line, a git observation) claims nothing;
-            // the model emitted these in one message, which is its own assertion that they are
-            // independent, and that assertion is exactly what parallel tool calls mean.
+            // Only a DECLARED path can be proven not to collide. Unknown/empty write sets therefore
+            // remain in the ordered executor; a model emitting calls together is not independent
+            // authority to widen physical side-effect concurrency.
             let declared = declared_write_paths(&call.input);
+            if effecting_tool_admission_policy().declared_set_required && declared.is_empty() {
+                break;
+            }
             if declared.iter().any(|path| claimed.contains(path)) {
                 break;
             }
@@ -4700,6 +5067,7 @@ impl Agent {
                 capability,
                 audit_arguments,
                 workspace: effect_workspace(&self.workspace),
+                provider_route_attempt: None,
             };
             let opened = {
                 let Agent {
@@ -5006,6 +5374,7 @@ impl Agent {
             capability,
             audit_arguments: ui_approval_arguments(&call.input),
             workspace: effect_workspace(&self.workspace),
+            provider_route_attempt: None,
         };
         let opened = {
             let Agent {
@@ -5252,6 +5621,12 @@ impl Agent {
     }
 
     fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
+        if !self.verification_policy.checkpoint.before_drain {
+            return Err(KernelError::ContextResolution(
+                "resolved verification checkpoint policy attempted to disable the mandatory drain recovery point"
+                    .into(),
+            ));
+        }
         self.checkpoint_at_turn_end(turn, true)?;
         let outcome = self.finish(turn, Outcome::Drained)?;
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
@@ -5286,23 +5661,23 @@ impl Agent {
             Outcome::Done => (iteron_protocol::PolicyTerminalOutcome::Succeeded, None),
             Outcome::Drained => (
                 iteron_protocol::PolicyTerminalOutcome::Cancelled,
-                Some("drained"),
+                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorDrain),
             ),
             Outcome::BudgetExhausted(reason) => (
                 iteron_protocol::PolicyTerminalOutcome::BudgetExhausted,
-                Some(*reason),
+                Some(policy_evidence::policy_budget_harness_error_code(reason)),
             ),
             Outcome::Interrupted => (
                 iteron_protocol::PolicyTerminalOutcome::Interrupted,
-                Some("interrupted"),
+                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorInterrupted),
             ),
             Outcome::Stuck => (
                 iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some("stuck"),
+                Some(iteron_protocol::PolicyHarnessErrorCode::ConsecutiveToolErrors),
             ),
             Outcome::HarnessError => (
                 iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some("harness_error"),
+                Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure),
             ),
         };
         self.append_policy_turn_outcome(
@@ -5343,7 +5718,15 @@ impl Agent {
             .ok_or(KernelError::IdentityExhausted("approval"))?;
         let id = SubmissionId(self.approval_seq);
         let tool = tool_use.name.as_str();
-        let arguments = ui_approval_arguments(&tool_use.input);
+        let arguments = if tool == "verification_rollback" {
+            ui_verification_rollback_arguments(&tool_use.input).ok_or_else(|| {
+                KernelError::ContextResolution(
+                    "verification rollback approval carried an invalid structural binding".into(),
+                )
+            })?
+        } else {
+            ui_approval_arguments(&tool_use.input)
+        };
         let workspace = strict_utf8_head(
             &iteron_record::redact::scrub(&self.workspace.display().to_string()),
             2_048,

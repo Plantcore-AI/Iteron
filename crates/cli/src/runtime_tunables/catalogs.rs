@@ -379,6 +379,7 @@ mod tests {
             image_input: None,
             image_input_version: None,
             image_input_source: None,
+            routing_objectives: None,
             version: None,
             source: None,
         });

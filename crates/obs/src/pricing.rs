@@ -280,7 +280,7 @@ impl PricingPort for HmacPricingAuthority {
         let trusted = self.trusted_card(signed)?;
         validate_projection_identity(&identity)?;
         ensure_card_fresh(&signed.rate_card, projected_at_unix_secs)?;
-        let amount_microusd = project_amount(signed.rate_card.rates, usage)?;
+        let amount_microusd = projected_amount_microusd(signed.rate_card.rates, usage)?;
         let mut projection = CostProjection {
             version: signed.rate_card.version,
             identity: Some(identity),
@@ -328,7 +328,7 @@ fn verify_projection_with_card(
         return Err(PricingError::InvalidField("projection_route_binding"));
     }
     ensure_card_fresh(&signed.rate_card, projection.projected_at_unix_secs)?;
-    let amount = project_amount(signed.rate_card.rates, projection.usage)?;
+    let amount = projected_amount_microusd(signed.rate_card.rates, projection.usage)?;
     if amount != projection.amount_microusd {
         return Err(PricingError::WorkflowEvidenceMismatch);
     }
@@ -503,7 +503,10 @@ fn card_is_fresh(rate_card: &RateCard, at_unix_secs: u64) -> bool {
     ensure_card_fresh(rate_card, at_unix_secs).is_ok()
 }
 
-fn project_amount(rates: TokenRateCard, usage: Usage) -> Result<u64, PricingError> {
+/// Deterministic fixed-point price for a bounded usage envelope. Live projections and the CLI's
+/// pre-dispatch worst-case reservation deliberately share this exact arithmetic, so admission can
+/// never reserve less merely because it duplicated rounding logic.
+pub fn projected_amount_microusd(rates: TokenRateCard, usage: Usage) -> Result<u64, PricingError> {
     if usage.thinking > usage.output {
         return Err(PricingError::ThinkingExceedsOutput);
     }

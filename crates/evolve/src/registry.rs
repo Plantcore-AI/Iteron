@@ -9,8 +9,8 @@ use crate::{
 };
 use iteron_protocol::{RunId, Seq, TenantId};
 use iteron_record::{
-    ContentReferenceSurface, PrivateContentClass, PrivateContentDerivativeStore,
-    PrivateContentHandle, PrivateContentRetention,
+    PrivateContentClass, PrivateContentDerivativeStore, PrivateContentHandle,
+    PrivateContentNamespace, PrivateContentRetention,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -266,7 +266,15 @@ impl TrajectoryRegistry {
 
         let record_hash = hash_record(&summary.last_hash, summary.next_sequence, &content_digest);
         let content_store = trajectory_content_store(&self.content_runs_dir, envelope)?;
-        let handle = content_store.put(Seq(summary.next_sequence), &envelope_bytes)?;
+        // The registry envelope is transformed record data, not an independent new source. Bind
+        // every physical record handle owned by this run before the manifest line is published;
+        // revoking any source then closes this handle (and its downstream dataset/candidate
+        // descendants) even though the envelope has a different content digest.
+        let handle = content_store.put_derived_from_run(
+            Seq(summary.next_sequence),
+            &envelope_bytes,
+            &envelope.run_id,
+        )?;
         if handle.digest.as_str() != format!("sha256:{content_digest}") {
             return Err(TrajectoryRegistryError::ContentDigestMismatch {
                 sequence: summary.next_sequence,
@@ -500,11 +508,11 @@ fn hydrate_record(
     content_runs_dir: &Path,
     stored: &StoredRegistryRecord,
 ) -> Result<RegistryRecord, TrajectoryRegistryError> {
-    let content_store = PrivateContentDerivativeStore::open(
+    let content_store = PrivateContentDerivativeStore::open_registered(
         content_runs_dir,
         stored.tenant_id.clone(),
         stored.run_id.clone(),
-        ContentReferenceSurface::Trajectory,
+        PrivateContentNamespace::Trajectory,
         PrivateContentClass::Trajectory,
         PrivateContentRetention::ExplicitRevocation,
         MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES,
@@ -537,11 +545,11 @@ fn trajectory_content_store(
     content_runs_dir: &Path,
     envelope: &TrajectoryEnvelope,
 ) -> Result<PrivateContentDerivativeStore, TrajectoryRegistryError> {
-    Ok(PrivateContentDerivativeStore::open(
+    Ok(PrivateContentDerivativeStore::open_registered(
         content_runs_dir,
         envelope.tenant_id.clone(),
         envelope.run_id.clone(),
-        ContentReferenceSurface::Trajectory,
+        PrivateContentNamespace::Trajectory,
         PrivateContentClass::Trajectory,
         PrivateContentRetention::ExplicitRevocation,
         MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES,

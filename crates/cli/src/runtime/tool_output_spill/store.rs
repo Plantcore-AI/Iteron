@@ -1,18 +1,22 @@
 use super::{
     ManagedToolResult, ToolOutputSpillCleanup, ToolOutputSpillError, ToolOutputSpillPolicy,
 };
-use iteron_protocol::ToolResult;
+use iteron_protocol::{RunId, Seq, TenantId, ToolResult};
+use iteron_record::{
+    MAX_PRIVATE_CONTENT_BYTES, PrivateContentClass, PrivateContentDerivativeStore,
+    PrivateContentHandle, PrivateContentNamespace, PrivateContentRetention,
+};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{DirBuilder, File, OpenOptions};
-use std::io::Write as _;
+use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const SHA256_BYTES: usize = 32;
-const MAX_TEMP_CREATE_ATTEMPTS: u64 = 64;
+const SPILL_SEQUENCE_BASE: u64 = 1_u64 << 63;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ToolOutputSpillHandle([u8; SHA256_BYTES]);
@@ -32,14 +36,6 @@ impl ToolOutputSpillHandle {
             bytes[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
         }
         Some(Self(bytes))
-    }
-
-    fn file_name(self) -> String {
-        let mut name = String::with_capacity("spill-".len() + (SHA256_BYTES * 2) + ".bin".len());
-        name.push_str("spill-");
-        push_hex(&mut name, &self.0);
-        name.push_str(".bin");
-        name
     }
 }
 
@@ -61,17 +57,9 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn push_hex(output: &mut String, bytes: &[u8]) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in bytes {
-        output.push(HEX[usize::from(byte >> 4)] as char);
-        output.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-}
-
 #[derive(Debug)]
 struct SpillEntry {
-    path: PathBuf,
+    chunks: Vec<(Seq, PrivateContentHandle)>,
     bytes: usize,
     leases: usize,
 }
@@ -97,45 +85,71 @@ enum RetainOutcome {
 /// dereference remain inside this owner.
 pub(crate) struct ToolOutputSpillStore {
     policy: ToolOutputSpillPolicy,
-    root: PathBuf,
-    next_temporary: AtomicU64,
+    private: PrivateContentDerivativeStore,
+    next_sequence: AtomicU64,
     state: Mutex<SpillState>,
+    cleanup_on_drop: bool,
+    #[cfg(test)]
+    test_root: Option<PathBuf>,
 }
 
 impl ToolOutputSpillStore {
+    /// Open the spill owner on the same tenant/run content graph as the durable record.
+    ///
+    /// Raw oversized output is one bounded primary private artifact behind the record CAS, and
+    /// the preview marker exposes that exact whole-value digest. Exact-session deletion and
+    /// content revocation therefore share the same owner lock and tombstone authority instead of
+    /// leaving an unrelated plaintext file in the system temporary directory.
+    pub(crate) fn create_for_run(
+        policy: ToolOutputSpillPolicy,
+        runs_dir: &Path,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Self, ToolOutputSpillError> {
+        let private = PrivateContentDerivativeStore::open_registered(
+            runs_dir,
+            tenant,
+            run,
+            PrivateContentNamespace::ToolArtifact,
+            PrivateContentClass::ToolOutput,
+            PrivateContentRetention::Session,
+            MAX_PRIVATE_CONTENT_BYTES,
+        )
+        .map_err(|_| ToolOutputSpillError::StorageUnavailable)?;
+        Ok(Self {
+            policy,
+            private,
+            next_sequence: AtomicU64::new(SPILL_SEQUENCE_BASE),
+            state: Mutex::new(SpillState::default()),
+            cleanup_on_drop: true,
+            #[cfg(test)]
+            test_root: None,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn create(policy: ToolOutputSpillPolicy) -> Result<Self, ToolOutputSpillError> {
         static STORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let base = std::env::temp_dir();
-        for _ in 0..MAX_TEMP_CREATE_ATTEMPTS {
-            let sequence = STORE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-            let root = base.join(format!(
-                "core-tool-output-spill-{}-{sequence}",
-                std::process::id()
-            ));
-            let mut builder = DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt as _;
-                builder.mode(0o700);
-            }
-            match builder.create(&root) {
-                Ok(()) => {
-                    if sync_directory(&base).is_err() {
-                        let _ = std::fs::remove_dir(&root);
-                        return Err(ToolOutputSpillError::StorageUnavailable);
-                    }
-                    return Ok(Self {
-                        policy,
-                        root,
-                        next_temporary: AtomicU64::new(1),
-                        state: Mutex::new(SpillState::default()),
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(_) => return Err(ToolOutputSpillError::StorageUnavailable),
-            }
+        let sequence = STORE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "core-tool-output-spill-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).map_err(|_| ToolOutputSpillError::StorageUnavailable)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| ToolOutputSpillError::StorageUnavailable)?;
         }
-        Err(ToolOutputSpillError::StorageUnavailable)
+        let mut store = Self::create_for_run(
+            policy,
+            &root,
+            TenantId::default(),
+            RunId(format!("tool-output-spill-test-{sequence}")),
+        )?;
+        store.test_root = Some(root);
+        Ok(store)
     }
 
     /// Replace an oversized result with a bounded prefix and opaque durable handle. Storage
@@ -147,13 +161,25 @@ impl ToolOutputSpillStore {
         }
 
         let original_bytes = result.content.len();
+        let advertised = ToolOutputSpillHandle::for_content(result.content.as_bytes());
+        let marker = format!(
+            "\n[tool output spill {advertised} bytes={original_bytes} cleanup={}]",
+            self.policy.cleanup().label(),
+        );
+        if marker.len() > self.policy.memory_threshold_bytes() {
+            // A truncated digest is not an opaque handle: it cannot be dereferenced or revoked.
+            // Refuse publication before writing the CAS rather than emitting a marker that names
+            // no durable target.
+            result.content = bounded_control_text(
+                "[tool output withheld: spill handle exceeds preview bound]",
+                self.policy.memory_threshold_bytes(),
+            );
+            result.is_error = true;
+            return ManagedToolResult::unspilled(result);
+        }
         match self.retain(result.content.as_bytes()) {
             Ok(RetainOutcome::Retained(lease)) => {
-                let marker = format!(
-                    "\n[tool output spill {} bytes={original_bytes} cleanup={}]",
-                    lease.handle,
-                    self.policy.cleanup().label(),
-                );
+                debug_assert_eq!(lease.handle, advertised);
                 result.content = bounded_preview(
                     &result.content,
                     &marker,
@@ -166,15 +192,16 @@ impl ToolOutputSpillStore {
                 }
             }
             Ok(RetainOutcome::CapacityExceeded) => {
-                let marker = format!(
-                    "\n[tool output omitted bytes={original_bytes}: private spill capacity exhausted; cleanup={}]",
+                let notice = format!(
+                    "[tool output withheld bytes={original_bytes}: private spill capacity exhausted; cleanup={}]",
                     self.policy.cleanup().label(),
                 );
-                result.content = bounded_preview(
-                    &result.content,
-                    &marker,
-                    self.policy.memory_threshold_bytes(),
-                );
+                // The store cannot retain the exact bytes, so no portion of the untrusted raw
+                // value may cross the model/record boundary. A prefix would be irreversible and
+                // would have neither a dereferenceable handle nor a revocation target.
+                result.content =
+                    bounded_control_text(&notice, self.policy.memory_threshold_bytes());
+                result.is_error = true;
                 ManagedToolResult::unspilled(result)
             }
             Err(_) => {
@@ -212,7 +239,7 @@ impl ToolOutputSpillStore {
             entry.leases -= 1;
             return Ok(());
         }
-        remove_entry(&self.root, &mut state, lease.handle)
+        remove_entry(&self.private, &mut state, lease.handle)
     }
 
     /// Later lifecycle boundaries also clean an earlier configured scope. This is the fail-closed
@@ -231,7 +258,7 @@ impl ToolOutputSpillStore {
         let handles = state.files.keys().copied().collect::<Vec<_>>();
         let mut failed = false;
         for handle in handles {
-            if remove_entry(&self.root, &mut state, handle).is_err() {
+            if remove_entry(&self.private, &mut state, handle).is_err() {
                 failed = true;
             }
         }
@@ -244,10 +271,6 @@ impl ToolOutputSpillStore {
 
     /// Resolve an opaque handle only against this exact session owner. The caller receives bounded
     /// bytes, never the backing path, and a handle minted by another store is simply absent.
-    #[allow(
-        dead_code,
-        reason = "private handle retrieval is the production artifact seam"
-    )]
     pub(crate) fn read_private(&self, handle: &str) -> Result<Vec<u8>, ToolOutputSpillError> {
         let handle =
             ToolOutputSpillHandle::parse(handle).ok_or(ToolOutputSpillError::UnknownHandle)?;
@@ -259,7 +282,18 @@ impl ToolOutputSpillStore {
             .files
             .get(&handle)
             .ok_or(ToolOutputSpillError::UnknownHandle)?;
-        std::fs::read(&entry.path).map_err(|_| ToolOutputSpillError::StorageUnavailable)
+        let mut bytes = Vec::with_capacity(entry.bytes);
+        for (seq, chunk) in &entry.chunks {
+            let next = self
+                .private
+                .read_at(*seq, chunk)
+                .map_err(|_| ToolOutputSpillError::StorageUnavailable)?;
+            bytes.extend_from_slice(&next);
+        }
+        if bytes.len() != entry.bytes || ToolOutputSpillHandle::for_content(&bytes) != handle {
+            return Err(ToolOutputSpillError::StorageUnavailable);
+        }
+        Ok(bytes)
     }
 
     fn retain(&self, content: &[u8]) -> Result<RetainOutcome, ToolOutputSpillError> {
@@ -278,64 +312,41 @@ impl ToolOutputSpillStore {
         let Some(next_bytes) = state.retained_bytes.checked_add(content.len()) else {
             return Ok(RetainOutcome::CapacityExceeded);
         };
-        if next_bytes > self.policy.spill_max_bytes() {
+        if content.len() > MAX_PRIVATE_CONTENT_BYTES || next_bytes > self.policy.spill_max_bytes() {
             return Ok(RetainOutcome::CapacityExceeded);
         }
 
-        let path = self.root.join(handle.file_name());
-        let (temporary_path, mut temporary) = self.create_temporary()?;
-        let publish = (|| -> std::io::Result<()> {
-            temporary.write_all(content)?;
-            temporary.flush()?;
-            temporary.sync_all()?;
-            drop(temporary);
-            std::fs::hard_link(&temporary_path, &path)?;
-            std::fs::remove_file(&temporary_path)?;
-            sync_directory(&self.root)
-        })();
-        if publish.is_err() {
-            let _ = std::fs::remove_file(&temporary_path);
-            let _ = std::fs::remove_file(&path);
-            let _ = sync_directory(&self.root);
+        // One marker must name one durable revocation target. Never advertise a digest for a
+        // virtual concatenation whose actual CAS references are unrelated chunk digests: a caller
+        // revoking the visible marker would otherwise receive TargetNotFound. Values beyond the
+        // record CAS bound are withheld instead of being published under a misleading handle.
+        let seq = Seq(self.next_sequence.fetch_add(1, Ordering::Relaxed));
+        let chunk = match self.private.put(seq, content) {
+            Ok(chunk) => chunk,
+            Err(_) => return Err(ToolOutputSpillError::StorageUnavailable),
+        };
+        if chunk.digest.as_str() != handle.to_string() {
+            let _ = self.private.release(seq, &chunk.digest);
             return Err(ToolOutputSpillError::StorageUnavailable);
+        }
+        match self.private.read_at(seq, &chunk) {
+            Ok(published) if published == content => {}
+            _ => {
+                let _ = self.private.release(seq, &chunk.digest);
+                return Err(ToolOutputSpillError::StorageUnavailable);
+            }
         }
 
         state.retained_bytes = next_bytes;
         state.files.insert(
             handle,
             SpillEntry {
-                path,
+                chunks: vec![(seq, chunk)],
                 bytes: content.len(),
                 leases: 1,
             },
         );
         Ok(RetainOutcome::Retained(ToolOutputSpillLease { handle }))
-    }
-
-    fn create_temporary(&self) -> Result<(PathBuf, File), ToolOutputSpillError> {
-        let first = self
-            .next_temporary
-            .fetch_add(MAX_TEMP_CREATE_ATTEMPTS, Ordering::Relaxed);
-        for offset in 0..MAX_TEMP_CREATE_ATTEMPTS {
-            let path = self.root.join(format!(
-                ".spill-{}-{}.tmp",
-                std::process::id(),
-                first.saturating_add(offset)
-            ));
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                options.mode(0o600);
-            }
-            match options.open(&path) {
-                Ok(file) => return Ok((path, file)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(_) => return Err(ToolOutputSpillError::StorageUnavailable),
-            }
-        }
-        Err(ToolOutputSpillError::StorageUnavailable)
     }
 
     #[cfg(test)]
@@ -350,54 +361,63 @@ impl ToolOutputSpillStore {
 
     #[cfg(test)]
     pub(super) fn root(&self) -> PathBuf {
-        self.root.clone()
+        self.private.runs_dir().to_path_buf()
     }
 
     #[cfg(all(test, unix))]
     pub(super) fn artifact_path(&self, handle: &str) -> Option<PathBuf> {
-        let handle = ToolOutputSpillHandle::parse(handle)?;
-        self.state
-            .lock()
-            .ok()?
-            .files
-            .get(&handle)
-            .map(|entry| entry.path.clone())
+        let _ = ToolOutputSpillHandle::parse(handle)?;
+        None
+    }
+
+    #[cfg(test)]
+    pub(super) fn abandon_for_recovery(mut self) -> Option<PathBuf> {
+        self.cleanup_on_drop = false;
+        self.test_root.take()
     }
 }
 
 fn remove_entry(
-    root: &std::path::Path,
+    private: &PrivateContentDerivativeStore,
     state: &mut SpillState,
     handle: ToolOutputSpillHandle,
 ) -> Result<(), ToolOutputSpillError> {
-    let Some(entry) = state.files.get(&handle) else {
+    let Some(entry) = state.files.remove(&handle) else {
         return Ok(());
     };
-    match std::fs::remove_file(&entry.path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(ToolOutputSpillError::StorageUnavailable),
-    }
     let bytes = entry.bytes;
-    state.files.remove(&handle);
     state.retained_bytes = state.retained_bytes.saturating_sub(bytes);
-    sync_directory(root).map_err(|_| ToolOutputSpillError::StorageUnavailable)
+    let mut failed = false;
+    for (seq, chunk) in entry.chunks {
+        if private.release(seq, &chunk.digest).is_err() {
+            failed = true;
+        }
+    }
+    if failed {
+        return Err(ToolOutputSpillError::StorageUnavailable);
+    }
+    Ok(())
 }
 
 impl Drop for ToolOutputSpillStore {
     fn drop(&mut self) {
-        let parent = self.root.parent().map(std::path::Path::to_path_buf);
+        if !self.cleanup_on_drop {
+            return;
+        }
         let state = self
             .state
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (_, entry) in std::mem::take(&mut state.files) {
-            let _ = std::fs::remove_file(entry.path);
+        let files = std::mem::take(&mut state.files);
+        state.retained_bytes = 0;
+        for (_, entry) in files {
+            for (seq, chunk) in entry.chunks {
+                let _ = self.private.release(seq, &chunk.digest);
+            }
         }
-        if std::fs::remove_dir(&self.root).is_ok()
-            && let Some(parent) = parent
-        {
-            let _ = sync_directory(&parent);
+        #[cfg(test)]
+        if let Some(root) = self.test_root.take() {
+            let _ = std::fs::remove_dir_all(root);
         }
     }
 }
@@ -423,14 +443,4 @@ fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
         end -= 1;
     }
     &value[..end]
-}
-
-#[cfg(unix)]
-fn sync_directory(path: &std::path::Path) -> std::io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }

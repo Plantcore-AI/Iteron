@@ -28,10 +28,6 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
         names: &["require_current"],
     },
     FreeFunctions {
-        path: "crates/record/src/lib.rs",
-        names: &["replay"],
-    },
-    FreeFunctions {
         path: "crates/eval/src/contract.rs",
         names: &[
             "admit_type_version",
@@ -75,6 +71,15 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
     },
 ];
 
+// `record::replay`, `record::replay_timed`, and `Rollout::append` deliberately evolve behind the
+// stricter structural dataflow authorities in `schema_compat_rust_runtime_record`: that gate proves
+// the exact Event -> canonical payload -> ChainLine and ChainLine -> optional revocation hydrate ->
+// Event -> authoritative sequence flows, including mutation oracles. Freezing their complete token
+// bodies here as well would reject a strengthened gate while adding no independent invariant.
+// Likewise, `iteron_ctx::ContextEstimate` is an internal measurement object: its bounded public
+// projection is independently locked producer -> strict eval DTO -> golden by
+// `schema_compat_rust_cli`, so new internal ledger dimensions are not machine-schema fields.
+
 const WHOLE_FILES: &[&str] = &["crates/eval/src/strict_json.rs"];
 
 const METHODS: &[Methods] = &[
@@ -87,11 +92,6 @@ const METHODS: &[Methods] = &[
         path: "crates/protocol/src/wire.rs",
         target: "EqEnvelope",
         names: &["current", "into_current"],
-    },
-    Methods {
-        path: "crates/record/src/lib.rs",
-        target: "Rollout",
-        names: &["append"],
     },
     Methods {
         path: "crates/cli/src/output.rs",
@@ -144,10 +144,6 @@ const TYPES: &[Types] = &[
     Types {
         path: "crates/provider/src/lib.rs",
         names: &["EffortApplication"],
-    },
-    Types {
-        path: "crates/ctx/src/compact.rs",
-        names: &["ContextEstimate"],
     },
     Types {
         path: "crates/obs/src/lib.rs",

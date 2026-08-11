@@ -1,11 +1,5 @@
 use super::*;
 
-/// Ceiling for one side conversation. Deliberately independent from the parent's remaining turn
-/// budget; a side conversation must not silently consume the main session's allowance.
-const MAX_TURNS: u32 = 24;
-const MAX_WALL_SECS: u64 = 300;
-const MAX_CONSECUTIVE_TOOL_ERRORS: u32 = 3;
-
 const SYSTEM: &str = "You are answering a question on the side of a coding session. You have \
 read-only tools: you can read files, glob, search, and inspect the repository, but you cannot edit \
 files, run commands, or delegate. Answer the operator directly and cite file:line when you looked \
@@ -100,7 +94,7 @@ impl Agent {
         let tunables_pin = self
             .tunables_pin_snapshot()
             .map_err(|error| error.public_summary())?;
-        let tunables_resolution_digest = tunables_pin.resolution_digest_sha256().to_owned();
+        let tunables_config_digest = format!("sha256:{}", tunables_pin.resolution_digest_sha256());
         let rollout = Rollout::open(&directory, &run_id, self.rollout.tenant().clone())
             .map_err(|error| format!("side conversation record failed: {error}"))?;
         let record_path = rollout.path().to_path_buf();
@@ -110,13 +104,11 @@ impl Agent {
             rollout,
             self.model.clone(),
             SYSTEM.into(),
-            Budget {
-                max_turns: MAX_TURNS,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: MAX_WALL_SECS,
-                max_consecutive_tool_errors: MAX_CONSECUTIVE_TOOL_ERRORS,
-            },
+            // A side conversation owns a separate ledger, so it does not consume the main
+            // session's allowance. Its *ceilings* must nevertheless be the exact values named by
+            // the inherited immutable tunables checkpoint. Installing a second local default here
+            // would make the child record claim one budget while enforcing another one.
+            self.budget.clone(),
             tunables_pin,
         )
         .map_err(|error| error.public_summary())?;
@@ -137,14 +129,13 @@ impl Agent {
         side.model_context_window = self.model_context_window;
         side.model_max_output_tokens = self.model_max_output_tokens;
         side.sensitive_env_names = self.sensitive_env_names.clone();
-        side.hooks = self.hooks.clone();
+        side.install_hooks(self.hooks.clone())
+            .map_err(|error| error.public_summary())?;
         side.hook_effect_journal = self.hook_effect_journal.clone();
+        side.composition_environment_context = self.composition_environment_context.clone();
+        side.environment_context = self.composition_environment_context.clone();
         side.delegation_depth = self.delegation_depth.saturating_add(1);
-        let child_effort = if self.effort == iteron_protocol::Effort::Ultracode {
-            iteron_protocol::Effort::Max
-        } else {
-            self.effort
-        };
+        let child_effort = self.execution_policy.subagent_effort;
         side.bypass_permissions = self.bypass_permissions;
         side.configure_initial_runtime_policy(
             child_effort,
@@ -166,7 +157,7 @@ impl Agent {
             &parent_run,
             self.workspace.display().to_string(),
             created_at,
-            tunables_resolution_digest,
+            tunables_config_digest,
             None,
         )
         .map_err(|error| error.public_summary())?;

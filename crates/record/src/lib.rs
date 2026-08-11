@@ -25,29 +25,32 @@ pub mod policy_bundle;
 pub mod redact;
 pub mod session;
 
+// Public type identities remain available at the crate root without importing new names into the
+// scope that owns the frozen `replay`/`Rollout::append` authorities. Executable entry points live
+// under their owning modules, which also makes erasure and private-content authority explicit at
+// call sites.
+pub type ContentReferenceSurface = content_store::ContentReferenceSurface;
+pub type ContentStoreError = content_store::ContentStoreError;
+pub type PrivateContentClass = content_store::PrivateContentClass;
+pub type PrivateContentDerivativeStore = content_store::PrivateContentDerivativeStore;
+pub type PrivateContentHandle = content_store::PrivateContentHandle;
+pub type PrivateContentNamespace = content_store::PrivateContentNamespace;
+pub type PrivateContentOwnerLease = content_store::PrivateContentOwnerLease;
+pub type PrivateContentRetention = content_store::PrivateContentRetention;
+pub type PrivateContentSource = content_store::PrivateContentSource;
+pub const MAX_PRIVATE_CONTENT_BYTES: usize = content_store::MAX_PRIVATE_CONTENT_BYTES;
+pub const MAX_PRIVATE_CONTENT_PREVIEW_BYTES: usize =
+    content_store::MAX_PRIVATE_CONTENT_PREVIEW_BYTES;
+pub type ErasureError = erasure::ErasureError;
+pub type LocalErasureAuthority = erasure::LocalErasureAuthority;
+pub const MAX_ERASURE_RECEIPTS: usize = erasure::MAX_ERASURE_RECEIPTS;
+pub type PolicyBundleCheckpointError = policy_bundle::PolicyBundleCheckpointError;
+
 mod cache_io;
 
 pub use checkpoint::{
     Snapshot, SnapshotInventory, checkpoint, checkpoint_excluding_runtime_state,
-    checkpoint_supported, rewind_workspace, rewind_workspace_paths, rewind_workspace_with_policy,
-    snapshot_inventory,
-};
-pub use content_store::{
-    ContentReferenceSurface, ContentStoreError, MAX_PRIVATE_CONTENT_BYTES,
-    MAX_PRIVATE_CONTENT_PREVIEW_BYTES, PrivateContentClass, PrivateContentDerivativeStore,
-    PrivateContentHandle, PrivateContentOwnerLease, PrivateContentRetention,
-    acquire_private_content_owner, content_revocation_generation, guard_private_content,
-    guard_private_content_for_run, private_content_digest, put_private_content,
-    put_private_content_at_surface, register_private_content_reference,
-    release_private_content_for_run, retain_private_content_references,
-};
-pub use erasure::{
-    ErasureError, LocalErasureAuthority, MAX_ERASURE_RECEIPTS, authorize_local_erasure,
-    execute_erasure, list_erasure_receipts, read_erasure_receipt,
-};
-pub use policy_bundle::{
-    PolicyBundleCheckpointError, policy_bundle_checkpoint_from_events, seal_policy_bundle_snapshot,
-    validate_policy_bundle_snapshot,
+    checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
 };
 pub use session::{
     DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, delete, fork,
@@ -144,6 +147,66 @@ pub(crate) const MAX_RECORD_LINE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_ROLLOUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_ROLLOUT_EVENTS: usize = 100_000;
 pub(crate) const MAX_ROLLOUT_PHYSICAL_LINES: usize = MAX_ROLLOUT_EVENTS + 1_024;
+
+/// Closed owner for the replay checks that every record reader and effect-journal fold enforces.
+///
+/// This is deliberately a process invariant rather than a caller option: a checkpoint can attest
+/// the policy identity, but it cannot disable any of the checks or make a weaker reader legal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayDivergenceDetectionPolicy {
+    verify_hash_chain: bool,
+    verify_identity_scope: bool,
+    verify_effect_terminals: bool,
+    fail_closed: bool,
+}
+
+impl ReplayDivergenceDetectionPolicy {
+    pub const fn owner() -> Self {
+        Self {
+            verify_hash_chain: true,
+            verify_identity_scope: true,
+            verify_effect_terminals: true,
+            fail_closed: true,
+        }
+    }
+
+    pub const fn verify_hash_chain(self) -> bool {
+        self.verify_hash_chain
+    }
+
+    pub const fn verify_identity_scope(self) -> bool {
+        self.verify_identity_scope
+    }
+
+    pub const fn verify_effect_terminals(self) -> bool {
+        self.verify_effect_terminals
+    }
+
+    pub const fn fail_closed(self) -> bool {
+        self.fail_closed
+    }
+}
+
+/// The physical replay entry points call this before reading any journal bytes. Keeping the gate
+/// beside the owner prevents the fixed-authority receipt from becoming an unattached constant.
+pub fn replay_divergence_detection_policy() -> ReplayDivergenceDetectionPolicy {
+    ReplayDivergenceDetectionPolicy::owner()
+}
+
+pub(crate) fn require_strict_replay_policy() -> Result<(), RecordError> {
+    let policy = replay_divergence_detection_policy();
+    if policy.verify_hash_chain()
+        && policy.verify_identity_scope()
+        && policy.verify_effect_terminals()
+        && policy.fail_closed()
+    {
+        Ok(())
+    } else {
+        Err(RecordError::InvalidEventSchema {
+            reason: "record replay policy must keep chain, identity, and effect-terminal checks fail-closed",
+        })
+    }
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -346,9 +409,9 @@ pub enum RecordError {
     #[error(transparent)]
     TunablesSnapshot(#[from] TunablesSnapshotError),
     #[error(transparent)]
-    PolicyBundleCheckpoint(#[from] PolicyBundleCheckpointError),
+    PolicyBundleCheckpoint(#[from] policy_bundle::PolicyBundleCheckpointError),
     #[error(transparent)]
-    PrivateContent(#[from] ContentStoreError),
+    PrivateContent(#[from] content_store::ContentStoreError),
 }
 
 /// One line of the rollout. `prev` chains to the previous line's `hash`; `hash` covers
@@ -545,6 +608,45 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
                     reason: "policy outcome evidence is invalid or outside its content-free bounds",
                 })?
         }
+        EventKind::VerificationPolicy { event, .. } => event.validate().map_err(|_| {
+            RecordError::InvalidEventSchema {
+                reason: "verification policy receipt is invalid or outside its content-free bounds",
+            }
+        })?,
+        EventKind::EffectIntent {
+            provider_route_attempt: Some(identity),
+            ..
+        } => {
+            identity
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_route_identifier(&identity.route_id) != identity.route_id {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "provider route attempt route_id must be credential-free",
+                });
+            }
+        }
+        EventKind::EffectDone {
+            provider_route_attempt: Some(accounting),
+            ..
+        }
+        | EventKind::EffectFailed {
+            provider_route_attempt: Some(accounting),
+            ..
+        }
+        | EventKind::EffectUnknown {
+            provider_route_attempt: Some(accounting),
+            ..
+        } => {
+            accounting
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_route_identifier(&accounting.route_id) != accounting.route_id {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "provider route attempt route_id must be credential-free",
+                });
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -568,22 +670,59 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
 /// `validate_event_bounds`. Records already on disk predate the rule and must stay replayable;
 /// rejecting them at read time would destroy exactly the evidence the audit was built from.
 fn validate_terminal_identity(kind: &EventKind) -> Result<(), &'static str> {
-    let EventKind::ToolDone {
-        result,
-        effect_id,
-        tool,
-    } = kind
-    else {
-        return Ok(());
-    };
-    if !tool.iter().any(|name| !name.is_empty()) {
-        return Err("a tool_done must name the tool that produced it");
-    }
-    if effect_id.is_none() && !result.is_error {
-        return Err(
-            "a successful tool_done must carry the effect id of its admission event; only a call \
-             that failed or was refused before dispatch may omit it",
-        );
+    match kind {
+        EventKind::ToolDone {
+            result,
+            effect_id,
+            tool,
+        } => {
+            if !tool.iter().any(|name| !name.is_empty()) {
+                return Err("a tool_done must name the tool that produced it");
+            }
+            if effect_id.is_none() && !result.is_error {
+                return Err(
+                    "a successful tool_done must carry the effect id of its admission event; only a call \
+                     that failed or was refused before dispatch may omit it",
+                );
+            }
+        }
+        EventKind::EffectIntent {
+            tool,
+            provider_route_attempt,
+            ..
+        } => {
+            if tool == "provider" && provider_route_attempt.is_none() {
+                return Err(
+                    "a new provider effect intent must carry its pre-dispatch route identity",
+                );
+            }
+            if tool != "provider" && provider_route_attempt.is_some() {
+                return Err("a non-provider effect intent cannot carry a provider route identity");
+            }
+        }
+        EventKind::EffectDone {
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectFailed {
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectUnknown {
+            tool,
+            provider_route_attempt,
+            ..
+        } => {
+            if tool == "provider" && provider_route_attempt.is_none() {
+                return Err("a new provider terminal must carry route-attempt accounting");
+            }
+            if tool != "provider" && provider_route_attempt.is_some() {
+                return Err("a non-provider terminal cannot carry provider route accounting");
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1468,6 +1607,7 @@ pub struct TimedEvent {
 /// because every existing caller wants the event stream alone and should not be made to thread a
 /// timing concern it does not use.
 pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
+    require_strict_replay_policy()?;
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();
     let mut expected_seq = 0u64;
@@ -1525,6 +1665,7 @@ pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
 }
 
 pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
+    require_strict_replay_policy()?;
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();
     let mut expected_seq = 0u64;
@@ -1587,6 +1728,82 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
     })?;
     guard_replay_lineage(path, tenant.as_ref())?;
     Ok(events)
+}
+
+fn rollout_identity_from_file(path: &Path) -> Result<(TenantId, RunId), RecordError> {
+    let run = RunId(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(RecordError::InvalidRunId {
+                reason: "rollout filename is not valid UTF-8",
+            })?
+            .to_owned(),
+    );
+    validate_run_id(&run)?;
+    let mut tenant = None;
+    visit_record_lines(path, |line| {
+        if tenant.is_none() && !line.trim().is_empty() {
+            let chain: ChainLine = serde_json::from_str(line)?;
+            tenant = Some(TenantId(chain.tenant));
+        }
+        Ok(())
+    })?;
+    let tenant = tenant.ok_or_else(|| {
+        RecordError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "rollout has no durable tenant identity",
+        ))
+    })?;
+    Ok((tenant, run))
+}
+
+/// Shared owner gate held across a non-record consumer of one verified rollout derivative.
+/// Content revocation needs the corresponding exclusive owner lock, so it cannot tombstone a
+/// checkpoint between replay validation and a Git inventory/restore that consumes the snapshot.
+pub struct VerifiedRolloutOwner {
+    tenant: TenantId,
+    run: RunId,
+    _lease: PrivateContentOwnerLease,
+}
+
+impl VerifiedRolloutOwner {
+    pub fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+
+    pub fn run(&self) -> &RunId {
+        &self.run
+    }
+}
+
+/// Acquire the owner read gate first, then verify the complete journal and every derivative
+/// lineage while revocation is excluded. Keep the returned value alive through the final external
+/// read; dropping it is the handoff point at which a waiting revoke may proceed.
+pub fn acquire_verified_rollout_owner(path: &Path) -> Result<VerifiedRolloutOwner, RecordError> {
+    let (tenant, run) = rollout_identity_from_file(path)?;
+    let lease = content_store::acquire_private_content_owner(
+        path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?,
+        &tenant,
+        &run,
+    )?;
+    let _ = replay(path)?;
+    Ok(VerifiedRolloutOwner {
+        tenant,
+        run,
+        _lease: lease,
+    })
+}
+
+/// Return tenant/run only after the ordinary replay gates pass. Callers which perform a later
+/// content read must use [`acquire_verified_rollout_owner`] and hold its lease across that read.
+pub fn verified_rollout_identity(path: &Path) -> Result<(TenantId, RunId), RecordError> {
+    let owner = acquire_verified_rollout_owner(path)?;
+    Ok((owner.tenant.clone(), owner.run.clone()))
 }
 
 fn guard_replay_lineage(path: &Path, tenant: Option<&TenantId>) -> Result<(), RecordError> {
@@ -2272,6 +2489,116 @@ mod tests {
             .unwrap();
         assert_eq!(replay(rollout.path()).unwrap().len(), 2);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn append_enforces_provider_attempt_identity_parity_at_the_mint_boundary() {
+        use iteron_protocol::{
+            ProviderRouteAttemptAccounting, ProviderRouteAttemptAccountingVersion,
+            ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
+            ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason,
+        };
+
+        let dir = test_dir("provider-attempt-mint-parity");
+        let mut rollout = Rollout::open(
+            &dir,
+            &RunId("provider-attempt-mint-parity".into()),
+            TenantId::default(),
+        )
+        .unwrap();
+        let identity = ProviderRouteAttemptIdentity {
+            version: ProviderRouteAttemptAccountingVersion::V1,
+            route_id: format!("sha256:{}", "a".repeat(64)),
+            physical_attempt: 1,
+            max_cost_reservation_microusd: None,
+        };
+        let accounting = ProviderRouteAttemptAccounting {
+            version: identity.version,
+            route_id: identity.route_id.clone(),
+            physical_attempt: identity.physical_attempt,
+            max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+            usage: ProviderRouteUsageTruth::Unknown {
+                reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable,
+            },
+            cost: ProviderRouteCostTruth::Unknown {
+                reason: ProviderRouteCostUnknownReason::OutcomeUnobservable,
+            },
+        };
+        let effect_id = iteron_protocol::EffectId("fx1-pv-00000001-0000".into());
+
+        let invalid = [
+            EventKind::EffectIntent {
+                id: effect_id.clone(),
+                tool_use_id: "hx1-pv-00000001-0000".into(),
+                tool: "provider".into(),
+                capability: iteron_protocol::Capability::IrreversibleExternal,
+                arguments: serde_json::json!({}),
+                workspace: "/repo".into(),
+                provider_route_attempt: None,
+            },
+            EventKind::EffectIntent {
+                id: effect_id.clone(),
+                tool_use_id: "hx1-cp-00000001-0000".into(),
+                tool: "checkpoint".into(),
+                capability: iteron_protocol::Capability::ReversibleLocal,
+                arguments: serde_json::json!({}),
+                workspace: "/repo".into(),
+                provider_route_attempt: Some(identity.clone()),
+            },
+            EventKind::EffectUnknown {
+                id: effect_id.clone(),
+                tool: "provider".into(),
+                reason: "crash".into(),
+                provider_route_attempt: None,
+            },
+            EventKind::EffectUnknown {
+                id: effect_id.clone(),
+                tool: "checkpoint".into(),
+                reason: "crash".into(),
+                provider_route_attempt: Some(accounting.clone()),
+            },
+        ];
+        for kind in invalid {
+            assert!(matches!(
+                rollout.append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(1),
+                    kind,
+                }),
+                Err(RecordError::InvalidEventSchema { .. })
+            ));
+            assert_eq!(rollout.next_sequence(), Seq::ZERO);
+        }
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::EffectIntent {
+                    id: effect_id.clone(),
+                    tool_use_id: "hx1-pv-00000001-0000".into(),
+                    tool: "provider".into(),
+                    capability: iteron_protocol::Capability::IrreversibleExternal,
+                    arguments: serde_json::json!({}),
+                    workspace: "/repo".into(),
+                    provider_route_attempt: Some(identity),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::EffectUnknown {
+                    id: effect_id,
+                    tool: "provider".into(),
+                    reason: "crash".into(),
+                    provider_route_attempt: Some(accounting),
+                },
+            })
+            .unwrap();
+        assert_eq!(rollout.next_sequence(), Seq(2));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The gate is write-only. Every rollout the audit read is full of anonymous terminals, and a

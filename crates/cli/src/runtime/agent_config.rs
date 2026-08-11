@@ -7,25 +7,59 @@ use super::*;
 /// installed the tooling policy while the post-construction pin only opened the spill store, so an
 /// agent pinned that way failed later with `ToolingPolicy` at its first tool call. One function is
 /// now the only place that answers "what does a pinned agent owe its registry".
+struct AppliedPinnedRuntime {
+    tool_output_spill: std::sync::Arc<tool_output_spill::ToolOutputSpillStore>,
+    token_estimator: iteron_ctx::TokenEstimatorPolicy,
+    execution: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+    verification_feedback: iteron_verify::VerificationFeedbackTailPolicy,
+    content: crate::runtime_tunables::effective_content::EffectiveContentIdentities,
+    app_server_queue: crate::app_server::AppServerQueuePolicy,
+    binary_media: crate::image_input::BinaryMediaInspectionPolicy,
+    multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
+}
+
 fn apply_pinned_tooling(
     pin: &tunables_pin::TunablesPin,
     registry: &Registry,
-) -> Result<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>, KernelError> {
-    let view = crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
-        pin.checkpoint(),
-    )
-    .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-    let tooling =
-        crate::runtime_tunables::effective_tooling::EffectiveToolingSettings::decode(&view)
+    rollout: &Rollout,
+) -> Result<AppliedPinnedRuntime, KernelError> {
+    let effective =
+        crate::runtime_tunables::effective_runtime::decode_checkpoint(pin.checkpoint(), None)
             .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    let tooling = effective.tooling;
+    let core = effective.core;
+    let token_estimator = core.token_estimator;
+    let execution = core.execution;
+    let verification_feedback = core.verification.feedback;
+    let content = effective.content;
+    let app_server_queue = core.app_server_queue;
+    let binary_media = core.binary_media;
+    let multimodal_decode = core.multimodal_decode;
+    let runs_dir = rollout.path().parent().ok_or(KernelError::ToolOutputSpill(
+        "record store resolution failed",
+    ))?;
     let store = std::sync::Arc::new(
-        tool_output_spill::ToolOutputSpillStore::create(tooling.tool_output_spill)
-            .map_err(|_| KernelError::ToolOutputSpill("private store creation failed"))?,
+        tool_output_spill::ToolOutputSpillStore::create_for_run(
+            tooling.tool_output_spill,
+            runs_dir,
+            rollout.tenant().clone(),
+            rollout.run_id().clone(),
+        )
+        .map_err(|_| KernelError::ToolOutputSpill("private store creation failed"))?,
     );
     tooling
         .install(registry)
         .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-    Ok(store)
+    Ok(AppliedPinnedRuntime {
+        tool_output_spill: store,
+        token_estimator,
+        execution,
+        verification_feedback,
+        content,
+        app_server_queue,
+        binary_media,
+        multimodal_decode,
+    })
 }
 
 impl Agent {
@@ -83,6 +117,7 @@ impl Agent {
             instruction_context: None,
             composition_instruction_context: None,
             environment_context: None,
+            composition_environment_context: None,
             compaction: CompactionPolicy::default(),
             compacted_in_run: false,
             last_compaction_turn: None,
@@ -102,7 +137,14 @@ impl Agent {
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
+            execution_policy:
+                crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
+            app_server_queue_policy: crate::app_server::AppServerQueuePolicy::owner(),
+            binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy::owner(),
+            multimodal_decode_envelope: crate::image_input::multimodal_decode_envelope(),
+            effective_content: None,
             verification_quarantine: std::collections::BTreeMap::new(),
+            verification_quarantine_restored: false,
             latest_workspace_checkpoint: None,
             last_workspace_checkpoint_turn: None,
             verification_rollback_point: None,
@@ -126,13 +168,14 @@ impl Agent {
             effect_admissions: effect_admission::EffectAdmissions::default(),
             interrupt: None,
             interrupt_requested: false,
-            max_tool_concurrency: 16,
+            max_tool_concurrency: DEFAULT_MAX_TOOL_CONCURRENCY,
             session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
             workflow_progress_tx: None,
             workflow_launcher: None,
             mcp_runtime: None,
             effort: iteron_protocol::Effort::default(),
+            runtime_policy_provenance: runtime_policy_overlay::RuntimePolicyProvenance::default(),
             memory_workspace: None,
             memory_benchmark_scope: None,
             context_strategy: compiled_policy_bundle.slots().context.clone(),
@@ -174,6 +217,7 @@ impl Agent {
             side_conversations_opened: 0,
             failed_actions: super::failed_action_cache::FailedActionCache::default(),
             hooks: Hooks::default(),
+            hooks_runtime_installed: false,
             hook_effect_journal: None,
             telemetry: None,
             run_deadline: None,
@@ -223,9 +267,16 @@ impl Agent {
         budget: Budget,
         pin: tunables_pin::TunablesPin,
     ) -> Result<Self, KernelError> {
-        let tool_output_spill = apply_pinned_tooling(&pin, &registry)?;
+        let applied = apply_pinned_tooling(&pin, &registry, &rollout)?;
         let mut agent = Self::new(provider, registry, rollout, model, system, budget);
-        agent.tool_output_spill = Some(tool_output_spill);
+        agent.tool_output_spill = Some(applied.tool_output_spill);
+        agent.context_estimator.pin_policy(applied.token_estimator);
+        agent.execution_policy = applied.execution;
+        agent.verification_policy.feedback = applied.verification_feedback;
+        agent.effective_content = Some(applied.content);
+        agent.app_server_queue_policy = applied.app_server_queue;
+        agent.binary_media_policy = applied.binary_media;
+        agent.multimodal_decode_envelope = applied.multimodal_decode;
         agent.tunables_pin = Some(pin);
         Ok(agent)
     }
@@ -276,6 +327,17 @@ impl Agent {
         if self.agent_catalog_pinned {
             return Err(KernelError::AgentCatalogAlreadyResolved);
         }
+        let identity = catalog.runtime_identity();
+        if let Some(expected) = self
+            .effective_content
+            .as_ref()
+            .map(|content| &content.agent_catalog)
+            && expected != &identity
+        {
+            return Err(KernelError::ExecutionPolicy(
+                "executable agent catalog differs from the immutable checkpoint".into(),
+            ));
+        }
         for def in catalog.defs() {
             def.validate()
                 .map_err(|_| KernelError::InvalidRouteMetadata {
@@ -308,8 +370,15 @@ impl Agent {
             return Err(KernelError::TunablesAlreadyResolved);
         }
         let pin = tunables_pin::TunablesPin::from_resolved(&resolved)?;
-        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
-        self.tool_output_spill = Some(tool_output_spill);
+        let applied = apply_pinned_tooling(&pin, &self.registry, &self.rollout)?;
+        self.tool_output_spill = Some(applied.tool_output_spill);
+        self.context_estimator.pin_policy(applied.token_estimator);
+        self.execution_policy = applied.execution;
+        self.verification_policy.feedback = applied.verification_feedback;
+        self.effective_content = Some(applied.content);
+        self.app_server_queue_policy = applied.app_server_queue;
+        self.binary_media_policy = applied.binary_media;
+        self.multimodal_decode_envelope = applied.multimodal_decode;
         self.tunables_pin = Some(pin);
         Ok(())
     }
@@ -323,8 +392,15 @@ impl Agent {
             return Err(KernelError::TunablesAlreadyResolved);
         }
         let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
-        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
-        self.tool_output_spill = Some(tool_output_spill);
+        let applied = apply_pinned_tooling(&pin, &self.registry, &self.rollout)?;
+        self.tool_output_spill = Some(applied.tool_output_spill);
+        self.context_estimator.pin_policy(applied.token_estimator);
+        self.execution_policy = applied.execution;
+        self.verification_policy.feedback = applied.verification_feedback;
+        self.effective_content = Some(applied.content);
+        self.app_server_queue_policy = applied.app_server_queue;
+        self.binary_media_policy = applied.binary_media;
+        self.multimodal_decode_envelope = applied.multimodal_decode;
         self.tunables_pin = Some(pin);
         Ok(())
     }
@@ -336,10 +412,55 @@ impl Agent {
             .ok_or(KernelError::TunablesNotResolved)
     }
 
+    pub(crate) const fn app_server_queue_policy(&self) -> crate::app_server::AppServerQueuePolicy {
+        self.app_server_queue_policy
+    }
+
     pub(crate) fn tunables_pin_snapshot(&self) -> Result<tunables_pin::TunablesPin, KernelError> {
         self.tunables_pin
             .clone()
             .ok_or(KernelError::TunablesNotResolved)
+    }
+
+    pub(super) fn validate_environment_identity(
+        &self,
+        context: Option<&iteron_protocol::DurableEnvironmentContext>,
+    ) -> Result<(), KernelError> {
+        let Some(expected) = self
+            .effective_content
+            .as_ref()
+            .map(|content| &content.environment)
+        else {
+            return Ok(());
+        };
+        if !expected.matches(context) {
+            return Err(KernelError::ExecutionPolicy(
+                "runtime environment differs from the immutable environment_snapshot identity"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_workflow_graph_identity(&self) -> Result<(), KernelError> {
+        let Some(expected) = self
+            .effective_content
+            .as_ref()
+            .map(|content| &content.workflow_graph)
+        else {
+            return Ok(());
+        };
+        if expected != &iteron_workflow::workflow_graph_runtime_identity() {
+            return Err(KernelError::ExecutionPolicy(
+                "workflow graph runtime differs from the immutable workflow_graph identity".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_content_identity_expectations_for_fixture(&mut self) {
+        self.effective_content = None;
     }
 
     /// The quota the provider last published on its response headers, or `None` when this route
@@ -401,6 +522,7 @@ impl Agent {
         next: Effort,
         source: RuntimePolicySource,
     ) -> Result<bool, KernelError> {
+        let sequence = self.rollout.next_sequence();
         let result = commit_effort_transition(
             &mut self.rollout,
             TurnId(self.seq_turn),
@@ -409,7 +531,20 @@ impl Agent {
             source,
         );
         match result {
-            Ok(changed) => Ok(changed),
+            Ok(changed) => {
+                if changed {
+                    self.observe_runtime_policy_commit(
+                        &EventKind::EffortChanged {
+                            version: RuntimePolicyEventVersion::V1,
+                            source,
+                            effort: next,
+                        },
+                        sequence,
+                        RuntimePolicyObservation::LiveCommit,
+                    );
+                }
+                Ok(changed)
+            }
             Err(error) => {
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
@@ -426,6 +561,13 @@ impl Agent {
         next_rules: PermissionRules,
         source: RuntimePolicySource,
     ) -> Result<bool, KernelError> {
+        let sequence = self.rollout.next_sequence();
+        let event_kind = EventKind::PolicyChanged {
+            version: RuntimePolicyEventVersion::V1,
+            source,
+            mode: next_mode,
+            rules: next_rules.clone(),
+        };
         let result = commit_permission_policy_transition(
             &mut self.rollout,
             TurnId(self.seq_turn),
@@ -436,7 +578,16 @@ impl Agent {
             source,
         );
         match result {
-            Ok(changed) => Ok(changed),
+            Ok(changed) => {
+                if changed {
+                    self.observe_runtime_policy_commit(
+                        &event_kind,
+                        sequence,
+                        RuntimePolicyObservation::LiveCommit,
+                    );
+                }
+                Ok(changed)
+            }
             Err(error) => {
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();

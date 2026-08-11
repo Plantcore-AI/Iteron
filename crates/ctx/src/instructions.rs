@@ -24,6 +24,63 @@ const MAX_INSTRUCTION_SOURCES: usize = 64;
 const MAX_IMPORT_DEPTH: usize = 8;
 const DISCLOSURE_RESERVE_BYTES: usize = 160;
 
+/// Fixed production owner for hierarchical instruction discovery and rendering.
+///
+/// The tunables checkpoint samples this getter; the filesystem walker and renderer consume the
+/// same value. This prevents a registry projection from claiming bounds that the actual reader no
+/// longer enforces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct InstructionDiscoveryPolicy {
+    pub max_depth: usize,
+    pub max_files: usize,
+    pub per_file_bytes: usize,
+    pub total_bytes: usize,
+}
+
+impl InstructionDiscoveryPolicy {
+    pub const fn owner() -> Self {
+        Self {
+            max_depth: MAX_IMPORT_DEPTH,
+            max_files: MAX_INSTRUCTION_SOURCES,
+            per_file_bytes: MAX_INSTRUCTION_CONTENT_BYTES,
+            total_bytes: MAX_MERGED_INSTRUCTION_BYTES,
+        }
+    }
+
+    /// Construct an executable discovery policy from one immutable tunables checkpoint.
+    ///
+    /// The registry may narrow or broaden the traversal counters within its declared bounded
+    /// domains, but the merged byte ceiling is independently clamped to the production owner's
+    /// tool-budget ceiling during composition. Rechecking that ceiling here makes a forged or
+    /// historical checkpoint fail closed before it can drive filesystem work.
+    pub fn try_new(
+        max_depth: usize,
+        max_files: usize,
+        per_file_bytes: usize,
+        total_bytes: usize,
+    ) -> Result<Self, &'static str> {
+        if max_depth > 64 {
+            return Err("instruction discovery depth exceeds the executable domain");
+        }
+        if max_files == 0 || max_files > 1_024 {
+            return Err("instruction discovery file count exceeds the executable domain");
+        }
+        if per_file_bytes == 0
+            || total_bytes == 0
+            || per_file_bytes > total_bytes
+            || total_bytes > MAX_MERGED_INSTRUCTION_BYTES
+        {
+            return Err("instruction discovery byte limits exceed the executable owner ceiling");
+        }
+        Ok(Self {
+            max_depth,
+            max_files,
+            per_file_bytes,
+            total_bytes,
+        })
+    }
+}
+
 /// The result of discovering repo instructions.
 pub enum Instructions {
     /// No instruction file present.
@@ -77,7 +134,12 @@ impl InstructionBundle {
 
     /// Render every accepted source with its own provenance frame under the fixed total cap.
     pub fn render(&self) -> String {
-        self.render_with_limit(MAX_MERGED_INSTRUCTION_BYTES)
+        self.render_with_limit(InstructionDiscoveryPolicy::owner().total_bytes)
+    }
+
+    /// Render with the same immutable policy which bounded discovery for this run.
+    pub fn render_with_policy(&self, policy: InstructionDiscoveryPolicy) -> String {
+        self.render_with_limit(policy.total_bytes)
     }
 
     fn render_with_limit(&self, limit: usize) -> String {
@@ -121,19 +183,21 @@ struct HierarchyDiscovery {
     bundle: InstructionBundle,
     seen: HashSet<PathBuf>,
     attempted_sources: usize,
+    policy: InstructionDiscoveryPolicy,
 }
 
 impl HierarchyDiscovery {
-    fn new() -> Self {
+    fn new(policy: InstructionDiscoveryPolicy) -> Self {
         Self {
             bundle: InstructionBundle::default(),
             seen: HashSet::new(),
             attempted_sources: 0,
+            policy,
         }
     }
 
     fn reject(&mut self, source: String, reason: impl Into<String>) {
-        if self.bundle.rejections.len() < MAX_INSTRUCTION_SOURCES {
+        if self.bundle.rejections.len() < self.policy.max_files {
             self.bundle.rejections.push(InstructionRejection {
                 source,
                 reason: reason.into(),
@@ -152,14 +216,14 @@ impl HierarchyDiscovery {
         depth: usize,
     ) {
         let source = source_label(root, &target, label_prefix);
-        if depth > MAX_IMPORT_DEPTH {
+        if depth > self.policy.max_depth {
             self.reject(
                 source,
-                format!("nested @import exceeds depth {MAX_IMPORT_DEPTH}"),
+                format!("nested @import exceeds depth {}", self.policy.max_depth),
             );
             return;
         }
-        if self.attempted_sources >= MAX_INSTRUCTION_SOURCES {
+        if self.attempted_sources >= self.policy.max_files {
             self.bundle.omitted_sources = self.bundle.omitted_sources.saturating_add(1);
             return;
         }
@@ -220,7 +284,10 @@ impl HierarchyDiscovery {
         if !body.trim().is_empty() {
             self.bundle.sources.push(InstructionSource {
                 source: source.clone(),
-                content: bounded_instruction_content(body.trim()),
+                content: bounded_instruction_content_with_limit(
+                    body.trim(),
+                    self.policy.per_file_bytes,
+                ),
             });
         }
 
@@ -243,7 +310,22 @@ pub fn discover_hierarchy(
     repository_root: &Path,
     active_dir: &Path,
 ) -> InstructionBundle {
-    let mut discovery = HierarchyDiscovery::new();
+    discover_hierarchy_with_policy(
+        home_core,
+        repository_root,
+        active_dir,
+        InstructionDiscoveryPolicy::owner(),
+    )
+}
+
+/// Discover the hierarchy using the immutable policy decoded from this run's checkpoint.
+pub fn discover_hierarchy_with_policy(
+    home_core: Option<&Path>,
+    repository_root: &Path,
+    active_dir: &Path,
+    policy: InstructionDiscoveryPolicy,
+) -> InstructionBundle {
+    let mut discovery = HierarchyDiscovery::new(policy);
     if let Some(home_core) = home_core {
         discovery.load(
             home_core,
@@ -285,13 +367,30 @@ pub fn discover_hierarchy(
 /// Keeping the tier as an input avoids reconstructing provenance from rendered path labels (a
 /// project-root import may itself contain `/`). Like [`discover_hierarchy`], every path is
 /// explicit and every accepted source remains framed as untrusted data by the caller.
+#[cfg(test)]
 pub(crate) fn discover_hierarchy_scope(
     home_core: Option<&Path>,
     repository_root: &Path,
     active_dir: &Path,
     scope: InstructionScope,
 ) -> InstructionBundle {
-    let mut discovery = HierarchyDiscovery::new();
+    discover_hierarchy_scope_with_policy(
+        home_core,
+        repository_root,
+        active_dir,
+        scope,
+        InstructionDiscoveryPolicy::owner(),
+    )
+}
+
+pub(crate) fn discover_hierarchy_scope_with_policy(
+    home_core: Option<&Path>,
+    repository_root: &Path,
+    active_dir: &Path,
+    scope: InstructionScope,
+    policy: InstructionDiscoveryPolicy,
+) -> InstructionBundle {
+    let mut discovery = HierarchyDiscovery::new(policy);
     match scope {
         InstructionScope::User => {
             if let Some(home_core) = home_core {
@@ -381,20 +480,27 @@ fn resolve_import(root: &Path, importer: &Path, specifier: &str) -> Result<PathB
 }
 
 fn bounded_instruction_content(content: &str) -> String {
-    if content.len() <= MAX_INSTRUCTION_CONTENT_BYTES {
+    bounded_instruction_content_with_limit(
+        content,
+        InstructionDiscoveryPolicy::owner().per_file_bytes,
+    )
+}
+
+fn bounded_instruction_content_with_limit(content: &str, limit: usize) -> String {
+    if content.len() <= limit {
         return content.to_owned();
     }
-    let omitted = content.len().saturating_sub(MAX_INSTRUCTION_CONTENT_BYTES);
+    let omitted = content.len().saturating_sub(limit);
     let marker = format!("\n… ({omitted} or more bytes omitted at the per-file limit)");
-    let head_budget = MAX_INSTRUCTION_CONTENT_BYTES.saturating_sub(marker.len());
+    let head_budget = limit.saturating_sub(marker.len());
     let mut end = head_budget.min(content.len());
     while end > 0 && !content.is_char_boundary(end) {
         end -= 1;
     }
-    let mut bounded = String::with_capacity(MAX_INSTRUCTION_CONTENT_BYTES);
+    let mut bounded = String::with_capacity(limit);
     bounded.push_str(&content[..end]);
     bounded.push_str(&marker);
-    debug_assert!(bounded.len() <= MAX_INSTRUCTION_CONTENT_BYTES);
+    debug_assert!(bounded.len() <= limit);
     bounded
 }
 
@@ -711,6 +817,41 @@ mod tests {
         let rendered = bundle.render();
         assert!(rendered.len() <= MAX_MERGED_INSTRUCTION_BYTES);
         assert!(rendered.contains("instruction sources omitted"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn checkpoint_policy_changes_physical_discovery_and_render_bounds() {
+        let base = unique_temp("pinned-policy");
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "agents guidance").unwrap();
+        std::fs::write(repo.join("CLAUDE.md"), "claude guidance").unwrap();
+
+        let one_file = InstructionDiscoveryPolicy::try_new(8, 1, 1_024, 2_048).unwrap();
+        let one = discover_hierarchy_with_policy(None, &repo, &repo, one_file);
+        assert_eq!(
+            one.sources()
+                .iter()
+                .map(|source| source.source.as_str())
+                .collect::<Vec<_>>(),
+            ["AGENTS.md"]
+        );
+        assert!(one.render_with_policy(one_file).contains("agents guidance"));
+        assert!(!one.render_with_policy(one_file).contains("claude guidance"));
+
+        let two_files = InstructionDiscoveryPolicy::try_new(8, 2, 1_024, 2_048).unwrap();
+        let two = discover_hierarchy_with_policy(None, &repo, &repo, two_files);
+        assert_eq!(two.sources().len(), 2);
+        let rendered = two.render_with_policy(two_files);
+        assert!(rendered.contains("agents guidance"));
+        assert!(rendered.contains("claude guidance"));
+
+        assert!(InstructionDiscoveryPolicy::try_new(8, 2, 1_024, 1_000).is_err());
+        assert!(
+            InstructionDiscoveryPolicy::try_new(8, 2, 1_024, MAX_MERGED_INSTRUCTION_BYTES + 1,)
+                .is_err()
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 

@@ -1,9 +1,10 @@
 use super::model::{
-    ContentTombstone, ContentTombstoneReason, MAX_CONTENT_REVOCATIONS, STORE_VERSION,
+    ContentTombstone, ContentTombstoneReason, MAX_CONTENT_LINEAGE_EDGES, MAX_CONTENT_REVOCATIONS,
+    STORE_VERSION,
 };
 use super::{
-    ContentStoreError, Layout, OwnerLock, StoreLock, ensure_layout, lock_owner, lock_store,
-    read_edges, read_state, write_state, write_tombstone,
+    ContentStoreError, Layout, OwnerLock, StoreLock, ensure_layout, lineage, lock_owner,
+    lock_store, read_edges, read_state, write_state, write_tombstone,
 };
 use iteron_protocol::{
     ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, RunId, TenantId,
@@ -22,7 +23,8 @@ pub(crate) struct ContentRevocationSummary {
 /// Holds the tenant content lock and every referenced rollout lock across all destructive phases.
 pub(crate) struct ContentRevocationGuard {
     layout: Layout,
-    digest: ErasureContentDigest,
+    root_digest: ErasureContentDigest,
+    digests: Vec<ErasureContentDigest>,
     references: usize,
     affected_runs: Vec<RunId>,
     affected_sessions: usize,
@@ -41,7 +43,17 @@ impl ContentRevocationGuard {
         ensure_layout(&layout)?;
         let store_lock = lock_store(&layout)?;
         let state = read_state(&layout)?;
-        let edges = read_edges(&layout, &digest)?;
+        let digests = collect_closure(&layout, &digest)?;
+        let mut edges = Vec::new();
+        for affected in &digests {
+            let next = read_edges(&layout, affected)?;
+            if edges.len().saturating_add(next.len()) > MAX_CONTENT_LINEAGE_EDGES {
+                return Err(ContentStoreError::ReferenceBound {
+                    max: MAX_CONTENT_LINEAGE_EDGES,
+                });
+            }
+            edges.extend(next);
+        }
         let key_exists = layout.object_path(&layout.keys, &digest).exists();
         let blob_exists = layout.object_path(&layout.blobs, &digest).exists();
         if state.tombstone(&digest).is_none() && edges.is_empty() && !key_exists && !blob_exists {
@@ -78,7 +90,8 @@ impl ContentRevocationGuard {
         }
         Ok(Some(Self {
             layout,
-            digest,
+            root_digest: digest,
+            digests,
             references: edges.len(),
             affected_runs,
             affected_sessions,
@@ -95,50 +108,67 @@ impl ContentRevocationGuard {
         revoked_at_unix_ms: u64,
     ) -> Result<u64, ContentStoreError> {
         let mut state = read_state(&self.layout)?;
-        if let Some(existing) = state.tombstone(&self.digest) {
-            write_tombstone(&self.layout, existing)?;
-            return Ok(existing.generation);
-        }
-        if state.tombstones.len() >= MAX_CONTENT_REVOCATIONS {
+        let generation = if let Some(existing) = state.tombstone(&self.root_digest) {
+            existing.generation
+        } else {
+            state
+                .generation
+                .checked_add(1)
+                .ok_or(ContentStoreError::Corrupt)?
+        };
+        let missing = self
+            .digests
+            .iter()
+            .filter(|digest| state.tombstone(digest).is_none())
+            .count();
+        if state.tombstones.len().saturating_add(missing) > MAX_CONTENT_REVOCATIONS {
             return Err(ContentStoreError::RevocationBound {
                 max: MAX_CONTENT_REVOCATIONS,
             });
         }
-        let generation = state
-            .generation
-            .checked_add(1)
-            .ok_or(ContentStoreError::Corrupt)?;
-        let tombstone = ContentTombstone {
-            version: STORE_VERSION,
-            digest: self.digest.clone(),
-            operation_id: operation_id.clone(),
-            authority_id: authority_id.clone(),
-            revoked_at_unix_ms,
-            reason: ContentTombstoneReason::AuthorityRevoked,
-            generation,
-        };
-        state.generation = generation;
-        let position = state
-            .tombstones
-            .binary_search_by(|entry| entry.digest.cmp(&self.digest))
-            .unwrap_or_else(|position| position);
-        state.tombstones.insert(position, tombstone.clone());
+        state.generation = state.generation.max(generation);
+        for digest in &self.digests {
+            if state.tombstone(digest).is_some() {
+                continue;
+            }
+            let tombstone = ContentTombstone {
+                version: STORE_VERSION,
+                digest: digest.clone(),
+                operation_id: operation_id.clone(),
+                authority_id: authority_id.clone(),
+                revoked_at_unix_ms,
+                reason: ContentTombstoneReason::AuthorityRevoked,
+                generation,
+            };
+            let position = state
+                .tombstones
+                .binary_search_by(|entry| entry.digest.cmp(digest))
+                .unwrap_or_else(|position| position);
+            state.tombstones.insert(position, tombstone);
+        }
         // The generation ledger is the fail-closed read gate. Persist it before deleting a key or
         // touching a rebuildable projection; a crash can leave extra ciphertext, never readable
         // stale content.
         write_state(&self.layout, &state)?;
-        write_tombstone(&self.layout, &tombstone)?;
+        for digest in &self.digests {
+            let tombstone = state.tombstone(digest).ok_or(ContentStoreError::Corrupt)?;
+            write_tombstone(&self.layout, tombstone)?;
+        }
         Ok(generation)
     }
 
     pub(crate) fn shred(&self) -> Result<(), ContentStoreError> {
         let state = read_state(&self.layout)?;
-        if state.tombstone(&self.digest).is_none() {
-            return Err(ContentStoreError::Corrupt);
+        for digest in &self.digests {
+            if state.tombstone(digest).is_none() {
+                return Err(ContentStoreError::Corrupt);
+            }
+            remove_durable(&self.layout.object_path(&self.layout.keys, digest))?;
         }
-        remove_durable(&self.layout.object_path(&self.layout.keys, &self.digest))?;
         super::crate_sync_dir(&self.layout.keys)?;
-        remove_durable(&self.layout.object_path(&self.layout.blobs, &self.digest))?;
+        for digest in &self.digests {
+            remove_durable(&self.layout.object_path(&self.layout.blobs, digest))?;
+        }
         super::crate_sync_dir(&self.layout.blobs)?;
         Ok(())
     }
@@ -147,54 +177,35 @@ impl ContentRevocationGuard {
         for run in &self.affected_runs {
             let sidecar = crate::validated_run_path(&self.layout.runs_dir, run, ".meta.json")
                 .map_err(|_| ContentStoreError::Corrupt)?;
-            if let Err(error) = std::fs::remove_file(sidecar)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error.into());
-            }
+            remove_durable(&sidecar)?;
         }
-        // Reindex skips every journal whose content handle now resolves to a tombstone. The
-        // revocation generation also invalidates any cache raced before this rewrite.
-        crate::session::reindex(&self.layout.runs_dir)
-            .map_err(|error| ContentStoreError::Io(std::io::Error::other(error.to_string())))?;
+        // Do not rebuild while holding the tenant content lock: the private session-cache writer
+        // must acquire that same lock to publish its CAS handle and would fail Busy here. Removing
+        // the global manifest is the fail-closed propagation step. The next `session::list` lazily
+        // rebuilds projections after this guard drops, and every replay/hydration still crosses
+        // the durable tombstone gate.
+        remove_durable(&self.layout.runs_dir.join("sessions.index"))?;
+        crate::cache_io::sync_dir(&self.layout.runs_dir)?;
         Ok(())
     }
 
     pub(crate) fn verify(&self) -> Result<ContentRevocationSummary, ContentStoreError> {
         let state = read_state(&self.layout)?;
-        let Some(tombstone) = state.tombstone(&self.digest) else {
+        let Some(tombstone) = state.tombstone(&self.root_digest) else {
             return Err(ContentStoreError::Corrupt);
         };
-        if self
-            .layout
-            .object_path(&self.layout.keys, &self.digest)
-            .exists()
-            || self
-                .layout
-                .object_path(&self.layout.blobs, &self.digest)
-                .exists()
-        {
-            return Err(ContentStoreError::Unresolved {
-                digest: self.digest.clone(),
-                reason: "material_not_shredded",
-            });
-        }
-        // Re-read the complete bounded reference set after shredding and prove the one serving
-        // gate rejects every extant handle at the exact durable generation. This catches a future
-        // surface that writes an edge but bypasses tombstone state before a Verified receipt can
-        // be produced.
-        for edge in read_edges(&self.layout, &self.digest)? {
-            match super::load_bytes(&self.layout, &edge.digest) {
-                Err(ContentStoreError::Revoked { digest, generation })
-                    if digest == self.digest && generation == tombstone.generation => {}
-                _ => {
-                    return Err(ContentStoreError::Unresolved {
-                        digest: self.digest.clone(),
-                        reason: "derivative_revocation_guard_unverified",
-                    });
-                }
+        for digest in &self.digests {
+            if self.layout.object_path(&self.layout.keys, digest).exists()
+                || self.layout.object_path(&self.layout.blobs, digest).exists()
+            {
+                return Err(ContentStoreError::Unresolved {
+                    digest: digest.clone(),
+                    reason: "material_not_shredded",
+                });
             }
         }
+        let coverage =
+            super::coverage::verify_registered_adapters(&self.layout, &state, &self.digests)?;
         Ok(ContentRevocationSummary {
             references: u32::try_from(self.references).map_err(|_| {
                 ContentStoreError::ReferenceBound {
@@ -207,9 +218,40 @@ impl ContentRevocationGuard {
                 }
             })?,
             generation: tombstone.generation,
-            coverage: super::guarded_derivative_coverage(),
+            coverage,
         })
     }
+}
+
+fn collect_closure(
+    layout: &Layout,
+    root: &ErasureContentDigest,
+) -> Result<Vec<ErasureContentDigest>, ContentStoreError> {
+    let mut pending = std::collections::VecDeque::from([root.clone()]);
+    let mut visited = std::collections::BTreeSet::new();
+    let mut edge_count = 0usize;
+    while let Some(digest) = pending.pop_front() {
+        if !visited.insert(digest.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_CONTENT_REVOCATIONS {
+            return Err(ContentStoreError::RevocationBound {
+                max: MAX_CONTENT_REVOCATIONS,
+            });
+        }
+        for edge in lineage::descendants(layout, &digest)? {
+            edge_count = edge_count.saturating_add(1);
+            if edge_count > MAX_CONTENT_LINEAGE_EDGES {
+                return Err(ContentStoreError::ReferenceBound {
+                    max: MAX_CONTENT_LINEAGE_EDGES,
+                });
+            }
+            if !visited.contains(&edge.derivative_digest) {
+                pending.push_back(edge.derivative_digest);
+            }
+        }
+    }
+    Ok(visited.into_iter().collect())
 }
 
 fn remove_durable(path: &std::path::Path) -> Result<(), ContentStoreError> {

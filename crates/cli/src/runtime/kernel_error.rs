@@ -75,6 +75,8 @@ pub enum KernelError {
     TunablesNotResolved,
     #[error("resolved tooling policy could not be installed: {0}")]
     ToolingPolicy(String),
+    #[error("resolved execution policy could not be installed: {0}")]
+    ExecutionPolicy(String),
     #[error("ordinary tool-output spill lifecycle invariant failed: {0}")]
     ToolOutputSpill(&'static str),
     #[error("MCP lifecycle invariant failed: {0}")]
@@ -117,6 +119,9 @@ impl KernelError {
             }
             Self::InvalidPermissionPolicy(reason) => {
                 format!("invalid permission policy: {reason}")
+            }
+            Self::ExecutionPolicy(_) => {
+                "resolved execution policy failed validation; no child work was admitted".into()
             }
             Self::RuntimePolicyAlreadyRecorded => {
                 "initial runtime policy was changed after the session record began".into()

@@ -11,12 +11,12 @@
     reason = "the adapter is compiled before the composition root starts consuming its report"
 )]
 
-#[path = "provider_process_facts/activations.rs"]
-mod activations;
 #[path = "provider_process_facts/constraints.rs"]
 mod constraints;
 #[path = "provider_process_facts/defaults.rs"]
 mod defaults;
+#[path = "provider_process_facts/fixed.rs"]
+mod fixed;
 #[path = "provider_process_facts/owner.rs"]
 mod owner;
 #[path = "provider_process_facts/types.rs"]
@@ -24,16 +24,47 @@ mod types;
 #[path = "provider_process_facts/value.rs"]
 mod value;
 
+pub(crate) use defaults::failure_classification_catalog_value;
+pub(crate) use fixed::live_fixed_authority_samples;
 pub(crate) use types::*;
 
 use crate::providers::{ModelCapabilities, ModelSelection, ProviderDirectory};
 use iteron_ctx::CompactionPolicy;
 use iteron_protocol::Budget;
 use iteron_tools::Registry;
-use iteron_tunables::{CapabilityRequirement, RouteCapabilities, RuntimeResolutionBuilder};
+use iteron_tunables::{
+    CapabilityRequirement, ProductionOwnerSymbolId, RouteCapabilities, RuntimeResolutionBuilder,
+};
 use iteron_verify::{VerifierPlan, VerifierSlotObservation};
 use owner::OwnerSnapshot;
 use std::path::Path;
+
+/// Exact context owner projection shared by value and constraint collection. `actual_window` is
+/// provider-attested family 96; `execution_window` is also available when metadata is unknown and
+/// matches `EffectiveCore`'s compaction-trigger + family-19 fallback path byte-for-byte.
+pub(super) fn context_owner_window(
+    input: &ProviderProcessFactsInput<'_>,
+) -> Result<(Option<usize>, usize, u32), ProviderProcessFactError> {
+    let actual_window = input
+        .model_capabilities
+        .context_window_tokens
+        .filter(|window| *window > 0)
+        .and_then(|window| usize::try_from(window.min(10_000_000)).ok());
+    let output_reserve = input
+        .model_capabilities
+        .max_output_tokens
+        .unwrap_or(super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+    let output_reserve_usize = usize::try_from(output_reserve)
+        .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
+    let execution_window = actual_window.unwrap_or_else(|| {
+        input
+            .compaction
+            .trigger_tokens
+            .saturating_add(output_reserve_usize)
+            .min(10_000_000)
+    });
+    Ok((actual_window, execution_window, output_reserve))
+}
 
 /// Verification facts already chosen by the verifier owner. Absence and inability to query the
 /// owner are separate states; neither is projected as an empty command list.
@@ -49,6 +80,7 @@ pub(crate) enum VerificationOwnerFacts<'a> {
 }
 
 pub(crate) struct ProviderProcessFactsInput<'a> {
+    pub agent_catalog: &'a iteron_agents::AgentCatalog,
     pub directory: &'a ProviderDirectory,
     pub selection: &'a ModelSelection,
     pub model_capabilities: &'a ModelCapabilities,
@@ -58,9 +90,14 @@ pub(crate) struct ProviderProcessFactsInput<'a> {
     pub registry: &'a Registry,
     pub workspace: &'a Path,
     pub verification: VerificationOwnerFacts<'a>,
+    pub verification_policy: &'a iteron_verify::VerificationRuntimePolicy,
+    /// Presence means this policy came from trusted user configuration. The shared project config
+    /// is never passed through this seam.
+    pub verification_config: Option<&'a crate::config::VerificationConfig>,
     pub provider_governor: &'a crate::config::ResolvedProviderGovernorConfig,
     pub provider_governor_configured: bool,
     pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
+    pub binary_media_policy: &'a crate::image_input::BinaryMediaInspectionPolicy,
 }
 
 /// Add every representable owner fact for ordinals 86..=132. A successful return means the facts
@@ -77,8 +114,93 @@ pub(crate) fn apply_provider_process_facts(
     record_registry_unavailable(&owner, &mut report);
     defaults::apply(builder, &input, &owner, &mut report)?;
     constraints::apply(builder, &input, &mut report)?;
-    activations::apply(builder, &input, &owner, &mut report)?;
+    submit_owner_symbols(builder)?;
     Ok(report)
+}
+
+fn submit_owner_symbols(
+    builder: &mut RuntimeResolutionBuilder,
+) -> Result<(), ProviderProcessFactError> {
+    use ProductionOwnerSymbolId as Owner;
+    for (owner, families) in [
+        (
+            Owner::ProviderGovernor,
+            &[
+                "model_fallback_chain",
+                "failover_eligible_error_taxonomy",
+                "route_quality_cost_latency_objective_weights",
+                "provider_health_circuit_breaker_state_policy",
+                "hedged_request_policy",
+                "provider_service_tier",
+                "response_verbosity",
+            ][..],
+        ),
+        (Owner::AgentOverlayPolicy, &["role_specific_model_map"][..]),
+        (
+            Owner::ContextMaterializationPolicy,
+            &[
+                "context_window_override_reserve",
+                "system_prefix_budget",
+                "conversation_history_budget",
+                "tool_result_history_budget",
+                "multimodal_token_budget",
+                "context_novelty_dedup_threshold",
+                "lsp_result_context_budget",
+            ][..],
+        ),
+        (
+            Owner::CompactionPolicy,
+            &[
+                "compaction_cooldown_hysteresis",
+                "multi_stage_summary_topology",
+                "summary_consistency_coverage_check",
+            ][..],
+        ),
+        (
+            Owner::VerificationPolicy,
+            &[
+                "test_selection_strategy",
+                "incremental_versus_full_verification",
+                "flaky_test_detection_quarantine",
+                "rollback_on_verification_failure",
+                "workspace_checkpoint_cadence",
+                "selective_restore_scope",
+                "verification_quorum_consensus",
+                "retry_eligibility_policy",
+            ][..],
+        ),
+        (
+            Owner::MemoryPolicy,
+            &["hybrid_retrieval_fusion_weights", "retrieval_recency_decay"][..],
+        ),
+        (
+            Owner::ProcessRuntimePolicy,
+            &[
+                "persistent_pty_backend",
+                "concurrent_background_job_cap",
+                "job_idle_stall_timeout",
+                "interactive_stdin_wait_policy",
+                "process_cwd_continuity",
+                "child_process_environment_reuse",
+                "tool_output_spill_to_disk_policy",
+                "tool_result_cache_ttl",
+            ][..],
+        ),
+        (
+            Owner::BinaryMediaPolicy,
+            &["binary_media_inspection_routing"][..],
+        ),
+        (
+            Owner::LspRuntimePolicy,
+            &[
+                "lsp_server_language_selection",
+                "lsp_timeout_restart_policy",
+            ][..],
+        ),
+    ] {
+        builder.submit_owner_symbol(owner, families)?;
+    }
+    Ok(())
 }
 
 fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderProcessFactError> {
@@ -105,6 +227,40 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
         .provider_control_capabilities
         .validate(&input.provider_governor.controls)
         .map_err(|_| ProviderProcessFactError::ProviderControlMismatch)?;
+    input
+        .verification_policy
+        .validate()
+        .map_err(|_| ProviderProcessFactError::InvalidVerificationPolicy)?;
+    match input.verification {
+        VerificationOwnerFacts::Configured { command, floor, .. } => {
+            let commands = &input.verification_policy.required_commands;
+            if commands.last().map(String::as_str) != Some(command)
+                || (input.verification_policy.selection
+                    == iteron_verify::VerificationSelectionMode::Full
+                    && commands.len() != 1)
+                || (input.verification_policy.selection
+                    != iteron_verify::VerificationSelectionMode::Full
+                    && commands.len() < 2)
+                || floor.scope_floor != iteron_verify::VerifierScope::Workspace
+            {
+                return Err(ProviderProcessFactError::InvalidVerificationPolicy);
+            }
+        }
+        VerificationOwnerFacts::Disabled | VerificationOwnerFacts::GetterUnavailable => {
+            if !input.verification_policy.required_commands.is_empty() {
+                return Err(ProviderProcessFactError::InvalidVerificationPolicy);
+            }
+        }
+    }
+    if !input
+        .verification_policy
+        .restore
+        .require_operator_confirmation
+        || u32::from(input.verification_policy.quorum.verifiers) > input.budget.max_turns
+        || u32::from(input.verification_policy.flaky.repeat_count) > input.budget.max_turns
+    {
+        return Err(ProviderProcessFactError::InvalidVerificationPolicy);
+    }
     for route in &input.provider_governor.fallback_routes {
         let (provider_id, model_id) = route
             .split_once(':')
@@ -139,7 +295,7 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
     Ok(())
 }
 
-const UNAVAILABLE: &[(u16, &str)] = &[(128, "rollback_on_verification_failure")];
+const UNAVAILABLE: &[(u16, &str)] = &[];
 
 fn record_registry_unavailable(owner: &OwnerSnapshot, report: &mut ProviderProcessFactsReport) {
     for &(ordinal, family) in UNAVAILABLE {

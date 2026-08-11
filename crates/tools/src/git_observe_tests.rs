@@ -29,6 +29,14 @@ impl Drop for TestDir {
     }
 }
 
+fn registry(root: &Path) -> Registry {
+    let registry = Registry::read_only(root).unwrap();
+    registry
+        .install_observation_tool_policy(crate::ObservationToolPolicy::default())
+        .unwrap();
+    registry
+}
+
 fn git_output(root: &Path, args: &[&OsStr]) -> Output {
     let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), root).unwrap();
     let mut command = Command::new(&git.executable);
@@ -104,7 +112,7 @@ async fn d3_09_g1_status_and_log_are_correct_through_the_hardened_registry() {
     std::fs::write(temp.0.join("tracked.txt"), "after\n").unwrap();
     std::fs::write(temp.0.join("new.txt"), "new\n").unwrap();
 
-    let registry = Registry::read_only(&temp.0).unwrap();
+    let registry = registry(&temp.0);
     let status = registry
         .run(ToolUse {
             id: "status".into(),
@@ -190,7 +198,7 @@ async fn d3_09_g2_clean_filter_cannot_execute_from_status_or_log() {
     std::fs::remove_file(&marker).unwrap();
     std::fs::write(temp.0.join("tracked"), "after\n").unwrap();
 
-    let registry = Registry::read_only(&temp.0).unwrap();
+    let registry = registry(&temp.0);
     for (name, input) in [
         ("git_status", serde_json::json!({})),
         ("git_log", serde_json::json!({"max_count":1})),
@@ -242,7 +250,7 @@ async fn d3_09_g2_malicious_core_worktree_cannot_disclose_an_outside_name() {
     );
     assert!(String::from_utf8_lossy(&vulnerable.stdout).contains(outside_name));
 
-    let registry = Registry::read_only(&workspace).unwrap();
+    let registry = registry(&workspace);
     for (name, input) in [
         ("git_status", serde_json::json!({})),
         ("git_log", serde_json::json!({"max_count":1})),
@@ -267,7 +275,7 @@ async fn d3_09_g3_linked_or_submodule_worktree_fails_closed_for_both_tools() {
         "gitdir: /outside/shared/.git/worktrees/w1\n",
     )
     .unwrap();
-    let registry = Registry::read_only(&temp.0).unwrap();
+    let registry = registry(&temp.0);
     for (name, input) in [
         ("git_status", serde_json::json!({})),
         ("git_log", serde_json::json!({"max_count":1})),
@@ -286,7 +294,7 @@ async fn d3_09_g3_linked_or_submodule_worktree_fails_closed_for_both_tools() {
 
 #[test]
 fn d3_09_g4_status_and_log_are_effecting_readonly_not_code_executing() {
-    let registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let registry = registry(&std::env::temp_dir());
     for name in ["git_status", "git_log"] {
         assert_eq!(registry.purity_of(name), Some(Purity::Effecting));
         assert_eq!(registry.capability_of(name), Some(Capability::ReadOnly));
@@ -306,20 +314,53 @@ fn status_escapes_deceptive_unicode_and_discloses_the_rewrite() {
 
 #[test]
 fn status_record_count_and_log_count_are_fixed_bounded() {
+    let policy = crate::ObservationToolPolicy::default().git;
     let mut status = Vec::new();
-    for _ in 0..=MAX_STATUS_RECORDS {
+    for _ in 0..=policy.status_max_entries {
         status.extend_from_slice(b"?? x\0");
     }
     let error = render_status(&status).unwrap_err();
     assert!(error.contains("record limit"));
     for input in [
         serde_json::json!({"max_count":0}),
-        serde_json::json!({"max_count":MAX_LOG_COUNT + 1}),
+        serde_json::json!({"max_count":policy.log_max_entries + 1}),
         serde_json::json!({"max_count":"many"}),
         serde_json::json!({"unexpected":1}),
     ] {
         assert!(parse_log_count(&input).is_err());
     }
+}
+
+#[tokio::test]
+async fn pinned_git_policy_is_one_shot_and_controls_exact_record_boundaries() {
+    let temp = TestDir::new("pinned-policy");
+    let unpinned = Registry::read_only(&temp.0).unwrap();
+    let refused = unpinned
+        .run(ToolUse {
+            id: "unpinned-status".into(),
+            name: "git_status".into(),
+            input: serde_json::json!({}),
+        })
+        .await;
+    assert!(refused.is_error);
+    assert!(refused.content.contains("policy was not installed"));
+
+    let mut owner = crate::ObservationToolPolicy::default();
+    owner.git.status_max_entries = 2;
+    owner.git.log_max_entries = 2;
+    let pinned = Registry::read_only(&temp.0).unwrap();
+    pinned.install_observation_tool_policy(owner).unwrap();
+    assert!(pinned.install_observation_tool_policy(owner).is_err());
+
+    let exact = render_status_with_policy(b"?? a\0?? b\0", owner.git).unwrap();
+    assert_eq!(exact.lines().count(), 2);
+    let overflow = render_status_with_policy(b"?? a\0?? b\0?? c\0", owner.git).unwrap_err();
+    assert!(overflow.contains("2-record limit"));
+    assert_eq!(
+        parse_log_count_with_policy(&serde_json::json!({}), owner.git).unwrap(),
+        2
+    );
+    assert!(parse_log_count_with_policy(&serde_json::json!({"max_count":3}), owner.git).is_err());
 }
 
 #[test]
