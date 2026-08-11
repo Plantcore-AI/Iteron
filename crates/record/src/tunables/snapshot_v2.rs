@@ -1,6 +1,9 @@
 //! Reconstructable V2 tunables checkpoint projection and validation.
 
-use super::{TunablesSnapshotError, digest_json, is_sha256, safe_id};
+use super::{
+    LEGACY_REGISTRY_ID, TunablesSnapshotError, digest_json, is_known_registry_id, is_sha256,
+    safe_id,
+};
 use iteron_protocol::{
     MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
     MAX_RUN_GENESIS_TUNABLES_V2_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_DEPTH,
@@ -12,6 +15,9 @@ use iteron_tunables::{
     EntryOutcome, EntryState, ResolutionReport, ResolutionSource, ResolutionValue,
 };
 use serde::Serialize;
+
+const LEGACY_EFFECTIVE_CANONICALIZATION: &str = "core-tunables-effective-json-v1";
+const EFFECTIVE_CANONICALIZATION: &str = "iteron-tunables-effective-json-v1";
 
 #[derive(Serialize)]
 struct SnapshotPayloadV2<'a> {
@@ -199,8 +205,13 @@ fn recompute_effective_digest(
             })
         })
         .collect::<Result<Vec<_>, TunablesSnapshotError>>()?;
+    let canonicalization = if snapshot.registry_id == LEGACY_REGISTRY_ID {
+        LEGACY_EFFECTIVE_CANONICALIZATION
+    } else {
+        EFFECTIVE_CANONICALIZATION
+    };
     digest_json(&EffectivePayloadV2 {
-        canonicalization: "iteron-tunables-effective-json-v1",
+        canonicalization,
         registry_id: &snapshot.registry_id,
         registry_revision: snapshot.registry_revision,
         registry_digest: &snapshot.registry_digest_sha256,
@@ -222,7 +233,7 @@ pub(super) fn effective_digest_from_report(
         })
         .collect();
     digest_json(&EffectiveReportPayload {
-        canonicalization: "iteron-tunables-effective-json-v1",
+        canonicalization: EFFECTIVE_CANONICALIZATION,
         registry_id: report.registry_id,
         registry_revision: report.registry_revision,
         registry_digest: report.registry_digest,
@@ -243,7 +254,7 @@ pub fn validate_tunables_snapshot_v2(
         || snapshot.registry_schema_version == 0
         || snapshot.family_schema_version == 0
         || snapshot.registry_revision == 0
-        || snapshot.registry_id != iteron_tunables::REGISTRY_ID
+        || !is_known_registry_id(&snapshot.registry_id)
     {
         return invalid("V2 registry identity or schema version is invalid");
     }

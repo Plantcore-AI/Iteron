@@ -1,4 +1,4 @@
-use super::ErasureValidationError;
+use crate::erasure::ErasureValidationError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

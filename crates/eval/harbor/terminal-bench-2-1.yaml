@@ -15,7 +15,7 @@ agents:
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
-      binary_path: /absolute/path/to/core-linux-binary
+      binary_path: /absolute/path/to/iteron-linux-binary
       binary_sha256: 0000000000000000000000000000000000000000000000000000000000000000
       binary_arch: x86_64
       max_turns: 250

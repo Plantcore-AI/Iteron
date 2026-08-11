@@ -175,7 +175,12 @@ fn resolve_binding_module(
     if current.is_empty() {
         Ok(origin)
     } else {
-        bail!("protocol internal import uses a non-crate-qualified path")
+        bail!(
+            "protocol internal import '{}' in module '{}' uses a non-crate-qualified path {:?}",
+            binding.local,
+            current.join("::"),
+            binding.origin
+        )
     }
 }
 

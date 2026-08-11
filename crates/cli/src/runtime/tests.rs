@@ -5141,7 +5141,7 @@ ant-api03-SuperSecretModelToken12345"
         // than the run started with.
         // The raise is a typed replay input now, not a prose notice: resume and fork must restore
         // the last operator amendment before admission, which a sentence cannot be parsed for.
-        let raised_event = core_record::replay(agent.rollout.path())
+        let raised_event = iteron_record::replay(agent.rollout.path())
             .unwrap()
             .into_iter()
             .find_map(|event| match event.kind {

@@ -4011,7 +4011,7 @@ impl Agent {
                     any_error = true;
                     continue;
                 };
-                // Elevate a trust-mutating write (.git/CI/instruction/.core paths) so the gate
+                // Elevate a trust-mutating write (.git/CI/instruction/.iteron paths) so the gate
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
                 let governing_trust = self.governing_turn_trust(messages);

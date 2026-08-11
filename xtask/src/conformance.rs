@@ -1098,7 +1098,7 @@ mod tests {
         assert!(validate_kernel_dependencies(exact).is_ok());
         assert!(
             validate_kernel_dependencies(&format!(
-                "{exact}\ncore-provider = {{ path = \"../provider\" }}"
+                "{exact}\niteron-provider = {{ path = \"../provider\" }}"
             ))
             .is_err()
         );

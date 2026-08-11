@@ -1,0 +1,1 @@
+{"schema_version":1,"scope":"turn","run_id":"run-1","turn_id":1,"terminal":"succeeded","opportunity_count":1,"opportunities_digest_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","quality_micros":null,"cost_microusd":42,"input_tokens":100,"output_tokens":10,"latency_us":123,"verifier":"passed","harness_error_code":null,"outcome_ordinal":0}

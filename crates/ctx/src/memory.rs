@@ -2,7 +2,7 @@
 //!
 //! Two layers live in this file, one additive on top of the other:
 //!
-//! 1. **The seed (`MemoryStore`).** A flat `.core/memory/` directory of one-fact markdown
+//! 1. **The seed (`MemoryStore`).** A flat `.iteron/memory/` directory of one-fact markdown
 //!    files with `add`/`load`/`remove`/`render`. It injects an inject-all-bounded block into the
 //!    stable system prefix and is still wired by the kernel (`effective_system`) and the TUI
 //!    (`/memory`). It is preserved verbatim so those callers keep working; only its fact type was
@@ -17,8 +17,8 @@
 //!    CHOICE MEM-1; this crate produces the segment, the kernel records it).
 //!
 //! Security (ADR-007 + R5 review Risk 5). Trust is keyed on **provenance AND authorship**, never on
-//! store location alone: the operator's global `~/.core/memory` is Trusted because the operator
-//! authored it; a repo's `.core/memory` is tree-discovered content that could have been authored
+//! store location alone: the operator's global `~/.iteron/memory` is Trusted because the operator
+//! authored it; a repo's `.iteron/memory` is tree-discovered content that could have been authored
 //! by anyone (a malicious contributor), so it enters Untrusted and is only promoted to Workspace by
 //! a recorded trust-on-first-use approval; anything under a vendored dependency path is stripped and
 //! never injected. Every index line and every fact body is scanned for bidi/invisible Unicode
@@ -59,7 +59,7 @@ pub struct StoredFact {
     pub text: String,
 }
 
-/// The flat memory store rooted at `<workspace>/.core/memory`.
+/// The flat memory store rooted at `<workspace>/.iteron/memory`.
 pub struct MemoryStore {
     workspace: PathBuf,
     dir: PathBuf,
@@ -335,12 +335,12 @@ const MAX_RECALL: usize = 32;
 /// provenance). Each tier maps to a `Trust` via `trust_for` (§1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemTier {
-    /// `~/.core/memory` — the operator's own global memory, authored by them.
+    /// `~/.iteron/memory` — the operator's own global memory, authored by them.
     User,
-    /// `<repo>/.core/memory` plus the repo-root instruction files — first-party but
+    /// `<repo>/.iteron/memory` plus the repo-root instruction files — first-party but
     /// tree-discovered, so authorship is not the operator's until approved.
     Project,
-    /// `<repo>/.core/memory.local` — machine-local, uncommitted; still tree content.
+    /// `<repo>/.iteron/memory.local` — machine-local, uncommitted; still tree content.
     Local,
     /// Any store found under a vendored/cloned dependency path — foreign; stripped, never injected.
     Dependency,
@@ -385,7 +385,7 @@ impl MemStore {
     /// Build a store whose trust is derived from its tier and approval (§1.4, Risk 5).
     pub fn new(root: PathBuf, tier: MemTier, approved: bool) -> Self {
         let trust = trust_for(tier, approved);
-        // Existing kernel/tool callers construct project stores from `<repo>/.core/memory`
+        // Existing kernel/tool callers construct project stores from `<repo>/.iteron/memory`
         // directly. Infer that repository boundary so `.core` or `memory` cannot redirect the
         // read through a symlink; unusual explicit roots remain their own caller-selected anchor.
         let source_root = match tier {
@@ -418,7 +418,7 @@ impl MemStore {
         self
     }
 
-    /// The user store: `<home>/.core/memory`, Trusted (operator-authored).
+    /// The user store: `<home>/.iteron/memory`, Trusted (operator-authored).
     pub fn user(home: &Path) -> Self {
         MemStore::new(
             iteron_protocol::home::path(home, "memory"),
@@ -427,7 +427,7 @@ impl MemStore {
         )
     }
 
-    /// The project store: `<repo>/.core/memory` plus repo-root instructions. `approved` reflects
+    /// The project store: `<repo>/.iteron/memory` plus repo-root instructions. `approved` reflects
     /// a recorded trust-on-first-use decision; unapproved it is Untrusted (framed, still injected).
     pub fn project(repo_root: &Path, approved: bool) -> Self {
         MemStore::new(
@@ -438,7 +438,7 @@ impl MemStore {
         .with_instructions(repo_root.to_path_buf())
     }
 
-    /// The machine-local store: `<repo>/.core/memory.local`.
+    /// The machine-local store: `<repo>/.iteron/memory.local`.
     pub fn local(repo_root: &Path, approved: bool) -> Self {
         let mut store = MemStore::new(
             iteron_protocol::home::path(repo_root, "memory.local"),
@@ -2552,7 +2552,7 @@ mod tests {
         let ws = tmp("seed-write-symlink");
         let outside = tmp("seed-write-outside");
         std::fs::create_dir_all(ws.join(".iteron")).unwrap();
-        std::os::unix::fs::symlink(&outside, ws.join(".core/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join(".iteron/memory")).unwrap();
         let store = MemoryStore::at(&ws);
         assert!(store.add("must stay inside").is_err());
         assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
@@ -2563,7 +2563,7 @@ mod tests {
     #[test]
     fn seed_tampered_memory_is_skipped() {
         let ws = tmp("seed-bad");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("evil.md"), "normal \u{202E}reversed injection").unwrap();
         let m = MemoryStore::at(&ws);
@@ -2579,7 +2579,7 @@ mod tests {
     #[test]
     fn seed_oversized_memory_is_skipped() {
         let ws = tmp("seed-large");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("large.md"),
@@ -2594,7 +2594,7 @@ mod tests {
     #[test]
     fn seed_memory_does_not_follow_a_repository_symlink() {
         let ws = tmp("seed-link");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(ws.join("outside.md"), "must not load").unwrap();
         std::os::unix::fs::symlink(ws.join("outside.md"), dir.join("linked.md")).unwrap();
@@ -3001,8 +3001,8 @@ mod tests {
         std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.md"), "outside project fact").unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
-        let store = MemStore::new(repo.join(".core/memory"), MemTier::Project, true);
+        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
+        let store = MemStore::new(repo.join(".iteron/memory"), MemTier::Project, true);
         assert!(store.index_entries().is_empty());
         assert!(FileMemory.read_fact(&[store], "secret").is_err());
         std::fs::remove_dir_all(base).ok();
@@ -3336,7 +3336,7 @@ mod tests {
         let outside = base.join("outside");
         std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
 
         let store = MemStore::project(&repo, true);
         let error = FileMemory
@@ -3987,7 +3987,7 @@ mod memory_slot_tests {
             std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let store_root = dir.join(".core/memory");
+        let store_root = dir.join(".iteron/memory");
         fs::create_dir_all(&store_root).unwrap();
         fs::write(
             store_root.join("signing-key.md"),

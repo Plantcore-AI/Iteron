@@ -2806,6 +2806,68 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.named.policy-decision-evidence",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-policy-decision-evidence-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "decided_at_us", "introduced_release": 1 },
+        { "name": "decision_ordinal", "introduced_release": 1 },
+        { "name": "disposition", "introduced_release": 1 },
+        { "name": "eligible_actions", "introduced_release": 1 },
+        { "name": "feature_digest_sha256", "introduced_release": 1 },
+        { "name": "feature_schema_id", "introduced_release": 1 },
+        { "name": "fixed_invariants_digest_sha256", "introduced_release": 1 },
+        { "name": "opportunity_id", "introduced_release": 1 },
+        { "name": "policy", "introduced_release": 1 },
+        { "name": "propensity_ppm", "introduced_release": 1 },
+        { "name": "run_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "selected_action", "introduced_release": 1 },
+        { "name": "selected_score_micros", "introduced_release": 1 },
+        { "name": "slot", "introduced_release": 1 },
+        { "name": "tunables_digest_sha256", "introduced_release": 1 },
+        { "name": "turn_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.policy-outcome-evidence",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-policy-outcome-evidence-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "cost_microusd", "introduced_release": 1 },
+        { "name": "harness_error_code", "introduced_release": 1 },
+        { "name": "input_tokens", "introduced_release": 1 },
+        { "name": "latency_us", "introduced_release": 1 },
+        { "name": "opportunities_digest_sha256", "introduced_release": 1 },
+        { "name": "opportunity_count", "introduced_release": 1 },
+        { "name": "outcome_ordinal", "introduced_release": 1 },
+        { "name": "output_tokens", "introduced_release": 1 },
+        { "name": "quality_micros", "introduced_release": 1 },
+        { "name": "run_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "scope", "introduced_release": 1 },
+        { "name": "terminal", "introduced_release": 1 },
+        { "name": "turn_id", "introduced_release": 1 },
+        { "name": "verifier", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.named.policy-runtime-identity",
       "current_version": 1,
       "version_field": null,
@@ -2917,6 +2979,30 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.named.run-genesis-tunable-entry-v2",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-tunable-entry-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "ceiling_adjustments", "introduced_release": 1 },
+        { "name": "effective_value", "introduced_release": 1, "optional": true },
+        { "name": "family_id", "introduced_release": 1 },
+        { "name": "inactive_reason", "introduced_release": 1, "optional": true },
+        { "name": "ordinal", "introduced_release": 1 },
+        { "name": "profile_applied", "introduced_release": 1 },
+        { "name": "provenance", "introduced_release": 1, "optional": true },
+        { "name": "semantic_key", "introduced_release": 1 },
+        { "name": "state", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.named.run-genesis-tunables-inheritance",
       "current_version": 1,
       "version_field": null,
@@ -3008,6 +3094,35 @@
           "name": "version",
           "introduced_release": 1
         }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-tunables-snapshot-v2",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-tunables-snapshot-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "canonicalization", "introduced_release": 1 },
+        { "name": "effective_digest_sha256", "introduced_release": 1 },
+        { "name": "entries", "introduced_release": 1 },
+        { "name": "family_schema_version", "introduced_release": 1 },
+        { "name": "input_digest_sha256", "introduced_release": 1 },
+        { "name": "profile_digest_sha256", "introduced_release": 1, "optional": true },
+        { "name": "registry_digest_sha256", "introduced_release": 1 },
+        { "name": "registry_id", "introduced_release": 1 },
+        { "name": "registry_revision", "introduced_release": 1 },
+        { "name": "registry_schema_version", "introduced_release": 1 },
+        { "name": "resolution_digest_sha256", "introduced_release": 1 },
+        { "name": "resolution_schema_version", "introduced_release": 1 },
+        { "name": "snapshot_digest_sha256", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },

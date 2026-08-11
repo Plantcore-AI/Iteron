@@ -10,7 +10,7 @@ pub fn check_generated(root: &Path, registry: &Registry) -> Result<()> {
     // by the generator from the protected base. Land the exact next format in
     // this allowlist first; only a later pull request may switch the writer.
     let ownership_current = ownership_markdown(registry);
-    let ownership_next = ownership_markdown_core_code(registry);
+    let ownership_next = ownership_markdown_iteron(registry);
     check_one_of(
         &root.join(&registry.generated.ownership),
         &[&ownership_current, &ownership_next],
@@ -25,7 +25,7 @@ pub fn check_generated(root: &Path, registry: &Registry) -> Result<()> {
 pub fn write_generated(root: &Path, registry: &Registry) -> Result<()> {
     write_atomic(
         &root.join(&registry.generated.ownership),
-        &ownership_markdown_core_code(registry),
+        &ownership_markdown_iteron(registry),
     )?;
     write_atomic(
         &root.join(&registry.generated.codeowners),
@@ -92,7 +92,7 @@ fn ownership_markdown(registry: &Registry) -> String {
     ownership_markdown_with_brand(registry, "Core", "Core")
 }
 
-fn ownership_markdown_core_code(registry: &Registry) -> String {
+fn ownership_markdown_iteron(registry: &Registry) -> String {
     ownership_markdown_with_brand(registry, "Iteron", "Iteron")
 }
 
@@ -459,7 +459,7 @@ mod tests {
         let registry: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
         let current = ownership_markdown(&registry);
-        let next = ownership_markdown_core_code(&registry);
+        let next = ownership_markdown_iteron(&registry);
 
         assert!(current.starts_with("# Core ownership registry\n"));
         assert!(next.starts_with("# Iteron ownership registry\n"));

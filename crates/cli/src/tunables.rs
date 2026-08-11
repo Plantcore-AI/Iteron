@@ -358,10 +358,10 @@ mod tests {
     /// request gets past the door and then fails closed on the families themselves, which is the
     /// distinction between `invalid_input` and `active_resolution_failed` that these tests pin.
     fn unresolved_request_json() -> Vec<u8> {
-        let activation: Vec<_> = core_tunables::families()
+        let activation: Vec<_> = iteron_tunables::families()
             .iter()
             .filter_map(|family| match family.activation.predicate {
-                core_tunables::ActivationPredicate::RuntimeDerived { seam } => {
+                iteron_tunables::ActivationPredicate::RuntimeDerived { seam } => {
                     Some(serde_json::json!({
                         "family": family.id,
                         "seam": seam,

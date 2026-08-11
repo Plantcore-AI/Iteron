@@ -16,6 +16,7 @@ venv/
 .data/
 runs/
 .iteron/
+/governance/schema-compat/fixtures/record/.content/**/owner-locks/
 
 # os
 .DS_Store

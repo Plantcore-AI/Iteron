@@ -2474,7 +2474,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)"
         );
     }
-    agent.memory_workspace = effective_settings.memory_enabled.then(|| repo.clone()); // modular memory: .core/memory (R5)
+    agent.memory_workspace = effective_settings.memory_enabled.then(|| repo.clone()); // modular memory: .iteron/memory (R5)
     if let Some(scope) = cli.benchmark_attempt_scope.as_deref() {
         agent.set_memory_benchmark_scope(scope)?;
     }

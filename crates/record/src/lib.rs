@@ -58,7 +58,9 @@ pub use session::{
 /// A registry-driven resolved tunable set for other crates' tests. Feature-gated, never in a
 /// release build; it resolves the compiled registry rather than inventing a snapshot.
 #[cfg(any(test, feature = "test-fixtures"))]
-pub use session::tunables::resolved_fixture;
+pub mod resolved_fixture {
+    pub use crate::session::tunables::resolved_fixture::*;
+}
 
 /// Explicit policy for admitting records created before immutable tunables snapshots.
 pub type LegacyTunablesPolicy = session::tunables::LegacyTunablesPolicy;

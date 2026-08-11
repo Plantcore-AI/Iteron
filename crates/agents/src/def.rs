@@ -35,6 +35,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "git_log",
     "read_memory",
     "use_skill",
+    "tool_search",
 ];
 
 /// Exact tool vocabulary of the harness-authored isolated writer. Execution and arbitrary
@@ -52,6 +53,7 @@ pub const ISOLATED_WRITER_TOOLS: &[&str] = &[
     "git_log",
     "read_memory",
     "use_skill",
+    "tool_search",
     "edit",
     "apply_patch",
     "write_file",
@@ -81,7 +83,8 @@ const WRITE_EXEC_DISPATCH: &[&str] = &[
 /// maintaining a second prompt with a smaller, drifting tool inventory.
 pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation subagent. Explore the \
     repository with read_file, list_dir, glob, grep, repo_map, git_diff, git_status, git_log, \
-    read_memory, and use_skill to answer the question. You cannot edit files or run code. When \
+    read_memory, use_skill, and tool_search to answer the question. You cannot edit files or run \
+    code. When \
     done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
     file:line references for anything you claim.";
 

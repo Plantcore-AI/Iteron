@@ -49,7 +49,7 @@ pub(super) fn render_reply(app: &mut App, mut reply: app_server::McpControlReply
     if reply.servers.is_empty() {
         app.note(
             block::NoticeLevel::Info,
-            "no MCP servers configured (add trusted user MCP configuration and restart Core)",
+            "no MCP servers configured (add trusted user MCP configuration and restart Iteron)",
         );
         return;
     }

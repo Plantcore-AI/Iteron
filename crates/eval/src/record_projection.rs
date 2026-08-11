@@ -1,4 +1,4 @@
-//! Production projection from hash-verified Core records to governed policy trajectories.
+//! Production projection from hash-verified Iteron records to governed policy trajectories.
 //!
 //! Unlike `iteron-evolve`'s fixture loader, this adapter owns no caller-supplied revocation bit. It
 //! replays the physical run through `iteron-record` for every projection, so exact deletion,

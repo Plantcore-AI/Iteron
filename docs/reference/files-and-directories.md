@@ -12,7 +12,7 @@ historical product directories.
 | `~/.iteron/provider-metadata.json` | Optional, strictly versioned replacement for dated built-in provider metadata |
 | `~/.iteron/skills/<name>/SKILL.md` | Trusted operator skills |
 | `~/.iteron/agents/*.md` | Trusted operator agent definitions (see [Executable agent definitions](agent-definitions.md)) |
-| `~/.core/memory/` | Trusted operator memory |
+| `~/.iteron/memory/` | Trusted operator memory |
 
 These paths can grant process execution or routing authority where documented.
 Protect them like other operator configuration.
@@ -25,8 +25,8 @@ Protect them like other operator configuration.
 | `<repo>/.iteron/runs/*.jsonl` | Hash-chained session records by default |
 | `<repo>/.iteron/skills/<name>/SKILL.md` | Workspace-tier project skills |
 | `<repo>/.iteron/agents/*.md` | Workspace-tier agent definitions |
-| `<repo>/.core/memory/` | Project memory |
-| `<repo>/.core/memory.local/` | Machine-local project memory surface |
+| `<repo>/.iteron/memory/` | Project memory |
+| `<repo>/.iteron/memory.local/` | Machine-local project memory surface |
 | `<repo>/.iteron/instructions.md` | Repository instruction source |
 
 Iteron also discovers `AGENTS.md` and `CLAUDE.md` as repository instruction

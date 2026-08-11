@@ -180,11 +180,11 @@ impl KernelError {
                 "resolved process/LSP policy could not be installed before execution".into()
             }
             Self::ToolOutputSpill(_) => {
-                "private tool-output spill storage could not be confirmed; Core stopped the run"
+                "private tool-output spill storage could not be confirmed; Iteron stopped the run"
                     .into()
             }
             Self::McpLifecycle(_) => {
-                "private MCP result cleanup could not be confirmed; Core stopped the run".into()
+                "private MCP result cleanup could not be confirmed; Iteron stopped the run".into()
             }
             Self::PolicyEvidence(_) => {
                 "policy evidence could not be joined to the immutable run identity".into()

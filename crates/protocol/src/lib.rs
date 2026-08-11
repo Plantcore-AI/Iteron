@@ -40,13 +40,16 @@ pub mod input;
 pub mod text;
 
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
+pub use erasure::ids::{
+    ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, ErasureScopeId, ErasureTargetId,
+    MAX_ERASURE_AUTHORITY_ID_BYTES, MAX_ERASURE_OPERATION_ID_BYTES, MAX_ERASURE_SCOPE_ID_BYTES,
+    MAX_ERASURE_TARGET_ID_BYTES,
+};
 pub use erasure::{
-    ERASURE_RECEIPT_SCHEMA_VERSION, ErasureAuthorityId, ErasureContentDigest, ErasureFailureCode,
-    ErasureOperationId, ErasureOperationKind, ErasurePropagationCoverage, ErasureReceipt,
-    ErasureRequest, ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId,
-    ErasureValidationError, ErasureVerification, MAX_ERASURE_AUTHORITY_ID_BYTES,
-    MAX_ERASURE_OPERATION_ID_BYTES, MAX_ERASURE_RECEIPT_BYTES, MAX_ERASURE_SCOPE_ID_BYTES,
-    MAX_ERASURE_TARGET_ID_BYTES, MAX_RETENTION_AGE_SECS, MAX_RETENTION_KEEP_LAST,
+    ERASURE_RECEIPT_SCHEMA_VERSION, ErasureFailureCode, ErasureOperationKind,
+    ErasurePropagationCoverage, ErasureReceipt, ErasureRequest, ErasureState, ErasureTarget,
+    ErasureValidationError, ErasureVerification, MAX_ERASURE_RECEIPT_BYTES, MAX_RETENTION_AGE_SECS,
+    MAX_RETENTION_KEEP_LAST,
 };
 pub use event::{
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,

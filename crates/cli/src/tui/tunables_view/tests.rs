@@ -65,10 +65,10 @@ fn assert_detail_bound(detail: &Detail) {
 /// view shows for an *active resolution* failure, so the evidence is complete while the declared
 /// values stay empty.
 fn minimal_request() -> String {
-    let activation: Vec<_> = core_tunables::families()
+    let activation: Vec<_> = iteron_tunables::families()
         .iter()
         .filter_map(|family| match family.activation.predicate {
-            core_tunables::ActivationPredicate::RuntimeDerived { seam } => {
+            iteron_tunables::ActivationPredicate::RuntimeDerived { seam } => {
                 Some(serde_json::json!({
                     "family": family.id,
                     "seam": seam,

@@ -9,10 +9,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-mod ids;
+pub(crate) mod ids;
 
-use ids::valid_session_target;
-pub use ids::{
+use crate::erasure::ids::valid_session_target;
+pub use crate::erasure::ids::{
     ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, ErasureScopeId, ErasureTargetId,
     MAX_ERASURE_AUTHORITY_ID_BYTES, MAX_ERASURE_OPERATION_ID_BYTES, MAX_ERASURE_SCOPE_ID_BYTES,
     MAX_ERASURE_TARGET_ID_BYTES,
@@ -397,5 +397,6 @@ impl ErasureReceipt {
 }
 
 #[cfg(test)]
-#[path = "erasure/tests.rs"]
-mod tests;
+mod tests {
+    include!("erasure/tests.rs");
+}

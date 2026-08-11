@@ -1,6 +1,6 @@
 //! Bounded, repository-scoped prompt history for the interactive frontend.
 //!
-//! Prompt text is operator data. The history manifest lives below the operator-owned Core home and
+//! Prompt text is operator data. The history manifest lives below the operator-owned Iteron home and
 //! contains handles only; scrubbed bytes are encrypted in the active run store so content
 //! revocation has one graph. Attachments are never serialized, and `Disabled` creates no store.
 

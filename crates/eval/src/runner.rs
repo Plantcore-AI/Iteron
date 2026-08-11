@@ -1176,7 +1176,7 @@ fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
     match std::fs::symlink_metadata(workspace.join(".iteron")) {
         Ok(_) => {
             return Err(
-                "benchmark workspace contains .core project state; refusing a confounded arm"
+                "benchmark workspace contains .iteron project state; refusing a confounded arm"
                     .into(),
             );
         }
