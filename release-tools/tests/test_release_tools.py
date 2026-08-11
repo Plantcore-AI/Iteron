@@ -661,7 +661,7 @@ exit 1
         self.assertIn("../builder/release-tools/smoke_release_client.py", receipt)
         self.assertIn("$builder/release-tools/verify_pe.py", receipt)
         self.assertIn(
-            "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+            "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
             receipt,
         )
         self.assertIn(
@@ -1439,7 +1439,7 @@ exit 1
         manifest.create_build_info(arguments)
         document = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(document["schema_version"], 1)
-        self.assertEqual(document["product"], "Core Code")
+        self.assertEqual(document["product"], "Iteron")
         self.assertEqual(document["version"], "0.0.1")
         self.assertEqual(document["target"], "aarch64-apple-darwin")
         self.assertEqual(document["commit"], "0" * 40)
