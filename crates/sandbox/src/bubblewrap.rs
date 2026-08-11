@@ -1,6 +1,6 @@
 //! Linux backend: **bubblewrap** (`bwrap`) for filesystem confinement + `unshare` of the
 //! network namespace for egress-off. This is ADR-007's designed Linux path, and it is what
-//! makes core deployable on a Linux server (the #1 production blocker without it).
+//! makes iteron deployable on a Linux server (the #1 production blocker without it).
 //!
 //! Posture (deny-by-default, matching the Seatbelt backend):
 //!   - a fresh mount namespace: read-only bind of the host's system dirs (so toolchains work),

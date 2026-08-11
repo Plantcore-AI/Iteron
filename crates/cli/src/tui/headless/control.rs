@@ -9,7 +9,7 @@ use crate::app_server::{
     Control, ControlReply, ControlRequest, JobControl, MemoryControlReply, SessionSnapshot,
 };
 use anyhow::{Context, Result};
-use core_protocol::{Capability, Effort, PermissionMode, Verdict, task::MAX_TASK_TEXT_BYTES};
+use iteron_protocol::{Capability, Effort, PermissionMode, Verdict, task::MAX_TASK_TEXT_BYTES};
 use serde::{Deserialize, Deserializer, de};
 use serde_json::{Value, json};
 use std::future::Future;

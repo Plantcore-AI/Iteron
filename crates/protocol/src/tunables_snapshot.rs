@@ -78,7 +78,7 @@ pub struct RunGenesisTunablesSnapshot {
 /// The JSON sub-values are sealed by the outer schema, bounded and secret-shape checked at the
 /// record boundary, and committed by both the effective-set digest and the checkpoint self-digest.
 /// They deliberately mirror the resolver's canonical typed JSON without introducing a dependency
-/// from `core-protocol` back to `core-tunables`.
+/// from `iteron-protocol` back to `iteron-tunables`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunGenesisTunableEntryV2 {

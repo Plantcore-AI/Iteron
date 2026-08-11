@@ -567,10 +567,10 @@ artifacts rather than editing them manually.
 Use 80 metric families with exactly four instruments per family:
 
 ```text
-core.<domain>.<family>.calls
-core.<domain>.<family>.failures
-core.<domain>.<family>.duration_ms
-core.<domain>.<family>.<magnitude>
+iteron.<domain>.<family>.calls
+iteron.<domain>.<family>.failures
+iteron.<domain>.<family>.duration_ms
+iteron.<domain>.<family>.<magnitude>
 ```
 
 The magnitude is declared per family: `bytes`, `tokens`, `items`, `depth`, `ratio_ppm`,
@@ -806,7 +806,7 @@ Do not hand-build a partial OTLP implementation that silently diverges from the 
 
 ### 12.1 Data model
 
-Add a content-free `ContextLedger` under `core-ctx` with protocol projection types:
+Add a content-free `ContextLedger` under `iteron-ctx` with protocol projection types:
 
 ```rust
 struct ContextLedger {
@@ -1018,12 +1018,12 @@ ground truth remains separate and cannot be modified by hooks.
 
 Add read-only commands after the underlying evidence is stable:
 
-- `core telemetry status`: exporter, queue, catalog, drops, last flush;
-- `core telemetry schema [event|metric|span]`: generated catalog inspection;
-- `core context inspect [turn]`: segment/window/cache ledger without content;
-- `core context explain <segment-id>`: source, budgets, transforms and decision;
-- `core memory trace [turn]`: query/store/candidate/selection summary;
-- `core memory explain <fact-id>`: provenance, scores, visibility and injection ranges;
+- `iteron telemetry status`: exporter, queue, catalog, drops, last flush;
+- `iteron telemetry schema [event|metric|span]`: generated catalog inspection;
+- `iteron context inspect [turn]`: segment/window/cache ledger without content;
+- `iteron context explain <segment-id>`: source, budgets, transforms and decision;
+- `iteron memory trace [turn]`: query/store/candidate/selection summary;
+- `iteron memory explain <fact-id>`: provenance, scores, visibility and injection ranges;
 - `/context`, `/memory`, `/telemetry` TUI panels using the same projections;
 - machine JSON output for evaluation and paper tooling.
 
@@ -1219,7 +1219,7 @@ Load tests:
 Add a new generated-catalog gate:
 
 ```text
-cargo run --locked -p core-xtask -- lifecycle check \
+cargo run --locked -p iteron-xtask -- lifecycle check \
   --hooks 192 --metrics 320 --logs 192 --spans 48
 ```
 
@@ -1230,16 +1230,16 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo test -p core-protocol --locked
-cargo test -p core-record --locked
-cargo test -p core-obs --locked
-cargo test -p core-ctx --locked
-cargo test -p core-cli hooks --locked
-cargo test -p core-cli telemetry --locked
-cargo test -p core-cli tui --locked
-cargo test -p core-cli --test tui_pty --locked
-cargo run --locked -p core-xtask -- tunables check
-cargo run --locked -p core-xtask -- boundaries check
+cargo test -p iteron-protocol --locked
+cargo test -p iteron-record --locked
+cargo test -p iteron-obs --locked
+cargo test -p iteron-ctx --locked
+cargo test -p iteron-cli hooks --locked
+cargo test -p iteron-cli telemetry --locked
+cargo test -p iteron-cli tui --locked
+cargo test -p iteron-cli --test tui_pty --locked
+cargo run --locked -p iteron-xtask -- tunables check
+cargo run --locked -p iteron-xtask -- boundaries check
 ```
 
 Run documentation checks when generated references/navigation change:

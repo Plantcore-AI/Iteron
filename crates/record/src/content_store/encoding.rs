@@ -2,7 +2,7 @@
 
 use super::ContentStoreError;
 use super::model::MARKER_PREFIX;
-use core_protocol::ErasureContentDigest;
+use iteron_protocol::ErasureContentDigest;
 
 #[derive(Clone, Copy)]
 pub(super) enum FieldEncoding {

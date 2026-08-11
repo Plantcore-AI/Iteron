@@ -15,7 +15,7 @@
 //! [`Decomposer::route`] *is* the `core/router` decision the spec names ("把任务或子任务路由到哪条
 //! 处理路径", `docs/spec/evolution.md:72`), and until now it was reachable only as an inherent
 //! function, so the pluggable-classifier upgrade ADR-011 promises had nowhere to plug in.
-//! [`RouterStrategy`] puts that same heuristic behind [`core_protocol::slot::StrategySlot`], and
+//! [`RouterStrategy`] puts that same heuristic behind [`iteron_protocol::slot::StrategySlot`], and
 //! [`RouterStrategy::route_with`] is the narrowing-enforced call every caller uses instead of
 //! `decide` — so a replacement classifier is a slot swap rather than a kernel change.
 //!
@@ -30,9 +30,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 
 use crate::stage::{AgentTask, Stage, WorkflowPlan};
 
@@ -513,8 +513,8 @@ fn token_is_path(tok: &str) -> bool {
 }
 
 fn token_is_file_line(tok: &str) -> bool {
-    let core = tok.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')'));
-    match core.split_once(':') {
+    let iteron = tok.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')'));
+    match iteron.split_once(':') {
         Some((head, rest)) => {
             let line_ok = rest
                 .split(':')
@@ -531,8 +531,8 @@ fn token_is_symbol(tok: &str) -> bool {
     if trimmed.chars().count() >= 3 && trimmed.starts_with('`') && trimmed.ends_with('`') {
         return true;
     }
-    let core = trimmed.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '.'));
-    if core.contains("::") {
+    let iteron = trimmed.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '.'));
+    if iteron.contains("::") {
         return true;
     }
     // Call form: `identifier(` — a named function/method the operator pointed at.
@@ -565,7 +565,7 @@ pub const ROUTER_SLOT_VERSION: u16 = 1;
 
 /// Upper bound on the task text a routing decision may be shown.
 ///
-/// Deliberately the same 64 KiB `core_ctx::context_strategy` bounds its own task query at: the two
+/// Deliberately the same 64 KiB `iteron_ctx::context_strategy` bounds its own task query at: the two
 /// slots are handed the *same* submission text by the runtime, so a different bound here would mean
 /// a task that routes but cannot have context selected for it, or the reverse.
 pub const MAX_ROUTER_TASK_BYTES: usize = 64 * 1024;

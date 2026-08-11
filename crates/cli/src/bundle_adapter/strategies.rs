@@ -1,7 +1,7 @@
 use super::schema::{CoreSlot, ImplementationFlavor};
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
 use std::sync::Arc;
 
 pub(crate) struct CompiledSlots {
@@ -75,41 +75,41 @@ pub(crate) const fn implementation_name(
 pub(crate) fn instantiate(slot: CoreSlot, flavor: ImplementationFlavor) -> Arc<dyn StrategySlot> {
     match (slot, flavor) {
         (CoreSlot::Context, ImplementationFlavor::Baseline) => {
-            Arc::new(core_ctx::ContextStrategy::default())
+            Arc::new(iteron_ctx::ContextStrategy::default())
         }
         (CoreSlot::Context, ImplementationFlavor::Alternative) => Arc::new(MinimalContext),
         (CoreSlot::ToolPolicy, ImplementationFlavor::Baseline) => {
-            Arc::new(core_tools::ToolPolicy::default())
+            Arc::new(iteron_tools::ToolPolicy::default())
         }
         (CoreSlot::ToolPolicy, ImplementationFlavor::Alternative) => Arc::new(ReadOnlyToolPolicy),
         (CoreSlot::Memory, ImplementationFlavor::Baseline) => {
-            Arc::new(core_ctx::MemoryRecallStrategy::default())
+            Arc::new(iteron_ctx::MemoryRecallStrategy::default())
         }
         (CoreSlot::Memory, ImplementationFlavor::Alternative) => Arc::new(SingleRecallMemory),
         (CoreSlot::Router, ImplementationFlavor::Baseline) => {
-            Arc::new(core_agents::RouterStrategy::default())
+            Arc::new(iteron_agents::RouterStrategy::default())
         }
         (CoreSlot::Router, ImplementationFlavor::Alternative) => Arc::new(DirectRouter),
         (CoreSlot::Planner, ImplementationFlavor::Baseline) => {
-            Arc::new(core_agents::PlannerStrategy::default())
+            Arc::new(iteron_agents::PlannerStrategy::default())
         }
         (CoreSlot::Planner, ImplementationFlavor::Alternative) => Arc::new(SingleLeafPlanner),
         (CoreSlot::Collaboration, ImplementationFlavor::Baseline) => {
-            Arc::new(core_workflow::CollaborationStrategy::default())
+            Arc::new(iteron_workflow::CollaborationStrategy::default())
         }
         (CoreSlot::Collaboration, ImplementationFlavor::Alternative) => {
             Arc::new(SerialCollaboration)
         }
         (CoreSlot::Scheduler, ImplementationFlavor::Baseline) => {
-            Arc::new(core_sched::SchedulerStrategy::default())
+            Arc::new(iteron_sched::SchedulerStrategy::default())
         }
         (CoreSlot::Scheduler, ImplementationFlavor::Alternative) => Arc::new(SerialScheduler),
         (CoreSlot::Verifier, ImplementationFlavor::Baseline) => {
-            Arc::new(core_verify::VerifierStrategy::default())
+            Arc::new(iteron_verify::VerifierStrategy::default())
         }
         (CoreSlot::Verifier, ImplementationFlavor::Alternative) => Arc::new(StrictVerifier),
         (CoreSlot::ModelRouter, ImplementationFlavor::Baseline) => {
-            Arc::new(core_provider::catalog::ModelRouterStrategy::default())
+            Arc::new(iteron_provider::catalog::ModelRouterStrategy::default())
         }
         (CoreSlot::ModelRouter, ImplementationFlavor::Alternative) => Arc::new(BoundModelRouter),
     }
@@ -155,13 +155,13 @@ macro_rules! unit_strategy {
 unit_strategy!(MinimalContext, "core/context");
 impl MinimalContext {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_ctx::ContextStrategy::default();
+        let baseline = iteron_ctx::ContextStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
         let Ok(mut input) =
-            serde_json::from_value::<core_ctx::ContextSlotObservation>(observation.payload.clone())
+            serde_json::from_value::<iteron_ctx::ContextSlotObservation>(observation.payload.clone())
         else {
             return first;
         };
@@ -177,9 +177,9 @@ impl MinimalContext {
 unit_strategy!(ReadOnlyToolPolicy, "core/tool_policy");
 impl ReadOnlyToolPolicy {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_tools::ToolPolicy::default();
+        let baseline = iteron_tools::ToolPolicy::default();
         let mut outcome = baseline.decide(observation);
-        let Ok(input) = serde_json::from_value::<core_tools::ToolPolicyObservation>(
+        let Ok(input) = serde_json::from_value::<iteron_tools::ToolPolicyObservation>(
             observation.payload.clone(),
         ) else {
             return outcome;
@@ -195,13 +195,13 @@ impl ReadOnlyToolPolicy {
 unit_strategy!(SingleRecallMemory, "core/memory");
 impl SingleRecallMemory {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_ctx::MemoryRecallStrategy::default();
+        let baseline = iteron_ctx::MemoryRecallStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
         let Ok(mut input) =
-            serde_json::from_value::<core_ctx::MemorySlotObservation>(observation.payload.clone())
+            serde_json::from_value::<iteron_ctx::MemorySlotObservation>(observation.payload.clone())
         else {
             return first;
         };
@@ -215,12 +215,12 @@ impl SingleRecallMemory {
 unit_strategy!(DirectRouter, "core/router");
 impl DirectRouter {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_agents::RouterStrategy::default();
+        let baseline = iteron_agents::RouterStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(input) = serde_json::from_value::<core_agents::RouterSlotObservation>(
+        let Ok(input) = serde_json::from_value::<iteron_agents::RouterSlotObservation>(
             observation.payload.clone(),
         ) else {
             return first;
@@ -232,13 +232,13 @@ impl DirectRouter {
 unit_strategy!(SingleLeafPlanner, "core/planner");
 impl SingleLeafPlanner {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_agents::PlannerStrategy::default();
+        let baseline = iteron_agents::PlannerStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
         let Ok(mut input) =
-            serde_json::from_value::<core_agents::PlannerObservation>(observation.payload.clone())
+            serde_json::from_value::<iteron_agents::PlannerObservation>(observation.payload.clone())
         else {
             return first;
         };
@@ -250,12 +250,12 @@ impl SingleLeafPlanner {
 unit_strategy!(SerialCollaboration, "core/collaboration");
 impl SerialCollaboration {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_workflow::CollaborationStrategy::default();
+        let baseline = iteron_workflow::CollaborationStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(mut input) = serde_json::from_value::<core_workflow::CollaborationObservation>(
+        let Ok(mut input) = serde_json::from_value::<iteron_workflow::CollaborationObservation>(
             observation.payload.clone(),
         ) else {
             return first;
@@ -268,12 +268,12 @@ impl SerialCollaboration {
 unit_strategy!(SerialScheduler, "core/scheduler");
 impl SerialScheduler {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_sched::SchedulerStrategy::default();
+        let baseline = iteron_sched::SchedulerStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
-        let Ok(mut input) = serde_json::from_value::<core_sched::SchedulerSlotObservation>(
+        let Ok(mut input) = serde_json::from_value::<iteron_sched::SchedulerSlotObservation>(
             observation.payload.clone(),
         ) else {
             return first;
@@ -287,12 +287,12 @@ impl SerialScheduler {
 unit_strategy!(StrictVerifier, "core/verifier");
 impl StrictVerifier {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_verify::VerifierStrategy::default();
+        let baseline = iteron_verify::VerifierStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
-        let strict = core_verify::WorkspaceGateVerifier::default();
+        let strict = iteron_verify::WorkspaceGateVerifier::default();
         let mut outcome = strict.decide(observation);
         outcome.admitted = outcome.admitted.intersect(observation.ceiling);
         outcome
@@ -302,12 +302,12 @@ impl StrictVerifier {
 unit_strategy!(BoundModelRouter, "core/model_router");
 impl BoundModelRouter {
     fn decide_narrowed(&self, observation: &SlotObservation) -> SlotOutcome {
-        let baseline = core_provider::catalog::ModelRouterStrategy::default();
+        let baseline = iteron_provider::catalog::ModelRouterStrategy::default();
         let first = baseline.decide(observation);
         if !baseline_is_decision(&first) {
             return first;
         }
-        let bound = core_provider::catalog::BoundRouteOnlyModelRouter::default();
+        let bound = iteron_provider::catalog::BoundRouteOnlyModelRouter::default();
         let mut outcome = bound.decide(observation);
         outcome.admitted = outcome.admitted.intersect(observation.ceiling);
         outcome
@@ -321,7 +321,7 @@ fn json<T: serde::Serialize>(value: T, fallback: SlotOutcome) -> serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::slot::decide_narrowed;
+    use iteron_protocol::slot::decide_narrowed;
 
     fn bound(slots: &CompiledSlots) -> Vec<(CoreSlot, &Arc<dyn StrategySlot>)> {
         vec![
@@ -337,7 +337,7 @@ mod tests {
         ]
     }
 
-    /// Every core slot is bound, at the composition root, to an implementation that claims that
+    /// Every iteron slot is bound, at the composition root, to an implementation that claims that
     /// same identity.
     ///
     /// This is the claim the replaceable-strategy design rests on, and nothing else asserted it.

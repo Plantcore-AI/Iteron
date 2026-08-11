@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Independent product ceiling. It is not derived from `core_workflow::RunLimits`; one session may
+/// Independent product ceiling. It is not derived from `iteron_workflow::RunLimits`; one session may
 /// contain many workflow runs.
 pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = 4_096;
 

@@ -1,18 +1,18 @@
 [package]
-name = "core-workflow"
+name = "iteron-workflow"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 # The ultracode-workflow engine: embeds QuickJS (via rquickjs) so Claude Code's `.js` workflow
-# scripts run with `agent()/parallel()/pipeline()/phase()/log()`. It stays OFF `core-kernel`:
+# scripts run with `agent()/parallel()/pipeline()/phase()/log()`. It stays OFF `iteron-kernel`:
 # the real sub-agent spawn is a trait (`AgentSpawner`) the kernel/CLI implements, so the dependency
 # edge points into this crate, never out of it (WORKFLOW-REPLICATION-DESIGN.md §2.1).
 
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-sched = { path = "../sched" }
+iteron-protocol = { path = "../protocol" }
+iteron-sched = { path = "../sched" }
 # QuickJS embed — the PROVEN spike pattern (features ["futures","macro"]): AsyncRuntime + LocalSet +
 # spawn_local(rt.drive()); inline `Async(async_fn)` host fns; eval -> Promise -> into_future.
 rquickjs = { version = "0.12", features = ["futures", "macro"] }

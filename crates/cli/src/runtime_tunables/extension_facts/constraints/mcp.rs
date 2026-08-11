@@ -3,7 +3,7 @@ use crate::runtime_tunables::extension_facts::value::{en, int};
 use crate::runtime_tunables::extension_facts::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport, ExtensionGapReason, GapImpact,
 };
-use core_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -77,7 +77,7 @@ pub(super) fn apply(
             "cap_milliseconds",
             ExternalCeiling::ParentWall,
             int(crate::runtime_tunables::extension_facts::value::i64v(
-                wall_ms.min(core_mcp::reconnect::MAX_RECONNECT_CAP_MS),
+                wall_ms.min(iteron_mcp::reconnect::MAX_RECONNECT_CAP_MS),
                 "mcp_reconnect_backoff",
             )?),
         )?;

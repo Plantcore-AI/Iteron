@@ -1,6 +1,6 @@
 # Terminal UI
 
-The TUI is Core Code's default frontend when stdin and stdout are attached to a
+The TUI is Iteron's default frontend when stdin and stdout are attached to a
 terminal. It owns presentation and input as a version-negotiated client of the
 same resident App Server used by one-shot and headless operation. Runtime state
 and the authoritative terminal result arrive over the event queue; the TUI never
@@ -9,7 +9,7 @@ reclaims or inspects the agent directly.
 ## Start the TUI
 
 ```sh
-core -C /path/to/repository
+iteron -C /path/to/repository
 ```
 
 Passing `--tui` forces the interactive intent, but a real terminal is still
@@ -27,7 +27,7 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   because a steer cannot carry an image, ++enter++ on a draft with chips queues it
   behind the running turn instead of steering it. The whole terminal drop must be
   one path — an interior line break is two references, not one — and the drop has
-  to reach Core Code as a paste; a terminal that replays it as individual
+  to reach Iteron as a paste; a terminal that replays it as individual
   keystrokes leaves it as ordinary text.
 - An attached image also gets an in-line anchor `[Image #N]` at the cursor, so a
   prompt can say *where* the picture belongs: "compare this screenshot
@@ -65,7 +65,7 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   `/lab promote` only shows the authority boundary: the TUI has no promotion key,
   activation credential, or rollback authority.
 - Use `/diff`, `/status`, `/context`, `/cost`, and `/workflows` to inspect the
-  evidence Core Code currently exposes. `/workflows` opens the run inspector:
+  evidence Iteron currently exposes. `/workflows` opens the run inspector:
   ++tab++ switches runs, arrows move through phases and agents, ++x++ stops the
   selected live run, ++r++ resumes an eligible persisted run, and ++n++ returns
   to a fresh prompt.
@@ -113,7 +113,7 @@ An approval prompt names the tool, declared capability, reason, arguments, and
 workspace. The operator may approve or deny it; selected capability decisions can
 be remembered for the session where policy permits.
 
-Core Code never turns a missing interactive answer into permission. In one-shot
+Iteron never turns a missing interactive answer into permission. In one-shot
 mode, an operation that still needs a human answer fails closed.
 
 ## Honest observability limits

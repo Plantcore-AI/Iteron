@@ -33,20 +33,20 @@ fn restore_terminal_modes(stdout: &mut impl Write) {
 
 pub(super) fn set_terminal_title_to(
     writer: &mut impl Write,
-    capabilities: core_statusline::Capabilities,
+    capabilities: iteron_statusline::Capabilities,
     title: &str,
     active: &AtomicBool,
 ) -> std::io::Result<bool> {
     if !capabilities.title_stack_restores() {
         return Ok(false);
     }
-    let title = match core_statusline::set_title(title) {
+    let title = match iteron_statusline::set_title(title) {
         Ok(title) => title,
         Err(_) => return Ok(false),
     };
-    writer.write_all(core_statusline::title_stack_push().as_bytes())?;
+    writer.write_all(iteron_statusline::title_stack_push().as_bytes())?;
     if let Err(error) = writer.write_all(title.as_bytes()) {
-        let _ = writer.write_all(core_statusline::restore_title().as_bytes());
+        let _ = writer.write_all(iteron_statusline::restore_title().as_bytes());
         let _ = writer.flush();
         return Err(error);
     }
@@ -57,14 +57,14 @@ pub(super) fn set_terminal_title_to(
 
 pub(super) fn replace_terminal_title_to(
     writer: &mut impl Write,
-    capabilities: core_statusline::Capabilities,
+    capabilities: iteron_statusline::Capabilities,
     title: &str,
     active: &AtomicBool,
 ) -> std::io::Result<bool> {
     if !active.load(Ordering::Acquire) || !capabilities.title_stack_restores() {
         return Ok(false);
     }
-    let title = match core_statusline::set_title(title) {
+    let title = match iteron_statusline::set_title(title) {
         Ok(title) => title,
         Err(_) => return Ok(false),
     };
@@ -75,7 +75,7 @@ pub(super) fn replace_terminal_title_to(
 
 pub(super) fn restore_terminal_title_to(writer: &mut impl Write, active: &AtomicBool) {
     if active.swap(false, Ordering::AcqRel) {
-        let _ = writer.write_all(core_statusline::restore_title().as_bytes());
+        let _ = writer.write_all(iteron_statusline::restore_title().as_bytes());
         let _ = writer.flush();
     }
 }
@@ -143,7 +143,7 @@ impl TermGuard {
 
     pub(super) fn set_title(
         &self,
-        capabilities: core_statusline::Capabilities,
+        capabilities: iteron_statusline::Capabilities,
         title: &str,
     ) -> std::io::Result<bool> {
         set_terminal_title_to(&mut std::io::stdout(), capabilities, title, &TITLE_ACTIVE)
@@ -151,7 +151,7 @@ impl TermGuard {
 
     pub(super) fn replace_title(
         &self,
-        capabilities: core_statusline::Capabilities,
+        capabilities: iteron_statusline::Capabilities,
         title: &str,
     ) -> std::io::Result<bool> {
         replace_terminal_title_to(&mut std::io::stdout(), capabilities, title, &TITLE_ACTIVE)

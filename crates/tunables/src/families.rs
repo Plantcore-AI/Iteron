@@ -259,7 +259,7 @@ mod tests {
         let first = family!(Partial;
             137,
             "session_spawn_limit",
-            "core.control.orchestration.session_spawn_budget",
+            "iteron.control.orchestration.session_spawn_budget",
             Orchestration,
             "First declaration for a session spawn control.",
             Direct,
@@ -269,7 +269,7 @@ mod tests {
         let second = family!(Partial;
             138,
             "session_spawn_limit_v2",
-            "core.control.orchestration.session_spawn_budget",
+            "iteron.control.orchestration.session_spawn_budget",
             Orchestration,
             "Renamed declaration for the same session spawn control.",
             Direct,
@@ -282,7 +282,7 @@ mod tests {
             Err(RegistryError::DuplicateSemanticKey {
                 first: "session_spawn_limit",
                 second: "session_spawn_limit_v2",
-                semantic_key: "core.control.orchestration.session_spawn_budget",
+                semantic_key: "iteron.control.orchestration.session_spawn_budget",
             })
         ));
     }
@@ -292,7 +292,7 @@ mod tests {
         let provider_with_model_key = family!(Full;
             1,
             "provider",
-            "core.control.provider.model_selection",
+            "iteron.control.provider.model_selection",
             Provider,
             "Provider declaration carrying the model control key.",
             Conditional,
@@ -302,7 +302,7 @@ mod tests {
         let model_with_provider_key = family!(Full;
             2,
             "model",
-            "core.control.provider.route_selection",
+            "iteron.control.provider.route_selection",
             Provider,
             "Model declaration carrying the provider control key.",
             Conditional,
@@ -318,10 +318,10 @@ mod tests {
             Err(RegistryError::SemanticKeyMappingMismatch {
                 ordinal: 1,
                 actual_id: "provider",
-                actual_key: "core.control.provider.model_selection",
+                actual_key: "iteron.control.provider.model_selection",
                 expected_ordinal: 1,
                 expected_id: "provider",
-                expected_key: "core.control.provider.route_selection",
+                expected_key: "iteron.control.provider.route_selection",
             })
         ));
     }

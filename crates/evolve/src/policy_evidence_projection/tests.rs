@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     DataClass, RetentionTrainingUse, TrainingConsent, TrajectoryIngest, TrajectoryRegistry,
 };
-use core_protocol::{
+use iteron_protocol::{
     POLICY_DECISION_EVIDENCE_SCHEMA_VERSION, POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     PolicyActionId, PolicyDecisionDisposition, PolicyOpportunityId, PolicyOutcomeScope,
     PolicyRuntimeIdentity, TurnId, slot::SlotId,
@@ -47,7 +47,7 @@ fn decision(ordinal: u64, turn: u32) -> PolicyDecisionEvidence {
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: Some(-3),
         propensity_ppm: Some(750_000),
-        feature_schema_id: "core:router-features-v1".into(),
+        feature_schema_id: "iteron:router-features-v1".into(),
         feature_digest_sha256: DIGEST_C.into(),
         fixed_invariants_digest_sha256: DIGEST_A.into(),
         tunables_digest_sha256: DIGEST_B.into(),
@@ -148,7 +148,7 @@ fn fixture(terminal: PolicyTerminalOutcome) -> PolicyEvidenceRunFixture {
 
 fn scratch() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-evolve-policy-evidence-{}-{}",
+        "iteron-evolve-policy-evidence-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

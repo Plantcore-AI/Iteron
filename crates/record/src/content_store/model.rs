@@ -1,4 +1,4 @@
-use core_protocol::{ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, RunId};
+use iteron_protocol::{ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, RunId};
 use serde::{Deserialize, Serialize};
 
 pub(super) const STORE_VERSION: u16 = 1;

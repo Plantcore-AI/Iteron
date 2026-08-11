@@ -2,7 +2,7 @@
 //!
 //! `/status`, `/config`, `/model`, the statusline and the startup banner each used to derive the
 //! current route independently — from the provider directory, from ad-hoc `App` fields, and (for
-//! `/config`) by re-reading the REPOSITORY config file, which is why `core --max-turns 5` reported
+//! `/config`) by re-reading the REPOSITORY config file, which is why `iteron --max-turns 5` reported
 //! `max_turns: default` while the kernel enforced 5. Four derivations of one fact are four chances
 //! to disagree with the request that actually goes out (I-26).
 //!
@@ -165,7 +165,7 @@ impl RouteView {
         }
     }
 
-    /// The route rows shared by `/status`, `/config` and `core auth status`, in one order.
+    /// The route rows shared by `/status`, `/config` and `iteron auth status`, in one order.
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         let mut rows = vec![
             (
@@ -199,23 +199,23 @@ impl RouteView {
     }
 }
 
-fn adapter_label(adapter: core_provider::AdapterKind) -> &'static str {
+fn adapter_label(adapter: iteron_provider::AdapterKind) -> &'static str {
     match adapter {
-        core_provider::AdapterKind::AnthropicMessages => "anthropic_messages",
-        core_provider::AdapterKind::OpenAiResponses => "openai_responses",
-        core_provider::AdapterKind::OpenAiCompatibleChat => "openai_chat",
+        iteron_provider::AdapterKind::AnthropicMessages => "anthropic_messages",
+        iteron_provider::AdapterKind::OpenAiResponses => "openai_responses",
+        iteron_provider::AdapterKind::OpenAiCompatibleChat => "openai_chat",
     }
 }
 
-fn error_profile_label(profile: core_provider::ErrorProfile) -> &'static str {
+fn error_profile_label(profile: iteron_provider::ErrorProfile) -> &'static str {
     match profile {
-        core_provider::ErrorProfile::Anthropic => "anthropic",
-        core_provider::ErrorProfile::OpenAi => "openai",
-        core_provider::ErrorProfile::DeepSeek => "deepseek",
-        core_provider::ErrorProfile::Glm => "glm",
-        core_provider::ErrorProfile::MiniMax => "minimax",
-        core_provider::ErrorProfile::Fireworks => "fireworks",
-        core_provider::ErrorProfile::CustomConservative => "custom",
+        iteron_provider::ErrorProfile::Anthropic => "anthropic",
+        iteron_provider::ErrorProfile::OpenAi => "openai",
+        iteron_provider::ErrorProfile::DeepSeek => "deepseek",
+        iteron_provider::ErrorProfile::Glm => "glm",
+        iteron_provider::ErrorProfile::MiniMax => "minimax",
+        iteron_provider::ErrorProfile::Fireworks => "fireworks",
+        iteron_provider::ErrorProfile::CustomConservative => "custom",
     }
 }
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     /// I-26 — `/config` re-read the repository config file instead of the effective layered value,
-    /// so `core --max-turns 5` displayed `max_turns: default`. The view carries the limits the
+    /// so `iteron --max-turns 5` displayed `max_turns: default`. The view carries the limits the
     /// kernel was given, so the displayed ceiling is the enforced ceiling.
     #[test]
     fn i26_the_view_reports_the_effective_limits_not_the_config_file() {

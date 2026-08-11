@@ -1,10 +1,10 @@
 //! Session-owned private overflow retention for ordinary (non-MCP) tool results.
 //!
-//! The store is deliberately separate from `core_mcp`'s result store. MCP transports own their
+//! The store is deliberately separate from `iteron_mcp`'s result store. MCP transports own their
 //! serialization, cap, and cleanup semantics; this owner sees only ordinary registry results and
 //! replaces an oversized result before it can cross the durable record or model-context boundary.
 
-use core_protocol::ToolResult;
+use iteron_protocol::ToolResult;
 
 mod store;
 
@@ -134,13 +134,13 @@ pub(super) fn manage_result(
 
 pub(super) fn manage_execution(
     store: Option<&ToolOutputSpillStore>,
-    execution: core_tools::ToolExecution,
+    execution: iteron_tools::ToolExecution,
 ) -> ManagedToolExecution {
     match execution {
-        core_tools::ToolExecution::Definite(result) => {
+        iteron_tools::ToolExecution::Definite(result) => {
             ManagedToolExecution::Definite(manage_result(store, result))
         }
-        core_tools::ToolExecution::Unknown(result) => {
+        iteron_tools::ToolExecution::Unknown(result) => {
             ManagedToolExecution::Unknown(manage_result(store, result))
         }
     }
@@ -148,15 +148,15 @@ pub(super) fn manage_execution(
 
 pub(super) fn into_execution_parts(
     execution: ManagedToolExecution,
-) -> (core_tools::ToolExecution, Option<ToolOutputSpillLease>) {
+) -> (iteron_tools::ToolExecution, Option<ToolOutputSpillLease>) {
     match execution {
         ManagedToolExecution::Definite(managed) => {
             let (result, lease, _) = managed.into_parts();
-            (core_tools::ToolExecution::Definite(result), lease)
+            (iteron_tools::ToolExecution::Definite(result), lease)
         }
         ManagedToolExecution::Unknown(managed) => {
             let (result, lease, _) = managed.into_parts();
-            (core_tools::ToolExecution::Unknown(result), lease)
+            (iteron_tools::ToolExecution::Unknown(result), lease)
         }
     }
 }

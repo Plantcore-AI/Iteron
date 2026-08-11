@@ -1,7 +1,7 @@
 //! Production ownership and durable append helpers for frozen-slot evidence.
 
 use super::*;
-use core_protocol::{
+use iteron_protocol::{
     PolicyActionId, PolicyDecisionDisposition, PolicyTerminalOutcome, PolicyVerifierOutcome, Usage,
     slot::SlotId,
 };
@@ -114,9 +114,9 @@ impl PolicyDecisionDraft {
             propensity_ppm: (disposition == PolicyDecisionDisposition::Selected)
                 .then_some(1_000_000),
             feature_schema_id: feature_schema_id.to_owned(),
-            feature_digest_sha256: digest_json("core:policy-features:v1", features)?,
+            feature_digest_sha256: digest_json("iteron:policy-features:v1", features)?,
             fixed_invariants_digest_sha256: digest_json(
-                "core:policy-fixed-invariants:v1",
+                "iteron:policy-fixed-invariants:v1",
                 fixed_invariants,
             )?,
         })
@@ -146,7 +146,7 @@ impl Agent {
         let Some(pin) = self.tunables_pin.as_ref() else {
             return Ok(false);
         };
-        let events = core_record::replay_timed(self.rollout.path())?;
+        let events = iteron_record::replay_timed(self.rollout.path())?;
         let recorder = policy_evidence_recorder::PolicyEvidenceRecorder::restore_or_begin(
             self.rollout.run_id(),
             pin.resolution_digest_sha256().to_owned(),
@@ -208,7 +208,7 @@ impl Agent {
         {
             self.fail_next_durable_append = None;
             return Err(self.policy_evidence_error(
-                core_record::RecordError::Io(std::io::Error::other(
+                iteron_record::RecordError::Io(std::io::Error::other(
                     "injected policy-decision sync failure",
                 ))
                 .into(),
@@ -419,7 +419,7 @@ fn policy_cost_delta_microusd(baseline: Option<&CostState>, current: &CostState)
 
 fn policy_turn_tokens(
     baseline: Option<&PolicyTurnCounterBaseline>,
-    current: &core_obs::ReproducibleCounters,
+    current: &iteron_obs::ReproducibleCounters,
 ) -> (Option<u64>, Option<u64>) {
     let Some(baseline) = baseline else {
         return (None, None);

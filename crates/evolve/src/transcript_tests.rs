@@ -7,7 +7,7 @@ use crate::{
 
 fn scratch(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "core-evolve-offline-transcript-{tag}-{}-{}",
+        "iteron-evolve-offline-transcript-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

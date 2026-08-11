@@ -1,13 +1,13 @@
 //! The machine read path for session listing and transcript retrieval.
 //!
-//! The data was always durable and always readable: `.core/runs/<run>.jsonl`, a per-run
+//! The data was always durable and always readable: `.iteron/runs/<run>.jsonl`, a per-run
 //! `.meta.json`, and a compacted `sessions.index`. The only published surface was `--sessions`,
 //! which prints human text, and combining it with a machine format was refused outright. For a
 //! client that is not a terminal the supported answer was therefore "there is none", so it read
 //! `sessions.index` directly and coupled itself to a private layout the record layer is free to
 //! change.
 //!
-//! This publishes the read contract instead, and owns it here rather than in `core-record`, which
+//! This publishes the read contract instead, and owns it here rather than in `iteron-record`, which
 //! stays the truth. Nothing about how runs are written changes: this module opens no rollout for
 //! append and mints no id.
 //!
@@ -28,9 +28,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use core_protocol::{RunId, TenantId};
-use core_record::SessionMeta;
-use core_record::redact::redact_event;
+use iteron_protocol::{RunId, TenantId};
+use iteron_record::SessionMeta;
+use iteron_record::redact::redact_event;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -46,7 +46,7 @@ pub(crate) const MAX_TRANSCRIPT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Operator-defined grouping metadata is deliberately small enough for every session page.
 pub(crate) const MAX_AGENT_DEFINITION_TAG_BYTES: usize =
-    core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES;
+    iteron_protocol::MAX_AGENT_DEFINITION_TAG_BYTES;
 const MAX_CURSOR_BYTES: usize = 4 * 1024;
 const CURSOR_VERSION: u32 = 1;
 
@@ -74,10 +74,10 @@ impl SessionSummary {
             // Every string here crosses into a durable client surface, so it goes through the same
             // scrubber the live seam uses. A title is the first line of a user message.
             run_id: meta.run_id.to_string(),
-            title: core_record::redact::scrub(&meta.title),
+            title: iteron_record::redact::scrub(&meta.title),
             turns: meta.turns,
-            provider_id: core_record::redact::scrub_route_identifier(&meta.provider_id),
-            model: core_record::redact::scrub_route_identifier(&meta.model),
+            provider_id: iteron_record::redact::scrub_route_identifier(&meta.provider_id),
+            model: iteron_record::redact::scrub_route_identifier(&meta.model),
             cost_usd: meta.cost_usd(),
             cost_state: if meta.cost_usd().is_some() {
                 "known"
@@ -141,7 +141,7 @@ struct TranscriptCursor {
 
 fn cursor_digest(payload: &[u8]) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"core-cli-session-cursor-v1\0");
+    digest.update(b"iteron-cli-session-cursor-v1\0");
     digest.update(payload);
     URL_SAFE_NO_PAD.encode(digest.finalize())
 }
@@ -190,7 +190,7 @@ pub(crate) fn validate_agent_definition_tag(tag: &str) -> anyhow::Result<()> {
             "--agent-definition-tag must be non-blank, control-free, and at most {MAX_AGENT_DEFINITION_TAG_BYTES} UTF-8 bytes"
         );
     }
-    if core_record::redact::scrub_route_identifier(tag) != tag {
+    if iteron_record::redact::scrub_route_identifier(tag) != tag {
         anyhow::bail!("--agent-definition-tag looks like a credential and cannot be recorded");
     }
     Ok(())
@@ -223,7 +223,7 @@ pub(crate) struct TranscriptDocument {
 /// asks for "the sessions in this repository" and a continue that picks one of them cannot be
 /// looking at two different sets. `None` lists every repository the runs dir holds.
 ///
-/// Degrades exactly as the human path does: `core_record::list_scoped` falls back to replay when
+/// Degrades exactly as the human path does: `iteron_record::list_scoped` falls back to replay when
 /// the index is stale or missing, so a client still gets an answer rather than an error.
 pub(crate) fn list_sessions(
     runs_dir: &Path,
@@ -231,7 +231,7 @@ pub(crate) fn list_sessions(
     repo: Option<&Path>,
     limit: usize,
 ) -> SessionListDocument {
-    let metas = core_record::session::list_scoped(runs_dir, tenant, repo);
+    let metas = iteron_record::session::list_scoped(runs_dir, tenant, repo);
     let total = metas.len();
     let limit = limit.min(MAX_SESSIONS_PER_PAGE);
     let sessions = metas
@@ -262,7 +262,7 @@ pub(crate) fn list_sessions_page(
         validate_agent_definition_tag(tag)?;
     }
     let limit = limit.clamp(1, MAX_SESSIONS_PER_PAGE);
-    let metas: Vec<_> = core_record::list(runs_dir, tenant)
+    let metas: Vec<_> = iteron_record::list(runs_dir, tenant)
         .into_iter()
         .filter(|meta| {
             agent_definition_tag.is_none_or(|tag| meta.agent_definition_tag.as_deref() == Some(tag))
@@ -323,8 +323,8 @@ pub(crate) fn list_sessions_page(
 pub(crate) fn read_transcript(
     runs_dir: &Path,
     run: &RunId,
-) -> Result<TranscriptDocument, core_record::RecordError> {
-    let events = core_record::load_forked(runs_dir, run)?;
+) -> Result<TranscriptDocument, iteron_record::RecordError> {
+    let events = iteron_record::load_forked(runs_dir, run)?;
     let total_events = events.len();
     let mut budget = 0usize;
     let mut truncated = false;
@@ -369,7 +369,7 @@ fn read_transcript_page_with_limit(
     schema_version: u32,
     max_bytes: usize,
 ) -> anyhow::Result<SessionTranscriptPage> {
-    let events = core_record::load_forked(runs_dir, run)?;
+    let events = iteron_record::load_forked(runs_dir, run)?;
     let end = if let Some(token) = cursor {
         let cursor: TranscriptCursor = decode_cursor(token)?;
         if cursor.version != CURSOR_VERSION

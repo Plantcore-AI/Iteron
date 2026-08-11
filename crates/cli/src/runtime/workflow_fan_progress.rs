@@ -6,14 +6,14 @@ impl Agent {
     pub(super) fn observe_workflow_fan_progress(
         &mut self,
         workflow_run_id: &str,
-        tasks: &[core_agents::AgentTask],
+        tasks: &[iteron_agents::AgentTask],
         child_ledgers: &std::sync::Arc<std::sync::Mutex<Vec<(u64, Ledger)>>>,
-        event: core_workflow::ProgressEvent,
+        event: iteron_workflow::ProgressEvent,
         terminals: &mut [Option<EngineAgentTerminal>],
         workflow_state: &mut WorkflowRunState,
     ) -> Result<(), KernelError> {
         match event {
-            core_workflow::ProgressEvent::AgentActivity {
+            iteron_workflow::ProgressEvent::AgentActivity {
                 index,
                 tokens,
                 tool_calls,
@@ -32,7 +32,7 @@ impl Agent {
                     activity,
                 }));
             }
-            core_workflow::ProgressEvent::AgentFinished {
+            iteron_workflow::ProgressEvent::AgentFinished {
                 index,
                 state,
                 tokens,
@@ -63,17 +63,17 @@ impl Agent {
                         "built-in workflow emitted a duplicate terminal".into(),
                     ));
                 }
-                let interrupted = state == core_workflow::WorkflowState::Error
+                let interrupted = state == iteron_workflow::WorkflowState::Error
                     && self.requested_control().interrupts();
                 let outcome = match state {
-                    core_workflow::WorkflowState::Done => WorkflowAgentOutcomeUi::Done,
-                    core_workflow::WorkflowState::Skipped => WorkflowAgentOutcomeUi::SkippedBudget,
-                    core_workflow::WorkflowState::Queued
-                    | core_workflow::WorkflowState::Running => WorkflowAgentOutcomeUi::NotStarted,
-                    core_workflow::WorkflowState::Error if interrupted => {
+                    iteron_workflow::WorkflowState::Done => WorkflowAgentOutcomeUi::Done,
+                    iteron_workflow::WorkflowState::Skipped => WorkflowAgentOutcomeUi::SkippedBudget,
+                    iteron_workflow::WorkflowState::Queued
+                    | iteron_workflow::WorkflowState::Running => WorkflowAgentOutcomeUi::NotStarted,
+                    iteron_workflow::WorkflowState::Error if interrupted => {
                         WorkflowAgentOutcomeUi::Interrupted
                     }
-                    core_workflow::WorkflowState::Error => WorkflowAgentOutcomeUi::Failed,
+                    iteron_workflow::WorkflowState::Error => WorkflowAgentOutcomeUi::Failed,
                 };
                 let error_preview = if interrupted {
                     Some("investigator interrupted at a safe point".into())
@@ -101,10 +101,10 @@ impl Agent {
                 }));
                 *slot = Some(EngineAgentTerminal { state, error });
             }
-            core_workflow::ProgressEvent::Phase { .. }
-            | core_workflow::ProgressEvent::Log { .. }
-            | core_workflow::ProgressEvent::AgentQueued { .. }
-            | core_workflow::ProgressEvent::AgentStarted { .. } => {}
+            iteron_workflow::ProgressEvent::Phase { .. }
+            | iteron_workflow::ProgressEvent::Log { .. }
+            | iteron_workflow::ProgressEvent::AgentQueued { .. }
+            | iteron_workflow::ProgressEvent::AgentStarted { .. } => {}
         }
         Ok(())
     }

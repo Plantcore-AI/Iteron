@@ -34,7 +34,7 @@ use crate::{
     tool_filter::McpToolFilter,
 };
 use budget::{OperationBudget, operation_deadline};
-use core_protocol::capability_set::CapabilitySet;
+use iteron_protocol::capability_set::CapabilitySet;
 use serde_json::Value;
 use std::{num::NonZeroU64, time::Duration};
 use tokio::time::Instant;

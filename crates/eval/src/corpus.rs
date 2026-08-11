@@ -577,7 +577,7 @@ mod tests {
     fn temp_file() -> std::path::PathBuf {
         let sequence = NEXT_TEMP_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "core-eval-corpus-{}-{sequence}.json",
+            "iteron-eval-corpus-{}-{sequence}.json",
             std::process::id()
         ))
     }

@@ -239,14 +239,14 @@ fn validate_protocol_boundary(root: &Path, registry: &Registry) -> Result<()> {
     if !boundary
         .checks
         .iter()
-        .any(|check| check == "core-xtask boundaries check-pr --base <rev>")
+        .any(|check| check == "iteron-xtask boundaries check-pr --base <rev>")
     {
         bail!("protocol-compat must declare the version-skew pull-request check");
     }
     if !boundary
         .checks
         .iter()
-        .any(|check| check == "core-xtask boundaries check-base --base <rev>")
+        .any(|check| check == "iteron-xtask boundaries check-base --base <rev>")
     {
         bail!("protocol-compat must declare the merge-group-safe immediate-base check");
     }

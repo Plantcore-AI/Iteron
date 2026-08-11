@@ -1,5 +1,5 @@
 use super::ImageInputErrorKind;
-use core_protocol::ImageMediaType;
+use iteron_protocol::ImageMediaType;
 use gif::{ColorOutput, DecodeOptions, MemoryLimit};
 use image_webp::WebPDecoder;
 use std::io::{BufReader, Cursor};

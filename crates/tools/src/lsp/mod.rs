@@ -1,4 +1,4 @@
-//! Live, lazy LSP query tools over the accepted `core-lsp` protocol/state substrate.
+//! Live, lazy LSP query tools over the accepted `iteron-lsp` protocol/state substrate.
 //!
 //! Known language adapters are admitted as CodeExecuting, confined by Linux bubblewrap or macOS
 //! Seatbelt, and owned by one bounded session/workspace pool. Requests recheck target bytes and
@@ -16,8 +16,8 @@ mod supervisor;
 mod wire;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
-use core_lsp::intel::Position;
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
+use iteron_lsp::intel::Position;
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use input::SourceDocument;
 use pool::Launcher;
 use serde_json::{Value, json};
@@ -150,7 +150,7 @@ enum LspToolError {
     #[error("bounded tool output exceeds {limit} bytes")]
     ToolOutputTooLarge { limit: usize },
     #[error("language-server protocol/state validation failed")]
-    Protocol(#[from] core_lsp::LspError),
+    Protocol(#[from] iteron_lsp::LspError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -419,7 +419,7 @@ fn bounded_u32(input: &Value, field: &str) -> Result<u32, (LspToolError, bool)> 
         .get(field)
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value <= core_lsp::MAX_LSP_POSITION)
+        .filter(|value| *value <= iteron_lsp::MAX_LSP_POSITION)
         .ok_or((LspToolError::InvalidArguments, false))
 }
 
@@ -430,7 +430,7 @@ fn location_limit(input: &Value) -> Result<usize, (LspToolError, bool)> {
         .unwrap_or(DEFAULT_LOCATION_LIMIT as u64);
     usize::try_from(value)
         .ok()
-        .filter(|limit| (1..=core_lsp::MAX_LOCATIONS).contains(limit))
+        .filter(|limit| (1..=iteron_lsp::MAX_LOCATIONS).contains(limit))
         .ok_or((LspToolError::InvalidArguments, false))
 }
 
@@ -449,7 +449,7 @@ fn input_schema() -> Value {
         "character": {"type":"integer", "description":"Zero-based UTF-16 code-unit offset; validated against the source and LSP uinteger ceiling."},
         "limit": {
             "type":"integer",
-            "description":format!("Maximum normalized locations retained, in [1, {}].", core_lsp::MAX_LOCATIONS)
+            "description":format!("Maximum normalized locations retained, in [1, {}].", iteron_lsp::MAX_LOCATIONS)
         },
         "include_declaration": {"type":"boolean", "description":"References only; defaults true."}
         },

@@ -20,9 +20,9 @@ use crate::turn_protocol::{
     VerifyOutcome,
 };
 use crate::turn_state::{TurnLimits, TurnState};
-use core_protocol::Outcome;
-use core_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
-use core_protocol::trust::Trust;
+use iteron_protocol::Outcome;
+use iteron_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
+use iteron_protocol::trust::Trust;
 use std::collections::BTreeSet;
 
 /// Fold a whole command stream, collecting every action in order.
@@ -81,9 +81,9 @@ const BANNED: &[(&str, &str)] = &[
         "Instant::now",
         "a monotonic clock reading must arrive as a command field",
     ),
-    ("core_provider", "the reducer must not name a world module"),
-    ("core_sandbox", "the reducer must not name a world module"),
-    ("core_ctx", "the reducer must not name a world module"),
+    ("iteron_provider", "the reducer must not name a world module"),
+    ("iteron_sandbox", "the reducer must not name a world module"),
+    ("iteron_ctx", "the reducer must not name a world module"),
     (
         "std::process",
         "the reducer must not start or inspect a process",

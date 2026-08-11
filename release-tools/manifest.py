@@ -139,7 +139,7 @@ def create_build_info(arguments: argparse.Namespace) -> None:
     document = {
         "cargo": arguments.cargo.strip(),
         "commit": commit,
-        "product": "Core Code",
+        "product": "Iteron",
         "rustc": arguments.rustc.strip(),
         "schema_version": 1,
         "target": target,
@@ -210,14 +210,14 @@ def create_release(arguments: argparse.Namespace) -> None:
 
     document = {
         "cli_stream_versions": first_capability["cli_stream_versions"],
-        "command": "core",
+        "command": "iteron",
         "commit": commit,
         "default_cli_stream_version": first_capability["default_cli_stream_version"],
         "installer": installer,
         "legal": legal,
-        "product": "Core Code",
+        "product": "Iteron",
         "protocol_version": protocol_version,
-        "repository": "https://github.com/Plantcore-AI/core",
+        "repository": "https://github.com/Plantcore-AI/Iteron",
         "schema_version": 3,
         "tag": f"v{version}",
         "targets": target_documents,

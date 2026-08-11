@@ -8,23 +8,23 @@ impl Agent {
     pub(super) async fn decompose(
         &mut self,
         task: &str,
-        class: core_agents::TaskClass,
+        class: iteron_agents::TaskClass,
     ) -> Result<Vec<String>, KernelError> {
         let coverage = match class {
-            core_agents::TaskClass::RunToUnderstand => {
+            iteron_agents::TaskClass::RunToUnderstand => {
                 "Cover static failure-path localization, existing tests/reproduction definitions, \
                  state/data flow, and verification options that do not require this read-only \
                  worker to execute commands."
             }
-            core_agents::TaskClass::MultiFile => {
+            iteron_agents::TaskClass::MultiFile => {
                 "Cover ownership boundaries, callers/consumers, shared data or protocol flow, \
                  migration compatibility, and affected tests/verification."
             }
-            core_agents::TaskClass::UnderSpecified => {
+            iteron_agents::TaskClass::UnderSpecified => {
                 "Cover entry-point localization, ownership/data flow, nearby analogous code, \
                  invariants/risks, and existing tests/verification."
             }
-            core_agents::TaskClass::Localized => {
+            iteron_agents::TaskClass::Localized => {
                 "Confirm the named location, its callers/data flow, and affected tests."
             }
         };
@@ -37,7 +37,7 @@ impl Agent {
             "Original operator goal:\n{task}\n\nTask class: {}\nCoverage contract: {coverage}\n\n\
              List up to {} complementary investigation assignments, one per line.",
             workflow_class_label(class),
-            core_agents::FAN_CAP,
+            iteron_agents::FAN_CAP,
         );
         let req = TurnRequest {
             model: self.model.clone(),
@@ -51,7 +51,7 @@ impl Agent {
             // pay a cold round the rest of the kernel does not (I-62).
             cache_system: true,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         // The draft itself stays private to the planner, but decode progress is real operator
@@ -95,10 +95,10 @@ impl Agent {
             Ok(r) => {
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
-                        ttft_ms: Some(core_obs::duration_ms_ceil(
+                        ttft_ms: Some(iteron_obs::duration_ms_ceil(
                             first.saturating_duration_since(stream_start),
                         )),
-                        decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                        decode_ms: Some(iteron_obs::duration_ms_ceil(first.elapsed())),
                         stream_items: Some(stream_items),
                     },
                     None => StreamTiming::default(),

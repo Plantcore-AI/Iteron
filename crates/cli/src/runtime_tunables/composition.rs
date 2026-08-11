@@ -2,7 +2,7 @@
 //!
 //! This is the only production caller of `RuntimeResolutionBuilder::resolve`. It samples every
 //! typed owner before a rollout is created and returns both the immutable resolver result and the
-//! decoded core settings that must drive the kernel.
+//! decoded iteron settings that must drive the kernel.
 
 use super::authorities::{AuthorityFactsInput, VerificationAuthority, collect_runtime_authorities};
 use super::catalogs::{CatalogObservation, ScalarCatalogInput, collect_scalar_catalogs};
@@ -26,13 +26,13 @@ use crate::config::{
     ConfigOrigin, McpServerConfig, McpTransportConfig, ResolvedProviderGovernorConfig,
 };
 use crate::providers::{ModelCapabilities, ModelSelection, ProviderDirectory};
-use core_agents::AgentCatalog;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{Budget, DurableEnvironmentContext, Effort, PermissionMode, PermissionRules};
-use core_sched::BackoffPolicy;
-use core_tools::Registry;
-use core_tunables::{ResolvedTunableSet, RuntimeProfile, RuntimeResolutionBuilder};
-use core_verify::{VerifierSlotObservation, VerifierStrategy};
+use iteron_agents::AgentCatalog;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Budget, DurableEnvironmentContext, Effort, PermissionMode, PermissionRules};
+use iteron_sched::BackoffPolicy;
+use iteron_tools::Registry;
+use iteron_tunables::{ResolvedTunableSet, RuntimeProfile, RuntimeResolutionBuilder};
+use iteron_verify::{VerifierSlotObservation, VerifierStrategy};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -48,7 +48,7 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub configured_mcp: &'a [McpServerConfig],
     pub agent_catalog: &'a AgentCatalog,
     pub profile: RuntimeProfile,
-    pub tenant: &'a core_protocol::TenantId,
+    pub tenant: &'a iteron_protocol::TenantId,
     pub benchmark_scope: Option<&'a str>,
     pub workspace: &'a Path,
     pub environment: Option<&'a str>,
@@ -68,7 +68,7 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub bypass_permissions: Sourced<bool>,
     pub operator_egress_allow: Option<&'a [String]>,
     pub project_egress_allow: Option<&'a [String]>,
-    pub compaction: &'a core_ctx::CompactionPolicy,
+    pub compaction: &'a iteron_ctx::CompactionPolicy,
     pub compaction_owner: CompactionOwner,
     pub retry: &'a BackoffPolicy,
     pub retry_origins: RetryOrigins,
@@ -78,15 +78,15 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub prompt_cache_enabled: bool,
     pub provider_governor: &'a ResolvedProviderGovernorConfig,
     pub provider_governor_configured: bool,
-    pub provider_control_capabilities: &'a core_provider::ProviderControlCapabilities,
+    pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
     pub authority_ceiling: CapabilitySet,
-    pub run_limits: core_workflow::RunLimits,
+    pub run_limits: iteron_workflow::RunLimits,
 }
 
 pub(crate) struct FreshComposition {
     pub resolved: Arc<ResolvedTunableSet>,
     pub settings: EffectiveCoreSettings,
-    pub route_capabilities: core_tunables::RouteCapabilities,
+    pub route_capabilities: iteron_tunables::RouteCapabilities,
     pub session_spawn_ledger: Arc<crate::runtime::SessionSpawnLedger>,
     pub fact_summary: FreshFactSummary,
 }
@@ -111,18 +111,18 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
     })?;
 
     let token_estimators = CatalogObservation::observed(
-        "core-ctx:request-estimator-v2",
+        "iteron-ctx:request-estimator-v2",
         [
-            core_ctx::TokenEstimatorProfile::GenericBytesPerToken35,
-            core_ctx::TokenEstimatorProfile::OpenAiBpeApprox,
-            core_ctx::TokenEstimatorProfile::AnthropicBpeApprox,
-            core_ctx::TokenEstimatorProfile::SentencePieceApprox,
+            iteron_ctx::TokenEstimatorProfile::GenericBytesPerToken35,
+            iteron_ctx::TokenEstimatorProfile::OpenAiBpeApprox,
+            iteron_ctx::TokenEstimatorProfile::AnthropicBpeApprox,
+            iteron_ctx::TokenEstimatorProfile::SentencePieceApprox,
         ]
         .map(|profile| profile.identity().catalog_id),
     );
     let service_tiers = CatalogObservation::observed(
         format!(
-            "core-provider:{}:service-tiers-v1",
+            "iteron-provider:{}:service-tiers-v1",
             input.selection.provider_id
         ),
         input
@@ -131,7 +131,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
             .iter()
             .map(|tier| tier.label().to_owned()),
     );
-    let binary_inspectors = CatalogObservation::observed_empty("core-tools:binary-inspectors-v1");
+    let binary_inspectors = CatalogObservation::observed_empty("iteron-tools:binary-inspectors-v1");
     let catalogs = collect_scalar_catalogs(ScalarCatalogInput {
         directory: input.directory,
         selection: input.selection,
@@ -176,7 +176,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         input.profile,
         authorities,
     )?;
-    let core = apply_core_facts(
+    let iteron = apply_core_facts(
         &mut builder,
         CoreFactsInput {
             selection: input.selection,
@@ -210,7 +210,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
 
     let durable_environment = input.environment.map(|text| DurableEnvironmentContext {
         text: text.to_owned(),
-        trust: core_protocol::Trust::Workspace,
+        trust: iteron_protocol::Trust::Workspace,
     });
     let execution = apply_execution_facts(
         &mut builder,
@@ -304,13 +304,13 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
             session_spawn_ledger: &session_spawn_ledger,
             child_overlay: Some(&child_overlay),
             configured_mcp: input.configured_mcp,
-            mcp_reconnect: core_mcp::reconnect::ReconnectPolicy::default(),
-            mcp_deadlines: core_mcp::McpDeadlinePolicy::default(),
-            mcp_result_policy: core_mcp::McpResultPolicy::default(),
-            early_stop_quorum: core_workflow::EarlyStopQuorumPolicy::default(),
-            speculative_siblings: core_workflow::SpeculativeSiblingPolicy::default(),
-            task_retry: core_workflow::TaskRetryPolicy::default(),
-            writer_merge: core_workflow::WriterMergePolicy::default(),
+            mcp_reconnect: iteron_mcp::reconnect::ReconnectPolicy::default(),
+            mcp_deadlines: iteron_mcp::McpDeadlinePolicy::default(),
+            mcp_result_policy: iteron_mcp::McpResultPolicy::default(),
+            early_stop_quorum: iteron_workflow::EarlyStopQuorumPolicy::default(),
+            speculative_siblings: iteron_workflow::SpeculativeSiblingPolicy::default(),
+            task_retry: iteron_workflow::TaskRetryPolicy::default(),
+            writer_merge: iteron_workflow::WriterMergePolicy::default(),
             session_profile,
             replay_owner,
             provider_governor: input.provider_governor,
@@ -359,7 +359,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         route_capabilities,
         session_spawn_ledger,
         fact_summary: FreshFactSummary {
-            core_gaps: core.gaps.len(),
+            core_gaps: iteron.gaps.len(),
             execution_gaps: execution.gaps.len(),
             provider_process_gaps: provider_process.gaps.len(),
             extension_gaps: extension.gaps.len(),
@@ -384,9 +384,9 @@ fn extension_authorities(input: &FreshCompositionInput<'_>) -> ExtensionAuthorit
         .tool_rules()
         .map(|(tool, verdict)| {
             let disposition = match verdict {
-                core_protocol::Verdict::Auto => ChildToolDisposition::Allow,
-                core_protocol::Verdict::Ask => ChildToolDisposition::Ask,
-                core_protocol::Verdict::Deny => ChildToolDisposition::Deny,
+                iteron_protocol::Verdict::Auto => ChildToolDisposition::Allow,
+                iteron_protocol::Verdict::Ask => ChildToolDisposition::Ask,
+                iteron_protocol::Verdict::Deny => ChildToolDisposition::Deny,
             };
             (tool.to_owned(), disposition)
         })

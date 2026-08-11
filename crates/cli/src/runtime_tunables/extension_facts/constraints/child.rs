@@ -3,8 +3,8 @@ use crate::runtime_tunables::extension_facts::value::{en, text, tool_profile};
 use crate::runtime_tunables::extension_facts::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport, ExtensionGapReason, GapImpact,
 };
-use core_protocol::Effort;
-use core_tunables::{CapabilityRequirement, ExternalCeiling, RuntimeResolutionBuilder};
+use iteron_protocol::Effort;
+use iteron_tunables::{CapabilityRequirement, ExternalCeiling, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,

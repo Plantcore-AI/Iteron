@@ -3,12 +3,12 @@
 use super::effective_core::EffectiveCoreError;
 use super::effective_view::EffectiveTunablesView;
 use crate::config::ResolvedProviderGovernorConfig;
-use core_provider::{
+use iteron_provider::{
     CacheBreakpoint, CacheScope, CircuitPolicy, FailoverClass, FailoverRule, FailurePoint,
     GovernorPolicy, HedgePolicy, ObjectiveWeights, PromptCacheControl, ProviderRequestControls,
     RateAdmissionPolicy, RequestCompression, ResponseVerbosity, ServiceTier, UnknownQuotaPolicy,
 };
-use core_tunables::{DecimalValue, ResolutionValue};
+use iteron_tunables::{DecimalValue, ResolutionValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 

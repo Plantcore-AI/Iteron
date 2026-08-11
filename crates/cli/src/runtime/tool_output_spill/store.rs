@@ -1,7 +1,7 @@
 use super::{
     ManagedToolResult, ToolOutputSpillCleanup, ToolOutputSpillError, ToolOutputSpillPolicy,
 };
-use core_protocol::ToolResult;
+use iteron_protocol::ToolResult;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;

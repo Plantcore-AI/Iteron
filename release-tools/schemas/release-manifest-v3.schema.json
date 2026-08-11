@@ -1,5 +1,5 @@
 {
-  "$id": "https://github.com/Plantcore-AI/core/release-tools/schemas/release-manifest-v3.schema.json",
+  "$id": "https://github.com/Plantcore-AI/Iteron/release-tools/schemas/release-manifest-v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "definitions": {
@@ -50,7 +50,7 @@
       "type": "array",
       "uniqueItems": true
     },
-    "command": { "const": "core" },
+    "command": { "const": "iteron" },
     "commit": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
     "default_cli_stream_version": {
       "maximum": 1000000000,
@@ -67,13 +67,13 @@
       "required": ["licenses", "notices"],
       "type": "object"
     },
-    "product": { "const": "Core Code" },
+    "product": { "const": "Iteron" },
     "protocol_version": {
       "maximum": 1000000000,
       "minimum": 1,
       "type": "integer"
     },
-    "repository": { "const": "https://github.com/Plantcore-AI/core" },
+    "repository": { "const": "https://github.com/Plantcore-AI/Iteron" },
     "schema_version": { "const": 3 },
     "tag": {
       "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
@@ -114,6 +114,6 @@
     "targets",
     "version"
   ],
-  "title": "Core Code release manifest v3",
+  "title": "Iteron release manifest v3",
   "type": "object"
 }

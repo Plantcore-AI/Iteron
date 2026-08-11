@@ -1,13 +1,13 @@
 //! The offline timeline reader (#104): turn a replayed rollout into a waterfall, a per-class
 //! breakdown and a distribution, with the gaps reported rather than filled in.
 //!
-//! # Why this lives in `core-obs` and takes no path
+//! # Why this lives in `iteron-obs` and takes no path
 //!
 //! [`fold`] is a pure function of an already-replayed event stream. It has no clock, no
 //! filesystem, no process and no network — the same standing restriction the [`crate::Ledger`]
 //! carries, and for the same reason: a projection that could measure would immediately become a
 //! second, disagreeing source of truth beside the record it is supposed to be reading. The caller
-//! verifies the hash chain (`core_record::replay_timed`) and hands the result in; if the bytes
+//! verifies the hash chain (`iteron_record::replay_timed`) and hands the result in; if the bytes
 //! would not pass the audit path, no timeline is produced from them.
 //!
 //! # What "honest" means here, concretely
@@ -27,7 +27,7 @@
 //! as an explicit signed remainder rather than silently absorbed. A reader that presented these as
 //! slices of a pie would be lying about the concurrency the harness was built to have.
 
-use core_protocol::{Event, EventKind};
+use iteron_protocol::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -134,7 +134,7 @@ pub struct Turns {
 /// Fold a replayed, chain-verified stream into the report.
 ///
 /// `entries` is `(segment offset, event)` in record order — exactly what
-/// `core_record::replay_timed` yields.
+/// `iteron_record::replay_timed` yields.
 pub fn fold<'a, I>(entries: I) -> Timeline
 where
     I: IntoIterator<Item = (Option<u64>, &'a Event)>,

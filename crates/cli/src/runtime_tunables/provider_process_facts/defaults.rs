@@ -4,8 +4,8 @@ use super::{
     ProviderProcessFactsInput, ProviderProcessFactsReport, VerificationOwnerFacts,
     owner::OwnerSnapshot,
 };
-use core_tunables::{RuntimeResolutionBuilder, SourceKind};
-use core_verify::{VERIFIER_SLOT_VERSION, VerifierScope};
+use iteron_tunables::{RuntimeResolutionBuilder, SourceKind};
+use iteron_verify::{VERIFIER_SLOT_VERSION, VerifierScope};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -229,7 +229,7 @@ fn add_governor_defaults(
     input: &ProviderProcessFactsInput<'_>,
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
-    use core_provider::FailurePoint;
+    use iteron_provider::FailurePoint;
 
     let source = if input.provider_governor_configured {
         SourceKind::UserConfig
@@ -417,7 +417,7 @@ fn add_context_defaults(
         .min(window);
     let output_reserve_u32 = u32::try_from(output_reserve)
         .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
-    let policy = core_ctx::ContextBudgetPolicy::for_usable_window(window, output_reserve_u32, 0);
+    let policy = iteron_ctx::ContextBudgetPolicy::for_usable_window(window, output_reserve_u32, 0);
 
     builder.observe_default(
         "context_window_override_reserve",

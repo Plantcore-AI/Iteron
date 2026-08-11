@@ -1,4 +1,4 @@
-use core_tunables::{ExternalCeiling, RuntimeResolutionError};
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FactLayer {

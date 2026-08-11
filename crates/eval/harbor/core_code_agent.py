@@ -1,4 +1,4 @@
-"""Pinned Harbor installed-agent adapter for the Core Code CLI.
+"""Pinned Harbor installed-agent adapter for the Iteron CLI.
 
 This module intentionally does not download an unversioned release.  The caller
 supplies one host-side Linux binary and its SHA-256; Harbor uploads those exact
@@ -91,7 +91,7 @@ def _snapshot_binary(
     path: Path, expected_sha256: str, expected_arch: str
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, int]:
     snapshot_root = tempfile.TemporaryDirectory(prefix="core-harbor-binary-")
-    snapshot = Path(snapshot_root.name) / "core"
+    snapshot = Path(snapshot_root.name) / "iteron"
     try:
         descriptor = _open_binary_without_symlinks(path)
         with os.fdopen(descriptor, "rb") as source:
@@ -185,7 +185,7 @@ class CoreCodeAgent(BaseInstalledAgent):
 
     SUPPORTS_ATIF = False
     SUPPORTS_RESUME = False
-    _OUTPUT_FILENAME = "core.stream.jsonl"
+    _OUTPUT_FILENAME = "iteron.stream.jsonl"
 
     def __init__(
         self,
@@ -266,7 +266,7 @@ class CoreCodeAgent(BaseInstalledAgent):
         self._autonomous = autonomous
         self._credential_env = credential_env
         nonce = secrets.token_hex(16)
-        self._remote_binary = PurePosixPath(f"/tmp/core-code-bin-{nonce}")
+        self._remote_binary = PurePosixPath(f"/tmp/iteron-bin-{nonce}")
         self._remote_home = PurePosixPath(f"/tmp/core-harbor-home-{nonce}")
         self._remote_config_home = PurePosixPath(f"/tmp/core-harbor-config-{nonce}")
 
@@ -282,7 +282,7 @@ class CoreCodeAgent(BaseInstalledAgent):
 
     @staticmethod
     def name() -> str:
-        return "core-code"
+        return "iteron"
 
     def get_version_command(self) -> str | None:
         binary = shlex.quote(self._remote_binary.as_posix())
@@ -362,7 +362,7 @@ class CoreCodeAgent(BaseInstalledAgent):
         )
         env = {
             "HOME": self._remote_home.as_posix(),
-            "CORE_CONFIG_HOME": self._remote_config_home.as_posix(),
+            "ITERON_CONFIG_HOME": self._remote_config_home.as_posix(),
         }
         runs = EnvironmentPaths.agent_dir / "runs"
         expected = shlex.quote(self._binary_sha256)

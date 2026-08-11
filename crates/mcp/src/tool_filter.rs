@@ -1,5 +1,5 @@
 use crate::{MAX_MCP_TOOL_NAME_BYTES, McpError};
-use core_protocol::ToolSpec;
+use iteron_protocol::ToolSpec;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -260,7 +260,7 @@ fn validate_namespaced_tool_name(name: &str) -> Result<(), McpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, Purity};
+    use iteron_protocol::{Capability, Purity};
     use serde_json::json;
 
     fn spec(name: &str) -> ToolSpec {

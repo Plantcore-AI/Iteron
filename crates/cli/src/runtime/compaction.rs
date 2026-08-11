@@ -29,7 +29,7 @@ impl Agent {
         msgs.push(Message::user_text(prompt));
         let req = TurnRequest {
             model: self.model.clone(),
-            controls: core_provider::ProviderRequestControls::default(),
+            controls: iteron_provider::ProviderRequestControls::default(),
             system: "You compress a coding-agent transcript into a terse hand-off note.".into(),
             messages: msgs,
             input_images: Vec::new(),
@@ -74,10 +74,10 @@ impl Agent {
             Ok(res) => {
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
-                        ttft_ms: Some(core_obs::duration_ms_ceil(
+                        ttft_ms: Some(iteron_obs::duration_ms_ceil(
                             first.saturating_duration_since(stream_start),
                         )),
-                        decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                        decode_ms: Some(iteron_obs::duration_ms_ceil(first.elapsed())),
                         stream_items: Some(stream_items),
                     },
                     None => StreamTiming::default(),
@@ -115,12 +115,12 @@ impl Agent {
         focus: Option<&str>,
     ) -> Result<String, KernelError> {
         let (max_chunks, reduce_focus) = match self.compaction.summary_topology {
-            core_ctx::SummaryTopology::SingleStage => return self.summarize(middle, focus).await,
-            core_ctx::SummaryTopology::Hierarchical => (
+            iteron_ctx::SummaryTopology::SingleStage => return self.summarize(middle, focus).await,
+            iteron_ctx::SummaryTopology::Hierarchical => (
                 4usize,
                 "Merge the bounded child summaries into one chronological hand-off without dropping conflicts or unresolved obligations.",
             ),
-            core_ctx::SummaryTopology::MapReduce => (
+            iteron_ctx::SummaryTopology::MapReduce => (
                 8usize,
                 "Reduce the independent map summaries into one deduplicated hand-off; preserve disagreements explicitly rather than voting them away.",
             ),
@@ -166,12 +166,12 @@ impl Agent {
         &mut self,
         turn: TurnId,
         before_messages: &[Message],
-        plan: &core_ctx::CompactionPlan,
+        plan: &iteron_ctx::CompactionPlan,
         summary: &str,
         reason_code: &'static str,
         coverage_verified: bool,
     ) {
-        let rebuilt = core_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
+        let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
         let before = before_messages.len();
         let after = rebuilt.len();
         let tools = self.registry.specs();
@@ -186,7 +186,7 @@ impl Agent {
             self.model_context_window,
             self.model_max_output_tokens.unwrap_or(8192),
         );
-        let compaction = core_ctx::CompactionEvidence {
+        let compaction = iteron_ctx::CompactionEvidence {
             trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
             before_tokens: u64::try_from(before_estimate.total_tokens).unwrap_or(u64::MAX),
             after_tokens: u64::try_from(after_estimate.total_tokens).unwrap_or(u64::MAX),
@@ -205,14 +205,14 @@ impl Agent {
             reason_code: reason_code.into(),
         };
         let mut ledger =
-            core_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
+            iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
         ledger.model_context_window = self.model_context_window;
         ledger.usable_window = self.model_context_window.map(|window| {
             window.saturating_sub(u64::from(self.model_max_output_tokens.unwrap_or(8192)))
         });
         ledger.output_reserved_tokens = u64::from(self.model_max_output_tokens.unwrap_or(8192));
-        ledger.record_transform(core_ctx::ContextTransformEvidence {
-            kind: core_ctx::ContextTransformKind::Compact,
+        ledger.record_transform(iteron_ctx::ContextTransformEvidence {
+            kind: iteron_ctx::ContextTransformKind::Compact,
             policy_id: "core/compaction@1".into(),
             input_segments: u32::try_from(before).unwrap_or(u32::MAX),
             output_segments: u32::try_from(after).unwrap_or(u32::MAX),
@@ -239,7 +239,7 @@ impl Agent {
         self.emit(
             turn,
             EventKind::Compaction {
-                messages: core_ctx::compaction_seed(plan, summary),
+                messages: iteron_ctx::compaction_seed(plan, summary),
             },
         );
         self.lifecycle_event(

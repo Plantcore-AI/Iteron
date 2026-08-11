@@ -1,7 +1,7 @@
 //! Immutable host admission for first-party network tools.
 //!
 //! This policy is deliberately narrower than a process sandbox. It governs the network clients
-//! owned by `core-tools` (`web_fetch` and `web_search`); it never pretends that inspecting an
+//! owned by `iteron-tools` (`web_fetch` and `web_search`); it never pretends that inspecting an
 //! arbitrary shell string can enforce host-level network confinement. A configured empty set
 //! denies every first-party destination. An absent policy preserves the explicitly selected
 //! legacy/unconfined posture, while a present policy is installed once before the registry can be

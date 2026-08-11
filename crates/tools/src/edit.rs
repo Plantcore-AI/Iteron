@@ -10,7 +10,7 @@ use crate::write_file::{
     GuardedCommitFailure, StagedWrite, file_changed_json, read_existing_snapshot,
 };
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::ops::Range;
 
 pub(crate) const MAX_NORMALIZED_LINES: usize = 262_144;
@@ -88,7 +88,7 @@ struct NormalizedLine {
 }
 
 impl NormalizedLine {
-    fn core<'a>(&self, text: &'a str) -> &'a str {
+    fn iteron<'a>(&self, text: &'a str) -> &'a str {
         &text[self.core_start..self.core_end]
     }
 
@@ -334,7 +334,7 @@ fn nearest_normalized_line(
     let target = old_lines
         .iter()
         .map(|line| line.core(old).as_bytes())
-        .find(|core| !core.is_empty())?;
+        .find(|iteron| !iteron.is_empty())?;
     let mut best: Option<(usize, usize, usize)> = None;
     for (index, line) in content_lines.iter().enumerate() {
         let candidate = line.core(content).as_bytes();

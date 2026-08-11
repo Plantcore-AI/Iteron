@@ -24,8 +24,8 @@ pub mod tunables;
 use crate::{
     RecordError, Rollout, TimedEvent, ensure_tenant, validate_event_bounds, validated_run_path,
 };
-use core_obs::{CostState, Ledger, PricingPort, PricingReplay};
-use core_protocol::{
+use iteron_obs::{CostState, Ledger, PricingPort, PricingReplay};
+use iteron_protocol::{
     Block, Effort, Event, EventKind, Message, Outcome, Role, RunId, RuntimePolicyEventVersion,
     RuntimePolicySource, RuntimePolicyState, Seq, TenantId, TurnId, Usage,
 };
@@ -274,11 +274,11 @@ impl SessionProjection {
                 self.usage.add(&metrics.usage);
             }
             EventKind::Workflow {
-                event: core_protocol::WorkflowEvent::ChildFinished { metrics, .. },
+                event: iteron_protocol::WorkflowEvent::ChildFinished { metrics, .. },
                 ..
             }
             | EventKind::WorkflowV2 {
-                event: core_protocol::WorkflowEvent::ChildFinished { metrics, .. },
+                event: iteron_protocol::WorkflowEvent::ChildFinished { metrics, .. },
                 ..
             } => {
                 self.turns = self.turns.saturating_add(metrics.provider_attempts);
@@ -341,7 +341,7 @@ mod outcome_opt {
 
 // ---------------------------------------------------------------------------------------------
 // Paths. The rollout, its per-run meta cache, and the compact index all live under `runs_dir`
-// (in practice `.core/runs`). Co-locating the index there keeps the module dependent on the
+// (in practice `.iteron/runs`). Co-locating the index there keeps the module dependent on the
 // single directory it is handed, and the `.jsonl` listing scan naturally ignores the `.meta.json`
 // and `.index` sidecars (different extensions), so they are never mistaken for rollouts.
 // ---------------------------------------------------------------------------------------------
@@ -1694,7 +1694,7 @@ pub fn fork_with_tunables_snapshot(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    expected: &iteron_protocol::RunGenesisTunablesSnapshot,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
     let expected = ForkTunablesExpectation::V1(expected, legacy);
@@ -1711,7 +1711,7 @@ pub fn fork_with_resolved_tunables(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    resolved: &core_tunables::ResolvedTunableSet,
+    resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
     let expected = ForkTunablesExpectation::Resolved(resolved, legacy);
@@ -1725,11 +1725,11 @@ pub fn fork_with_resolved_tunables(
 #[derive(Clone, Copy)]
 enum ForkTunablesExpectation<'a> {
     V1(
-        &'a core_protocol::RunGenesisTunablesSnapshot,
+        &'a iteron_protocol::RunGenesisTunablesSnapshot,
         tunables::LegacyTunablesPolicy,
     ),
     Resolved(
-        &'a core_tunables::ResolvedTunableSet,
+        &'a iteron_tunables::ResolvedTunableSet,
         tunables::LegacyTunablesPolicy,
     ),
 }
@@ -1910,7 +1910,7 @@ fn fork_internal(
         rollout.append(&genesis)?;
     }
     if let Some(snapshot) = parent_policy_snapshot {
-        let inherited_from = Some(core_protocol::RunGenesisPolicyBundleInheritance {
+        let inherited_from = Some(iteron_protocol::RunGenesisPolicyBundleInheritance {
             parent_run: parent.0.clone(),
             parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
         });
@@ -1918,7 +1918,7 @@ fn fork_internal(
             seq: Seq::ZERO,
             turn: TurnId(0),
             kind: EventKind::PolicyBundleSnapshot {
-                version: core_protocol::RunGenesisPolicyBundleVersion::V1,
+                version: iteron_protocol::RunGenesisPolicyBundleVersion::V1,
                 snapshot,
                 inherited_from,
             },
@@ -2191,7 +2191,7 @@ fn genesis_tunables_event(
     lines: &[ReadLine],
 ) -> Option<(
     tunables::TunablesCheckpoint,
-    Option<&core_protocol::RunGenesisTunablesInheritance>,
+    Option<&iteron_protocol::RunGenesisTunablesInheritance>,
 )> {
     match lines.get(1).map(|line| &line.event.kind) {
         Some(EventKind::TunablesSnapshot {
@@ -2217,8 +2217,8 @@ fn genesis_tunables_event(
 fn genesis_policy_bundle_event(
     lines: &[ReadLine],
 ) -> Option<(
-    core_protocol::RunGenesisPolicyBundleSnapshot,
-    Option<&core_protocol::RunGenesisPolicyBundleInheritance>,
+    iteron_protocol::RunGenesisPolicyBundleSnapshot,
+    Option<&iteron_protocol::RunGenesisPolicyBundleInheritance>,
 )> {
     match lines.get(2).map(|line| &line.event.kind) {
         Some(EventKind::PolicyBundleSnapshot {
@@ -2299,7 +2299,7 @@ fn validate_fork_policy_bundle_inheritance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, PermissionMode, PermissionRules, Verdict};
+    use iteron_protocol::{Capability, PermissionMode, PermissionRules, Verdict};
 
     #[test]
     fn every_budget_terminal_reason_survives_the_session_projection() {
@@ -2584,7 +2584,7 @@ mod tests {
         assert_eq!(
             m.cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard
             },
             "replay must not apply one placeholder price across an unattributed route"
         );
@@ -2615,13 +2615,13 @@ mod tests {
                 seq: Seq::ZERO,
                 turn: TurnId(1),
                 kind: EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     workflow_id: "workflow-1".into(),
-                    event: core_protocol::WorkflowEvent::ChildFinished {
+                    event: iteron_protocol::WorkflowEvent::ChildFinished {
                         task_id: 0,
                         sub_run: Some("fan-0".into()),
-                        outcome: core_protocol::WorkflowChildOutcome::Done,
-                        metrics: core_protocol::WorkflowMetrics {
+                        outcome: iteron_protocol::WorkflowChildOutcome::Done,
+                        metrics: iteron_protocol::WorkflowMetrics {
                             provider_attempts: 3,
                             completed_turns: 2,
                             usage: Usage {
@@ -2653,7 +2653,7 @@ mod tests {
         assert_ne!(
             projected.cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::LegacyUnattributed
+                reason: iteron_obs::CostUnknownReason::LegacyUnattributed
             }
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2681,10 +2681,10 @@ mod tests {
                 seq: Seq::ZERO,
                 turn: TurnId(1),
                 kind: EventKind::SubagentFinishedV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
+                    version: iteron_protocol::WorkflowEventVersion::V2,
                     sub_run: "direct-0".into(),
-                    outcome: core_protocol::WorkflowChildOutcome::Drained,
-                    metrics: core_protocol::WorkflowMetrics {
+                    outcome: iteron_protocol::WorkflowChildOutcome::Drained,
+                    metrics: iteron_protocol::WorkflowMetrics {
                         provider_attempts: 2,
                         completed_turns: 1,
                         usage: Usage {
@@ -2694,7 +2694,7 @@ mod tests {
                             cache_read: 8,
                             thinking: 0,
                         },
-                        ..core_protocol::WorkflowMetrics::default()
+                        ..iteron_protocol::WorkflowMetrics::default()
                     },
                     error_code: Some("operator_drain".into()),
                     error_detail: None,
@@ -2731,7 +2731,7 @@ mod tests {
         assert_eq!(
             meta(&dir, &run).unwrap().cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::BillingEvidenceMissing
+                reason: iteron_obs::CostUnknownReason::BillingEvidenceMissing
             }
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2749,13 +2749,13 @@ mod tests {
                 seq: Seq::ZERO,
                 turn: TurnId(1),
                 kind: EventKind::Workflow {
-                    version: core_protocol::WorkflowEventVersion::V1,
+                    version: iteron_protocol::WorkflowEventVersion::V1,
                     workflow_id: "workflow-1".into(),
-                    event: core_protocol::WorkflowEvent::ChildStarted {
+                    event: iteron_protocol::WorkflowEvent::ChildStarted {
                         task_id: 0,
                         sub_run: "fan-started".into(),
                         spawn_seq: Seq(1),
-                        budget: core_protocol::Budget::default(),
+                        budget: iteron_protocol::Budget::default(),
                     },
                 },
             })
@@ -2764,7 +2764,7 @@ mod tests {
         assert_eq!(
             meta(&dir, &run).unwrap().cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::BillingEvidenceMissing
+                reason: iteron_obs::CostUnknownReason::BillingEvidenceMissing
             }
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2904,7 +2904,7 @@ mod tests {
         assert_eq!(
             projected.cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard
             }
         );
         assert_eq!(projected.cost_usd(), None);
@@ -4136,7 +4136,7 @@ mod tests {
         assert_eq!(
             via_cache.cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
             },
             "cache-only Known must be rebuilt without monetary trust"
         );
@@ -4337,7 +4337,7 @@ mod tests {
         assert_eq!(
             direct.cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
             },
             "an unauthenticated cache cannot prove exact zero after a provider turn"
         );

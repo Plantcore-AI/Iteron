@@ -1,7 +1,7 @@
 # Context, usage, and cost
 
 Context-window, cache, token, and monetary numbers have different evidence
-sources. Core Code attempts to expose what it knows without turning an estimate
+sources. Iteron attempts to expose what it knows without turning an estimate
 into an exact claim.
 
 ## Context construction
@@ -25,7 +25,7 @@ Its precision depends on the route and event evidence.
 
 ## Monetary state
 
-Core Code's cost state can be known or unknown. An operator-signed, versioned rate
+Iteron's cost state can be known or unknown. An operator-signed, versioned rate
 card is bound to the exact provider, model, catalog digest, and capability digest.
 For each authoritative usage sample, the injected pricing strategy produces a
 fixed-point micro-USD projection; the record stores its card digest, timestamp,

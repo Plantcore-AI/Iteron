@@ -4,12 +4,12 @@
 //! skill. [`crate::ContextPort`] owns that world-facing half so a policy remains a bounded,
 //! deterministic function of an already-gathered observation.
 
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::context::{
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::{
     ContextRequest, ContextSelector, InstructionScope, MAX_CONTEXT_GRANT_BYTES, RequestId,
 };
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
-use core_protocol::{Capability, Trust};
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::{Capability, Trust};
 use serde::{Deserialize, Serialize};
 
 pub const CONTEXT_SLOT_VERSION: u16 = 1;

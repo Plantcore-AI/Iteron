@@ -14,11 +14,11 @@ use value::*;
 
 use crate::config::ConfigOrigin;
 use crate::providers::{ModelCapabilities, ModelSelection};
-use core_ctx::{CompactionPolicy, MemBudget};
-use core_protocol::permission::{PermissionMode, PermissionRules, Verdict};
-use core_protocol::{Budget, Effort};
-use core_sched::BackoffPolicy;
-use core_tunables::{
+use iteron_ctx::{CompactionPolicy, MemBudget};
+use iteron_protocol::permission::{PermissionMode, PermissionRules, Verdict};
+use iteron_protocol::{Budget, Effort};
+use iteron_sched::BackoffPolicy;
+use iteron_tunables::{
     CapabilityRequirement, ConstraintValue, DecimalValue, ExternalCeiling, ResolutionValue,
     RouteCapabilities, RuntimeResolutionBuilder, RuntimeResolutionError, SourceKind,
 };
@@ -138,7 +138,7 @@ pub(crate) enum CoreFactError {
     IntegerOverflow(&'static str),
     #[error("permission rule key is outside the bounded namespaced-id schema")]
     InvalidPermissionRuleKey,
-    #[error("core owner evidence could not be encoded")]
+    #[error("iteron owner evidence could not be encoded")]
     EvidenceEncoding,
     #[error(transparent)]
     Resolution(#[from] RuntimeResolutionError),
@@ -403,7 +403,7 @@ fn add_internal_defaults(
     }
     // The estimator id names the actual route-selected conservative algorithm. It remains an
     // explicitly inexact approximation and provider usage is reconciled after the response.
-    let estimator = core_ctx::TokenEstimatorProfile::for_route(
+    let estimator = iteron_ctx::TokenEstimatorProfile::for_route(
         Some(&input.selection.provider_id),
         &input.selection.model_id,
     )

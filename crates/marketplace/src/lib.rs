@@ -74,7 +74,7 @@ pub enum InstallError {
 }
 
 /// A three-part version. Ordering is derived, so comparison is lexicographic over the tuple, which
-/// is exactly semantic-version precedence for the numeric core.
+/// is exactly semantic-version precedence for the numeric iteron.
 #[derive(
     Debug,
     Clone,

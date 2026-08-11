@@ -3,10 +3,10 @@
 ## Start in a repository
 
 ```sh
-core -C /path/to/repository
+iteron -C /path/to/repository
 ```
 
-With an interactive terminal, Core Code opens the TUI even when no task argument
+With an interactive terminal, Iteron opens the TUI even when no task argument
 is supplied. With no terminal, pass `-p` and a task for one-shot operation.
 
 ## Orient before changing anything
@@ -23,7 +23,7 @@ Useful commands:
 - `/tools` — registered tools and their capability classes;
 - `/permissions` — session permission rules;
 - `/diff` — current working-tree diff summary;
-- `/context` and `/cost` — the estimates or measurements Core Code actually has;
+- `/context` and `/cost` — the estimates or measurements Iteron actually has;
 - `/help` — the complete command list.
 
 ## Understand approval prompts
@@ -42,9 +42,9 @@ Use `/quit`, ++esc++, or ++ctrl+d++ to leave. The local hash-chained run record
 remains available:
 
 ```sh
-core --sessions -C /path/to/repository
-core --continue -C /path/to/repository
-core --resume RUN_ID -C /path/to/repository
+iteron --sessions -C /path/to/repository
+iteron --continue -C /path/to/repository
+iteron --resume RUN_ID -C /path/to/repository
 ```
 
 Continuation and resume rebuild the transcript from the durable record. They do

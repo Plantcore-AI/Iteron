@@ -5,8 +5,8 @@
 //! and [`crate::RetryProvider`] remain caller-side mechanisms that may apply the returned plan.
 
 use crate::BackoffPolicy;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -270,7 +270,7 @@ impl StrategySlot for SchedulerStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, slot::StrategySlot};
+    use iteron_protocol::{Capability, slot::StrategySlot};
 
     fn observation() -> SchedulerSlotObservation {
         SchedulerSlotObservation::baseline(BackoffPolicy::default(), 8).unwrap()

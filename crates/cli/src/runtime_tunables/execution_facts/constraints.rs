@@ -1,8 +1,8 @@
 use super::*;
 
 use super::values::{capability_list, int, text};
-use core_protocol::Capability;
-use core_tunables::{ConstraintValue, DecimalValue, ExternalCeiling, ResolutionValue};
+use iteron_protocol::Capability;
+use iteron_tunables::{ConstraintValue, DecimalValue, ExternalCeiling, ResolutionValue};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -36,7 +36,7 @@ fn add_tool_and_verifier_constraints(
             field,
             ExternalCeiling::ToolBudget,
             int(i64u(
-                core_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
+                iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
                 "shell_timeout_output",
             )?),
         )?;
@@ -48,7 +48,7 @@ fn add_tool_and_verifier_constraints(
         "verifier_attempts",
         "$",
         ExternalCeiling::RunBudget,
-        int(i64::from(core_verify::strategy::MAX_VERIFIER_ATTEMPTS)),
+        int(i64::from(iteron_verify::strategy::MAX_VERIFIER_ATTEMPTS)),
     )?;
     report.mark("verifier_attempts", FactStage::Constraint);
     upper(
@@ -67,7 +67,7 @@ fn add_orchestration_constraints(
     input: &ExecutionFactsInput<'_>,
     report: &mut ExecutionFactsReport,
 ) -> Result<(), ExecutionFactError> {
-    let workflow = core_workflow::RunLimits::default();
+    let workflow = iteron_workflow::RunLimits::default();
     upper(
         builder,
         "fan_breadth",
@@ -161,7 +161,7 @@ fn add_orchestration_constraints(
 fn add_partial_workflow_constraints(
     builder: &mut RuntimeResolutionBuilder,
     input: &ExecutionFactsInput<'_>,
-    workflow: core_workflow::RunLimits,
+    workflow: iteron_workflow::RunLimits,
     report: &mut ExecutionFactsReport,
 ) -> Result<(), ExecutionFactError> {
     upper(
@@ -286,7 +286,7 @@ fn add_prompt_constraints(
         );
         return Ok(());
     };
-    if u64::try_from(core_ctx::estimate_tokens(prompt)).unwrap_or(u64::MAX) > window {
+    if u64::try_from(iteron_ctx::estimate_tokens(prompt)).unwrap_or(u64::MAX) > window {
         report.gap(
             "operator_prompt_stream",
             FactStage::Constraint,

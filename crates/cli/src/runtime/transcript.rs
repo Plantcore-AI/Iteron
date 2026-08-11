@@ -1,6 +1,6 @@
 //! Projection from the durable event stream to a provider-valid transcript.
 
-use core_protocol::{Block, Event, EventKind, Message, Role, ToolResult, ToolUse, Trust};
+use iteron_protocol::{Block, Event, EventKind, Message, Role, ToolResult, ToolUse, Trust};
 
 /// Append a user message while preserving provider role alternation.
 pub(super) fn merge_adjacent_user_message(messages: &mut Vec<Message>, mut message: Message) {
@@ -44,7 +44,7 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
             } => {
                 // The seed range is measured in reconciled projection coordinates. Reconcile
                 // first so separately durable steers cannot shift that coordinate system.
-                messages = core_ctx::replay_compaction(reconcile_transcript(messages), compacted);
+                messages = iteron_ctx::replay_compaction(reconcile_transcript(messages), compacted);
                 terminal_results.clear();
                 duplicate_terminal_id = false;
                 pending_turn = messages.last().and_then(|message| {

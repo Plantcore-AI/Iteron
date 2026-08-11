@@ -1,10 +1,10 @@
 # 3. 微内核规格 (Microkernel / TCB Specification)
 
-本节规定 Core Code 的**受信计算基 (Trusted Computing Base, TCB)**,即**微内核 (microkernel)**,的确切边界:它包含哪些组件、每个组件的契约 (contract) 与一个具体示例、它所强制的不变量、以及它**绝不做**的事(负空间, negative space)。本节的所有 MUST / SHOULD / MAY 均按 RFC-2119 解读。
+本节规定 Iteron 的**受信计算基 (Trusted Computing Base, TCB)**,即**微内核 (microkernel)**,的确切边界:它包含哪些组件、每个组件的契约 (contract) 与一个具体示例、它所强制的不变量、以及它**绝不做**的事(负空间, negative space)。本节的所有 MUST / SHOULD / MAY 均按 RFC-2119 解读。
 
 微内核是整个 harness 中**唯一不可训练、不可进化、不可替换**的部分。§2 的论点(即「专门化一个 agent 是训练 harness,而不是训练模型」)只有在存在一个固定的、可信的安全内核时才成立:自我改进算子 (self-improving operator) 的每一个输出都必须落在这个内核所界定的授权范围之内。**安全不能是自我改进算子的不动点 (Safety cannot be a fixed point of the self-improving operator)**;因此内核位于 ABI 之外、位于进化回路之外,由人类治理(晋升与回滚的权威见 §3.2-K8 与 §6)。
 
-> **口径 (R3)。** 本节同时是微内核的规范与当前实现的验收口径。TCB 已抽取到 `core-kernel`:其内部路径依赖恰为 `core-protocol` / `core-record` / `core-obs`,世界能力经版本化端口注入,产品级会话编排在 `core-cli` 组合。`cargo run --locked -p core-xtask -- conformance kernel` 对 W1 冻结点 `304027e` 执行 ABI、依赖负空间与逐条证据矩阵检查;§3.7 记录仍然存在的产品组合边界,而不是把目标契约冒充成未交付事实。
+> **口径 (R3)。** 本节同时是微内核的规范与当前实现的验收口径。TCB 已抽取到 `iteron-kernel`:其内部路径依赖恰为 `iteron-protocol` / `iteron-record` / `iteron-obs`,世界能力经版本化端口注入,产品级会话编排在 `iteron-cli` 组合。`cargo run --locked -p iteron-xtask -- conformance kernel` 对 W1 冻结点 `304027e` 执行 ABI、依赖负空间与逐条证据矩阵检查;§3.7 记录仍然存在的产品组合边界,而不是把目标契约冒充成未交付事实。
 
 ### 3.1 判据:五条不变量 (The Five Invariants)
 
@@ -179,7 +179,7 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 
 关键规范陈述:**这五个 ABI 契约在进化过程中 MUST NOT 改变。** 进化改变的是**槽里的策略 (the policy in a slot)**,不是槽与内核之间的接口。`core/tool_policy` 可以从一个手写规则演进成一个 GRPO 训练出来的策略,但它与内核之间仍然只说 `ToolIntent`;`core/context` 无论怎样进化,与内核之间仍然只说 `ContextRequest` / `ArtifactRef`。正因为接口冻结,一个经训练的策略状态(PolicyManifest,即「harness checkpoint」)才能被 diff、merge、restrict、retire、transfer,并跨冻结的基座模型迁移:**权重学先验,harness 学具体情境 (weights learn the prior; the harness learns the situation)**。
 
-九个 well-known 核心槽(`core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration`)之外,一个 vertical pack MAY 增加命名空间化的新槽(如 `db/query_planner`、`support/escalation_router`)**而完全不触碰微内核**,因为槽身份 `SlotId` 是一个开放的、命名空间化的字符串类型(文法为 `<domain>/<role>`,恰好一个 `/`,`crates/protocol/src/slot.rs:68-87`),而非封闭枚举。注意不要与 `StrategySlot` 这个名字混淆:在 `core_protocol` 里它是内核调用的 **trait**(`crates/protocol/src/slot.rs:140-150`),在 `crates/evolve/src/lib.rs:131` 里另有一个同名的身份 newtype;跨接缝的槽身份类型只有 `SlotId`。可扩展性 (extensibility) 由此得到保证:开放命名空间意味着新增能力 = 新增槽 + 新增策略,永不 = 修改内核。一个 worked example:要为数据库 vertical 增加一个查询规划能力,只需注册 `db/query_planner` 槽并提供其策略,内核的九个组件、五条不变量、五个 ABI 契约一律不变;这与在内核里新增第十个组件是本质不同的两件事,后者被 §3.2 的封闭词汇表明令禁止。
+九个 well-known 核心槽(`core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration`)之外,一个 vertical pack MAY 增加命名空间化的新槽(如 `db/query_planner`、`support/escalation_router`)**而完全不触碰微内核**,因为槽身份 `SlotId` 是一个开放的、命名空间化的字符串类型(文法为 `<domain>/<role>`,恰好一个 `/`,`crates/protocol/src/slot.rs:68-87`),而非封闭枚举。注意不要与 `StrategySlot` 这个名字混淆:在 `iteron_protocol` 里它是内核调用的 **trait**(`crates/protocol/src/slot.rs:140-150`),在 `crates/evolve/src/lib.rs:131` 里另有一个同名的身份 newtype;跨接缝的槽身份类型只有 `SlotId`。可扩展性 (extensibility) 由此得到保证:开放命名空间意味着新增能力 = 新增槽 + 新增策略,永不 = 修改内核。一个 worked example:要为数据库 vertical 增加一个查询规划能力,只需注册 `db/query_planner` 槽并提供其策略,内核的九个组件、五条不变量、五个 ABI 契约一律不变;这与在内核里新增第十个组件是本质不同的两件事,后者被 §3.2 的封闭词汇表明令禁止。
 
 ### 3.6 为什么必须从零构建 (Why From-Scratch: Decoupling Behind the ABI)
 
@@ -193,13 +193,13 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 - 决策 (router / planner / context / tool_policy 等) 必须位于该表面**之外**,以便被替换、被回滚、被独立评估;
 - 二者之间必须是**类型化的 ABI**(§3.5 的五契约),而不是共享的可变状态与环境权限。
 
-一个把循环和模块焊在一个文件里的现成 agent,**没有这条边界**:它的授权与决策共享环境权限,它的效果散落在多个直接 spawn / HTTP 调用点,它的「状态」是命令式过程里的局部变量而非可重放的归约。要在这样的基座上事后加装一个真正的 TCB,等于把已经缠绕的授权/决策/IO/UI 重新拆散;其代价高于、且风险大于从一个**归约优先 (reduce-first)**、**端口注入 (injected-ports)**、**单 broker (one-effect-broker)** 的骨架从零长出。因此 Core Code 从零构建:先画出多数 agent 推迟的 TCB/策略边界,再在边界之外长出广度。这不是「设计更漂亮」,而是「没有这条边界,harness-checkpoint 的整个论点无法成立」。
+一个把循环和模块焊在一个文件里的现成 agent,**没有这条边界**:它的授权与决策共享环境权限,它的效果散落在多个直接 spawn / HTTP 调用点,它的「状态」是命令式过程里的局部变量而非可重放的归约。要在这样的基座上事后加装一个真正的 TCB,等于把已经缠绕的授权/决策/IO/UI 重新拆散;其代价高于、且风险大于从一个**归约优先 (reduce-first)**、**端口注入 (injected-ports)**、**单 broker (one-effect-broker)** 的骨架从零长出。因此 Iteron 从零构建:先画出多数 agent 推迟的 TCB/策略边界,再在边界之外长出广度。这不是「设计更漂亮」,而是「没有这条边界,harness-checkpoint 的整个论点无法成立」。
 
 ### 3.7 当前实现真相 (Current Implementation Truth)
 
-诚实的当前状态:Core Code 仍处于 **pre-alpha**,但 TCB 抽取与端口反转已经完成。`core-kernel` 的内部路径依赖恰为 `core-protocol` / `core-record` / `core-obs`;provider、sandbox、context、scheduler、diagnostics、verify、tool、workflow 与 record 能力均通过带版本常量的端口表达,具体策略/世界适配器在 `core-cli` 组合。内核内的 `reduce(state, command) -> (state, action_requests)` 是纯函数,有界 driver 只消费类型化动作;源码门禁禁止文件/环境/进程、provider、prompt、context selection、MCP parsing、UI、training/activation 进入 TCB。SQ 与 EQ 均为有界队列,满时生产者要么背压,要么收到显式拒绝并原样拿回提交,**绝不静默丢弃**。
+诚实的当前状态:Iteron 仍处于 **pre-alpha**,但 TCB 抽取与端口反转已经完成。`iteron-kernel` 的内部路径依赖恰为 `iteron-protocol` / `iteron-record` / `iteron-obs`;provider、sandbox、context、scheduler、diagnostics、verify、tool、workflow 与 record 能力均通过带版本常量的端口表达,具体策略/世界适配器在 `iteron-cli` 组合。内核内的 `reduce(state, command) -> (state, action_requests)` 是纯函数,有界 driver 只消费类型化动作;源码门禁禁止文件/环境/进程、provider、prompt、context selection、MCP parsing、UI、training/activation 进入 TCB。SQ 与 EQ 均为有界队列,满时生产者要么背压,要么收到显式拒绝并原样拿回提交,**绝不静默丢弃**。
 
-产品级 `Agent` 会话编排刻意保留在 `core-cli::runtime`,它通过内核端口、准入与 effect broker 使用 TCB,而不是重新进入 kernel crate。该组合层仍可扩展和替换;「微内核合规」的声明只覆盖由 `xtask conformance kernel` 列出的 K1-K9、五条不变量与八条负空间子句,不把整个 pre-alpha 产品的成熟度混同为 TCB 合规。尚无第一方基准数字。**单一 effect broker (K3)** 已覆盖 provider 请求、hook、subagent 派发、verify 预言机、workspace checkpoint、workflow 与注册表工具:每一类共享 fsync 的 `EffectIntent` 写前顺序、写前 at-most-once admission 与 terminal-or-unknown 词汇;崩溃/恢复/fork 的单个 E2E 证据证明悬空 intent 只会变为 `EffectUnknown`,不会被重放,分叉则钉住已提交的父哈希前缀并独立追加。
+产品级 `Agent` 会话编排刻意保留在 `iteron-cli::runtime`,它通过内核端口、准入与 effect broker 使用 TCB,而不是重新进入 kernel crate。该组合层仍可扩展和替换;「微内核合规」的声明只覆盖由 `xtask conformance kernel` 列出的 K1-K9、五条不变量与八条负空间子句,不把整个 pre-alpha 产品的成熟度混同为 TCB 合规。尚无第一方基准数字。**单一 effect broker (K3)** 已覆盖 provider 请求、hook、subagent 派发、verify 预言机、workspace checkpoint、workflow 与注册表工具:每一类共享 fsync 的 `EffectIntent` 写前顺序、写前 at-most-once admission 与 terminal-or-unknown 词汇;崩溃/恢复/fork 的单个 E2E 证据证明悬空 intent 只会变为 `EffectUnknown`,不会被重放,分叉则钉住已提交的父哈希前缀并独立追加。
 
 已经**存在且经测试**的部分,恰是本节最难、最应前置的骨架:一个真实的五层能力格与一个模型无法影响的默认拒绝准入门 (K2);效果/授权分离与信任污点 (K1);一个 SHA-256 哈希链、fsync 写前、可崩溃重建的规范记录 (K5);以及一个机器可检查的边界注册表,用于保证路径责任唯一并侦测内部依赖漂移。抽取 (extraction) 路径已在架构文档中给出:版本化的规范命令/事件信封 -> 纯状态 reducer -> 单一能力与 effect broker -> 注入的 provider / world / context / verification / scheduler 端口 -> 长驻的、有界流控的会话运行时 -> 版本化的 App Server。
 

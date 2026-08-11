@@ -1,5 +1,5 @@
 use super::{MAX_ENTRIES, PersistedState, PrivateContentHandle, State, Store, bound_and_scrub};
-use core_protocol::Seq;
+use iteron_protocol::Seq;
 
 impl Store {
     pub(super) fn store_text(

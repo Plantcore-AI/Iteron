@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use core_verify::Oracle as _;
+use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
 
 const MAX_GIT_MESSAGE_BYTES: usize = 16 * 1024;
@@ -134,8 +134,8 @@ impl WriterWorktree {
                 "an isolated writer cannot merge without an operator-admitted verification command",
             ));
         };
-        let oracle = core_verify::TestOracle::new(
-            core_sandbox::platform_sandbox(),
+        let oracle = iteron_verify::TestOracle::new(
+            iteron_sandbox::platform_sandbox(),
             self.path.clone(),
             command.to_owned(),
         )

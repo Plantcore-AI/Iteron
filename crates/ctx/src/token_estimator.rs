@@ -101,10 +101,10 @@ impl TokenEstimatorProfile {
 
     pub fn identity(self) -> TokenizerIdentity {
         let catalog_id = match self {
-            Self::GenericBytesPerToken35 => "core.byte-heuristic",
-            Self::OpenAiBpeApprox => "core.openai-bpe-approx",
-            Self::AnthropicBpeApprox => "core.anthropic-bpe-approx",
-            Self::SentencePieceApprox => "core.sentencepiece-approx",
+            Self::GenericBytesPerToken35 => "iteron.byte-heuristic",
+            Self::OpenAiBpeApprox => "iteron.openai-bpe-approx",
+            Self::AnthropicBpeApprox => "iteron.anthropic-bpe-approx",
+            Self::SentencePieceApprox => "iteron.sentencepiece-approx",
         };
         TokenizerIdentity {
             catalog_id: catalog_id.into(),

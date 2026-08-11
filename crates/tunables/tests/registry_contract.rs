@@ -1,4 +1,4 @@
-use core_tunables::{
+use iteron_tunables::{
     ActivationPredicate, CausalPath, ConstraintProjection, ConstraintRelation, ConstraintViolation,
     CoreStrategySlot, CrossFieldRule, DefaultKind, DefaultResolver, DefaultValueRequirement,
     EXPECTED_FAMILY_COUNT, ExternalCeiling, ImplementationStatus, InactiveReason,
@@ -691,7 +691,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 160 replay_divergence_detection_policy
 ];
 
-fn family(id: &str) -> &'static core_tunables::Family {
+fn family(id: &str) -> &'static iteron_tunables::Family {
     families()
         .iter()
         .find(|family| family.id == id)
@@ -734,7 +734,7 @@ fn exact_160_entry_contract_is_pinned_per_ordinal() {
         assert_eq!(usize::from(family.ordinal), ordinal);
         assert_eq!(family.id, EXPECTED_IDS[index], "ordinal {ordinal}");
         assert!(
-            family.semantic_key.starts_with("core.control."),
+            family.semantic_key.starts_with("iteron.control."),
             "{}",
             family.id
         );
@@ -765,7 +765,7 @@ fn exact_160_entry_contract_is_pinned_per_ordinal() {
         );
         assert_eq!(
             family.value_schema.schema_id,
-            format!("core://tunables/families/{}/value-v1", family.id)
+            format!("iteron://tunables/families/{}/value-v1", family.id)
         );
     }
     assert_eq!(semantic_keys.len(), EXPECTED_FAMILY_COUNT);
@@ -858,9 +858,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(integer_default("compaction_keep_recent"), 6);
     for (id, expected, environment) in [
-        ("retry_backoff_base", 500, "CORE_RETRY_BASE_MS"),
-        ("retry_backoff_cap", 30_000, "CORE_RETRY_CAP_MS"),
-        ("retry_max_attempts", 6, "CORE_RETRY_MAX_ATTEMPTS"),
+        ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
+        ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
+        ("retry_max_attempts", 6, "ITERON_RETRY_MAX_ATTEMPTS"),
     ] {
         let family = family(id);
         assert_eq!(family.default.kind, DefaultKind::Literal);
@@ -947,11 +947,11 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(
         prompt_cache.source.bindings[0].locator,
-        "core_provider::ProviderInstance::with_prompt_cache"
+        "iteron_provider::ProviderInstance::with_prompt_cache"
     );
     assert_eq!(
         prompt_cache.semantic_key,
-        "core.control.provider.prompt_cache_emission"
+        "iteron.control.provider.prompt_cache_emission"
     );
     assert!(prompt_cache.value_schema.rules.iter().any(|rule| matches!(
         rule,
@@ -1002,7 +1002,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     ));
     assert_eq!(
         prompt_cache_strategy.semantic_key,
-        "core.control.provider.prompt_cache_policy"
+        "iteron.control.provider.prompt_cache_policy"
     );
     assert!(
         prompt_cache_strategy
@@ -1450,7 +1450,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
                     ExternalCeiling::ProviderCapability => assert_eq!(
                         violation,
                         ConstraintViolation::DegradeAttested {
-                            policy_id: "core://tunables/degrade/provider-attested-preferred-v1"
+                            policy_id: "iteron://tunables/degrade/provider-attested-preferred-v1"
                         }
                     ),
                     ExternalCeiling::OperatorAuthority

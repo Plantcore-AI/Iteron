@@ -5,7 +5,7 @@ Effort is a session setting with two distinct effects:
 1. a requested model reasoning level or thinking budget;
 2. whether the built-in Ultracode orchestration policy is enabled.
 
-| Level | Core Code intent |
+| Level | Iteron intent |
 | --- | --- |
 | `low` | fastest; extended thinking disabled |
 | `medium` | balanced default |
@@ -17,16 +17,16 @@ Effort is a session setting with two distinct effects:
 Set effort for one run:
 
 ```sh
-core --effort high
+iteron --effort high
 ```
 
-Or use `/effort` in the TUI. Trusted user configuration and `CORE_EFFORT` can set
+Or use `/effort` in the TUI. Trusted user configuration and `ITERON_EFFORT` can set
 a default; repository configuration cannot raise or redirect effort authority.
 
 ## Provider enforcement is not uniform
 
 Adapters may apply effort exactly, map it to a smaller enum, express it through a
-token budget, expose only an on/off toggle, or mark it unsupported. Core Code
+token budget, expose only an on/off toggle, or mark it unsupported. Iteron
 records the requested and sent form where available instead of claiming that all
 providers implement the same semantics.
 

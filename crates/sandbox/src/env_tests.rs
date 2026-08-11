@@ -35,13 +35,13 @@ fn secret_shapes_are_detected_toolchain_vars_are_not() {
 #[test]
 fn exact_sensitive_name_removes_an_explicit_command_value() {
     let mut command = tokio::process::Command::new("/usr/bin/env");
-    command.env("CORE_SANDBOX_ROUTE", "synthetic-exact-must-not-leak");
-    confine_env_with_exact(&mut command, &["CORE_SANDBOX_ROUTE".into()]);
+    command.env("ITERON_SANDBOX_ROUTE", "synthetic-exact-must-not-leak");
+    confine_env_with_exact(&mut command, &["ITERON_SANDBOX_ROUTE".into()]);
 
     let entry = command
         .as_std()
         .get_envs()
-        .find(|(name, _)| *name == "CORE_SANDBOX_ROUTE");
+        .find(|(name, _)| *name == "ITERON_SANDBOX_ROUTE");
     assert!(
         entry.is_some_and(|(_, value)| value.is_none()),
         "an exact deny must override a value explicitly configured on the child"

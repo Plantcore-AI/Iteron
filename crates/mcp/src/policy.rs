@@ -41,7 +41,7 @@
 //! opposite directions and neither can stand in for the other.
 
 use crate::{McpError, tool_filter::validate_bare_tool_name};
-use core_protocol::{Capability, capability_set::CapabilitySet};
+use iteron_protocol::{Capability, capability_set::CapabilitySet};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

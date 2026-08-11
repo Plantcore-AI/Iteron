@@ -5,7 +5,7 @@ use super::{
     CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, ProcessLifecycleKind,
     ProcessLifecycleNotice, ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
 };
-use core_sandbox::{
+use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess,
 };
 use std::sync::atomic::Ordering;

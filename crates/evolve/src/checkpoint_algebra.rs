@@ -12,7 +12,7 @@ use crate::{
     ManifestAdmissionPolicy, PolicyBundle, PolicyManifest, PolicyRef, PromotionAuthorityError,
     PromotionEvidence, StrategySlot,
 };
-use core_protocol::Capability;
+use iteron_protocol::Capability;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 

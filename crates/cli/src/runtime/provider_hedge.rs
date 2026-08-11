@@ -6,7 +6,7 @@
 //! a proven-unbilled request.
 
 use super::*;
-use core_provider::{AttemptPermit, ProviderAdmission as Admission};
+use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MAX_BUFFERED_HEDGE_ITEMS: usize = 131_072;
 
 pub(super) struct HedgedProviderDispatch {
-    pub result: Result<core_provider::TurnResult, KernelError>,
+    pub result: Result<iteron_provider::TurnResult, KernelError>,
     pub items: Vec<StreamItem>,
     pub scheduled_attempts: u32,
 }
@@ -53,8 +53,8 @@ enum AttemptTerminal {
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
         items: Vec<StreamItem>,
-        rate_limit: Option<core_provider::RateLimitSnapshot>,
-        result: Result<core_provider::TurnResult, KernelError>,
+        rate_limit: Option<iteron_provider::RateLimitSnapshot>,
+        result: Result<iteron_provider::TurnResult, KernelError>,
     },
 }
 
@@ -165,7 +165,7 @@ impl Agent {
             .into_iter()
             .map(|attempt| Box::pin(run_attempt(attempt)) as AttemptFuture)
             .collect::<FuturesUnordered<_>>();
-        let mut winner: Option<(u8, core_provider::TurnResult, Vec<StreamItem>)> = None;
+        let mut winner: Option<(u8, iteron_provider::TurnResult, Vec<StreamItem>)> = None;
         let mut errors = BTreeMap::new();
         let mut aggregate = UsageAggregate::default();
 
@@ -233,7 +233,7 @@ impl Agent {
         } else {
             (
                 Err(KernelError::Provider(
-                    core_provider::ProviderError::Configuration(
+                    iteron_provider::ProviderError::Configuration(
                         "hedge dispatcher produced no terminal".into(),
                     ),
                 )),
@@ -340,7 +340,7 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
 }
 
 struct UsageAggregate {
-    usage: core_protocol::Usage,
+    usage: iteron_protocol::Usage,
     saw_success: bool,
     complete: bool,
     cache_creation_reported: bool,
@@ -349,7 +349,7 @@ struct UsageAggregate {
 impl Default for UsageAggregate {
     fn default() -> Self {
         Self {
-            usage: core_protocol::Usage::default(),
+            usage: iteron_protocol::Usage::default(),
             saw_success: false,
             complete: true,
             cache_creation_reported: true,
@@ -392,29 +392,29 @@ mod tests {
     #[test]
     fn hedge_usage_counts_each_success_once_and_preserves_incompleteness() {
         let mut aggregate = UsageAggregate::default();
-        aggregate.observe_success(UsageReport::complete(core_protocol::Usage {
+        aggregate.observe_success(UsageReport::complete(iteron_protocol::Usage {
             input: 10,
             output: 2,
-            ..core_protocol::Usage::default()
+            ..iteron_protocol::Usage::default()
         }));
         aggregate.observe_success(UsageReport::cache_creation_unreported(
-            core_protocol::Usage {
+            iteron_protocol::Usage {
                 input: 10,
                 output: 3,
-                ..core_protocol::Usage::default()
+                ..iteron_protocol::Usage::default()
             },
         ));
         assert_eq!(
             aggregate.report(),
-            UsageReport::cache_creation_unreported(core_protocol::Usage {
+            UsageReport::cache_creation_unreported(iteron_protocol::Usage {
                 input: 20,
                 output: 5,
-                ..core_protocol::Usage::default()
+                ..iteron_protocol::Usage::default()
             })
         );
 
         let mut incomplete = UsageAggregate::default();
-        incomplete.observe_success(UsageReport::complete(core_protocol::Usage::default()));
+        incomplete.observe_success(UsageReport::complete(iteron_protocol::Usage::default()));
         incomplete.observe_dispatched_without_usage();
         assert_eq!(incomplete.report(), UsageReport::provider_omitted());
     }

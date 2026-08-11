@@ -4,7 +4,7 @@ use super::{
     GapImpact, McpTransport, OAuthLifecycleMode,
 };
 use crate::config::McpTransportConfig;
-use core_tunables::{RuntimeResolutionBuilder, SourceKind};
+use iteron_tunables::{RuntimeResolutionBuilder, SourceKind};
 use std::collections::BTreeSet;
 
 pub(super) fn apply(
@@ -183,7 +183,7 @@ pub(super) fn apply(
         "deferred_discovery_threshold",
         SourceKind::Builtin,
         super::value::int(super::value::i64u(
-            core_tools::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT,
+            iteron_tools::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT,
             "deferred_discovery_threshold",
         )?),
     )?;
@@ -253,8 +253,8 @@ fn add_provider_governor(
         (
             "unknown_quota",
             en(match rate.unknown_quota {
-                core_provider::UnknownQuotaPolicy::Conservative => "conservative",
-                core_provider::UnknownQuotaPolicy::Reject => "reject",
+                iteron_provider::UnknownQuotaPolicy::Conservative => "conservative",
+                iteron_provider::UnknownQuotaPolicy::Reject => "reject",
             }),
         ),
     ]);
@@ -509,7 +509,7 @@ fn add_oauth_lifecycle(
             ("revoke_access_after_forbidden", boolv(true)),
             (
                 "expiry_skew_seconds",
-                super::value::int(core_mcp::token::EXPIRY_SKEW_SECS as i64),
+                super::value::int(iteron_mcp::token::EXPIRY_SKEW_SECS as i64),
             ),
             (
                 "revocation_endpoint_configured",

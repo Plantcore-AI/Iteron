@@ -1,5 +1,5 @@
 use clap::Parser;
-use core_eval::{
+use iteron_eval::{
     BenchmarkReference, CorpusManifest, EvaluationPurpose, Partition, ProvisioningBackend,
     RunStatus, TestSetReceipt, TwoSidedOracleReceipt,
 };
@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "sha256:{}",
         hex::encode(Sha256::digest(gold_patch.as_bytes()))
     );
-    let receipt = core_eval::runner::score_candidate_diff(
+    let receipt = iteron_eval::runner::score_candidate_diff(
         &task,
         &gold_patch,
         &args.oracle_workspace,

@@ -3,11 +3,11 @@ use crate::{
     ChainLine, LegacyTunablesPolicy, RecordError, Rollout, TunablesCompatibility,
     TunablesSnapshotError, ZERO_HASH, hash_line, replay, replay_with_tunables_snapshot,
 };
-use core_protocol::{
+use iteron_protocol::{
     Effort, Event, EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
     RunGenesisTunablesVersion, RunId, Seq, TenantId, TurnId,
 };
-use core_tunables::{EntryOutcome, ResolutionReport, ResolutionValue, ResolvedEntry, families};
+use iteron_tunables::{EntryOutcome, ResolutionReport, ResolutionValue, ResolvedEntry, families};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -191,10 +191,10 @@ fn accepted_report_projection_covers_every_family_and_aggregate_commitment() {
     entries[0].outcome = EntryOutcome::Effective;
     entries[0].effective = Some(ResolutionValue::Boolean { value: true });
     let report = ResolutionReport {
-        schema_version: core_tunables::RESOLUTION_SCHEMA_VERSION,
-        registry_id: core_tunables::REGISTRY_ID,
-        registry_revision: core_tunables::REGISTRY_REVISION,
-        registry_digest: core_tunables::REGISTRY_DIGEST_SHA256,
+        schema_version: iteron_tunables::RESOLUTION_SCHEMA_VERSION,
+        registry_id: iteron_tunables::REGISTRY_ID,
+        registry_revision: iteron_tunables::REGISTRY_REVISION,
+        registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256,
         input_digest_sha256: digest.clone(),
         effective_digest_sha256: digest.clone(),
         resolution_digest_sha256: digest,
@@ -202,7 +202,7 @@ fn accepted_report_projection_covers_every_family_and_aggregate_commitment() {
         entries,
     };
     let snapshot = snapshot_from_report(&report).unwrap();
-    assert_eq!(snapshot.entries.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(snapshot.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
     assert_eq!(snapshot.entries[0].state, RunGenesisTunableState::Effective);
     assert_eq!(snapshot.effective_digest_sha256, "a".repeat(64));
     assert_eq!(
@@ -691,7 +691,7 @@ fn checked_legacy_policy_and_snapshot_placement_fail_closed_without_mutation() {
             seq: Seq::ZERO,
             turn: TurnId(0),
             kind: EventKind::TunablesSnapshot {
-                version: core_protocol::RunGenesisTunablesVersion::V1,
+                version: iteron_protocol::RunGenesisTunablesVersion::V1,
                 snapshot: tampered,
                 inherited_from: None,
             },
@@ -706,7 +706,7 @@ fn checked_legacy_policy_and_snapshot_placement_fail_closed_without_mutation() {
             seq: Seq::ZERO,
             turn: TurnId(0),
             kind: EventKind::TunablesSnapshot {
-                version: core_protocol::RunGenesisTunablesVersion::V1,
+                version: iteron_protocol::RunGenesisTunablesVersion::V1,
                 snapshot: snapshot.clone(),
                 inherited_from: None,
             },
@@ -800,7 +800,7 @@ fn hash_valid_but_self_inconsistent_snapshot_is_refused_by_every_read_boundary()
         seq: Seq(1),
         turn: TurnId(0),
         kind: EventKind::TunablesSnapshot {
-            version: core_protocol::RunGenesisTunablesVersion::V1,
+            version: iteron_protocol::RunGenesisTunablesVersion::V1,
             snapshot: tampered,
             inherited_from: None,
         },

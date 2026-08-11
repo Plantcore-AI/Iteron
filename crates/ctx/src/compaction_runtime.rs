@@ -1,6 +1,6 @@
 //! Runtime-effective compaction controls beside the transcript planning algorithm.
 
-use core_protocol::Effort;
+use iteron_protocol::Effort;
 
 const RATIO_SCALE: u32 = 1_000_000;
 

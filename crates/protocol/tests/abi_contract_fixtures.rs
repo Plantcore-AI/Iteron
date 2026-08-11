@@ -1,6 +1,6 @@
 //! The five W1 ABI contracts, bound to the frozen fixtures the compatibility gate reads.
 //!
-//! `core-xtask schema-compat` checks the fixtures against the *manifest*: it asserts that
+//! `iteron-xtask schema-compat` checks the fixtures against the *manifest*: it asserts that
 //! `governance/schema-compat/fixtures/abi/*.json` carries exactly the fields
 //! `governance/schema-compatibility.json` declares, and that those bytes never move again. What it
 //! cannot check is the other half — that the declared shape is still the shape the Rust type
@@ -13,11 +13,11 @@
 //! its contract type and re-encoded, and the bytes must come back identical. A field added to,
 //! removed from or renamed on any of the five types fails here.
 
-use core_protocol::artifact::ArtifactRef;
-use core_protocol::context::ContextRequest;
-use core_protocol::effect::EffectProposal;
-use core_protocol::intent::ToolIntent;
-use core_protocol::task::TaskEnvelope;
+use iteron_protocol::artifact::ArtifactRef;
+use iteron_protocol::context::ContextRequest;
+use iteron_protocol::effect::EffectProposal;
+use iteron_protocol::intent::ToolIntent;
+use iteron_protocol::task::TaskEnvelope;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;

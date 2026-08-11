@@ -2,8 +2,8 @@
 //! D10-02 — the operator `!cmd` inline shell must pass the SAME capability/effect broker as the
 //! agent's own `bash` tool, instead of spawning a process directly.
 //!
-//! This is a process-level PTY test: it launches the real `core` TUI in **Plan mode** — a HARD
-//! read-only overlay that `core_protocol::gate` denies for every capability above `ReadOnly`,
+//! This is a process-level PTY test: it launches the real `iteron` TUI in **Plan mode** — a HARD
+//! read-only overlay that `iteron_protocol::gate` denies for every capability above `ReadOnly`,
 //! including `CodeExecuting` — and then types `!echo BROKER-$((21+21))` at the composer.
 //!
 //! The marker `BROKER-42` is produced ONLY by shell arithmetic evaluation; it can never appear in
@@ -33,7 +33,7 @@ const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_REPLY: &[u8] = b"\x1b[?1;2c";
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
-/// An isolated HOME + repo + rollout tree for one hermetic `core` launch.
+/// An isolated HOME + repo + rollout tree for one hermetic `iteron` launch.
 struct Scratch {
     root: PathBuf,
 }
@@ -42,7 +42,7 @@ impl Scratch {
     fn new() -> Self {
         let id = SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
         let root =
-            std::env::temp_dir().join(format!("core-cli-d10-02-{}-{id}", std::process::id()));
+            std::env::temp_dir().join(format!("iteron-cli-d10-02-{}-{id}", std::process::id()));
         std::fs::create_dir_all(root.join("home")).expect("create isolated HOME");
         std::fs::create_dir_all(root.join("repo")).expect("create isolated repository");
         Self { root }
@@ -92,18 +92,18 @@ impl Pty {
             })
             .expect("open a deterministic PTY");
 
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
         // Direct binary launch: `env_clear` guarantees no real provider credential can be inherited,
-        // and a fixed terminal identity (CORE_THEME=terminal) skips the background-color probe.
+        // and a fixed terminal identity (ITERON_THEME=terminal) skips the background-color probe.
         command.env_clear();
         command.env("HOME", scratch.home().as_os_str());
         command.env("PATH", "/usr/bin:/bin");
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        command.env("CORE_THEME", "terminal");
+        command.env("ITERON_THEME", "terminal");
         command.env("LANG", "C.UTF-8");
-        command.env("CORE_PROVIDER", "glm");
-        command.env("CORE_MODEL", "glm-5.2");
+        command.env("ITERON_PROVIDER", "glm");
+        command.env("ITERON_MODEL", "glm-5.2");
         command.cwd(scratch.repo());
         command.arg("--tui");
         command.arg("--repo");
@@ -123,7 +123,7 @@ impl Pty {
         let child = pair
             .slave
             .spawn_command(command)
-            .expect("spawn core directly in the PTY");
+            .expect("spawn iteron directly in the PTY");
         // Our own slave handle is redundant once the child owns its controlling terminal; dropping it
         // lets the master reader observe EOF when the child exits.
         drop(pair.slave);
@@ -213,7 +213,7 @@ impl Pty {
                         return;
                     }
                     panic!(
-                        "the core process exited before {label}; current terminal:\n{}",
+                        "the iteron process exited before {label}; current terminal:\n{}",
                         self.screen_text()
                     );
                 }
@@ -242,7 +242,7 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
     // Startup: the semantic status row carries the `plan` mode and resolved model. Without Plan
     // mode the whole premise of the test is void, so we require it here rather than trusting the
     // flag; the quiet composer deliberately has no redundant titled perimeter.
-    pty.wait_until("the core TUI ready in plan mode", READY_TIMEOUT, |screen| {
+    pty.wait_until("the iteron TUI ready in plan mode", READY_TIMEOUT, |screen| {
         screen.contains("plan")
             && screen.contains("ask about this codebase")
             && screen.contains("glm-5.2")

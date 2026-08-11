@@ -4,7 +4,7 @@ One-shot mode runs one task, streams or emits a machine-readable result, and
 exits.
 
 ```sh
-core -p -C /path/to/repository \
+iteron -p -C /path/to/repository \
   "Find the smallest cause of the failing test and report it"
 ```
 
@@ -14,10 +14,10 @@ selects one-shot operation, but explicit `-p` is clearer in automation.
 ## Output formats
 
 ```sh
-core -p --output-format text "Explain the repository"
-core -p --output-format json "Explain the repository"
-core -p --output-format stream-json "Explain the repository"
-core -p --image screenshot.png --image trace.webp \
+iteron -p --output-format text "Explain the repository"
+iteron -p --output-format json "Explain the repository"
+iteron -p --output-format stream-json "Explain the repository"
+iteron -p --image screenshot.png --image trace.webp \
   "Compare these screenshots"
 ```
 
@@ -72,7 +72,7 @@ operation.
 ## Bound the run
 
 ```sh
-core -p \
+iteron -p \
   --max-turns 12 \
   --max-usd 2.50 \
   --effort high \

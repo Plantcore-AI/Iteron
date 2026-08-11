@@ -90,7 +90,7 @@ pub(crate) async fn edit(
     }
     let command = resolve_command(configured)?;
     let home = config_home.ok_or_else(|| {
-        "no config root for a private draft; set HOME or CORE_CONFIG_HOME".to_owned()
+        "no config root for a private draft; set HOME or ITERON_CONFIG_HOME".to_owned()
     })?;
     let temporary = TempDraft::create(&home, draft.as_bytes()).map_err(public_io)?;
     let mut process = tokio::process::Command::new(&command[0]);
@@ -105,7 +105,7 @@ pub(crate) async fn edit(
     // Preserve the operator's editor/toolchain environment, but never hand it provider/pricing
     // names or ambient secret-shaped variables. The same shared classifier guards sandboxed code
     // and avoids a second, drifting notion of what looks credential-bearing.
-    core_sandbox::confine_env_with_exact(&mut process, sensitive_env_names);
+    iteron_sandbox::confine_env_with_exact(&mut process, sensitive_env_names);
     let mut child = process
         .spawn()
         .map_err(|error| format!("external editor could not start: {error}"))?;
@@ -139,7 +139,7 @@ struct TempDraft {
 
 impl TempDraft {
     fn create(home: &Path, bytes: &[u8]) -> std::io::Result<Self> {
-        let directory = core_protocol::home::path(home, "tmp");
+        let directory = iteron_protocol::home::path(home, "tmp");
         if let Ok(metadata) = fs::symlink_metadata(&directory)
             && metadata.file_type().is_symlink()
         {
@@ -260,13 +260,13 @@ mod tests {
     async fn round_trip_is_exact_private_bounded_and_strips_provider_environment() {
         let home = scratch("home");
         let repo = scratch("repo");
-        let env_name = "CORE_EDITOR_TEST_PROVIDER_TOKEN".to_owned();
-        let ambient_name = "CORE_EDITOR_TEST_UNLISTED_SECRET";
+        let env_name = "ITERON_EDITOR_TEST_PROVIDER_TOKEN".to_owned();
+        let ambient_name = "ITERON_EDITOR_TEST_UNLISTED_SECRET";
         // The child receives the draft as $1; no shell ever interprets operator configuration.
         let command = vec![
             "/bin/sh".into(),
             "-c".into(),
-            "printf 'edited 写\\n%s/%s' \"${CORE_EDITOR_TEST_PROVIDER_TOKEN-unset}\" \"${CORE_EDITOR_TEST_UNLISTED_SECRET-unset}\" > \"$1\"".into(),
+            "printf 'edited 写\\n%s/%s' \"${ITERON_EDITOR_TEST_PROVIDER_TOKEN-unset}\" \"${ITERON_EDITOR_TEST_UNLISTED_SECRET-unset}\" > \"$1\"".into(),
             "core-editor-test".into(),
         ];
         unsafe { std::env::set_var(&env_name, "must-not-cross") };
@@ -283,7 +283,7 @@ mod tests {
         unsafe { std::env::remove_var(&env_name) };
         unsafe { std::env::remove_var(ambient_name) };
         assert_eq!(edited, "edited 写\nunset/unset");
-        let tmp = core_protocol::home::path(&home, "tmp");
+        let tmp = iteron_protocol::home::path(&home, "tmp");
         assert_eq!(fs::read_dir(tmp).unwrap().count(), 0, "draft is removed");
     }
 
@@ -305,7 +305,7 @@ mod tests {
             error.contains("draft I/O failed"),
             "refusal is public but must not include redirected file content: {error}"
         );
-        let tmp = core_protocol::home::path(&home, "tmp");
+        let tmp = iteron_protocol::home::path(&home, "tmp");
         assert_eq!(fs::read_dir(tmp).unwrap().count(), 0, "symlink is removed");
     }
 }

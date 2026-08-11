@@ -369,51 +369,51 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-agents"
+name = "iteron-agents"
 version = "0.0.2"
 dependencies = [
- "core-ctx",
- "core-protocol",
+ "iteron-ctx",
+ "iteron-protocol",
  "serde",
  "serde_json",
  "sha2",
 ]
 
 [[package]]
-name = "core-changeset"
+name = "iteron-changeset"
 version = "0.0.2"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "core-cli"
+name = "iteron-cli"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64",
  "clap",
- "core-agents",
- "core-changeset",
- "core-ctx",
- "core-eval",
- "core-evolve",
- "core-kernel",
- "core-marketplace",
- "core-mcp",
- "core-obs",
- "core-protocol",
- "core-provider",
- "core-record",
- "core-sandbox",
- "core-sched",
- "core-statusline",
- "core-support",
- "core-tools",
- "core-tunables",
- "core-verify",
- "core-workflow",
+ "iteron-agents",
+ "iteron-changeset",
+ "iteron-ctx",
+ "iteron-eval",
+ "iteron-evolve",
+ "iteron-kernel",
+ "iteron-marketplace",
+ "iteron-mcp",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-provider",
+ "iteron-record",
+ "iteron-sandbox",
+ "iteron-sched",
+ "iteron-statusline",
+ "iteron-support",
+ "iteron-tools",
+ "iteron-tunables",
+ "iteron-verify",
+ "iteron-workflow",
  "crossterm 0.29.0",
  "futures-util",
  "getrandom 0.4.3",
@@ -440,10 +440,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-ctx"
+name = "iteron-ctx"
 version = "0.0.2"
 dependencies = [
- "core-protocol",
+ "iteron-protocol",
  "libc",
  "serde",
  "serde_json",
@@ -453,16 +453,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-eval"
+name = "iteron-eval"
 version = "0.0.2"
 dependencies = [
  "clap",
- "core-evolve",
- "core-protocol",
- "core-record",
- "core-sandbox",
- "core-tunables",
- "core-verify",
+ "iteron-evolve",
+ "iteron-protocol",
+ "iteron-record",
+ "iteron-sandbox",
+ "iteron-tunables",
+ "iteron-verify",
  "ed25519-dalek",
  "hex",
  "serde",
@@ -474,11 +474,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-evolve"
+name = "iteron-evolve"
 version = "0.0.2"
 dependencies = [
- "core-protocol",
- "core-record",
+ "iteron-protocol",
+ "iteron-record",
  "serde",
  "serde_json",
  "sha2",
@@ -486,13 +486,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-kernel"
+name = "iteron-kernel"
 version = "0.0.2"
 dependencies = [
  "async-trait",
- "core-obs",
- "core-protocol",
- "core-record",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-record",
  "serde",
  "serde_json",
  "sha2",
@@ -501,7 +501,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-lsp"
+name = "iteron-lsp"
 version = "0.0.2"
 dependencies = [
  "serde",
@@ -512,11 +512,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-marketplace"
+name = "iteron-marketplace"
 version = "0.0.2"
 dependencies = [
  "base64",
- "core-protocol",
+ "iteron-protocol",
  "ed25519-dalek",
  "hex",
  "serde",
@@ -526,11 +526,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-mcp"
+name = "iteron-mcp"
 version = "0.0.2"
 dependencies = [
- "core-protocol",
- "core-sandbox",
+ "iteron-protocol",
+ "iteron-sandbox",
  "futures-util",
  "reqwest",
  "serde",
@@ -542,10 +542,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-obs"
+name = "iteron-obs"
 version = "0.0.2"
 dependencies = [
- "core-protocol",
+ "iteron-protocol",
  "hmac",
  "serde",
  "serde_json",
@@ -554,7 +554,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-protocol"
+name = "iteron-protocol"
 version = "0.0.2"
 dependencies = [
  "serde",
@@ -563,11 +563,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-provider"
+name = "iteron-provider"
 version = "0.0.2"
 dependencies = [
  "async-trait",
- "core-protocol",
+ "iteron-protocol",
  "futures-util",
  "hmac",
  "httpdate",
@@ -582,12 +582,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-record"
+name = "iteron-record"
 version = "0.0.2"
 dependencies = [
- "core-obs",
- "core-protocol",
- "core-tunables",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-tunables",
  "getrandom 0.4.3",
  "hex",
  "libc",
@@ -600,7 +600,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-sandbox"
+name = "iteron-sandbox"
 version = "0.0.2"
 dependencies = [
  "async-trait",
@@ -610,40 +610,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-sched"
+name = "iteron-sched"
 version = "0.0.2"
 dependencies = [
  "async-trait",
- "core-protocol",
- "core-provider",
+ "iteron-protocol",
+ "iteron-provider",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "core-statusline"
+name = "iteron-statusline"
 version = "0.0.2"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "core-support"
+name = "iteron-support"
 version = "0.0.2"
 dependencies = [
- "core-record",
+ "iteron-record",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "core-tools"
+name = "iteron-tools"
 version = "0.0.2"
 dependencies = [
- "core-ctx",
- "core-lsp",
- "core-protocol",
- "core-sandbox",
+ "iteron-ctx",
+ "iteron-lsp",
+ "iteron-protocol",
+ "iteron-sandbox",
  "futures-util",
  "getrandom 0.4.3",
  "ignore",
@@ -660,7 +660,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-tunables"
+name = "iteron-tunables"
 version = "0.0.2"
 dependencies = [
  "hex",
@@ -671,12 +671,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-verify"
+name = "iteron-verify"
 version = "0.0.2"
 dependencies = [
  "async-trait",
- "core-protocol",
- "core-sandbox",
+ "iteron-protocol",
+ "iteron-sandbox",
  "hex",
  "serde",
  "serde_json",
@@ -685,13 +685,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-workflow"
+name = "iteron-workflow"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "core-protocol",
- "core-sched",
+ "iteron-protocol",
+ "iteron-sched",
  "hex",
  "jsonschema",
  "libc",
@@ -705,15 +705,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-xtask"
+name = "iteron-xtask"
 version = "0.0.2"
 dependencies = [
  "anyhow",
- "core-agents",
- "core-ctx",
- "core-protocol",
- "core-tools",
- "core-tunables",
+ "iteron-agents",
+ "iteron-ctx",
+ "iteron-protocol",
+ "iteron-tools",
+ "iteron-tunables",
  "quote",
  "serde",
  "serde_json",

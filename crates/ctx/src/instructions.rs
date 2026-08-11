@@ -1,4 +1,4 @@
-//! Repo instruction discovery (AGENTS.md / CLAUDE.md / .core/instructions.md), the feature
+//! Repo instruction discovery (AGENTS.md / CLAUDE.md / .iteron/instructions.md), the feature
 //! Codex and Claude Code have — done with the ADR-007 security treatment.
 //!
 //! Tree-discovered instructions are UNTRUSTED (ADR-007 R11): a malicious `AGENTS.md` (especially
@@ -12,9 +12,9 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::source::{SourceScope, read_bounded_utf8};
-use core_protocol::context::InstructionScope;
+use iteron_protocol::context::InstructionScope;
 
-const CANDIDATES: &[&str] = &["AGENTS.md", "CLAUDE.md", ".core/instructions.md"];
+const CANDIDATES: &[&str] = &["AGENTS.md", "CLAUDE.md", ".iteron/instructions.md"];
 /// Large enough to preserve the existing 8 KB injected head while preventing a repository file
 /// from causing an unbounded allocation during Unicode inspection.
 const MAX_INSTRUCTION_SOURCE_BYTES: usize = 256 * 1024;
@@ -51,8 +51,8 @@ pub struct InstructionRejection {
 
 /// Bounded hierarchical discovery result.
 ///
-/// Precedence is deterministic and least-specific first: operator `~/.core/instructions.md`, then
-/// every root candidate in `AGENTS.md`, `CLAUDE.md`, `.core/instructions.md` order, then the same
+/// Precedence is deterministic and least-specific first: operator `~/.iteron/instructions.md`, then
+/// every root candidate in `AGENTS.md`, `CLAUDE.md`, `.iteron/instructions.md` order, then the same
 /// order for each directory from the repository root down to the active directory. Imports appear
 /// immediately after their importing source and therefore refine it. No source grants authority.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -173,7 +173,7 @@ impl HierarchyDiscovery {
             root,
             &target,
             MAX_INSTRUCTION_SOURCE_BYTES,
-            // Instruction imports are code-controlled even under ~/.core. Refuse symlinks for
+            // Instruction imports are code-controlled even under ~/.iteron. Refuse symlinks for
             // this merge path; the legacy single-file API retains its existing semantics.
             SourceScope::Repository,
         ) {
@@ -235,7 +235,7 @@ impl HierarchyDiscovery {
 
 /// Discover and merge operator, repository-root, and active-subdirectory instructions.
 ///
-/// `home_core` is the explicit `~/.core` directory (not HOME itself). `active_dir` must be the
+/// `home_core` is the explicit `~/.iteron` directory (not HOME itself). `active_dir` must be the
 /// repository root or one of its descendant directories. All filesystem reads are confined to
 /// one of those passed roots; this function does not read ambient environment state.
 pub fn discover_hierarchy(
@@ -248,7 +248,7 @@ pub fn discover_hierarchy(
         discovery.load(
             home_core,
             home_core.join("instructions.md"),
-            Some("~/.core"),
+            Some("~/.iteron"),
             false,
             0,
         );
@@ -298,7 +298,7 @@ pub(crate) fn discover_hierarchy_scope(
                 discovery.load(
                     home_core,
                     home_core.join("instructions.md"),
-                    Some("~/.core"),
+                    Some("~/.iteron"),
                     false,
                     0,
                 );
@@ -505,16 +505,16 @@ mod tests {
     #[test]
     fn hierarchy_merges_home_root_aliases_and_subdirectory_in_precedence_order() {
         let base = unique_temp("hierarchy");
-        let home_core = base.join("home/.core");
+        let home_core = base.join("home/.iteron");
         let repo = base.join("repo");
         let active = repo.join("sub");
         std::fs::create_dir_all(&home_core).unwrap();
-        std::fs::create_dir_all(repo.join(".core")).unwrap();
+        std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&active).unwrap();
         std::fs::write(home_core.join("instructions.md"), "home rule").unwrap();
         std::fs::write(repo.join("AGENTS.md"), "root agents rule").unwrap();
         std::fs::write(repo.join("CLAUDE.md"), "root claude rule").unwrap();
-        std::fs::write(repo.join(".core/instructions.md"), "root core rule").unwrap();
+        std::fs::write(repo.join(".iteron/instructions.md"), "root iteron rule").unwrap();
         std::fs::write(active.join("AGENTS.md"), "sub agents rule").unwrap();
         std::fs::write(active.join("CLAUDE.md"), "sub claude rule").unwrap();
 
@@ -527,10 +527,10 @@ mod tests {
         assert_eq!(
             sources,
             [
-                "~/.core/instructions.md",
+                "~/.iteron/instructions.md",
                 "AGENTS.md",
                 "CLAUDE.md",
-                ".core/instructions.md",
+                ".iteron/instructions.md",
                 "sub/AGENTS.md",
                 "sub/CLAUDE.md",
             ]
@@ -540,7 +540,7 @@ mod tests {
             "home rule",
             "root agents rule",
             "root claude rule",
-            "root core rule",
+            "root iteron rule",
             "sub agents rule",
             "sub claude rule",
         ] {
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn scoped_discovery_keeps_root_imports_in_the_project_tier() {
         let base = unique_temp("scoped-hierarchy");
-        let home_core = base.join("home/.core");
+        let home_core = base.join("home/.iteron");
         let repo = base.join("repo");
         let active = repo.join("sub");
         std::fs::create_dir_all(&home_core).unwrap();
@@ -576,7 +576,7 @@ mod tests {
             InstructionScope::Directory,
         );
 
-        assert_eq!(user.sources()[0].source, "~/.core/instructions.md");
+        assert_eq!(user.sources()[0].source, "~/.iteron/instructions.md");
         assert_eq!(
             project
                 .sources()

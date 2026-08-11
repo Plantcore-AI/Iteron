@@ -7,8 +7,8 @@
 use crate::{
     EvidenceRecordError, EvidenceRecorder, MAX_POLICIES_PER_BUNDLE, PolicyRef, TrajectoryEnvelope,
 };
-use core_protocol::{RunId, Seq, TenantId};
-use core_record::{
+use iteron_protocol::{RunId, Seq, TenantId};
+use iteron_record::{
     ContentReferenceSurface, PrivateContentClass, PrivateContentDerivativeStore,
     PrivateContentHandle, PrivateContentRetention,
 };
@@ -27,7 +27,7 @@ const REGISTRY_FILE_NAME: &str = "trajectory-registry.jsonl";
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Bound the serialized envelope independently of in-memory construction.
-pub const MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES: usize = core_record::MAX_PRIVATE_CONTENT_BYTES;
+pub const MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES: usize = iteron_record::MAX_PRIVATE_CONTENT_BYTES;
 /// One physical line includes the bounded envelope plus fixed chain metadata.
 pub const MAX_TRAJECTORY_REGISTRY_RECORD_BYTES: usize =
     MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES + 64 * 1024;
@@ -45,7 +45,7 @@ pub enum TrajectoryRegistryError {
     #[error("trajectory registry JSON is invalid: {0}")]
     Json(#[from] serde_json::Error),
     #[error("trajectory private-content storage failed: {0}")]
-    PrivateContent(#[from] core_record::ContentStoreError),
+    PrivateContent(#[from] iteron_record::ContentStoreError),
     #[error("trajectory envelope is not verified evidence: {0}")]
     InvalidEnvelope(#[source] EvidenceRecordError),
     #[error("stored trajectory at sequence {sequence} is not verified evidence: {source}")]

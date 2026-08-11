@@ -33,10 +33,10 @@
 //!
 //! # What is only half here: `PolicyManifest`
 //!
-//! Criterion 7 names `core-protocol` **and** `PolicyManifest`. `PolicyManifest` lives in
-//! `crates/evolve`, which depends on `core-protocol`; reaching it from here means a
+//! Criterion 7 names `iteron-protocol` **and** `PolicyManifest`. `PolicyManifest` lives in
+//! `crates/evolve`, which depends on `iteron-protocol`; reaching it from here means a
 //! dev-dependency cycle back into this crate's manifest, and #14 permits no change outside the
-//! frozen modules. So this file freezes the half of the manifest that `core-protocol` owns, and
+//! frozen modules. So this file freezes the half of the manifest that `iteron-protocol` owns, and
 //! says plainly that it is a half. `PolicyManifest.required_capabilities` is a
 //! `BTreeSet<Capability>`, so its persisted form is decided by this crate's `Capability` names
 //! and their declaration order, and `ArtifactSchema::PolicyManifest` is the tag under which such
@@ -59,7 +59,7 @@
 //! This module used to carry a prose list of three places where the spec and the code still
 //! differed. That list was the whole problem: a comment is as far as an observation can travel, so
 //! the spec kept rotting beside it and three issue bodies were written from the rotted version.
-//! The comparison is now machine-checked by `core-xtask boundaries check`
+//! The comparison is now machine-checked by `iteron-xtask boundaries check`
 //! (`xtask/src/spec_shapes.rs`), which parses every fenced Rust block under `docs/spec`, compares
 //! it against `crates/protocol/src` at name-and-arity level, and fails on a divergence that is not
 //! recorded in its `DIVERGENCES` allowlist with a reason. The allowlist is empty today, because the
@@ -104,33 +104,33 @@
 //! the same commit that adds the field. Editing a row to make a red test green is the one thing
 //! this file exists to make visible.
 
-use core_protocol::artifact::{
+use iteron_protocol::artifact::{
     ARTIFACT_HASH_HEX_LEN, ArtifactRef, ArtifactSchema, MAX_ARTIFACT_LOCATOR_BYTES,
     MAX_ARTIFACT_PARENT_HASHES, MAX_ARTIFACT_TAG_BYTES, MAX_PRODUCER_NAME_BYTES, Producer,
     Provenance,
 };
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::context::{
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::{
     ContextGrant, ContextRequest, ContextSegment, ContextSelector, ContextSource, InstructionScope,
     MAX_CONTEXT_GRANT_BYTES, MAX_CONTEXT_SEGMENTS, MAX_MEMORY_KEY_BYTES, MAX_MEMORY_KEYS,
     MAX_SELECTOR_ROOT_BYTES, MAX_SELECTORS, RequestId,
 };
-use core_protocol::effect::{
+use iteron_protocol::effect::{
     EffectProposal, MAX_EFFECT_ARGUMENTS_BYTES, MAX_EFFECT_WORKSPACE_BYTES,
 };
-use core_protocol::input::{
+use iteron_protocol::input::{
     ContentSegment, ContentSegments, FILE_ATTACHMENT_FRAMING_BYTES, FileContent, ImageBase64,
     ImageContent, ImageMediaType, MAX_FILE_PATH_BYTES, MAX_FILE_TEXT_BYTES, MAX_IMAGE_BASE64_BYTES,
     MAX_INPUT_FILES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS, MAX_TOTAL_FILE_TEXT_BYTES,
     MAX_TOTAL_IMAGE_BASE64_BYTES,
 };
-use core_protocol::intent::ToolIntent;
-use core_protocol::slot::{MAX_SLOT_ID_BYTES, SlotId, SlotObservation, SlotOutcome};
-use core_protocol::task::{
+use iteron_protocol::intent::ToolIntent;
+use iteron_protocol::slot::{MAX_SLOT_ID_BYTES, SlotId, SlotObservation, SlotOutcome};
+use iteron_protocol::task::{
     Acceptance, AcceptanceCheck, MAX_ACCEPTANCE_CHECKS, MAX_TASK_TEXT_BYTES, Quantifier,
     TaskEnvelope, TaskInput,
 };
-use core_protocol::{
+use iteron_protocol::{
     Block, Budget, Capability, CostAttribution, EffectId, Effort, PROTOCOL_VERSION, Phase,
     ProviderState, ProviderStateFormat, Purity, Role, RunId, Seq, StopReason, SubmissionId,
     SubmissionRejectionReason, ToolResult, ToolUse, Trust, WorkflowChildOutcome, WorkflowEvent,

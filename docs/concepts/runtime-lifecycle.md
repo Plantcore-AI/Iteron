@@ -1,6 +1,6 @@
 # Runtime lifecycle
 
-Core Code runs one resident App Server task per session. The TUI, one-shot
+Iteron runs one resident App Server task per session. The TUI, one-shot
 emitter, and headless transport are clients of its bounded SQ/EQ queues; none
 reclaims or directly runs the kernel `Agent`.
 
@@ -55,7 +55,7 @@ input, approval responses, steering, interrupt, and drain operations are explici
 submissions. Phases and tool or workflow activity are emitted as events for the
 frontend and record path.
 
-The TUI and one-shot client use the in-process versioned wire. `core serve`
+The TUI and one-shot client use the in-process versioned wire. `iteron serve`
 projects the same events onto an authenticated, bounded loopback JSONL
 transport. A managing parent supplies a fresh bearer capability through stdin
 before bind; each client's first `hello` proves that capability before any
@@ -94,7 +94,7 @@ final checkpoint.
 
 Checkpoint trees unconditionally exclude the active rollout/session-state root,
 including descendant-agent journals and rebuildable indexes, even when the
-repository does not ignore `.core/runs`. Rewind therefore cannot replace the
+repository does not ignore `.iteron/runs`. Rewind therefore cannot replace the
 append-only record that authorizes it. The distinct drained workflow and direct
 child terminals use new top-level V2 event tags; a V1 reader skips those tags via
 its unknown-event fallback instead of failing on a new nested enum value. The

@@ -3,7 +3,7 @@ use super::{
     ProviderProcessFactsInput, ProviderProcessFactsReport, VerificationOwnerFacts,
     owner::OwnerSnapshot,
 };
-use core_tunables::{CapabilityRequirement, RuntimeResolutionBuilder};
+use iteron_tunables::{CapabilityRequirement, RuntimeResolutionBuilder};
 
 struct Inactive {
     ordinal: u16,

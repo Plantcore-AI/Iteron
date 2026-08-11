@@ -4,7 +4,7 @@ use crate::{
     MAX_MCP_TOOL_NAME_BYTES, MAX_MCP_TOOL_SCHEMA_BYTES, McpError, suspicious_unicode,
     tool_filter::{McpToolFilter, namespace_tool_name},
 };
-use core_protocol::{Capability, Purity, ToolSpec, capability_set::CapabilitySet};
+use iteron_protocol::{Capability, Purity, ToolSpec, capability_set::CapabilitySet};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -213,7 +213,7 @@ fn truncate_description(description: &str, limit: usize) -> String {
     }
     debug_assert!(limit >= TRUNCATED_MARKER.len());
     let prefix_budget = limit.saturating_sub(TRUNCATED_MARKER.len());
-    let headed = core_protocol::text::head(description, prefix_budget);
+    let headed = iteron_protocol::text::head(description, prefix_budget);
     let prefix = headed.strip_suffix(PROTOCOL_HEAD_MARKER).unwrap_or(&headed);
     let mut truncated = String::with_capacity(prefix.len() + TRUNCATED_MARKER.len());
     truncated.push_str(prefix);

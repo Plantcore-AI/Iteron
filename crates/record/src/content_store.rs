@@ -17,7 +17,7 @@ pub use model::{
 pub use references::{guard_private_content_for_run, retain_private_content_references};
 pub(crate) use revocation::ContentRevocationGuard;
 
-use core_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
+use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use model::{
     ENVELOPE_FIELD, MAX_CONTENT_JSON_BYTES, MAX_CONTENT_REFERENCES, MAX_REFERENCE_EDGE_BYTES,
     ReferenceEdge, STORE_VERSION,
@@ -499,8 +499,8 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
 /// production writer, source-to-derivative lineage, and every production read path all use the same
 /// durable gate. In particular, the trajectory registry now has a gated handle store, but its
 /// record-backed opener has no production caller and transformed source lineage is not yet durable.
-pub(crate) fn guarded_derivative_coverage() -> core_protocol::ErasurePropagationCoverage {
-    core_protocol::ErasurePropagationCoverage {
+pub(crate) fn guarded_derivative_coverage() -> iteron_protocol::ErasurePropagationCoverage {
+    iteron_protocol::ErasurePropagationCoverage {
         session_projections: true,
         indexes: true,
         prompt_history: true,

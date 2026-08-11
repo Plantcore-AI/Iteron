@@ -12,7 +12,7 @@ const POLICY: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
 fn scratch(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-evolve-record-projection-{tag}-{}-{}",
+        "iteron-evolve-record-projection-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

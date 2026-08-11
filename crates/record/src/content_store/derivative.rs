@@ -5,7 +5,7 @@ use super::{
     PrivateContentOwnerLease, PrivateContentRetention, acquire_private_content_owner,
     put_private_content_at_surface, retain_private_content_references,
 };
-use core_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
+use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

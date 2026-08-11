@@ -1,11 +1,11 @@
-//! core-tools owns the tool ABI, concrete executors, and their generation-scoped memo.
+//! iteron-tools owns the tool ABI, concrete executors, and their generation-scoped memo.
 //! Registration enforces that `Pure` means `ReadOnly`; effecting tools carry explicit capability
 //! and invalidate cached reads when their attempt completes. Code execution crosses the platform
 //! sandbox rather than relying on the model's declaration.
 
-use core_protocol::intent::ToolIntent;
-use core_protocol::slot::StrategySlot;
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
+use iteron_protocol::intent::ToolIntent;
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -104,7 +104,7 @@ pub enum ToolError {
 /// A boxed-future alias so the registry can hold heterogeneous async executors. Public so
 /// external tool sources (e.g. the MCP client, wired by the CLI) can register their own tools.
 pub mod boxfut {
-    use core_protocol::ToolResult;
+    use iteron_protocol::ToolResult;
     use std::future::Future;
     use std::pin::Pin;
     pub type BoxFut = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
@@ -466,7 +466,7 @@ impl Registry {
         policy: &dyn StrategySlot,
         call: ToolUse,
         argument_trust: Trust,
-        ceiling: core_protocol::capability_set::CapabilitySet,
+        ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ToolPolicyProposal, ToolPolicyError> {
         let spec = self
             .tools

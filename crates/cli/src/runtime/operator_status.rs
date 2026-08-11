@@ -11,23 +11,23 @@ use std::time::Instant;
 
 #[derive(Clone)]
 pub(crate) struct RuntimeOperatorStatusSources {
-    policy_bundle: core_protocol::RunGenesisPolicyBundleSnapshot,
-    tunables: Option<core_record::TunablesCheckpoint>,
-    governor: Option<core_provider::ProviderGovernor>,
-    context_budget: core_ctx::ContextBudgetPolicy,
-    context_ledgers: core_ctx::ContextLedgerStore,
+    policy_bundle: iteron_protocol::RunGenesisPolicyBundleSnapshot,
+    tunables: Option<iteron_record::TunablesCheckpoint>,
+    governor: Option<iteron_provider::ProviderGovernor>,
+    context_budget: iteron_ctx::ContextBudgetPolicy,
+    context_ledgers: iteron_ctx::ContextLedgerStore,
     session_spawns: Arc<SessionSpawnLedger>,
     settled_budget: RuntimeBudgetHealth,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOperatorStatusSnapshot {
-    pub(crate) policy_bundle: core_protocol::RunGenesisPolicyBundleSnapshot,
-    pub(crate) tunables: Option<core_record::TunablesCheckpoint>,
-    pub(crate) governor: Option<core_provider::ProviderGovernorSnapshot>,
-    pub(crate) governor_policy: Option<core_provider::GovernorPolicy>,
-    pub(crate) context_budget: core_ctx::ContextBudgetPolicy,
-    pub(crate) context_ledger: core_ctx::ContextLedgerSnapshot,
+    pub(crate) policy_bundle: iteron_protocol::RunGenesisPolicyBundleSnapshot,
+    pub(crate) tunables: Option<iteron_record::TunablesCheckpoint>,
+    pub(crate) governor: Option<iteron_provider::ProviderGovernorSnapshot>,
+    pub(crate) governor_policy: Option<iteron_provider::GovernorPolicy>,
+    pub(crate) context_budget: iteron_ctx::ContextBudgetPolicy,
+    pub(crate) context_ledger: iteron_ctx::ContextLedgerSnapshot,
     pub(crate) collaboration: CollaborationRuntimeHealth,
     /// Aggregate counters captured at the last turn/control boundary. Provider-governor and owner
     /// health above remain live while a turn runs; this field never pretends to race the Agent's
@@ -44,7 +44,7 @@ pub(crate) struct CollaborationRuntimeHealth {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeBudgetHealth {
-    pub(crate) ceiling: core_protocol::Budget,
+    pub(crate) ceiling: iteron_protocol::Budget,
     pub(crate) provider_attempts: u32,
     pub(crate) provider_attempts_remaining: u32,
     pub(crate) tokens_used: u64,

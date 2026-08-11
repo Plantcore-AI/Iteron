@@ -7,7 +7,7 @@
 use crate::driver::{PortFault, ProviderReply};
 use crate::turn_action::{ContinueReason, NoticeKind};
 use crate::turn_protocol::{BudgetCeiling, ControlSignal, VerifyOutcome};
-use core_protocol::context::ContextGrant;
+use iteron_protocol::context::ContextGrant;
 
 pub const PROVIDER_PORT_VERSION: u32 = 1;
 pub const SANDBOX_PORT_VERSION: u32 = 1;
@@ -65,7 +65,7 @@ pub trait ToolPort: Send {
     async fn dispatch_tools(&mut self, turn: u32, calls: u32) -> bool;
 }
 
-/// Durable record seam. Concrete JSONL storage and filesystem sync live in `core-record`; the
+/// Durable record seam. Concrete JSONL storage and filesystem sync live in `iteron-record`; the
 /// kernel asks only that a turn boundary be committed before admitting the next effect.
 #[async_trait::async_trait]
 pub trait RecordPort: Send {

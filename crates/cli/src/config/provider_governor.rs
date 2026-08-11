@@ -1,6 +1,6 @@
 //! Operator-trusted provider-governor configuration.
 
-use core_provider::{
+use iteron_provider::{
     CacheBreakpoint, CacheScope, CircuitPolicy, FailoverClass, FailoverRule, FailurePoint,
     GovernorPolicy, HedgePolicy, MAX_GOVERNED_ROUTES, ObjectiveWeights, PromptCacheControl,
     ProviderRequestControls, RateAdmissionPolicy, RequestCompression, ResponseVerbosity,

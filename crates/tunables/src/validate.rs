@@ -54,7 +54,7 @@ pub enum RegistryError {
     MissingCapabilityRequirement(&'static str),
     #[error("family `{0}` has an invalid provider requirement")]
     InvalidProviderRequirement(&'static str),
-    #[error("family `{0}` must bind one or more unique core StrategySlots")]
+    #[error("family `{0}` must bind one or more unique iteron StrategySlots")]
     InvalidStrategySlots(&'static str),
     #[error("family `{0}` has an invalid value schema: {1}")]
     InvalidValueDomain(&'static str, &'static str),
@@ -119,7 +119,7 @@ pub fn validate_registry() -> Result<(), RegistryError> {
 fn validate_scalar_catalogs() -> Result<(), RegistryError> {
     let mut ids = BTreeSet::new();
     for catalog in crate::SCALAR_CATALOGS {
-        if !catalog.id.starts_with("core://tunables/catalogs/")
+        if !catalog.id.starts_with("iteron://tunables/catalogs/")
             || !catalog.id.ends_with("-v1")
             || !ids.insert(catalog.id)
             || value::validate_scalar_domain(catalog.value_domain).is_err()
@@ -270,7 +270,7 @@ fn validate_identity(identity: &'static str) -> Result<(), RegistryError> {
 }
 
 fn validate_semantic_key(key: &'static str) -> Result<(), RegistryError> {
-    let Some(path) = key.strip_prefix("core.control.") else {
+    let Some(path) = key.strip_prefix("iteron.control.") else {
         return Err(RegistryError::InvalidSemanticKey(key));
     };
     let mut segments = path.split('.');
@@ -370,7 +370,7 @@ fn validate_default(family: &crate::Family) -> Result<(), RegistryError> {
 }
 
 fn valid_core_id(value: &str) -> bool {
-    value.starts_with("core://tunables/") && value.ends_with("-v1")
+    value.starts_with("iteron://tunables/") && value.ends_with("-v1")
 }
 
 fn validate_requirements_and_slots(family: &crate::Family) -> Result<(), RegistryError> {

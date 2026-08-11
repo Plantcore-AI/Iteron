@@ -6,7 +6,7 @@ use crate::{
     StrategyDecision, StrategySlot, TrainingAdmissionPolicy, TrajectoryEnvelope,
     validate_collection, validate_digest, validate_nonempty_string,
 };
-use core_protocol::{
+use iteron_protocol::{
     PolicyDecisionEvidence, PolicyOpportunityJoinDigest, PolicyOutcomeEvidence, PolicyOutcomeScope,
     PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TenantId,
 };

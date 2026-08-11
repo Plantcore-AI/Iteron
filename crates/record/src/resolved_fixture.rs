@@ -1,6 +1,6 @@
 //! Public-resolver fixture used to exercise record wrappers with a real `ResolvedTunableSet`.
 
-use core_tunables::{
+use iteron_tunables::{
     ActivationEvidence, ActivationPredicate, CatalogSnapshot, ConstraintEvidence,
     ConstraintProjection, ConstraintRelation, ConstraintValue, CrossFieldRule, DeclaredValue,
     EvidenceSubject, ExternalCeiling, FieldDomain, ImplementationStatus, REGISTRY_DIGEST_SHA256,
@@ -438,7 +438,7 @@ fn catalog_snapshot_values(catalog_id: &str, values: BTreeSet<String>) -> Catalo
     }
     let digest_sha256 = hex::encode(Sha256::digest(
         serde_json::to_vec(&Payload {
-            canonicalization: "core-tunables-catalog-snapshot-json-v1",
+            canonicalization: "iteron-tunables-catalog-snapshot-json-v1",
             catalog_id,
             value_count: values.len(),
             values: &values,

@@ -76,7 +76,7 @@ pub fn agent_id(key: &str) -> String {
 /// second canonical JSON value from metadata that has already exceeded its admission bound.
 pub(crate) fn rejected_agent_key(raw_call_json: &str, reason_code: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"core-workflow-rejected-agent-v1");
+    digest.update(b"iteron-workflow-rejected-agent-v1");
     for part in [reason_code.as_bytes(), raw_call_json.as_bytes()] {
         digest.update((part.len() as u64).to_be_bytes());
         digest.update(part);

@@ -227,7 +227,7 @@ def render_notices(
         raise ReleaseToolError("no third-party packages were found")
 
     lines = [
-        "Core Code Third-Party Notices",
+        "Iteron Third-Party Notices",
         "=================================",
         "",
         "Generated from the locked Cargo dependency graph. The accompanying",

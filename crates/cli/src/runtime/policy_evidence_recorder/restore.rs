@@ -3,7 +3,7 @@ use super::{
     OpportunityStatus, PolicyEvidenceRecorder, PolicyEvidenceRecorderError, PolicyOutcomeInput,
     PolicyRunAggregate, join,
 };
-use core_protocol::{
+use iteron_protocol::{
     EventKind, PolicyOutcomeScope, PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TurnId,
 };
 use sha2::{Digest, Sha256};
@@ -18,9 +18,9 @@ impl PolicyEvidenceRecorder {
         rollout_run_id: &RunId,
         tunables_digest_sha256: String,
         bindings: Vec<FrozenSlotPolicyBinding>,
-        events: &[core_record::TimedEvent],
+        events: &[iteron_record::TimedEvent],
     ) -> Result<Self, PolicyEvidenceRecorderError> {
-        let mut groups: Vec<(RunId, Vec<core_record::TimedEvent>)> = Vec::new();
+        let mut groups: Vec<(RunId, Vec<iteron_record::TimedEvent>)> = Vec::new();
         for timed in events {
             let Some(run_id) = policy_event_run_id(&timed.event.kind) else {
                 continue;
@@ -87,7 +87,7 @@ impl PolicyEvidenceRecorder {
         run_id: RunId,
         tunables_digest_sha256: String,
         bindings: Vec<FrozenSlotPolicyBinding>,
-        events: &[core_record::TimedEvent],
+        events: &[iteron_record::TimedEvent],
     ) -> Result<Self, PolicyEvidenceRecorderError> {
         let mut recorder = Self::new(run_id, tunables_digest_sha256, bindings)?;
         for timed in events {
@@ -110,8 +110,8 @@ impl PolicyEvidenceRecorder {
 
     fn restore_decision(
         &mut self,
-        timed: &core_record::TimedEvent,
-        evidence: &core_protocol::PolicyDecisionEvidence,
+        timed: &iteron_record::TimedEvent,
+        evidence: &iteron_protocol::PolicyDecisionEvidence,
     ) -> Result<(), PolicyEvidenceRecorderError> {
         evidence.validate()?;
         if self.run_terminal {
@@ -194,8 +194,8 @@ impl PolicyEvidenceRecorder {
 
     fn restore_outcome(
         &mut self,
-        timed: &core_record::TimedEvent,
-        evidence: &core_protocol::PolicyOutcomeEvidence,
+        timed: &iteron_record::TimedEvent,
+        evidence: &iteron_protocol::PolicyOutcomeEvidence,
     ) -> Result<(), PolicyEvidenceRecorderError> {
         evidence.validate()?;
         if evidence.run_id != self.run_id || evidence.outcome_ordinal != self.next_outcome_ordinal {
@@ -272,7 +272,7 @@ impl PolicyEvidenceRecorder {
         );
     }
 
-    fn absorb_turn_evidence(&mut self, evidence: &core_protocol::PolicyOutcomeEvidence) {
+    fn absorb_turn_evidence(&mut self, evidence: &iteron_protocol::PolicyOutcomeEvidence) {
         self.absorb_turn(
             evidence.terminal,
             evidence.quality_micros,

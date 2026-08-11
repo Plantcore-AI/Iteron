@@ -1,4 +1,4 @@
-use core_protocol::Usage;
+use iteron_protocol::Usage;
 use serde::{Deserialize, Serialize};
 
 /// Counters whose value is derived exclusively from durable runtime events.

@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D14-01 oracle: `core-eval` performs REAL-repository evaluation, not fabricated synthetic
+//! D14-01 oracle: `iteron-eval` performs REAL-repository evaluation, not fabricated synthetic
 //! 2-file micro-repos.
 //!
 //! The gap under closure is "no real-repository evaluation — eval fabricates synthetic 2-file
@@ -28,8 +28,8 @@
 //! The fixture is network-free (`file://` repositories) and sandbox-free (no cell completes, so the
 //! egress-off oracle is never entered), so it runs deterministically on the Linux merge gate.
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
     CellResult, CorpusManifest, CorpusTask, EvalOptions, EvaluationManifest, EvaluationPurpose,
     Partition, RunStatus, run_evaluation,
 };
@@ -48,7 +48,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d14-01-{label}-{}-{nonce:x}",
+            "iteron-eval-d14-01-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D14-01 root");
@@ -89,9 +89,9 @@ fn commit(repo: &Path, message: &str) -> String {
         repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -145,12 +145,12 @@ fn create_other_repository(root: &TempRoot) -> (String, String) {
 fn create_fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-        .expect("write executable fake core");
+        .expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -277,7 +277,7 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
 
     // (1) EXACT non-tip commit materialization. The task pinned to the FIRST (non-tip) commit is
     // cloned and checked out at precisely that SHA — the runner verifies HEAD == pinned commit — so
-    // it reaches the core phase and never fails at `checkout`. Only a real Git checkout of an exact
+    // it reaches the iteron phase and never fails at `checkout`. Only a real Git checkout of an exact
     // historical commit can do this; a synthetic tree could not.
     for cell in cells_for(&manifest, "alpha-historical") {
         assert_eq!(cell.repo_url, alpha_url);
@@ -299,8 +299,8 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
             "an exact historical commit must materialize, not fail at checkout"
         );
         assert!(
-            phase.starts_with("core"),
-            "materialization at the pinned commit must reach the core phase, got `{phase}`"
+            phase.starts_with("iteron"),
+            "materialization at the pinned commit must reach the iteron phase, got `{phase}`"
         );
     }
 
@@ -315,8 +315,8 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
             .expect("a failed cell records its phase");
         assert_ne!(phase, "checkout");
         assert!(
-            phase.starts_with("core"),
-            "the second real repository must also materialize and reach the core phase, got `{phase}`"
+            phase.starts_with("iteron"),
+            "the second real repository must also materialize and reach the iteron phase, got `{phase}`"
         );
     }
 
@@ -329,7 +329,7 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
         assert_eq!(cell.failure_phase.as_deref(), Some("checkout"));
         assert_eq!(
             cell.exit_code, None,
-            "no core process runs when checkout of the pinned commit fails"
+            "no iteron process runs when checkout of the pinned commit fails"
         );
         assert!(
             cell.error

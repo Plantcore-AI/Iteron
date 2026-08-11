@@ -3,7 +3,7 @@ use super::*;
 impl Agent {
     pub fn set_verification_policy(
         &mut self,
-        policy: core_verify::VerificationRuntimePolicy,
+        policy: iteron_verify::VerificationRuntimePolicy,
     ) -> Result<(), KernelError> {
         policy.validate().map_err(|error| {
             KernelError::ContextResolution(format!("verification policy refused: {error}"))
@@ -34,7 +34,7 @@ impl Agent {
         &mut self,
         turn: TurnId,
     ) -> Result<(), KernelError> {
-        if self.verification_policy.restore.mode == core_verify::VerificationRollbackMode::Off {
+        if self.verification_policy.restore.mode == iteron_verify::VerificationRollbackMode::Off {
             return Ok(());
         }
         // A rollback must point to state from before this submission's model/tool effects. An
@@ -93,8 +93,8 @@ impl Agent {
     pub(super) async fn run_verification_policy(
         &mut self,
         fallback_command: &str,
-        plan: core_verify::VerifierPlan,
-    ) -> Result<core_verify::Verdict, KernelError> {
+        plan: iteron_verify::VerifierPlan,
+    ) -> Result<iteron_verify::Verdict, KernelError> {
         let now = Instant::now();
         self.verification_quarantine
             .retain(|_, expires_at| *expires_at > now);
@@ -111,9 +111,9 @@ impl Agent {
         for command in &configured {
             let digest = verification_command_digest(command);
             if self.verification_quarantine.contains_key(&digest) {
-                return Ok(core_verify::Verdict::new(
+                return Ok(iteron_verify::Verdict::new(
                     plan.strength,
-                    core_verify::VerificationOutcome::InfrastructureFailure,
+                    iteron_verify::VerificationOutcome::InfrastructureFailure,
                     format!(
                         "verification evidence {digest} remains quarantined after contradictory outcomes"
                     ),
@@ -132,7 +132,7 @@ impl Agent {
             .len()
             .saturating_mul(repeat_count)
             .saturating_mul(verifier_count);
-        if physical_runs > core_verify::MAX_PHYSICAL_VERIFIER_RUNS {
+        if physical_runs > iteron_verify::MAX_PHYSICAL_VERIFIER_RUNS {
             return Err(KernelError::ContextResolution(
                 "verification physical-run product exceeds its immutable ceiling".into(),
             ));
@@ -141,7 +141,7 @@ impl Agent {
         let mut details = Vec::with_capacity(physical_runs);
         let mut observed_flake = false;
         for _ in 0..verifier_count {
-            let mut lane_outcome = core_verify::VerificationOutcome::Pass;
+            let mut lane_outcome = iteron_verify::VerificationOutcome::Pass;
             for command in &configured {
                 let mut outcomes = Vec::with_capacity(repeat_count);
                 let mut last_detail = String::new();
@@ -158,14 +158,14 @@ impl Agent {
                     observed_flake = true;
                 }
                 lane_outcome = match (lane_outcome, first) {
-                    (_, core_verify::VerificationOutcome::TestFailure) => {
-                        core_verify::VerificationOutcome::TestFailure
+                    (_, iteron_verify::VerificationOutcome::TestFailure) => {
+                        iteron_verify::VerificationOutcome::TestFailure
                     }
-                    (core_verify::VerificationOutcome::TestFailure, _) => {
-                        core_verify::VerificationOutcome::TestFailure
+                    (iteron_verify::VerificationOutcome::TestFailure, _) => {
+                        iteron_verify::VerificationOutcome::TestFailure
                     }
-                    (core_verify::VerificationOutcome::Pass, other) => other,
-                    (current, core_verify::VerificationOutcome::Pass) => current,
+                    (iteron_verify::VerificationOutcome::Pass, other) => other,
+                    (current, iteron_verify::VerificationOutcome::Pass) => current,
                     (current, _) => current,
                 };
                 details.push(last_detail);
@@ -181,7 +181,7 @@ impl Agent {
                     .checked_add(quarantine_for)
                     .unwrap_or_else(Instant::now);
                 for command in &configured {
-                    if self.verification_quarantine.len() >= core_verify::MAX_VERIFICATION_COMMANDS
+                    if self.verification_quarantine.len() >= iteron_verify::MAX_VERIFICATION_COMMANDS
                     {
                         break;
                     }
@@ -198,9 +198,9 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
-            return Ok(core_verify::Verdict::new(
+            return Ok(iteron_verify::Verdict::new(
                 plan.strength,
-                core_verify::VerificationOutcome::InfrastructureFailure,
+                iteron_verify::VerificationOutcome::InfrastructureFailure,
                 if self.verification_policy.flaky.report_disagreement {
                     format!(
                         "verification attempts disagreed; evidence is quarantined for {} seconds",
@@ -212,27 +212,27 @@ impl Agent {
             ));
         }
 
-        let consensus = core_verify::verification_consensus(
+        let consensus = iteron_verify::verification_consensus(
             self.verification_policy.quorum,
             self.verification_policy.flaky.minimum_disagreements,
             &representative_outcomes,
         );
         let outcome = match consensus {
-            core_verify::VerificationConsensus::Accepted => core_verify::VerificationOutcome::Pass,
-            core_verify::VerificationConsensus::Rejected => {
-                core_verify::VerificationOutcome::TestFailure
+            iteron_verify::VerificationConsensus::Accepted => iteron_verify::VerificationOutcome::Pass,
+            iteron_verify::VerificationConsensus::Rejected => {
+                iteron_verify::VerificationOutcome::TestFailure
             }
-            core_verify::VerificationConsensus::Flaky
-            | core_verify::VerificationConsensus::Indeterminate => {
-                core_verify::VerificationOutcome::InfrastructureFailure
+            iteron_verify::VerificationConsensus::Flaky
+            | iteron_verify::VerificationConsensus::Indeterminate => {
+                iteron_verify::VerificationOutcome::InfrastructureFailure
             }
         };
         let detail = truncate_tail(&details.join("\n--- verifier ---\n"), 3_000);
-        Ok(core_verify::Verdict::new(plan.strength, outcome, detail))
+        Ok(iteron_verify::Verdict::new(plan.strength, outcome, detail))
     }
 
     pub(super) fn rollback_after_verification_failure(&mut self) -> Result<bool, KernelError> {
-        use core_verify::VerificationRollbackMode;
+        use iteron_verify::VerificationRollbackMode;
 
         let mode = self.verification_policy.restore.mode;
         if mode == VerificationRollbackMode::Off {
@@ -257,10 +257,10 @@ impl Agent {
         match mode {
             VerificationRollbackMode::Off => return Ok(false),
             VerificationRollbackMode::Workspace => {
-                core_record::rewind_workspace(snapshot, &self.workspace)?;
+                iteron_record::rewind_workspace(snapshot, &self.workspace)?;
             }
             VerificationRollbackMode::SelectedPaths => {
-                core_record::rewind_workspace_paths(
+                iteron_record::rewind_workspace_paths(
                     snapshot,
                     &self.workspace,
                     &self.verification_policy.restore.paths,
@@ -292,7 +292,7 @@ impl Agent {
     pub(super) async fn run_verify(
         &mut self,
         command: &str,
-    ) -> Result<core_verify::Verdict, KernelError> {
+    ) -> Result<iteron_verify::Verdict, KernelError> {
         let class = effect_class::EffectClass::Verify;
         let turn = TurnId(self.seq_turn);
         self.lifecycle_event(
@@ -343,7 +343,7 @@ impl Agent {
             // timeout and infrastructure failure — those are observations, not lost dispatches.
             VerifyDispatch::Observed(verdict) => {
                 let terminal =
-                    if verdict.outcome == core_verify::VerificationOutcome::InfrastructureFailure {
+                    if verdict.outcome == iteron_verify::VerificationOutcome::InfrastructureFailure {
                         effect_failed_terminal(turn, class, ordinal, &verdict.detail)
                     } else {
                         effect_done_terminal(turn, class, ordinal)
@@ -376,8 +376,8 @@ impl Agent {
             return self.run_bounded_verify(oracle).await;
         }
 
-        let mut oracle = core_verify::TestOracle::new(
-            core_sandbox::platform_sandbox(),
+        let mut oracle = iteron_verify::TestOracle::new(
+            iteron_sandbox::platform_sandbox(),
             self.workspace.clone(),
             command.to_string(),
         )
@@ -402,7 +402,7 @@ impl Agent {
     /// production always reaches this through the sandbox-backed `TestOracle` above.
     pub(super) async fn run_bounded_verify(
         &mut self,
-        oracle: std::sync::Arc<dyn core_verify::Oracle>,
+        oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
     ) -> VerifyDispatch {
         const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
 
@@ -418,7 +418,7 @@ impl Agent {
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
             if queue_cancelled.interrupts() || flag_cancelled {
-                let verdict = core_verify::Verdict::cancelled(
+                let verdict = iteron_verify::Verdict::cancelled(
                     "verification cancelled by the operator before a verdict",
                 );
                 return VerifyDispatch::from_drop(dispatched, verdict);
@@ -426,7 +426,7 @@ impl Agent {
 
             let remaining = self.run_time_remaining();
             if remaining.is_some_and(|duration| duration.is_zero()) {
-                let verdict = core_verify::Verdict::timed_out(
+                let verdict = iteron_verify::Verdict::timed_out(
                     "verification exceeded the absolute run deadline",
                 );
                 return VerifyDispatch::from_drop(dispatched, verdict);
@@ -450,7 +450,7 @@ impl Agent {
                         // The oracle completed; only its verdict is being discarded in favour of
                         // the operator's stop. The sandboxed process demonstrably ended, so the
                         // effect terminal is observed even though the caller sees Cancelled.
-                        return VerifyDispatch::Observed(core_verify::Verdict::cancelled(
+                        return VerifyDispatch::Observed(iteron_verify::Verdict::cancelled(
                             "verification cancelled by the operator at the verdict boundary",
                         ));
                     }

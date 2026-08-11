@@ -7,7 +7,7 @@
 //! substrate, and `LoopUntilDry`/`AdversarialVerify` have no proven consumer. Keeping the enum to
 //! two variants is the honest surface: it cannot express a topology the engine cannot execute.
 
-use core_protocol::Budget;
+use iteron_protocol::Budget;
 
 use serde::{Deserialize, Serialize};
 
@@ -77,7 +77,7 @@ pub enum Stage {
     /// isolation and synthesis topology, and Reduce waits for every admitted worker — never the
     /// first finisher, so completion order never leaks into the writer decision.
     Fan { tasks: Vec<AgentTask> },
-    /// The single writer consumes the ordered fan bundle. In core this IS the parent writer, not
+    /// The single writer consumes the ordered fan bundle. In iteron this IS the parent writer, not
     /// a separate agent — one synthesizer, and it is the one writer (ADR-001).
     Reduce,
 }

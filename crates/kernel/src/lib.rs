@@ -1,10 +1,10 @@
-//! Core Code's frozen microkernel.
+//! Iteron's frozen microkernel.
 //!
 //! This crate is the trusted control plane: pure reduction, bounded driving, versioned injected
 //! ports, the universal effect broker, canonical diagnostics, and no concrete world strategy.
 //! Provider clients, context selection, prompt construction, tool registries, schedulers,
 //! verification executors, sandboxes, workflow engines, process spawning, and UI rendering are
-//! composed by `core-cli`; none is a kernel dependency.
+//! composed by `iteron-cli`; none is a kernel dependency.
 
 pub mod admission;
 pub mod diagnostics;

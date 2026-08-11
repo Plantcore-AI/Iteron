@@ -1,7 +1,7 @@
 //! Agent-side bridge from the immutable provider policy to per-physical-attempt admission.
 
 use super::*;
-use core_provider::{
+use iteron_provider::{
     AdmissionReason, AttemptPermit, CircuitTransition, ProviderAdmission as Admission,
 };
 
@@ -51,7 +51,7 @@ impl Agent {
     /// Install the exact immutable controls before the first provider attempt.
     pub(crate) fn set_provider_controls(
         &mut self,
-        controls: core_provider::ProviderRequestControls,
+        controls: iteron_provider::ProviderRequestControls,
     ) -> Result<(), KernelError> {
         if self.ledger.provider_attempts != 0 {
             return Err(KernelError::InvalidRouteMetadata {
@@ -72,7 +72,7 @@ impl Agent {
 
     pub(crate) fn install_provider_governor(
         &mut self,
-        policy: core_provider::GovernorPolicy,
+        policy: iteron_provider::GovernorPolicy,
         route_ids: impl IntoIterator<Item = String>,
     ) -> Result<(), KernelError> {
         if self.ledger.provider_attempts != 0 || self.provider_governor.is_some() {
@@ -88,7 +88,7 @@ impl Agent {
             });
         }
         self.provider_governor = Some(
-            core_provider::ProviderGovernor::new(policy, route_ids).map_err(|_| {
+            iteron_provider::ProviderGovernor::new(policy, route_ids).map_err(|_| {
                 KernelError::InvalidRouteMetadata {
                     field: "provider_governor",
                     reason: "configured governor policy or route set is invalid",
@@ -167,7 +167,7 @@ impl Agent {
                         },
                     );
                     return Err(KernelError::Provider(
-                        core_provider::ProviderError::Configuration(format!(
+                        iteron_provider::ProviderError::Configuration(format!(
                             "provider governor rejected route admission ({})",
                             admission_reason(reason)
                         )),
@@ -181,8 +181,8 @@ impl Agent {
         &self,
         turn: TurnId,
         route_id: &str,
-        result: &Result<core_provider::TurnResult, KernelError>,
-        rate_limit: Option<core_provider::RateLimitSnapshot>,
+        result: &Result<iteron_provider::TurnResult, KernelError>,
+        rate_limit: Option<iteron_provider::RateLimitSnapshot>,
     ) {
         let Some(governor) = &self.provider_governor else {
             return;
@@ -193,8 +193,8 @@ impl Agent {
         let transition = match result {
             Ok(_) => governor.observe_success(route_id),
             Err(KernelError::Provider(
-                core_provider::ProviderError::Interrupted
-                | core_provider::ProviderError::DeadlineExceeded,
+                iteron_provider::ProviderError::Interrupted
+                | iteron_provider::ProviderError::DeadlineExceeded,
             )) => CircuitTransition::None,
             Err(KernelError::Provider(_)) => governor.observe_failure(route_id, Instant::now()),
             Err(_) => CircuitTransition::None,
@@ -206,19 +206,19 @@ impl Agent {
         &self,
         error: &KernelError,
         emitted: bool,
-    ) -> Option<core_provider::FailoverClass> {
+    ) -> Option<iteron_provider::FailoverClass> {
         let governor = self.provider_governor.as_ref()?;
         let KernelError::Provider(error) = error else {
             return None;
         };
         let point = if matches!(
             error,
-            core_provider::ProviderError::KnownModelUnavailable { .. }
-                | core_provider::ProviderError::KnownAccountUnavailable { .. }
+            iteron_provider::ProviderError::KnownModelUnavailable { .. }
+                | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
         ) {
-            core_provider::FailurePoint::PreDispatch
+            iteron_provider::FailurePoint::PreDispatch
         } else if !emitted && !super::provider_route::provider_outcome_is_unobservable(error) {
-            core_provider::FailurePoint::ProvenTerminal
+            iteron_provider::FailurePoint::ProvenTerminal
         } else {
             return None;
         };
@@ -230,7 +230,7 @@ impl Agent {
         &mut self,
         turn: TurnId,
         index: usize,
-        class: core_provider::FailoverClass,
+        class: iteron_provider::FailoverClass,
     ) -> Result<GovernedProviderRoute, KernelError> {
         let route =
             self.fallback_provider_routes

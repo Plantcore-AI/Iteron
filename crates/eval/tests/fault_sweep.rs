@@ -1,11 +1,11 @@
 #![cfg(target_os = "macos")]
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
     CellResult, CostStatus, EvalOptions, EvaluationManifest, EvaluationPurpose, OracleStatus,
     Partition, RunStatus, run_evaluation,
 };
-use core_eval::{CorpusManifest, CorpusTask};
+use iteron_eval::{CorpusManifest, CorpusTask};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +20,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-integration-{label}-{}-{nonce:x}",
+            "iteron-eval-integration-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated integration-test root");
@@ -66,9 +66,9 @@ fn create_real_repository(root: &TempRoot) -> (String, String) {
         &repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -114,7 +114,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$workspace" ] || [ -z "$prompt" ]; then
-    printf '%s\n' 'fake core did not receive workspace and prompt' >&2
+    printf '%s\n' 'fake iteron did not receive workspace and prompt' >&2
     exit 64
 fi
 
@@ -174,12 +174,12 @@ case "$prompt" in
         ;;
 esac
 "##;
-    std::fs::write(&path, script).expect("write executable fake core");
+    std::fs::write(&path, script).expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -189,7 +189,7 @@ fn task(id: &str, repo_url: &str, commit: &str) -> CorpusTask {
         repo_url: repo_url.to_owned(),
         commit: commit.to_owned(),
         // The fake CLI intentionally dispatches on this external task input. No behavior is
-        // selected through a production-only hook in core-eval.
+        // selected through a production-only hook in iteron-eval.
         prompt: id.to_owned(),
         verify_command: "test \"$(cat status.txt)\" = good".into(),
         ground_truth_command: "test \"$(cat status.txt)\" = good".into(),
@@ -333,7 +333,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
 
     for cell in cells_for(&manifest, "malformed") {
         assert_eq!(cell.run_status, RunStatus::Errored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core_contract"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron_contract"));
         assert_eq!(cell.exit_code, Some(0));
         assert_eq!(cell.resolved, None);
         assert!(
@@ -345,7 +345,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
     let crashed = cells_for(&manifest, "crashed");
     for cell in &crashed {
         assert_eq!(cell.run_status, RunStatus::Errored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core_contract"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron_contract"));
         assert_eq!(cell.exit_code, Some(70));
         assert_eq!(cell.resolved, None);
         assert_eq!(cell.candidate_diff, None);
@@ -353,7 +353,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
 
     for cell in cells_for(&manifest, "budget") {
         assert_eq!(cell.run_status, RunStatus::Censored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
         assert_eq!(cell.terminal_outcome.as_deref(), Some("budget_exhausted"));
         assert_eq!(cell.exit_code, Some(3));
         assert_eq!(cell.resolved, None);
@@ -363,7 +363,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
 
     for cell in cells_for(&manifest, "harness-error") {
         assert_eq!(cell.run_status, RunStatus::Errored);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
         assert_eq!(cell.terminal_outcome.as_deref(), Some("harness_error"));
         assert_eq!(cell.exit_code, Some(2));
         assert_eq!(cell.resolved, None);
@@ -372,7 +372,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
     for (task, outcome, exit_code) in [("interrupted", "interrupted", 130), ("stuck", "stuck", 4)] {
         for cell in cells_for(&manifest, task) {
             assert_eq!(cell.run_status, RunStatus::Censored);
-            assert_eq!(cell.failure_phase.as_deref(), Some("core"));
+            assert_eq!(cell.failure_phase.as_deref(), Some("iteron"));
             assert_eq!(cell.terminal_outcome.as_deref(), Some(outcome));
             assert_eq!(cell.exit_code, Some(exit_code));
             assert_eq!(cell.resolved, None);
@@ -383,7 +383,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
     let stalled = cells_for(&manifest, "stalled");
     for cell in stalled {
         assert_eq!(cell.run_status, RunStatus::TimedOut);
-        assert_eq!(cell.failure_phase.as_deref(), Some("core_timeout"));
+        assert_eq!(cell.failure_phase.as_deref(), Some("iteron_timeout"));
         assert_eq!(cell.resolved, None);
         assert!(
             cell.error

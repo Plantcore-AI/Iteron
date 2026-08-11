@@ -14,11 +14,11 @@ mod values;
 
 use crate::config::McpServerConfig;
 use crate::providers::{ModelCapabilities, ProviderDirectory};
-use core_agents::AgentCatalog;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{Budget, DurableEnvironmentContext, Effort};
-use core_tools::Registry;
-use core_tunables::{RuntimeResolutionBuilder, RuntimeResolutionError};
+use iteron_agents::AgentCatalog;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Budget, DurableEnvironmentContext, Effort};
+use iteron_tools::Registry;
+use iteron_tunables::{RuntimeResolutionBuilder, RuntimeResolutionError};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -227,7 +227,7 @@ fn collect_inventory(
         .collect::<std::collections::BTreeSet<_>>();
     let pure_tool_count = specs
         .iter()
-        .filter(|spec| spec.purity == core_protocol::Purity::Pure)
+        .filter(|spec| spec.purity == iteron_protocol::Purity::Pure)
         .count();
     let providers = input
         .directory

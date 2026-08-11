@@ -11,7 +11,7 @@
 use crate::backoff::{BackoffPolicy, Jitter, full_jitter};
 use crate::clock::{Clock, TokioClock};
 use async_trait::async_trait;
-use core_provider::{
+use iteron_provider::{
     EffortApplication, Provider, ProviderAttemptSemantics, ProviderError, RetryDisposition,
     StreamItem, TurnRequest, TurnResult,
 };
@@ -148,11 +148,11 @@ impl Provider for RetryProvider {
         self.inner.effort_application(req)
     }
 
-    fn run_notice(&self, req: &TurnRequest) -> Option<core_provider::ProviderNotice> {
+    fn run_notice(&self, req: &TurnRequest) -> Option<iteron_provider::ProviderNotice> {
         self.inner.run_notice(req)
     }
 
-    fn preflight_notice(&self, req: &TurnRequest) -> Option<core_provider::ProviderNotice> {
+    fn preflight_notice(&self, req: &TurnRequest) -> Option<iteron_provider::ProviderNotice> {
         self.inner.preflight_notice(req)
     }
 
@@ -207,8 +207,8 @@ impl Provider for RetryProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::StopReason;
-    use core_provider::{
+    use iteron_protocol::StopReason;
+    use iteron_provider::{
         AccountAvailability, AdapterKind, ApiResponseError, AvailabilityTransition, ErrorProfile,
         ErrorScope, NormalizedFailure, StreamError, UsageReport,
     };
@@ -345,7 +345,7 @@ mod tests {
                 max_tokens: 10,
                 cache_system: false,
                 thinking_budget: 0,
-                reasoning_effort: core_protocol::ReasoningEffort::Low,
+                reasoning_effort: iteron_protocol::ReasoningEffort::Low,
                 controls: Default::default(),
             };
 
@@ -433,7 +433,7 @@ mod tests {
                     max_tokens: 10,
                     cache_system: false,
                     thinking_budget: 0,
-                    reasoning_effort: core_protocol::ReasoningEffort::Low,
+                    reasoning_effort: iteron_protocol::ReasoningEffort::Low,
                     controls: Default::default(),
                 };
                 provider.turn(&request, &mut |_| {}).await
@@ -493,7 +493,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         let r = rp.turn(&req, &mut |_| {}).await;
@@ -535,7 +535,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
@@ -582,7 +582,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
@@ -613,7 +613,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(
@@ -649,7 +649,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_err());
@@ -725,7 +725,7 @@ mod tests {
                 max_tokens: 10,
                 cache_system: false,
                 thinking_budget: 0,
-                reasoning_effort: core_protocol::ReasoningEffort::Low,
+                reasoning_effort: iteron_protocol::ReasoningEffort::Low,
                 controls: Default::default(),
             };
             assert!(provider.turn(&request, &mut |_| {}).await.is_err());
@@ -798,7 +798,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
@@ -877,7 +877,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
@@ -900,7 +900,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         let mut items = Vec::new();
@@ -964,7 +964,7 @@ mod tests {
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: core_protocol::ReasoningEffort::Low,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         };
         assert!(provider.turn(&request, &mut |_| {}).await.is_err());

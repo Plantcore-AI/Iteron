@@ -1,11 +1,11 @@
 //! Version-neutral decoder and installer for process/LSP session ownership.
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
-use core_tools::{
+use iteron_tools::{
     EgressAllowPolicy, InteractiveStdinWaitPolicy, LspLanguageRoute, LspRecoveryPolicy,
     LspRuntimePolicy, PersistentBackendSelection, ProcessRuntimePolicy, Registry,
 };
-use core_tunables::ResolutionValue;
+use iteron_tunables::ResolutionValue;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]

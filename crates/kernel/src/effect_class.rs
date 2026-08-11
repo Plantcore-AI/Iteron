@@ -14,7 +14,7 @@
 //! Registry tools deliberately keep the original, code-free shape. Their identities are already on
 //! disk in real records; renaming them would strand every rollout written before this change.
 
-use core_protocol::{EffectId, TurnId};
+use iteron_protocol::{EffectId, TurnId};
 
 /// Every externally-visible effect the kernel can dispatch.
 ///
@@ -23,7 +23,7 @@ use core_protocol::{EffectId, TurnId};
 /// effect-producing call site that is not one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectClass {
-    /// A `core_tools::Registry` call the model asked for. The only class that predates #16.
+    /// A `iteron_tools::Registry` call the model asked for. The only class that predates #16.
     RegistryTool,
     /// One paid inference request crossing the provider adapter.
     Provider,

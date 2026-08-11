@@ -41,7 +41,7 @@ use crate::{Event, Op, SubmissionId};
 use serde::{Deserialize, Serialize};
 
 /// Current SQ/EQ wire version. Changes to the `protocol-compat` boundary must bump this value;
-/// `core-xtask boundaries check-pr` compares it with the trusted base revision.
+/// `iteron-xtask boundaries check-pr` compares it with the trusted base revision.
 pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

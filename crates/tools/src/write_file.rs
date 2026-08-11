@@ -5,7 +5,7 @@
 
 use crate::edit::suspicious_unicode;
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};

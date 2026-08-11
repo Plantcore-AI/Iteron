@@ -5,27 +5,27 @@
 //! fact can never collapse into an observed empty set.
 
 use crate::providers::{ModelCapabilities, ModelSelection, ProviderDirectory};
-use core_agents::AgentCatalog;
-use core_protocol::{Capability as ToolCapability, ReasoningEffort};
-use core_provider::Selectability;
-use core_tools::Registry;
-use core_tunables::{CatalogSnapshot, RuntimeResolutionError, runtime_catalog_snapshot};
+use iteron_agents::AgentCatalog;
+use iteron_protocol::{Capability as ToolCapability, ReasoningEffort};
+use iteron_provider::Selectability;
+use iteron_tools::Registry;
+use iteron_tunables::{CatalogSnapshot, RuntimeResolutionError, runtime_catalog_snapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
-const PROVIDERS: &str = "core://tunables/catalogs/providers-v1";
-const MODELS: &str = "core://tunables/catalogs/models-v1";
-const REASONING_LEVELS: &str = "core://tunables/catalogs/provider-reasoning-levels-v1";
-const TOKEN_ESTIMATORS: &str = "core://tunables/catalogs/token-estimators-v1";
-const TOOL_CAPABILITIES: &str = "core://tunables/catalogs/tool-capabilities-v1";
-const MODEL_ROUTES: &str = "core://tunables/catalogs/model-routes-v1";
-const SERVICE_TIERS: &str = "core://tunables/catalogs/provider-service-tiers-v1";
-const AGENT_ROLES: &str = "core://tunables/catalogs/agent-roles-v1";
-const BINARY_INSPECTORS: &str = "core://tunables/catalogs/binary-inspectors-v1";
+const PROVIDERS: &str = "iteron://tunables/catalogs/providers-v1";
+const MODELS: &str = "iteron://tunables/catalogs/models-v1";
+const REASONING_LEVELS: &str = "iteron://tunables/catalogs/provider-reasoning-levels-v1";
+const TOKEN_ESTIMATORS: &str = "iteron://tunables/catalogs/token-estimators-v1";
+const TOOL_CAPABILITIES: &str = "iteron://tunables/catalogs/tool-capabilities-v1";
+const MODEL_ROUTES: &str = "iteron://tunables/catalogs/model-routes-v1";
+const SERVICE_TIERS: &str = "iteron://tunables/catalogs/provider-service-tiers-v1";
+const AGENT_ROLES: &str = "iteron://tunables/catalogs/agent-roles-v1";
+const BINARY_INSPECTORS: &str = "iteron://tunables/catalogs/binary-inspectors-v1";
 
-const PROVIDER_DIRECTORY_OWNER: &str = "core-provider:directory-v1";
-const PROVIDER_REASONING_OWNER: &str = "core-provider:reasoning-effort-v1";
-const TOOL_REGISTRY_OWNER: &str = "core-tools:registry-v1";
-const AGENT_CATALOG_OWNER: &str = "core-agents:catalog-v1";
+const PROVIDER_DIRECTORY_OWNER: &str = "iteron-provider:directory-v1";
+const PROVIDER_REASONING_OWNER: &str = "iteron-provider:reasoning-effort-v1";
+const TOOL_REGISTRY_OWNER: &str = "iteron-tools:registry-v1";
+const AGENT_CATALOG_OWNER: &str = "iteron-agents:catalog-v1";
 const MAX_CATALOG_VALUES: usize = 4_096;
 const MAX_CATALOG_VALUE_BYTES: usize = 96;
 const MAX_OWNER_ID_BYTES: usize = 128;

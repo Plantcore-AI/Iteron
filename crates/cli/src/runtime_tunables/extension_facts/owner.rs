@@ -1,6 +1,6 @@
 use super::{ExtensionFactError, ExtensionFactsInput, McpTransport};
 use crate::config::McpTransportConfig;
-use core_tunables::CapabilityRequirement;
+use iteron_tunables::CapabilityRequirement;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -21,13 +21,13 @@ pub(super) struct OwnerSnapshot {
     configured_mcp_count: usize,
     configured_transports: BTreeSet<McpTransport>,
     oauth_server_count: usize,
-    mcp_reconnect: core_mcp::reconnect::ReconnectPolicy,
-    mcp_deadlines: core_mcp::McpDeadlinePolicy,
-    mcp_result_policy: core_mcp::McpResultPolicy,
-    early_stop_quorum: core_workflow::EarlyStopQuorumPolicy,
-    speculative_siblings: core_workflow::SpeculativeSiblingPolicy,
-    task_retry: core_workflow::TaskRetryPolicy,
-    writer_merge: core_workflow::WriterMergePolicy,
+    mcp_reconnect: iteron_mcp::reconnect::ReconnectPolicy,
+    mcp_deadlines: iteron_mcp::McpDeadlinePolicy,
+    mcp_result_policy: iteron_mcp::McpResultPolicy,
+    early_stop_quorum: iteron_workflow::EarlyStopQuorumPolicy,
+    speculative_siblings: iteron_workflow::SpeculativeSiblingPolicy,
+    task_retry: iteron_workflow::TaskRetryPolicy,
+    writer_merge: iteron_workflow::WriterMergePolicy,
     live_mcp_server_count: usize,
     resource_prompt_surface: bool,
     session_profile: super::SessionIsolationProfile,

@@ -211,7 +211,7 @@ fn a_removed_seam_needs_its_exact_crate_binding_not_an_alias_or_test_impl() {
             &["TrajectoryProjection"],
             vec![source(
                 SATISFIABILITY_TEST,
-                "use core_evolve::HeldOutEvidenceBridge;\n\
+                "use iteron_evolve::HeldOutEvidenceBridge;\n\
                  impl HeldOutEvidenceBridge for TestOnly {}",
             )],
         )
@@ -439,7 +439,7 @@ fn a_macro_and_an_include_are_found_at_any_nesting_too() {
         vec!["b.inc".to_owned()]
     );
     assert_eq!(
-        include_targets("core::include!(\"c.inc\");"),
+        include_targets("iteron::include!(\"c.inc\");"),
         vec!["c.inc".to_owned()]
     );
     // The name is not what is matched any more: a review renamed the macro on import and the

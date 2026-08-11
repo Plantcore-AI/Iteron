@@ -672,6 +672,6 @@ fn filtered_and_all_export_share_the_same_semantic_snapshot_builder() {
     assert!(all.contains("first") && all.contains("second needle"));
     assert!(!filtered.contains("first"));
     assert!(filtered.contains("second needle"));
-    assert!(all.starts_with("# Core Code transcript\n\n"));
-    assert!(filtered.starts_with("# Core Code transcript\n\n"));
+    assert!(all.starts_with("# Iteron transcript\n\n"));
+    assert!(filtered.starts_with("# Iteron transcript\n\n"));
 }

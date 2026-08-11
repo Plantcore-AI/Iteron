@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::{
+use iteron_protocol::{
     Block, Effort, ErasureAuthorityId, Event, EventKind, Message, Role, Seq, TurnId,
 };
 
@@ -70,7 +70,7 @@ fn create_run(runs_dir: &Path, run: &str) {
         .unwrap();
 }
 
-fn text_digest(value: &str) -> core_protocol::ErasureContentDigest {
+fn text_digest(value: &str) -> iteron_protocol::ErasureContentDigest {
     crate::private_content_digest(value.as_bytes())
 }
 

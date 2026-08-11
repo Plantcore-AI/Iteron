@@ -1,4 +1,4 @@
-//! core-agents — provider-free policy + data for the ultracode orchestration engine.
+//! iteron-agents — provider-free policy + data for the ultracode orchestration engine.
 //!
 //! This crate owns the *what* of ultracode orchestration — the agent catalog, the stage
 //! vocabulary, the task-class router, and the deterministic `reduce()` — as **pure data and pure

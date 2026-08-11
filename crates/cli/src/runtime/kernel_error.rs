@@ -3,9 +3,9 @@ use super::effects;
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
     #[error("provider: {0}")]
-    Provider(#[from] core_provider::ProviderError),
+    Provider(#[from] iteron_provider::ProviderError),
     #[error("record: {0}")]
-    Record(#[from] core_record::RecordError),
+    Record(#[from] iteron_record::RecordError),
     #[error("invalid route metadata in {field}: {reason}")]
     InvalidRouteMetadata {
         field: &'static str,
@@ -24,7 +24,7 @@ pub enum KernelError {
     #[error("cannot enforce a USD ceiling for a route without a verified rate card")]
     UnpricedUsdCeiling,
     #[error("invalid pricing evidence: {0}")]
-    Pricing(#[from] core_obs::PricingError),
+    Pricing(#[from] iteron_obs::PricingError),
     #[error("pricing ledger invariant failed: {0}")]
     PricingLedger(&'static str),
     #[error("invalid permission policy: {0}")]
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn public_provider_error_never_exposes_transport_diagnostics() {
-        let error = KernelError::Provider(core_provider::ProviderError::Http(
+        let error = KernelError::Provider(iteron_provider::ProviderError::Http(
             "request to https://secret.example/sk-test-secret failed".into(),
         ));
         let public = error.public_summary();

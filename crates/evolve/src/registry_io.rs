@@ -187,7 +187,7 @@ pub(super) fn digest_bytes(bytes: &[u8]) -> String {
 
 pub(super) fn hash_record(previous_hash: &str, sequence: u64, content_digest: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"core-evolve/trajectory-registry/v1\0");
+    hasher.update(b"iteron-evolve/trajectory-registry/v1\0");
     hasher.update(previous_hash.as_bytes());
     hasher.update(sequence.to_le_bytes());
     hasher.update(content_digest.as_bytes());

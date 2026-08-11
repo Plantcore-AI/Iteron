@@ -5,7 +5,7 @@
 //! every state transition is an atomic file replacement with a directory durability barrier.
 
 use crate::session::{self, DeleteSessionError, PrunePolicy};
-use core_protocol::{
+use iteron_protocol::{
     ErasureAuthorityId, ErasureFailureCode, ErasureOperationId, ErasureReceipt, ErasureRequest,
     ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId, ErasureValidationError,
     ErasureVerification, MAX_ERASURE_RECEIPT_BYTES, RunId, TenantId,
@@ -414,7 +414,7 @@ fn execute_content_revocation(
     runs_dir: &Path,
     receipt: &mut ErasureReceipt,
     scope_id: ErasureScopeId,
-    content_digest: core_protocol::ErasureContentDigest,
+    content_digest: iteron_protocol::ErasureContentDigest,
 ) -> Result<ErasureReceipt, ErasureError> {
     let tenant = TenantId(scope_id.as_str().to_owned());
     let guard = match crate::content_store::ContentRevocationGuard::begin(

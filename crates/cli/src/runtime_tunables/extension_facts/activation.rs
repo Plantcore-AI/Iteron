@@ -3,7 +3,7 @@ use super::{
     AgentMemoryMode, ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport,
     ExtensionGapReason, FactLayer, GapImpact,
 };
-use core_tunables::{CapabilityRequirement, RuntimeResolutionBuilder};
+use iteron_tunables::{CapabilityRequirement, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,

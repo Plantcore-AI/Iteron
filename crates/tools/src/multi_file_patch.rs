@@ -9,7 +9,7 @@ use crate::multi_file_patch_error::PatchFailure;
 use crate::multi_file_patch_input::{FilePatch, MAX_FILES, MAX_HUNKS_PER_FILE, parse_requests};
 use crate::write_file::{StagedWrite, atomic_replace};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::ops::Range;

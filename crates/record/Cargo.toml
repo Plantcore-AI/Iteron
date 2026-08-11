@@ -1,5 +1,5 @@
 [package]
-name = "core-record"
+name = "iteron-record"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,9 @@ publish.workspace = true
 test-fixtures = []
 
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-obs = { path = "../obs" }
-core-tunables = { path = "../tunables" }
+iteron-protocol = { path = "../protocol" }
+iteron-obs = { path = "../obs" }
+iteron-tunables = { path = "../tunables" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

@@ -2,7 +2,7 @@
 //!
 //! The TUI deliberately never derives a live runtime configuration here. A registry view is only
 //! metadata; a loaded request is only an explicit frozen simulation. Resolution values are exposed
-//! exclusively through `core_tunables::explain_entry_json`, whose contract redacts every value.
+//! exclusively through `iteron_tunables::explain_entry_json`, whose contract redacts every value.
 
 mod format;
 mod model;
@@ -14,8 +14,8 @@ use self::format::{
 pub(super) use self::model::Detail;
 use self::model::{Catalog, LoadError};
 #[cfg(target_os = "linux")]
-use core_tunables::RESOLUTION_INPUT_MAX_BYTES;
-use core_tunables::{Family, ResolutionFailureReport, ResolutionReport};
+use iteron_tunables::RESOLUTION_INPUT_MAX_BYTES;
+use iteron_tunables::{Family, ResolutionFailureReport, ResolutionReport};
 use serde_json::Value;
 #[cfg(target_os = "linux")]
 use std::io::Read as _;
@@ -29,9 +29,9 @@ pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
         format_args!(
             "tunables · catalog · {} families · simulation only",
-            core_tunables::families().len()
+            iteron_tunables::families().len()
         ),
-        core_tunables::families()
+        iteron_tunables::families()
             .iter()
             .map(catalog_detail)
             .collect(),
@@ -41,29 +41,29 @@ pub(super) fn registry_catalog() -> Catalog {
 /// Project the exact immutable checkpoint that drives this live runtime. Unlike `registry_catalog`
 /// and loaded request files, this surface is runtime-bound and never invokes the current resolver.
 pub(super) fn checkpoint_catalog(
-    checkpoint: &core_record::TunablesCheckpoint,
+    checkpoint: &iteron_record::TunablesCheckpoint,
 ) -> Result<Catalog, LoadError> {
-    let core_record::TunablesCheckpoint::V2(snapshot) = checkpoint else {
+    let iteron_record::TunablesCheckpoint::V2(snapshot) = checkpoint else {
         return Err(LoadError(
             "this historical session has an identity-only V1 tunables checkpoint",
         ));
     };
-    core_record::validate_tunables_snapshot_v2(snapshot)
+    iteron_record::validate_tunables_snapshot_v2(snapshot)
         .map_err(|_| LoadError("the immutable runtime tunables checkpoint is invalid"))?;
     let entries = snapshot
         .entries
         .iter()
         .map(checkpoint_detail)
         .collect::<Result<Vec<_>, _>>()?;
-    let profile = core_tunables::RuntimeProfile::ALL
+    let profile = iteron_tunables::RuntimeProfile::ALL
         .into_iter()
         .find(|profile| {
-            core_tunables::runtime_profile_digest(*profile)
+            iteron_tunables::runtime_profile_digest(*profile)
                 .ok()
                 .as_deref()
                 == snapshot.profile_digest_sha256.as_deref()
         })
-        .map(core_tunables::RuntimeProfile::id)
+        .map(iteron_tunables::RuntimeProfile::id)
         .unwrap_or("unrecognized");
     Ok(Catalog::new(
         format_args!(
@@ -76,8 +76,8 @@ pub(super) fn checkpoint_catalog(
     ))
 }
 
-fn checkpoint_detail(entry: &core_protocol::RunGenesisTunableEntryV2) -> Result<Detail, LoadError> {
-    let family = core_tunables::families()
+fn checkpoint_detail(entry: &iteron_protocol::RunGenesisTunableEntryV2) -> Result<Detail, LoadError> {
+    let family = iteron_tunables::families()
         .iter()
         .find(|family| family.id == entry.family_id)
         .ok_or(LoadError(
@@ -89,9 +89,9 @@ fn checkpoint_detail(entry: &core_protocol::RunGenesisTunableEntryV2) -> Result<
         ));
     }
     let state = match entry.state {
-        core_protocol::RunGenesisTunableState::Effective => "effective",
-        core_protocol::RunGenesisTunableState::Inactive => "inactive",
-        core_protocol::RunGenesisTunableState::Unavailable => "unavailable",
+        iteron_protocol::RunGenesisTunableState::Effective => "effective",
+        iteron_protocol::RunGenesisTunableState::Inactive => "inactive",
+        iteron_protocol::RunGenesisTunableState::Unavailable => "unavailable",
     };
     let mut detail = metadata_detail(family, state);
     detail.prepend_rows([
@@ -235,7 +235,7 @@ fn read_workspace_request(_workspace: &Path, requested_path: &str) -> Result<Vec
 }
 
 fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
-    match core_tunables::resolve_json(bytes) {
+    match iteron_tunables::resolve_json(bytes) {
         Ok(resolved) => report_catalog(resolved.report(), "resolved", 0),
         Err(failure) => failed_report_catalog(&failure),
     }
@@ -255,7 +255,7 @@ fn report_catalog(
     atomic_status: &str,
     failure_count: usize,
 ) -> Result<Catalog, LoadError> {
-    let entries = core_tunables::families()
+    let entries = iteron_tunables::families()
         .iter()
         .map(|family| report_detail(report, family, atomic_status))
         .collect::<Result<Vec<_>, _>>()?;
@@ -297,7 +297,7 @@ fn report_detail(
 ) -> Result<Detail, LoadError> {
     // This is the only resolution-value ingress. The R2 explain contract validates the complete
     // report and replaces values, evidence ids, routes, subjects, and input digests with previews.
-    let encoded = core_tunables::explain_entry_json(report, family.id)
+    let encoded = iteron_tunables::explain_entry_json(report, family.id)
         .map_err(|_| LoadError("resolver explain refused the simulation report"))?;
     let document: Value = serde_json::from_str(&encoded)
         .map_err(|_| LoadError("resolver explain returned an unreadable document"))?;

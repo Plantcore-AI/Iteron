@@ -42,11 +42,11 @@ pub struct SlotId(pub String);
 | 类型 | 位置 | 是什么 |
 |---|---|---|
 | `StrategySlot`（trait） | `crates/protocol/src/slot.rs:140` | kernel 调用的**端口**：「kernel 调的是什么」 |
-| `core_evolve::StrategySlot`（newtype） | `crates/evolve/src/lib.rs:131` | policy bundle 里持久化的**身份**：「这个制品是给哪个槽的」 |
+| `iteron_evolve::StrategySlot`（newtype） | `crates/evolve/src/lib.rs:131` | policy bundle 里持久化的**身份**：「这个制品是给哪个槽的」 |
 
 `SlotId` 是在二者之间穿行的那个身份。两侧文法**并不相等**，而且不等有方向（`crates/protocol/src/slot.rs:13-29`）：evolve 侧接受 `[a-z0-9/_.-]`、任意个 `/`（不以 `/` 开头或结尾、不含 `//`）、<=128 字节（`crates/evolve/src/lib.rs:133-150`），因此 `db/query.planner` 与 `acme/billing/router` 在 evolve 侧合法而在 kernel 侧非法，`Acme/Router` 则两侧都非法。规范约束是一条**严格子集**关系：
 
-> 每一个合法的 `SlotId` **MUST** 是一个合法的 `core_evolve::StrategySlot`；反向 **MUST NOT** 被假定成立。
+> 每一个合法的 `SlotId` **MUST** 是一个合法的 `iteron_evolve::StrategySlot`；反向 **MUST NOT** 被假定成立。
 
 方向不可颠倒：bundle 指向一个 kernel 没有的槽是惰性的、无害的；kernel 拥有一个任何 bundle 都无法命名的槽，则是一个不可治理的空洞（那条槽会静默回落到内建策略，且没有任何东西报告这件事）。因此一条 bundle 条目若命名了本侧无法表达的槽，**MUST** 被拒（`BundleResolutionError::UnrepresentableSlot`，`crates/protocol/src/bundle.rs:171`），**MUST NOT** 被静默丢弃。
 

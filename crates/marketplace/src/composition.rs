@@ -70,7 +70,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use core_protocol::{Capability, capability_set::CapabilitySet};
+use iteron_protocol::{Capability, capability_set::CapabilitySet};
 
 use crate::composition_model::{Defect, Manifest, Refusal, RuntimeScope, Slot, Surface, inspect};
 

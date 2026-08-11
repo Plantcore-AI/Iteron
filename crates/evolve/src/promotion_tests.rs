@@ -1,6 +1,6 @@
 use super::*;
 use crate::verifier_crypto::sha256_hex;
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -12,7 +12,7 @@ const FIXTURE_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccc
 
 fn scratch(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-evolve-promotion-{tag}-{}-{}",
+        "iteron-evolve-promotion-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -665,7 +665,7 @@ fn restricted_checkpoint_can_enter_the_checkpoint_admission_path() {
         checkpoint_manifest(source_policy.clone(), None, &suite, candidate_base_model());
     source_manifest
         .required_capabilities
-        .insert(core_protocol::Capability::ReadOnly);
+        .insert(iteron_protocol::Capability::ReadOnly);
     let source = PolicyCheckpoint::build(
         "restrict-source",
         None,
@@ -673,7 +673,7 @@ fn restricted_checkpoint_can_enter_the_checkpoint_admission_path() {
     )
     .unwrap();
     let admission_policy =
-        ManifestAdmissionPolicy::new(slot.clone(), [core_protocol::Capability::ReadOnly].into());
+        ManifestAdmissionPolicy::new(slot.clone(), [iteron_protocol::Capability::ReadOnly].into());
     let restricted = restrict(
         &source,
         "restrict-candidate",
@@ -1191,10 +1191,10 @@ fn rewritten_checkpoint_admission_policy_is_refused_on_replay() {
                 .unwrap();
             admission_policies.insert(
                 slot.clone(),
-                ManifestAdmissionPolicy::new(slot, [core_protocol::Capability::ReadOnly].into())
+                ManifestAdmissionPolicy::new(slot, [iteron_protocol::Capability::ReadOnly].into())
                     .with_parent_ceiling(ParentCapabilityCeiling::new(
                         parent,
-                        [core_protocol::Capability::ReadOnly].into(),
+                        [iteron_protocol::Capability::ReadOnly].into(),
                     )),
             );
             true

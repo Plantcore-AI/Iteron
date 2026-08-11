@@ -1,7 +1,7 @@
 //! Content-free context/memory decision evidence and lifecycle emission.
 
 use super::*;
-use core_ctx::{
+use iteron_ctx::{
     CacheClass, ContaminationEvidence, ContextDecision, ContextDecisionReason, ContextLedger,
     ContextSegmentEvidence, ContextSegmentId, ContextSourceClass, ContextTransformEvidence,
     ContextTransformKind, MemoryBudgetEvidence, MemoryCandidateDecision, MemoryCandidateEvidence,
@@ -10,17 +10,17 @@ use core_ctx::{
     MemorySelectionEvidence, MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence,
     MemoryVisibilityState, TokenRange,
 };
-use core_obs::lifecycle::LifecycleCorrelation;
-use core_protocol::context::{ContextSegment, ContextSource};
-use core_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
+use iteron_obs::lifecycle::LifecycleCorrelation;
+use iteron_protocol::context::{ContextSegment, ContextSource};
+use iteron_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
 use sha2::{Digest, Sha256};
 
 pub(super) struct ContextRequestObservation<'a> {
     pub(super) system: &'a str,
     pub(super) messages: &'a [Message],
     pub(super) tools: &'a [ToolSpec],
-    pub(super) images: &'a [core_protocol::ImageContent],
-    pub(super) estimate: core_ctx::ContextEstimate,
+    pub(super) images: &'a [iteron_protocol::ImageContent],
+    pub(super) estimate: iteron_ctx::ContextEstimate,
     pub(super) output_reserved_tokens: u32,
     pub(super) elapsed_us: u64,
 }
@@ -30,7 +30,7 @@ pub(super) struct ResolvedContextObservation<'a> {
     pub(super) turn: TurnId,
     pub(super) task: &'a str,
     pub(super) segments: &'a [ContextSegment],
-    pub(super) materialization: &'a core_ctx::ContextMaterializationAudit,
+    pub(super) materialization: &'a iteron_ctx::ContextMaterializationAudit,
     pub(super) memory_audit: Option<&'a MemoryRecallAudit>,
     pub(super) memory_benchmark_scope: Option<&'a [u8; 32]>,
     pub(super) benchmark_memory_rejections: u32,
@@ -75,7 +75,7 @@ impl Agent {
             source_turn
         };
         let fact_digest_sha256 = digest(text.as_bytes());
-        if self.session_memory_visibility.len() == core_ctx::MAX_MEMORY_TRACE_VISIBILITY {
+        if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
             self.session_memory_visibility.pop_front();
         }
         self.session_memory_visibility
@@ -153,10 +153,10 @@ impl Agent {
             let mut scheduled_evidence = activated.clone();
             scheduled_evidence.state = MemoryVisibilityState::Scheduled;
             for evidence in [scheduled_evidence, activated.clone()] {
-                core_ctx::MemoryObserver::observe(
+                iteron_ctx::MemoryObserver::observe(
                     &self.memory_traces,
                     turn,
-                    core_ctx::MemoryObservation::Visibility(evidence),
+                    iteron_ctx::MemoryObservation::Visibility(evidence),
                 );
             }
         }
@@ -188,15 +188,15 @@ impl Agent {
             })
             .collect::<Vec<_>>();
         for evidence in &used {
-            core_ctx::MemoryObserver::observe(
+            iteron_ctx::MemoryObserver::observe(
                 &self.memory_traces,
                 turn,
-                core_ctx::MemoryObservation::Visibility(evidence.clone()),
+                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
             );
-            core_ctx::MemoryObserver::observe(
+            iteron_ctx::MemoryObserver::observe(
                 &self.memory_traces,
                 turn,
-                core_ctx::MemoryObservation::Attribution(core_ctx::MemoryAttributionEvidence {
+                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
                     fact_id: evidence.fact_id,
                     cited: false,
                     used_by_tool: false,
@@ -217,10 +217,10 @@ impl Agent {
             .map(|trace| trace.selected)
             .unwrap_or_default();
         for selection in &recalled {
-            core_ctx::MemoryObserver::observe(
+            iteron_ctx::MemoryObserver::observe(
                 &self.memory_traces,
                 turn,
-                core_ctx::MemoryObservation::Attribution(core_ctx::MemoryAttributionEvidence {
+                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
                     fact_id: selection.fact_id,
                     cited: false,
                     used_by_tool: false,
@@ -256,10 +256,10 @@ impl Agent {
         {
             evidence.state = MemoryVisibilityState::Unused;
             count = count.saturating_add(1);
-            core_ctx::MemoryObserver::observe(
+            iteron_ctx::MemoryObserver::observe(
                 &self.memory_traces,
                 turn,
-                core_ctx::MemoryObservation::Visibility(evidence.clone()),
+                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
             );
         }
         let recalled = self
@@ -302,13 +302,13 @@ impl Agent {
         }
     }
 
-    pub(crate) fn set_lifecycle_emitter(&mut self, emitter: core_obs::lifecycle::LifecycleEmitter) {
+    pub(crate) fn set_lifecycle_emitter(&mut self, emitter: iteron_obs::lifecycle::LifecycleEmitter) {
         self.lifecycle_emitter = Some(emitter);
     }
 
     pub(crate) fn set_lifecycle_telemetry(
         &mut self,
-        telemetry: core_obs::otel::lifecycle::LifecycleTelemetryRuntime,
+        telemetry: iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime,
     ) {
         self.lifecycle_telemetry = Some(telemetry);
     }
@@ -364,13 +364,13 @@ impl Agent {
         payload: LifecyclePayload,
     ) {
         let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.subagent_id = Some(core_protocol::SubagentId(subagent_id.to_owned()));
+        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
         self.lifecycle_event_with_correlation(event_id, correlation, payload);
     }
 
     pub(super) fn lifecycle_correlation(&self, turn_id: Option<TurnId>) -> LifecycleCorrelation {
         LifecycleCorrelation {
-            session_id: Some(core_protocol::SessionId(format!(
+            session_id: Some(iteron_protocol::SessionId(format!(
                 "session-{}",
                 self.rollout.run_id().0
             ))),
@@ -384,7 +384,7 @@ impl Agent {
         &self,
         event_id: &str,
         turn_id: TurnId,
-        effect_id: Option<core_protocol::EffectId>,
+        effect_id: Option<iteron_protocol::EffectId>,
         payload: LifecyclePayload,
     ) {
         let Some(emitter) = &self.lifecycle_emitter else {
@@ -402,8 +402,8 @@ impl Agent {
     pub(super) fn observe_process_tool_started(
         &self,
         turn_id: TurnId,
-        effect_id: core_protocol::EffectId,
-        call: &core_protocol::ToolUse,
+        effect_id: iteron_protocol::EffectId,
+        call: &iteron_protocol::ToolUse,
     ) {
         let event_id = match call.name.as_str() {
             "bash" | "process_start" => "process.spawn_requested",
@@ -420,7 +420,7 @@ impl Agent {
     pub(super) fn observe_process_tool_terminal(
         &self,
         turn_id: TurnId,
-        effect_id: core_protocol::EffectId,
+        effect_id: iteron_protocol::EffectId,
         tool: &str,
         result: &ToolResult,
         definite: bool,
@@ -531,13 +531,13 @@ impl Agent {
         &self,
         event_id: &str,
         turn_id: TurnId,
-        effect_id: core_protocol::EffectId,
+        effect_id: iteron_protocol::EffectId,
         job_id: Option<&str>,
         payload: LifecyclePayload,
     ) {
         let mut correlation = self.lifecycle_correlation(Some(turn_id));
         correlation.effect_id = Some(effect_id);
-        correlation.job_id = job_id.map(|id| core_protocol::JobId(id.to_owned()));
+        correlation.job_id = job_id.map(|id| iteron_protocol::JobId(id.to_owned()));
         self.lifecycle_event_with_correlation(event_id, correlation, payload);
     }
 
@@ -1023,7 +1023,7 @@ impl Agent {
     }
 
     pub(super) fn observe_context_usage(&self, turn: TurnId, usage: Usage) {
-        use core_ctx::{ContextObservation, ContextObserver};
+        use iteron_ctx::{ContextObservation, ContextObserver};
         let actual_input_tokens = usage
             .input
             .saturating_add(usage.cache_read)
@@ -1318,7 +1318,7 @@ impl Agent {
                             .recency_multipliers_ppm
                             .get(index)
                             .copied()
-                            .unwrap_or(core_ctx::SCORE_SCALE),
+                            .unwrap_or(iteron_ctx::SCORE_SCALE),
                     ),
                     confidence_ppm: 0,
                     combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(0),
@@ -1463,7 +1463,7 @@ impl Agent {
                 granted_bytes: requested_bytes,
                 requested_tokens,
                 granted_tokens: requested_tokens,
-                candidate_limit: u32::try_from(core_ctx::MAX_MEMORY_CANDIDATES).unwrap_or(u32::MAX),
+                candidate_limit: u32::try_from(iteron_ctx::MAX_MEMORY_CANDIDATES).unwrap_or(u32::MAX),
                 selected_count: u32::try_from(memory_segments.len()).unwrap_or(u32::MAX),
             };
             self.lifecycle_event(

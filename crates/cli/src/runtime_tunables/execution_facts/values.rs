@@ -1,7 +1,7 @@
 use super::*;
 
-use core_protocol::{Capability, Effort};
-use core_tunables::{DecimalValue, ResolutionValue, SourceKind};
+use iteron_protocol::{Capability, Effort};
+use iteron_tunables::{DecimalValue, ResolutionValue, SourceKind};
 use std::collections::BTreeMap;
 
 pub(super) fn apply(
@@ -21,13 +21,13 @@ pub(super) fn apply(
         builder,
         report,
         "verifier_attempts",
-        int(i64::from(core_verify::strategy::MAX_VERIFIER_ATTEMPTS)),
+        int(i64::from(iteron_verify::strategy::MAX_VERIFIER_ATTEMPTS)),
     )?;
     observe(
         builder,
         report,
         "fan_breadth",
-        int(i64u(core_agents::FAN_CAP, "fan_breadth")?),
+        int(i64u(iteron_agents::FAN_CAP, "fan_breadth")?),
     )?;
     observe(
         builder,
@@ -43,7 +43,7 @@ pub(super) fn apply(
             value: token_split()?,
         },
     )?;
-    let limits = core_workflow::RunLimits::default();
+    let limits = iteron_workflow::RunLimits::default();
     observe(
         builder,
         report,
@@ -51,7 +51,7 @@ pub(super) fn apply(
         int(i64u(limits.max_concurrency(), "fan_concurrency")?),
     )?;
 
-    let child = core_agents::subagent_budget_ceiling();
+    let child = iteron_agents::subagent_budget_ceiling();
     let child_capabilities = CapabilitySet::only(Capability::ReadOnly);
     observe(
         builder,
@@ -204,15 +204,15 @@ fn record_non_catalog_default_gaps(report: &mut ExecutionFactsReport) {
 }
 
 fn worker_min_turns() -> Result<u32, ExecutionFactError> {
-    let ceiling = core_agents::subagent_budget_ceiling();
+    let ceiling = iteron_agents::subagent_budget_ceiling();
     (1..=ceiling.max_turns.saturating_add(8))
-        .find_map(|parent_turns| core_agents::subagent_budget(parent_turns, 3, None))
+        .find_map(|parent_turns| iteron_agents::subagent_budget(parent_turns, 3, None))
         .map(|budget| budget.max_turns)
         .ok_or(ExecutionFactError::ChildAllocationUnavailable)
 }
 
 fn token_split() -> Result<DecimalValue, ExecutionFactError> {
-    let observed = core_agents::subagent_budget(8, 3, Some(100))
+    let observed = iteron_agents::subagent_budget(8, 3, Some(100))
         .and_then(|budget| budget.max_tokens)
         .ok_or(ExecutionFactError::ChildAllocationUnavailable)?;
     Ok(DecimalValue {

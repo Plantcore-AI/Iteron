@@ -11,7 +11,7 @@ impl Agent {
             .control_capabilities()
             .validate(&request.controls)
             .map_err(|error| {
-                KernelError::Provider(core_provider::ProviderError::Configuration(
+                KernelError::Provider(iteron_provider::ProviderError::Configuration(
                     error.to_string(),
                 ))
             })?;
@@ -58,7 +58,7 @@ impl Agent {
         }
 
         let mut hasher = Sha256::new();
-        hasher.update(b"core.provider-run-notice-key.v1");
+        hasher.update(b"iteron.provider-run-notice-key.v1");
         field(&mut hasher, &self.rollout.run_id().0);
         if let Some(selected) = &self.selected_route {
             field(&mut hasher, "durable-route");
@@ -135,10 +135,10 @@ impl Agent {
         let projected_at_unix_secs = self.pricing_now();
         if let Some(rate_card) = &self.pricing {
             if projected_at_unix_secs < rate_card.rate_card.issued_at_unix_secs {
-                return Err(core_obs::PricingError::RateCardNotYetValid.into());
+                return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
             }
             if projected_at_unix_secs >= rate_card.rate_card.expires_at_unix_secs {
-                return Err(core_obs::PricingError::RateCardExpired.into());
+                return Err(iteron_obs::PricingError::RateCardExpired.into());
             }
         }
         self.validate_provider_request_route(request)?;
@@ -188,7 +188,7 @@ impl Agent {
         let deadline = self.run_deadline?;
         if deadline.saturating_duration_since(Instant::now()).is_zero() {
             return Some(KernelError::Provider(
-                core_provider::ProviderError::DeadlineExceeded,
+                iteron_provider::ProviderError::DeadlineExceeded,
             ));
         }
         let interrupted = self.drain.load(std::sync::atomic::Ordering::Relaxed)
@@ -197,7 +197,7 @@ impl Agent {
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
         interrupted.then_some(KernelError::Provider(
-            core_provider::ProviderError::Interrupted,
+            iteron_provider::ProviderError::Interrupted,
         ))
     }
 
@@ -224,7 +224,7 @@ impl Agent {
         turn: TurnId,
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
-    ) -> Result<core_provider::TurnResult, KernelError> {
+    ) -> Result<iteron_provider::TurnResult, KernelError> {
         let mut governed_request = request.clone();
         governed_request.controls = self.provider_controls;
         let class = effect_class::EffectClass::Provider;
@@ -238,7 +238,7 @@ impl Agent {
             .position(|route| route.id() == route_id)
             .map_or(0, |index| index.saturating_add(1));
         let mut transition_reason: Option<&'static str> = None;
-        let mut jitter = core_sched::backoff::Jitter::new();
+        let mut jitter = iteron_sched::backoff::Jitter::new();
         loop {
             if let Some(refusal) = self.provider_dispatch_refusal() {
                 return Err(refusal);
@@ -325,7 +325,7 @@ impl Agent {
                 && retry_index.saturating_add(1) < self.retry_policy.max_attempts
             {
                 let random = jitter.next01();
-                let jitter_delay = core_sched::full_jitter(&self.retry_policy, retry_index, random);
+                let jitter_delay = iteron_sched::full_jitter(&self.retry_policy, retry_index, random);
                 let delay = error
                     .retry_after()
                     .map(|hint| {
@@ -392,7 +392,7 @@ impl Agent {
             route_id = next.id();
             governed_request.model = next.route.model_id;
             retry_index = 0;
-            jitter = core_sched::backoff::Jitter::new();
+            jitter = iteron_sched::backoff::Jitter::new();
             transition_reason = Some(failover_class.label());
         }
     }
@@ -430,13 +430,13 @@ pub(super) async fn execute_admitted_provider_turn(
     attempt_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     request: &TurnRequest,
     on_item: &mut (dyn FnMut(StreamItem) + Send),
-) -> Result<core_provider::TurnResult, KernelError> {
+) -> Result<iteron_provider::TurnResult, KernelError> {
     if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
         return Err(KernelError::OpaqueProviderRetries);
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return Err(core_provider::ProviderError::DeadlineExceeded.into());
+        return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
     }
     let mut cancels = vec![drain.as_ref()];
     if let Some(interrupt) = interrupt.as_deref() {
@@ -445,7 +445,7 @@ pub(super) async fn execute_admitted_provider_turn(
     if let Some(attempt_cancel) = attempt_cancel.as_deref() {
         cancels.push(attempt_cancel);
     }
-    let turn = core_provider::turn_cancellable_any(
+    let turn = iteron_provider::turn_cancellable_any(
         provider.as_ref(),
         request,
         on_item,
@@ -454,7 +454,7 @@ pub(super) async fn execute_admitted_provider_turn(
     );
     tokio::time::timeout(remaining, turn)
         .await
-        .map_err(|_| KernelError::Provider(core_provider::ProviderError::DeadlineExceeded))?
+        .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
         .map_err(KernelError::Provider)
 }
 
@@ -462,7 +462,7 @@ pub(super) async fn execute_admitted_provider_turn(
 pub(super) fn provider_settlement(
     turn: TurnId,
     ordinal: usize,
-    result: &Result<core_provider::TurnResult, KernelError>,
+    result: &Result<iteron_provider::TurnResult, KernelError>,
 ) -> effects::Settlement {
     let class = effect_class::EffectClass::Provider;
     match result {
@@ -483,20 +483,20 @@ pub(super) fn provider_settlement(
     }
 }
 
-pub(super) fn provider_outcome_is_unobservable(error: &core_provider::ProviderError) -> bool {
+pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::ProviderError) -> bool {
     matches!(
         error,
-        core_provider::ProviderError::Interrupted
-            | core_provider::ProviderError::DeadlineExceeded
-            | core_provider::ProviderError::Stream(_)
-            | core_provider::ProviderError::Decode(_)
+        iteron_provider::ProviderError::Interrupted
+            | iteron_provider::ProviderError::DeadlineExceeded
+            | iteron_provider::ProviderError::Stream(_)
+            | iteron_provider::ProviderError::Decode(_)
     )
 }
 
 pub(super) fn retryable_pre_stream_provider_error(
-    result: &Result<core_provider::TurnResult, KernelError>,
+    result: &Result<iteron_provider::TurnResult, KernelError>,
     emitted: bool,
-) -> Option<&core_provider::ProviderError> {
+) -> Option<&iteron_provider::ProviderError> {
     if emitted {
         return None;
     }
@@ -505,7 +505,7 @@ pub(super) fn retryable_pre_stream_provider_error(
     };
     let proven_terminal = matches!(
         error,
-        core_provider::ProviderError::Api { .. } | core_provider::ProviderError::ApiResponse(_)
+        iteron_provider::ProviderError::Api { .. } | iteron_provider::ProviderError::ApiResponse(_)
     );
     (proven_terminal && error.retry_disposition() == RetryDisposition::Transient).then_some(error)
 }

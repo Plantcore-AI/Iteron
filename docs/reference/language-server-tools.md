@@ -27,7 +27,7 @@ server.
 
 The input must be a control-free relative workspace path to a UTF-8 source file of at most 2 MiB.
 Line and character use zero-based LSP positions; character offsets are UTF-16 code units. One frame
-is limited by the `core-lsp` 16 MiB ceiling, at most 64 interleaved messages and 32 MiB aggregate
+is limited by the `iteron-lsp` 16 MiB ceiling, at most 64 interleaved messages and 32 MiB aggregate
 JSON are inspected, locations retain at most 200 entries, hover text retains at most 64 KiB, and
 rendered tool output is capped at 1 MiB. The target file's identity and bytes are rechecked after
 the reply. Server-produced content is labelled untrusted. Locations are projected to

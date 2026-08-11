@@ -1,17 +1,17 @@
 #!/bin/sh
-# Core Code release installer. Release packaging replaces the marker below with
+# Iteron release installer. Release packaging replaces the marker below with
 # an immutable tag such as v0.0.1. Keep the entire mutating path behind main so
 # a truncated `curl | sh` stream cannot perform a partial installation.
 
-CORE_CODE_EMBEDDED_VERSION='@CORE_CODE_VERSION@'
-CORE_CODE_RELEASE_ROOT='https://github.com/Plantcore-AI/core/releases/download'
-CORE_CODE_MAX_MANIFEST_BYTES=1048576
-CORE_CODE_MAX_ARCHIVE_BYTES=268435456
-CORE_CODE_MAX_UNPACKED_BYTES=134217728
+ITERON_CODE_EMBEDDED_VERSION='@ITERON_CODE_VERSION@'
+ITERON_CODE_RELEASE_ROOT='https://github.com/Plantcore-AI/Iteron/releases/download'
+ITERON_CODE_MAX_MANIFEST_BYTES=1048576
+ITERON_CODE_MAX_ARCHIVE_BYTES=268435456
+ITERON_CODE_MAX_UNPACKED_BYTES=134217728
 
 core_code_usage() {
     cat <<'EOF'
-Install Core Code from an immutable GitHub release.
+Install Iteron from an immutable GitHub release.
 
 Usage:
   install.sh [--version vX.Y.Z] [--bin-dir PATH]
@@ -19,8 +19,8 @@ Usage:
 Options:
   --version VERSION  Install an exact release tag. The release asset embeds its
                      own version, so this is optional for normal curl installs.
-  --bin-dir PATH     Install the `core` command into PATH. Defaults to
-                     $CORE_CODE_INSTALL_DIR, $XDG_BIN_HOME, or ~/.local/bin.
+  --bin-dir PATH     Install the `iteron` command into PATH. Defaults to
+                     $ITERON_CODE_INSTALL_DIR, $XDG_BIN_HOME, or ~/.local/bin.
   -h, --help         Show this help.
 
 The installer never invokes sudo and never edits shell startup files.
@@ -28,12 +28,12 @@ EOF
 }
 
 core_code_die() {
-    printf 'core-code: error: %s\n' "$*" >&2
+    printf 'iteron: error: %s\n' "$*" >&2
     exit 1
 }
 
 core_code_warn() {
-    printf 'core-code: warning: %s\n' "$*" >&2
+    printf 'iteron: warning: %s\n' "$*" >&2
 }
 
 # Code execution is confined by bubblewrap on Linux, and the backend fails CLOSED: no usable
@@ -41,7 +41,7 @@ core_code_warn() {
 # a new user would look. The package may simply be absent, and Ubuntu 24.04 restricts unprivileged
 # user namespaces unless the invoking binary has an AppArmor profile — the project's own CI has to
 # install one. Run the same probe the backend runs and print the exact remedy. A WARNING, never a
-# hard failure: `core` is perfectly usable for reading and editing without a sandbox.
+# hard failure: `iteron` is perfectly usable for reading and editing without a sandbox.
 core_code_linux_preflight() {
     [ "$1" = Linux ] || return 0
 
@@ -56,7 +56,7 @@ core_code_linux_preflight() {
     if [ -z "$core_code_bwrap" ]; then
         core_code_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
         cat <<'EOF' >&2
-Install it, then re-run `core`:
+Install it, then re-run `iteron`:
   Debian/Ubuntu:  sudo apt-get install -y bubblewrap
   Fedora/RHEL:    sudo dnf install -y bubblewrap
   Alpine:         sudo apk add bubblewrap
@@ -78,7 +78,7 @@ one binary rather than disabling the system-wide control:
   sudo apt-get install -y apparmor apparmor-utils
   printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile core-bwrap $core_code_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/core-bwrap >/dev/null
   sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
-See https://plantcore-ai.github.io/core/reference/platforms/ for the full contract.
+See https://plantcore-ai.github.io/Iteron/reference/platforms/ for the full contract.
 EOF
 }
 
@@ -129,14 +129,14 @@ core_code_unpack_archive() {
     # POSIX ulimit -f uses 512-byte blocks. Bounding the decompressor's output
     # prevents a small, checksum-valid gzip bomb from exhausting the filesystem
     # before tar ever has a chance to inspect member paths and types.
-    core_code_file_blocks=$(( (CORE_CODE_MAX_UNPACKED_BYTES + 511) / 512 ))
+    core_code_file_blocks=$(( (ITERON_CODE_MAX_UNPACKED_BYTES + 511) / 512 ))
     (
         ulimit -f "$core_code_file_blocks" || exit 1
         gzip -dc "$core_code_compressed" > "$core_code_unpacked"
     ) || core_code_die 'release archive exceeds the safe unpacked size limit or is corrupt'
     core_code_unpacked_size=$(core_code_file_size "$core_code_unpacked")
     if [ "$core_code_unpacked_size" -le 0 ] \
-        || [ "$core_code_unpacked_size" -gt "$CORE_CODE_MAX_UNPACKED_BYTES" ]; then
+        || [ "$core_code_unpacked_size" -gt "$ITERON_CODE_MAX_UNPACKED_BYTES" ]; then
         core_code_die 'release archive is empty or exceeds the safe unpacked size limit'
     fi
 }
@@ -160,7 +160,7 @@ core_code_validate_archive() {
     # payloads, and unexpected files before extraction.
     {
         printf '%s/\n' "$core_code_root"
-        printf '%s/%s\n' "$core_code_root" core
+        printf '%s/%s\n' "$core_code_root" iteron
         printf '%s/%s\n' "$core_code_root" LICENSE
         printf '%s/%s\n' "$core_code_root" README.md
         printf '%s/%s\n' "$core_code_root" THIRD_PARTY_LICENSES.html
@@ -189,8 +189,8 @@ core_code_validate_archive() {
 core_code_main() {
     set -eu
 
-    core_code_version=$CORE_CODE_EMBEDDED_VERSION
-    core_code_bin_dir=${CORE_CODE_INSTALL_DIR:-}
+    core_code_version=$ITERON_CODE_EMBEDDED_VERSION
+    core_code_bin_dir=${ITERON_CODE_INSTALL_DIR:-}
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -270,11 +270,11 @@ core_code_main() {
     esac
 
     core_code_version_number=${core_code_version#v}
-    core_code_archive_root="core-code-${core_code_version}-${core_code_target}"
+    core_code_archive_root="iteron-${core_code_version}-${core_code_target}"
     core_code_archive_name="${core_code_archive_root}.tar.gz"
-    core_code_base_url="${CORE_CODE_RELEASE_ROOT}/${core_code_version}"
+    core_code_base_url="${ITERON_CODE_RELEASE_ROOT}/${core_code_version}"
 
-    core_code_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/core-code.XXXXXXXX") \
+    core_code_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/iteron.XXXXXXXX") \
         || core_code_die 'could not create a temporary directory'
     core_code_install_tmp=
     core_code_cleanup() {
@@ -292,22 +292,22 @@ core_code_main() {
     core_code_download \
         "$core_code_base_url/SHA256SUMS" \
         "$core_code_checksums" \
-        "$CORE_CODE_MAX_MANIFEST_BYTES" \
+        "$ITERON_CODE_MAX_MANIFEST_BYTES" \
         || core_code_die 'could not download SHA256SUMS'
     core_code_manifest_size=$(core_code_file_size "$core_code_checksums")
     if [ "$core_code_manifest_size" -le 0 ] \
-        || [ "$core_code_manifest_size" -gt "$CORE_CODE_MAX_MANIFEST_BYTES" ]; then
+        || [ "$core_code_manifest_size" -gt "$ITERON_CODE_MAX_MANIFEST_BYTES" ]; then
         core_code_die 'SHA256SUMS is empty or unexpectedly large'
     fi
 
     core_code_download \
         "$core_code_base_url/$core_code_archive_name" \
         "$core_code_archive" \
-        "$CORE_CODE_MAX_ARCHIVE_BYTES" \
+        "$ITERON_CODE_MAX_ARCHIVE_BYTES" \
         || core_code_die "could not download $core_code_archive_name"
     core_code_archive_size=$(core_code_file_size "$core_code_archive")
     if [ "$core_code_archive_size" -le 0 ] \
-        || [ "$core_code_archive_size" -gt "$CORE_CODE_MAX_ARCHIVE_BYTES" ]; then
+        || [ "$core_code_archive_size" -gt "$ITERON_CODE_MAX_ARCHIVE_BYTES" ]; then
         core_code_die 'release archive is empty or unexpectedly large'
     fi
 
@@ -341,15 +341,15 @@ core_code_main() {
         || core_code_die 'release archive extraction failed'
     core_code_binary="$core_code_work_dir/extract/$core_code_archive_root/core"
     if [ ! -f "$core_code_binary" ] || [ -L "$core_code_binary" ]; then
-        core_code_die 'archive core entry is not a regular file'
+        core_code_die 'archive iteron entry is not a regular file'
     fi
     chmod 0755 "$core_code_binary"
 
-    # `-V` is the bare `core <semver>`; `--version` additionally carries the commit and build date,
+    # `-V` is the bare `iteron <semver>`; `--version` additionally carries the commit and build date,
     # so the exact-match smoke tests below deliberately use the short form.
     core_code_reported_version=$("$core_code_binary" -V 2>&1) \
         || core_code_die 'downloaded binary failed its version smoke test'
-    [ "$core_code_reported_version" = "core $core_code_version_number" ] \
+    [ "$core_code_reported_version" = "iteron $core_code_version_number" ] \
         || core_code_die "downloaded binary reported an unexpected version: $core_code_reported_version"
 
     mkdir -p -- "$core_code_bin_dir" \
@@ -367,23 +367,23 @@ core_code_main() {
     fi
     core_code_staged_version=$("$core_code_install_tmp" -V 2>&1) \
         || core_code_die 'staged binary failed its version smoke test'
-    [ "$core_code_staged_version" = "core $core_code_version_number" ] \
+    [ "$core_code_staged_version" = "iteron $core_code_version_number" ] \
         || core_code_die 'staged binary reported an unexpected version'
     mv -f -- "$core_code_install_tmp" "$core_code_bin_dir/core" \
-        || core_code_die 'could not atomically install core'
+        || core_code_die 'could not atomically install iteron'
     if [ ! -f "$core_code_bin_dir/core" ] || [ -L "$core_code_bin_dir/core" ]; then
         core_code_die 'atomic install did not produce a regular destination file'
     fi
     core_code_installed_version=$("$core_code_bin_dir/core" -V 2>&1) \
         || core_code_die 'installed binary failed its final version smoke test'
-    [ "$core_code_installed_version" = "core $core_code_version_number" ] \
+    [ "$core_code_installed_version" = "iteron $core_code_version_number" ] \
         || core_code_die 'installed binary reported an unexpected final version'
     core_code_install_tmp=
 
-    printf 'Core Code %s installed at %s/core\n' "$core_code_version_number" "$core_code_bin_dir"
+    printf 'Iteron %s installed at %s/core\n' "$core_code_version_number" "$core_code_bin_dir"
     case ":${PATH:-}:" in
         *:"$core_code_bin_dir":*) ;;
-        *) printf 'Add %s to PATH to run the core command.\n' "$core_code_bin_dir" ;;
+        *) printf 'Add %s to PATH to run the iteron command.\n' "$core_code_bin_dir" ;;
     esac
     core_code_linux_preflight "$core_code_os"
 }

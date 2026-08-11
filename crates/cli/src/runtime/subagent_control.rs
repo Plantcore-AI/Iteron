@@ -11,7 +11,7 @@ impl Agent {
         kind: &str,
         turn: u32,
         ordinal: usize,
-    ) -> core_protocol::RunId {
+    ) -> iteron_protocol::RunId {
         let mut digest = Sha256::new();
         for value in [
             self.rollout.tenant().0.as_bytes(),
@@ -25,7 +25,7 @@ impl Agent {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        core_protocol::RunId(format!("{kind}-{namespace}-t{turn:08x}-n{ordinal:04x}"))
+        iteron_protocol::RunId(format!("{kind}-{namespace}-t{turn:08x}-n{ordinal:04x}"))
     }
 
     pub(super) fn subagent_directory(&self) -> std::path::PathBuf {

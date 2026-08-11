@@ -1,4 +1,4 @@
-//! core-ctx — context assembly and management.
+//! iteron-ctx — context assembly and management.
 //!
 //! Two jobs, both from the recon:
 //!   1. **Localization ladder** (Agentless): repo tree -> skeleton (declaration headers only)

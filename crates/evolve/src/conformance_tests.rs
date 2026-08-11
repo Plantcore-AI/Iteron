@@ -26,14 +26,14 @@ fn no_runtime_activation_surface_exists_in_kernel_or_agents() {
 }
 
 #[test]
-fn kernel_and_agents_do_not_depend_on_core_evolve() {
+fn kernel_and_agents_do_not_depend_on_iteron_evolve() {
     let root = repo_root();
     for crate_dir in ["crates/kernel", "crates/agents"] {
         let manifest = std::fs::read_to_string(root.join(crate_dir).join("Cargo.toml"))
             .expect("the TCB crate manifest is readable");
         assert!(
-            !manifest.contains("core-evolve") && !manifest.contains("core_evolve"),
-            "{crate_dir} names core-evolve; the control plane must stay outside the runtime TCB"
+            !manifest.contains("iteron-evolve") && !manifest.contains("iteron_evolve"),
+            "{crate_dir} names iteron-evolve; the control plane must stay outside the runtime TCB"
         );
     }
 }

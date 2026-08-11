@@ -5,8 +5,8 @@ mod session;
 pub(crate) use session::{McpRuntimeControl, McpServerHealth};
 
 use crate::config::{McpServerConfig, McpTransportConfig};
-use core_protocol::ToolSpec;
-use core_tools::Registry;
+use iteron_protocol::ToolSpec;
+use iteron_tools::Registry;
 #[cfg(test)]
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -20,8 +20,8 @@ struct DiscoveredServer {
 }
 
 pub(crate) enum ConfiguredMcpClient {
-    Stdio(Arc<core_mcp::McpClient>),
-    Http(Arc<core_mcp::McpRemoteClient>),
+    Stdio(Arc<iteron_mcp::McpClient>),
+    Http(Arc<iteron_mcp::McpRemoteClient>),
 }
 
 impl ConfiguredMcpClient {
@@ -32,7 +32,7 @@ impl ConfiguredMcpClient {
         }
     }
     #[cfg(test)]
-    fn capabilities(&self) -> core_mcp::McpServerCapabilities {
+    fn capabilities(&self) -> iteron_mcp::McpServerCapabilities {
         match self {
             Self::Stdio(client) => client.capabilities(),
             Self::Http(client) => client.capabilities(),
@@ -44,7 +44,7 @@ impl ConfiguredMcpClient {
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<String, core_mcp::McpError> {
+    ) -> Result<String, iteron_mcp::McpError> {
         match self {
             Self::Stdio(client) => client.call_extension_rendered(method, params).await,
             Self::Http(client) => client.call_extension_rendered(method, params).await,
@@ -53,10 +53,10 @@ impl ConfiguredMcpClient {
 
     async fn list_tools_governed(
         &self,
-        filter: &core_mcp::McpToolFilter,
-        policy: &core_mcp::McpServerPolicy,
-        ceiling: core_protocol::capability_set::CapabilitySet,
-    ) -> Result<Vec<ToolSpec>, core_mcp::McpError> {
+        filter: &iteron_mcp::McpToolFilter,
+        policy: &iteron_mcp::McpServerPolicy,
+        ceiling: iteron_protocol::capability_set::CapabilitySet,
+    ) -> Result<Vec<ToolSpec>, iteron_mcp::McpError> {
         match self {
             Self::Stdio(client) => client.list_tools_governed(filter, policy, ceiling).await,
             Self::Http(client) => client.list_tools_governed(filter, policy, ceiling).await,
@@ -68,7 +68,7 @@ impl ConfiguredMcpClient {
         name: &str,
         arguments: serde_json::Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -91,7 +91,7 @@ impl ConfiguredMcpClient {
         method: &str,
         params: serde_json::Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -111,8 +111,8 @@ impl ConfiguredMcpClient {
 
     fn cleanup_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
-    ) -> Result<(), core_mcp::McpError> {
+        boundary: iteron_mcp::McpSpillCleanup,
+    ) -> Result<(), iteron_mcp::McpError> {
         match self {
             Self::Stdio(client) => client.cleanup_spills(boundary),
             Self::Http(client) => client.cleanup_spills(boundary),
@@ -140,7 +140,7 @@ async fn register_configured_servers_with_limit(
     sensitive_env_names: &[String],
     combined_limit: usize,
 ) -> anyhow::Result<()> {
-    let mut combined = core_mcp::CombinedToolCatalog::with_limit(combined_limit)?;
+    let mut combined = iteron_mcp::CombinedToolCatalog::with_limit(combined_limit)?;
     let mut discovered = Vec::with_capacity(servers.len());
 
     for server in servers {
@@ -176,7 +176,7 @@ async fn register_configured_servers_with_limit(
         )
         .any(|spec| existing.contains(&spec.name))
     {
-        return Err(core_mcp::McpError::ToolNameCollision.into());
+        return Err(iteron_mcp::McpError::ToolNameCollision.into());
     }
 
     for server in discovered {
@@ -203,8 +203,8 @@ async fn register_configured_servers_with_limit(
 async fn discover_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
-) -> Result<DiscoveredServer, core_mcp::McpError> {
-    let reconnect = core_mcp::reconnect::ReconnectPolicy::default();
+) -> Result<DiscoveredServer, iteron_mcp::McpError> {
+    let reconnect = iteron_mcp::reconnect::ReconnectPolicy::default();
     let mut attempt = 0;
     loop {
         let result = async {
@@ -213,7 +213,7 @@ async fn discover_configured_server(
                 .list_tools_governed(&server.tools, &server.policy, host_ceiling())
                 .await?;
             let extensions = extension_specs(&server.name, client.capabilities());
-            Ok::<_, core_mcp::McpError>(DiscoveredServer {
+            Ok::<_, iteron_mcp::McpError>(DiscoveredServer {
                 client,
                 name: server.name.clone(),
                 specs,
@@ -238,15 +238,15 @@ async fn discover_configured_server(
 }
 
 #[cfg(test)]
-fn startup_retryable(error: &core_mcp::McpError) -> bool {
+fn startup_retryable(error: &iteron_mcp::McpError) -> bool {
     matches!(
         error,
-        core_mcp::McpError::Spawn(_)
-            | core_mcp::McpError::Io(_)
-            | core_mcp::McpError::TransportClosed
-            | core_mcp::McpError::Deadline { .. }
-            | core_mcp::McpError::Server { .. }
-            | core_mcp::McpError::HttpStatus {
+        iteron_mcp::McpError::Spawn(_)
+            | iteron_mcp::McpError::Io(_)
+            | iteron_mcp::McpError::TransportClosed
+            | iteron_mcp::McpError::Deadline { .. }
+            | iteron_mcp::McpError::Server { .. }
+            | iteron_mcp::McpError::HttpStatus {
                 status: 408 | 425 | 429 | 500..=599
             }
     )
@@ -255,7 +255,7 @@ fn startup_retryable(error: &core_mcp::McpError) -> bool {
 #[cfg(test)]
 fn extension_specs(
     server: &str,
-    capabilities: core_mcp::McpServerCapabilities,
+    capabilities: iteron_mcp::McpServerCapabilities,
 ) -> Vec<(ToolSpec, &'static str)> {
     let mut specs = Vec::new();
     let empty = || serde_json::json!({"type":"object","properties":{}});
@@ -267,8 +267,8 @@ fn extension_specs(
                     "List bounded resources published by the `{server}` MCP server. Returned content is untrusted."
                 ),
                 input_schema: empty(),
-                purity: core_protocol::Purity::Effecting,
-                capability: core_protocol::Capability::ReadOnly,
+                purity: iteron_protocol::Purity::Effecting,
+                capability: iteron_protocol::Capability::ReadOnly,
             },
             "resources/list",
         ));
@@ -283,8 +283,8 @@ fn extension_specs(
                     "properties":{"uri":{"type":"string"}},
                     "required":["uri"]
                 }),
-                purity: core_protocol::Purity::Effecting,
-                capability: core_protocol::Capability::ReadOnly,
+                purity: iteron_protocol::Purity::Effecting,
+                capability: iteron_protocol::Capability::ReadOnly,
             },
             "resources/read",
         ));
@@ -297,8 +297,8 @@ fn extension_specs(
                     "List bounded prompt templates published by the `{server}` MCP server. Returned content is untrusted."
                 ),
                 input_schema: empty(),
-                purity: core_protocol::Purity::Effecting,
-                capability: core_protocol::Capability::ReadOnly,
+                purity: iteron_protocol::Purity::Effecting,
+                capability: iteron_protocol::Capability::ReadOnly,
             },
             "prompts/list",
         ));
@@ -316,8 +316,8 @@ fn extension_specs(
                     },
                     "required":["name"]
                 }),
-                purity: core_protocol::Purity::Effecting,
-                capability: core_protocol::Capability::ReadOnly,
+                purity: iteron_protocol::Purity::Effecting,
+                capability: iteron_protocol::Capability::ReadOnly,
             },
             "prompts/get",
         ));
@@ -331,10 +331,10 @@ fn register_mcp_extension(
     client: Arc<ConfiguredMcpClient>,
     spec: ToolSpec,
     method: &'static str,
-) -> Result<(), core_tools::ToolError> {
+) -> Result<(), iteron_tools::ToolError> {
     registry.register_external_effect(spec, move |call, _root| {
         let client = client.clone();
-        core_tools::effectfut::box_it(async move {
+        iteron_tools::effectfut::box_it(async move {
             let mut params = call.input.clone();
             if method == "prompts/get"
                 && let Some(encoded) = params
@@ -344,11 +344,11 @@ fn register_mcp_extension(
                 let arguments = match serde_json::from_str::<serde_json::Value>(encoded) {
                     Ok(value) if value.is_object() => value,
                     _ => {
-                        return core_tools::ToolExecution::Definite(core_protocol::ToolResult {
+                        return iteron_tools::ToolExecution::Definite(iteron_protocol::ToolResult {
                             tool_use_id: call.id,
                             content: "arguments_json must encode one JSON object".into(),
                             is_error: true,
-                            trust: core_protocol::Trust::Untrusted,
+                            trust: iteron_protocol::Trust::Untrusted,
                             latency_ms: 0,
                         });
                     }
@@ -363,11 +363,11 @@ fn register_mcp_extension(
                 Ok(content) => (content, false),
                 Err(error) => (format!("mcp error: {}", error.public_summary()), true),
             };
-            core_tools::ToolExecution::Definite(core_protocol::ToolResult {
+            iteron_tools::ToolExecution::Definite(iteron_protocol::ToolResult {
                 tool_use_id: call.id,
                 content,
                 is_error,
-                trust: core_protocol::Trust::Untrusted,
+                trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: 0,
             })
         })
@@ -378,12 +378,12 @@ fn register_mcp_extension(
 async fn connect_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
-) -> Result<ConfiguredMcpClient, core_mcp::McpError> {
+) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
     connect_configured_server_with_policies(
         server,
         sensitive_env_names,
-        core_mcp::McpDeadlinePolicy::default(),
-        core_mcp::McpResultPolicy::default(),
+        iteron_mcp::McpDeadlinePolicy::default(),
+        iteron_mcp::McpResultPolicy::default(),
     )
     .await
 }
@@ -391,19 +391,19 @@ async fn connect_configured_server(
 async fn connect_configured_server_with_policies(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
-    deadlines: core_mcp::McpDeadlinePolicy,
-    result_policy: core_mcp::McpResultPolicy,
-) -> Result<ConfiguredMcpClient, core_mcp::McpError> {
+    deadlines: iteron_mcp::McpDeadlinePolicy,
+    result_policy: iteron_mcp::McpResultPolicy,
+) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
     match server.transport {
         McpTransportConfig::Stdio => {
             let command = server
                 .command
                 .as_deref()
-                .ok_or(core_mcp::McpError::InvalidEndpoint {
+                .ok_or(iteron_mcp::McpError::InvalidEndpoint {
                     field: "command",
                     limit: 4096,
                 })?;
-            core_mcp::McpClient::connect_with_sensitive_env_names(
+            iteron_mcp::McpClient::connect_with_sensitive_env_names(
                 command,
                 &server.args,
                 &server.name,
@@ -413,30 +413,30 @@ async fn connect_configured_server_with_policies(
             .map(|client| ConfiguredMcpClient::Stdio(Arc::new(client)))
         }
         McpTransportConfig::Http => {
-            let endpoint = core_mcp::http::McpHttpEndpoint::parse(server.url.as_deref().ok_or(
-                core_mcp::McpError::InvalidEndpoint {
+            let endpoint = iteron_mcp::http::McpHttpEndpoint::parse(server.url.as_deref().ok_or(
+                iteron_mcp::McpError::InvalidEndpoint {
                     field: "url",
-                    limit: core_mcp::http::MAX_MCP_HTTP_URL_BYTES,
+                    limit: iteron_mcp::http::MAX_MCP_HTTP_URL_BYTES,
                 },
             )?)?;
-            let policy = core_mcp::http::McpHttpHeaderPolicy::new(
+            let policy = iteron_mcp::http::McpHttpHeaderPolicy::new(
                 server.header_env.keys().cloned().collect(),
             )?;
             let mut headers = Vec::with_capacity(server.header_env.len());
             for (name, env_name) in &server.header_env {
                 let value =
-                    std::env::var(env_name).map_err(|_| core_mcp::McpError::InvalidEndpoint {
+                    std::env::var(env_name).map_err(|_| iteron_mcp::McpError::InvalidEndpoint {
                         field: "header_env_value",
                         limit: 8192,
                     })?;
-                headers.push((name.clone(), core_mcp::http::McpHeaderValue::new(value)?));
+                headers.push((name.clone(), iteron_mcp::http::McpHeaderValue::new(value)?));
             }
             let credential = server
                 .oauth
                 .as_ref()
                 .map(|oauth| {
                     let secret = std::env::var(&oauth.access_token_env).map_err(|_| {
-                        core_mcp::McpError::Credential(core_mcp::token::TokenError::Absent)
+                        iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
                     })?;
                     let expires_at = oauth
                         .expires_at_env
@@ -445,13 +445,13 @@ async fn connect_configured_server_with_policies(
                             std::env::var(name)
                                 .ok()
                                 .and_then(|value| value.parse::<u64>().ok())
-                                .ok_or(core_mcp::McpError::Credential(
-                                    core_mcp::token::TokenError::Expired { skew: 30 },
+                                .ok_or(iteron_mcp::McpError::Credential(
+                                    iteron_mcp::token::TokenError::Expired { skew: 30 },
                                 ))
                         })
                         .transpose()?
                         .unwrap_or(u64::MAX);
-                    Ok::<_, core_mcp::McpError>(core_mcp::token::Token::new(secret, expires_at))
+                    Ok::<_, iteron_mcp::McpError>(iteron_mcp::token::Token::new(secret, expires_at))
                 })
                 .transpose()?;
             let oauth_grant = server
@@ -464,25 +464,25 @@ async fn connect_configured_server_with_policies(
                         .zip(oauth.refresh_token_env.as_ref())
                         .map(|(refresh_url, refresh_token_env)| {
                             let refresh_token = std::env::var(refresh_token_env).map_err(|_| {
-                                core_mcp::McpError::Credential(core_mcp::token::TokenError::Absent)
+                                iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
                             })?;
                             let client_secret = oauth
                                 .client_secret_env
                                 .as_ref()
                                 .map(|name| {
                                     std::env::var(name).map_err(|_| {
-                                        core_mcp::McpError::Credential(
-                                            core_mcp::token::TokenError::Absent,
+                                        iteron_mcp::McpError::Credential(
+                                            iteron_mcp::token::TokenError::Absent,
                                         )
                                     })
                                 })
                                 .transpose()?;
-                            core_mcp::oauth::OAuthRefreshGrant::new(
-                                core_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
+                            iteron_mcp::oauth::OAuthRefreshGrant::new(
+                                iteron_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
                                 oauth
                                     .revoke_url
                                     .as_deref()
-                                    .map(core_mcp::http::McpHttpEndpoint::parse)
+                                    .map(iteron_mcp::http::McpHttpEndpoint::parse)
                                     .transpose()?,
                                 refresh_token,
                                 oauth.client_id.clone(),
@@ -491,7 +491,7 @@ async fn connect_configured_server_with_policies(
                         })
                 })
                 .transpose()?;
-            core_mcp::McpRemoteClient::connect_with_policies(
+            iteron_mcp::McpRemoteClient::connect_with_policies(
                 endpoint,
                 server.name.clone(),
                 credential,
@@ -514,12 +514,12 @@ async fn connect_configured_server_with_policies(
 /// input a per-server policy may only ever intersect. An installed server participates in the
 /// narrowing and never in this value, which is what makes "an installed server cannot widen what
 /// the host allows" a property of the composition rather than a rule someone has to remember.
-fn host_ceiling() -> core_protocol::capability_set::CapabilitySet {
-    core_mcp::default_host_ceiling()
+fn host_ceiling() -> iteron_protocol::capability_set::CapabilitySet {
+    iteron_mcp::default_host_ceiling()
 }
 
 #[cfg(test)]
-fn startup_error_line(server_name: &str, operation: &str, error: &core_mcp::McpError) -> String {
+fn startup_error_line(server_name: &str, operation: &str, error: &iteron_mcp::McpError) -> String {
     format!(
         "mcp {server_name}: {operation} failed: {}",
         error.public_summary()
@@ -532,19 +532,19 @@ pub(crate) fn register_mcp_tool(
     client: Arc<ConfiguredMcpClient>,
     server_name: &str,
     spec: ToolSpec,
-) -> Result<(), core_tools::ToolError> {
+) -> Result<(), iteron_tools::ToolError> {
     let prefix = format!("{server_name}__");
     let bare = spec.name.strip_prefix(&prefix).ok_or_else(|| {
-        core_tools::ToolError::Registration(
+        iteron_tools::ToolError::Registration(
             "MCP tool does not match its validated server namespace".into(),
         )
     })?;
-    let attribution = core_tools::McpEffectAttribution::new(server_name, bare.to_string());
+    let attribution = iteron_tools::McpEffectAttribution::new(server_name, bare.to_string());
     let bare = bare.to_string();
     registry.register_mcp_effect(spec, attribution, move |call, _root, dispatch_clock| {
         let client = client.clone();
         let bare = bare.clone();
-        core_tools::effectfut::box_it(async move {
+        iteron_tools::effectfut::box_it(async move {
             let clock = dispatch_clock.clone();
             let outcome = client
                 .call_tool_outcome_observed(&bare, call.input.clone(), move || {
@@ -558,37 +558,37 @@ pub(crate) fn register_mcp_tool(
 
 fn mcp_tool_execution(
     tool_use_id: String,
-    outcome: core_mcp::McpToolOutcome,
-) -> core_tools::ToolExecution {
+    outcome: iteron_mcp::McpToolOutcome,
+) -> iteron_tools::ToolExecution {
     match outcome {
-        core_mcp::McpToolOutcome::Completed {
+        iteron_mcp::McpToolOutcome::Completed {
             content,
             is_error,
             evidence,
-        } => core_tools::ToolExecution::Definite(core_protocol::ToolResult {
+        } => iteron_tools::ToolExecution::Definite(iteron_protocol::ToolResult {
             tool_use_id,
             content,
             is_error,
-            trust: core_protocol::Trust::Untrusted,
+            trust: iteron_protocol::Trust::Untrusted,
             latency_ms: evidence.dispatch_to_terminal_ms.get(),
         }),
-        core_mcp::McpToolOutcome::FailedDefinite { error, evidence } => {
-            core_tools::ToolExecution::Definite(core_protocol::ToolResult {
+        iteron_mcp::McpToolOutcome::FailedDefinite { error, evidence } => {
+            iteron_tools::ToolExecution::Definite(iteron_protocol::ToolResult {
                 tool_use_id,
                 content: format!("mcp error: {}", error.public_summary()),
                 is_error: true,
-                trust: core_protocol::Trust::Untrusted,
+                trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: evidence
                     .map(|evidence| evidence.dispatch_to_terminal_ms.get())
                     .unwrap_or(0),
             })
         }
-        core_mcp::McpToolOutcome::Unknown { evidence, .. } => {
-            core_tools::ToolExecution::Unknown(core_protocol::ToolResult {
+        iteron_mcp::McpToolOutcome::Unknown { evidence, .. } => {
+            iteron_tools::ToolExecution::Unknown(iteron_protocol::ToolResult {
                 tool_use_id,
                 content: "MCP request was dispatched but no authoritative terminal response was observed; remote outcome is unknown and Core will not retry it automatically".into(),
                 is_error: true,
-                trust: core_protocol::Trust::Untrusted,
+                trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: evidence.dispatch_to_terminal_ms.get(),
             })
         }
@@ -702,7 +702,7 @@ mod tests {
             &mut registry,
             trusted.mcp_servers.as_deref().unwrap(),
             &[],
-            core_mcp::MAX_COMBINED_MCP_TOOLS,
+            iteron_mcp::MAX_COMBINED_MCP_TOOLS,
         )
         .await
         .unwrap();
@@ -716,7 +716,7 @@ mod tests {
             assert!(names.iter().any(|name| name == expected), "{names:?}");
         }
         let result = registry
-            .run_effect(core_protocol::ToolUse {
+            .run_effect(iteron_protocol::ToolUse {
                 id: "resource-list".into(),
                 name: "docs__resources_list".into(),
                 input: json!({}),
@@ -725,7 +725,7 @@ mod tests {
             .into_result();
         assert!(!result.is_error, "{}", result.content);
         assert!(result.content.contains("plantcore://guide"));
-        assert_eq!(result.trust, core_protocol::Trust::Untrusted);
+        assert_eq!(result.trust, iteron_protocol::Trust::Untrusted);
     }
 
     #[tokio::test]
@@ -792,7 +792,7 @@ mod tests {
             .expect("the admitted tool is registered");
         assert_eq!(
             ordinary.capability,
-            core_protocol::Capability::IrreversibleExternal,
+            iteron_protocol::Capability::IrreversibleExternal,
             "a server declaring every class must not raise the class its tools register with"
         );
     }
@@ -852,8 +852,8 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(
-            error.downcast_ref::<core_mcp::McpError>(),
-            Some(core_mcp::McpError::CombinedToolLimit { limit: 1 })
+            error.downcast_ref::<iteron_mcp::McpError>(),
+            Some(iteron_mcp::McpError::CombinedToolLimit { limit: 1 })
         ));
         assert_eq!(registry.specs().len(), before);
         assert!(!format!("{error:#}").contains(secret_shaped));
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn startup_diagnostic_does_not_reflect_peer_secret_or_terminal_controls() {
         let secret = "opaque-secret\u{1b}[2J";
-        let error = core_mcp::McpError::Server {
+        let error = iteron_mcp::McpError::Server {
             code: -32_001,
             message: secret.into(),
         };

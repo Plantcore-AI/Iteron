@@ -53,8 +53,8 @@ pub(super) fn model_picker_items(
                         .clone()
                         .or_else(|| directory.model_blocked_reason(entry.id(), &model.raw.id))
                         .or_else(|| match model.selectability {
-                            core_provider::Selectability::Selectable => None,
-                            core_provider::Selectability::Disabled { reason } => {
+                            iteron_provider::Selectability::Selectable => None,
+                            iteron_provider::Selectability::Disabled { reason } => {
                                 Some(reason.into())
                             }
                         });
@@ -187,7 +187,7 @@ pub(super) fn model_picker_items(
 /// never asserted: a session rule (`--allow-code`, `/permissions allow code_executing`) outranks the
 /// mode table, so a hard-coded "code still gated" mislabels every session that carries such a grant.
 pub(super) fn mode_picker_items(current: PermissionMode, rules: &PermissionRules) -> Vec<PickItem> {
-    let code_clause = |mode: PermissionMode| match core_protocol::gate(
+    let code_clause = |mode: PermissionMode| match iteron_protocol::gate(
         mode,
         rules,
         "bash",

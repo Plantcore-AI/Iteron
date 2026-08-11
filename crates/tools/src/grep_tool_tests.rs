@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::ToolUse;
+use iteron_protocol::ToolUse;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -10,7 +10,7 @@ impl TestRoot {
     fn new(label: &str) -> Self {
         let serial = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "core-tools-grep-{label}-{}-{serial}",
+            "iteron-tools-grep-{label}-{}-{serial}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).unwrap();

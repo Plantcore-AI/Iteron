@@ -6,7 +6,7 @@
 //! with no reference to its neighbours, or a plugin's fate would depend on who else is installed --
 //! which is exactly the coupling that makes one bad plugin able to take down the rest.
 
-use core_protocol::capability_set::CapabilitySet;
+use iteron_protocol::capability_set::CapabilitySet;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -328,7 +328,7 @@ impl fmt::Display for Refusal {
 ///
 /// Stricter than [`crate::valid_name`], which admits `.` because a plugin id appears in paths.
 /// Slot keys are echoed into the model's prompt and used as tool arguments, so they follow the
-/// same rule the skill loader already enforces (`core-ctx` `skills.rs`: "not a plain slug").
+/// same rule the skill loader already enforces (`iteron-ctx` `skills.rs`: "not a plain slug").
 fn valid_slot_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= MAX_SLOT_KEY_BYTES

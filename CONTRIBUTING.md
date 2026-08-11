@@ -1,6 +1,6 @@
-# Contributing to Core Code
+# Contributing to Iteron
 
-Thank you for helping build Core Code. Focused bug fixes, tests, documentation,
+Thank you for helping build Iteron. Focused bug fixes, tests, documentation,
 provider adapters, evaluation fixtures, and carefully scoped features are
 welcome. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before
 participating.
@@ -23,7 +23,7 @@ CLA is required.
 Issues labeled `good first issue` should be independently reproducible, bounded to
 one responsibility area, and include acceptance evidence. `help wanted` may need
 more design work. Ask setup and usage questions in
-[GitHub Discussions](https://github.com/Plantcore-AI/core/discussions).
+[GitHub Discussions](https://github.com/Plantcore-AI/Iteron/discussions).
 
 ## Planned work runs through issues and milestones
 
@@ -61,9 +61,9 @@ Fork the repository in GitHub, then clone your fork:
 
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/core.git
-cd core
-git remote add upstream https://github.com/Plantcore-AI/core.git
-cargo build --locked -p core-cli
+cd iteron
+git remote add upstream https://github.com/Plantcore-AI/Iteron.git
+cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked
 ```
 
@@ -81,7 +81,7 @@ troubleshooting.
 3. Find the primary responsibility boundary for each path:
 
    ```sh
-   cargo run --locked -p core-xtask -- boundaries explain path/to/file
+   cargo run --locked -p iteron-xtask -- boundaries explain path/to/file
    ```
 
 4. For a new subsystem, public protocol, security boundary, cross-boundary
@@ -101,7 +101,7 @@ Run focused checks while iterating. Before requesting review, run the full gate:
 
 ```sh
 cargo fmt --all -- --check
-cargo run --locked -p core-xtask -- boundaries check
+cargo run --locked -p iteron-xtask -- boundaries check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
@@ -219,7 +219,7 @@ compatibility impact, security impact, rollout, and rollback. To compute the exa
 boundary contract for a committed branch:
 
 ```sh
-cargo run --locked -p core-xtask -- boundaries affected --base origin/main
+cargo run --locked -p iteron-xtask -- boundaries affected --base origin/main
 ```
 
 - Declare every affected primary boundary and invariant overlay exactly as CI

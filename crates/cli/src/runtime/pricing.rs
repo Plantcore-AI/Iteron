@@ -1,4 +1,4 @@
-use core_obs::CostState;
+use iteron_obs::CostState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

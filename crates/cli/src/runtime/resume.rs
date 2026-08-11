@@ -211,7 +211,7 @@ impl Agent {
                     let mut pricing_replay = self
                         .pricing_port
                         .as_ref()
-                        .map(|pricing| core_obs::PricingReplay::trusted(pricing.clone()))
+                        .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
                         .unwrap_or_default();
                     for scoped in &scoped_events {
                         pricing_replay.observe(
@@ -480,7 +480,7 @@ impl Agent {
             validate_route_identifier(
                 "agent_definition_tag",
                 tag,
-                core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
+                iteron_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
                 false,
             )?;
         }
@@ -563,14 +563,14 @@ impl Agent {
     ) -> Result<(), KernelError> {
         let snapshot = self.compiled_policy_bundle.genesis_snapshot().clone();
         let inherited_from =
-            parent_run.map(|parent| core_protocol::RunGenesisPolicyBundleInheritance {
+            parent_run.map(|parent| iteron_protocol::RunGenesisPolicyBundleInheritance {
                 parent_run: parent.0.clone(),
                 parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
             });
         self.emit_durable(
             TurnId(0),
             EventKind::PolicyBundleSnapshot {
-                version: core_protocol::RunGenesisPolicyBundleVersion::V1,
+                version: iteron_protocol::RunGenesisPolicyBundleVersion::V1,
                 snapshot,
                 inherited_from,
             },

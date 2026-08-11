@@ -1,4 +1,4 @@
-use core_protocol::{
+use iteron_protocol::{
     Event, EventKind, PolicyActionId, PolicyDecisionDisposition, PolicyDecisionEvidence,
     PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyRuntimeIdentity,
     PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, Seq, TenantId, TurnId,
@@ -7,7 +7,7 @@ use core_protocol::{
     },
     slot::SlotId,
 };
-use core_record::{Rollout, replay};
+use iteron_record::{Rollout, replay};
 use std::path::PathBuf;
 
 fn tmpdir() -> PathBuf {
@@ -23,9 +23,9 @@ fn tmpdir() -> PathBuf {
 
 fn identity() -> PolicyRuntimeIdentity {
     PolicyRuntimeIdentity {
-        bundle_id: "core:baseline".into(),
+        bundle_id: "iteron:baseline".into(),
         bundle_digest_sha256: "a".repeat(64),
-        policy_id: "core://policies/router/baseline-v1".into(),
+        policy_id: "iteron://policies/router/baseline-v1".into(),
         policy_version: "1.0.0".into(),
         policy_digest_sha256: "b".repeat(64),
     }
@@ -44,7 +44,7 @@ fn decision() -> PolicyDecisionEvidence {
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: None,
         propensity_ppm: Some(1_000_000),
-        feature_schema_id: "core:router-features-v1".into(),
+        feature_schema_id: "iteron:router-features-v1".into(),
         feature_digest_sha256: "c".repeat(64),
         fixed_invariants_digest_sha256: "d".repeat(64),
         tunables_digest_sha256: "e".repeat(64),

@@ -1,6 +1,6 @@
 //! Immutable policy identity sidecar for standalone workflow runs.
 
-use core_protocol::RunGenesisPolicyBundleSnapshot;
+use iteron_protocol::RunGenesisPolicyBundleSnapshot;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ pub(crate) fn persist(
     if !super::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
-    core_record::validate_policy_bundle_snapshot(snapshot)?;
+    iteron_record::validate_policy_bundle_snapshot(snapshot)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
     if bytes.len() > MAX_POLICY_CHECKPOINT_BYTES {
         anyhow::bail!(
@@ -88,7 +88,7 @@ fn load_path(path: &PathBuf) -> anyhow::Result<RunGenesisPolicyBundleSnapshot> {
         );
     }
     let snapshot: RunGenesisPolicyBundleSnapshot = serde_json::from_slice(&bytes)?;
-    core_record::validate_policy_bundle_snapshot(&snapshot)?;
+    iteron_record::validate_policy_bundle_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn workflow_checkpoint_is_bounded_validated_and_immutable() {
         let root = std::env::temp_dir().join(format!(
-            "core-workflow-policy-{}-{}",
+            "iteron-workflow-policy-{}-{}",
             std::process::id(),
             NEXT_DIR.fetch_add(1, Ordering::Relaxed)
         ));
@@ -118,7 +118,7 @@ mod tests {
         for row in &mut different.slots {
             row.policy.bundle_id = different.bundle_id.clone();
         }
-        let different = core_record::seal_policy_bundle_snapshot(different).unwrap();
+        let different = iteron_record::seal_policy_bundle_snapshot(different).unwrap();
         assert!(persist(&root, "wf-test", &different).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }

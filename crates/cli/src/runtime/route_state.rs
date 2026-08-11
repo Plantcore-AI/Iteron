@@ -1,6 +1,6 @@
 use super::*;
 
-const MODEL_ROUTE_FEATURE_SCHEMA: &str = "core:model-route-decision-features-v1";
+const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 
 impl Agent {
     /// Record the composition root's already-resolved initial route as one deterministic
@@ -390,12 +390,12 @@ impl Agent {
             );
         }
 
-        let observation = core_provider::catalog::ModelRouterObservation::single_route(
+        let observation = iteron_provider::catalog::ModelRouterObservation::single_route(
             model_id.to_owned(),
             None,
             None,
         );
-        match core_provider::catalog::ModelRouterStrategy::route_with(
+        match iteron_provider::catalog::ModelRouterStrategy::route_with(
             self.model_router.as_ref(),
             &observation,
             self.authority_ceiling,
@@ -570,7 +570,7 @@ fn model_route_action_id(
     }
 
     let mut hasher = Sha256::new();
-    hasher.update(b"core.model-route-action.v1");
+    hasher.update(b"iteron.model-route-action.v1");
     field(&mut hasher, provider_id);
     field(&mut hasher, model_id);
     field(&mut hasher, catalog_digest);

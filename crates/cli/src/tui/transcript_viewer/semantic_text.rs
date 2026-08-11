@@ -4,8 +4,8 @@ mod markdown;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use core_protocol::DiffTag;
-use core_workflow::events::{self, WorkflowState};
+use iteron_protocol::DiffTag;
+use iteron_workflow::events::{self, WorkflowState};
 
 use crate::block;
 use crate::markdown::MarkdownDoc;
@@ -31,7 +31,7 @@ pub(super) fn block_text(
             out.push("\n");
         }
         block::BlockKind::Assistant(document) => {
-            out.push("### core\n");
+            out.push("### iteron\n");
             if out.active()
                 && let Some((text, truncated)) =
                     markdown::project(document, out.remaining(), cancelled)

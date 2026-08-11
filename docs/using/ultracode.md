@@ -1,11 +1,11 @@
 # Ultracode
 
-Ultracode is Core Code's highest effort setting. It combines the maximum
+Ultracode is Iteron's highest effort setting. It combines the maximum
 provider-facing reasoning intent with a bounded internal investigation-and-write
 workflow.
 
 ```sh
-core --effort ultracode
+iteron --effort ultracode
 ```
 
 ## Current workflow
@@ -19,16 +19,16 @@ For a substantive task, the current policy may:
 5. give one writer the original task plus the bounded evidence.
 
 Investigators run bounded-concurrent: several are in flight at once, capped by a
-permit pool, and the live tree renders one row per investigator. Core Code does
+permit pool, and the live tree renders one row per investigator. Iteron does
 not claim a generic DAG scheduler or multiple concurrent writers. If
 decomposition fails, yields no useful evidence, or would consume the writer
-reserve, Core Code falls back to the single writer.
+reserve, Iteron falls back to the single writer.
 
 ## Workflow scripts
 
 The same engine also runs standalone workflow scripts — JavaScript files that
 call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`. See
-`core workflow` in the [CLI reference](../reference/cli.md) and the example
+`iteron workflow` in the [CLI reference](../reference/cli.md) and the example
 script at `crates/workflow/examples/repo-audit.js`.
 
 ## Authority remains fixed

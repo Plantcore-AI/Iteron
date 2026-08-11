@@ -8,7 +8,7 @@
 //! Three properties are load-bearing.
 //!
 //! 1. **A chip names exactly what a tool call could have named.** Every path is resolved by
-//!    [`core_tools::resolve_in_root`], the same function `read_file` routes through, so the
+//!    [`iteron_tools::resolve_in_root`], the same function `read_file` routes through, so the
 //!    composer and the tool can never disagree about which bytes a path means. Since 2026-08-05
 //!    that function addresses the host rather than confining to the workspace, and this module
 //!    follows it rather than keeping a second, stricter rule of its own.
@@ -17,10 +17,10 @@
 //!    a model, and answering confidently from half a file is worse than not answering.
 //! 3. **Nothing unsanitised reaches the terminal.** Chip labels are
 //!    [`crate::image_input::SafeDisplayName`]; workspace-relative paths are proven free of control
-//!    and bidi-format characters by `core_protocol`'s own validation before they can be built.
+//!    and bidi-format characters by `iteron_protocol`'s own validation before they can be built.
 
 use crate::image_input::{ImageInputErrorKind, SafeDisplayName, read_path_capped};
-use core_protocol::input::{
+use iteron_protocol::input::{
     FileContent, MAX_FILE_TEXT_BYTES, MAX_INPUT_FILES, MAX_TOTAL_FILE_TEXT_BYTES,
 };
 use sha2::{Digest as _, Sha256};
@@ -227,7 +227,7 @@ impl FileAttachment {
         self.display_name.as_str()
     }
 
-    /// The workspace-relative path this chip resolved to. Safe to print: `core_protocol` refused
+    /// The workspace-relative path this chip resolved to. Safe to print: `iteron_protocol` refused
     /// it otherwise.
     pub fn relative_path(&self) -> &str {
         &self.content.path
@@ -306,7 +306,7 @@ impl FileAttachments {
     /// Attach one workspace file named by the operator.
     ///
     /// `requested` may be absolute or workspace-relative; either way the authority on whether it
-    /// may be read is [`core_tools::resolve_in_root`], not this function. Everything before that
+    /// may be read is [`iteron_tools::resolve_in_root`], not this function. Everything before that
     /// call only reduces the path to the relative form that call expects, and refuses shapes that
     /// have no relative form at all.
     pub fn attach_path(
@@ -347,7 +347,7 @@ impl FileAttachments {
         }
         // The same resolution `read_file` performs, for the same reason it always was: the chip
         // must attach exactly what the tool would read. It is no longer a containment check.
-        let resolved = core_tools::resolve_in_root(workspace, &relative).map_err(|_| {
+        let resolved = iteron_tools::resolve_in_root(workspace, &relative).map_err(|_| {
             FileInputError::named(FileInputErrorKind::OutsideWorkspace, name.clone())
         })?;
 
@@ -590,7 +590,7 @@ impl FileMention {
 /// that attached whatever looked like a path would turn an ordinary sentence into a filesystem
 /// read.
 pub fn parse_file_mentions(input: &str) -> Result<Vec<FileMention>, FileInputError> {
-    if input.len() > core_protocol::task::MAX_TASK_TEXT_BYTES {
+    if input.len() > iteron_protocol::task::MAX_TASK_TEXT_BYTES {
         return Err(FileInputError::unnamed(
             FileInputErrorKind::InvalidReference,
         ));
@@ -680,7 +680,7 @@ fn mention_boundary(input: &str, at: usize) -> bool {
 /// Bytes of framing this renderer adds per file, excluding the path.
 ///
 /// Kept next to the renderer and asserted against
-/// [`core_protocol::input::FILE_ATTACHMENT_FRAMING_BYTES`] so the admission bound and the thing it
+/// [`iteron_protocol::input::FILE_ATTACHMENT_FRAMING_BYTES`] so the admission bound and the thing it
 /// bounds cannot drift.
 const RENDER_FRAMING_BYTES: usize =
     "<attached-file path=\"".len() + "\">\n".len() + "\n</attached-file>\n\n".len();
@@ -715,7 +715,7 @@ pub fn render_attached_files(text: &str, files: &[FileContent]) -> String {
 /// A `const` assertion rather than a test: both sides are compile-time constants, so a runtime
 /// `assert!` over them is optimised out and proves nothing. This one fails the build.
 const _: () = assert!(
-    RENDER_FRAMING_BYTES <= core_protocol::input::FILE_ATTACHMENT_FRAMING_BYTES,
+    RENDER_FRAMING_BYTES <= iteron_protocol::input::FILE_ATTACHMENT_FRAMING_BYTES,
     "the renderer must fit inside the per-file framing the protocol charges"
 );
 
@@ -725,7 +725,7 @@ mod tests {
         ContextKind, FileAttachments, FileInputErrorKind, FileLoadLimits, parse_file_mentions,
         render_attached_files,
     };
-    use core_protocol::input::{
+    use iteron_protocol::input::{
         FILE_ATTACHMENT_FRAMING_BYTES, FileContent, MAX_FILE_TEXT_BYTES, validate_file_submission,
     };
     use std::path::{Path, PathBuf};

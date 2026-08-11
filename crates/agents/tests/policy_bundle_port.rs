@@ -3,7 +3,7 @@
 //!
 //! # Why this test exists
 //!
-//! `#26` acceptance criterion 5 runs `grep -rniE 'core[-_]evolve'` over `crates/kernel` and
+//! `#26` acceptance criterion 5 runs `grep -rniE 'iteron[-_]evolve'` over `crates/kernel` and
 //! `crates/agents` and requires no hit, so that the bundle-resolution port cannot have added that
 //! dependency to either. The invariant is real: evolution is deliberately outside the runtime
 //! trusted computing base.
@@ -15,12 +15,12 @@
 //!
 //! This file is the consumer that makes it mean something. `crates/agents` names the port, holds it
 //! as a trait object at a composition root, implements it, and reads a governed slot out of the
-//! resolved view — all through `core-protocol`, which it already depends on. If the port is ever
+//! resolved view — all through `iteron-protocol`, which it already depends on. If the port is ever
 //! moved back onto evolution-crate types, this file stops compiling, and the criterion goes from
 //! vacuously green to honestly red.
 //!
 //! Read `crates/agents/Cargo.toml` alongside this: its only workspace-internal dependencies are
-//! `core-ctx` and `core-protocol` (plus serde and serde_json). The earlier wording said "nothing
+//! `iteron-ctx` and `iteron-protocol` (plus serde and serde_json). The earlier wording said "nothing
 //! else", which was false as literally stated even though the invariant it defends does hold.
 //!
 //! # A warning about that grep, for whoever runs it next
@@ -31,10 +31,10 @@
 //! therefore worded around the literal token deliberately. If the criterion ever does go red, read
 //! the hits before believing them, and check `Cargo.toml` and `cargo tree` for the real answer.
 
-use core_protocol::bundle::{
+use iteron_protocol::bundle::{
     BundleResolutionError, PolicyBundleResolver, ResolvedBundle, ResolvedPolicy,
 };
-use core_protocol::slot::SlotId;
+use iteron_protocol::slot::SlotId;
 
 fn digest(seed: char) -> String {
     std::iter::repeat_n(seed, 64).collect()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create deterministic Core Code release archives."""
+"""Create deterministic Iteron release archives."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def build_archive(arguments: argparse.Namespace) -> Path:
     if arguments.source_date_epoch < 0:
         raise ReleaseToolError("SOURCE_DATE_EPOCH must be non-negative")
 
-    root_name = f"core-code-v{version}-{target}"
+    root_name = f"iteron-v{version}-{target}"
     output = arguments.output_dir / archive_filename(version, target)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
 

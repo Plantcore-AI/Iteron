@@ -5,7 +5,7 @@ use super::{
     snapshot_from_resolved, snapshot_v2_from_resolved, validate_tunables_snapshot,
     validate_tunables_snapshot_v2,
 };
-use core_protocol::{
+use iteron_protocol::{
     EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
     RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersion,
 };
@@ -92,7 +92,7 @@ pub(crate) fn check_checkpoint_compatibility(
 /// identity without pretending that the old journal contains reconstructable values.
 pub(crate) fn check_resolved_compatibility(
     recorded: Option<&TunablesCheckpoint>,
-    resolved: &core_tunables::ResolvedTunableSet,
+    resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: LegacyTunablesPolicy,
 ) -> Result<TunablesCompatibility, TunablesSnapshotError> {
     let Some(recorded) = recorded else {
@@ -183,7 +183,7 @@ fn root_parent(kind: &EventKind) -> Option<Option<String>> {
         } => match (parent_run, forked_at, parent_hash_at_seq) {
             (None, None, None) => Some(None),
             (Some(parent_run), Some(_), Some(parent_hash))
-                if crate::validate_run_id(&core_protocol::RunId(parent_run.clone())).is_ok()
+                if crate::validate_run_id(&iteron_protocol::RunId(parent_run.clone())).is_ok()
                     && is_sha256(parent_hash) =>
             {
                 Some(Some(parent_run.clone()))
@@ -243,7 +243,7 @@ fn validate_inheritance(
     match (parent, inherited) {
         (None, None) => Ok(()),
         (None, Some(inherited))
-            if crate::validate_run_id(&core_protocol::RunId(inherited.parent_run.clone()))
+            if crate::validate_run_id(&iteron_protocol::RunId(inherited.parent_run.clone()))
                 .is_ok()
                 && inherited.parent_snapshot_digest_sha256
                     == checkpoint.snapshot_digest_sha256() =>
@@ -272,7 +272,7 @@ fn validate_inheritance(
 }
 
 pub(crate) fn checkpoint_from_events(
-    events: &[core_protocol::Event],
+    events: &[iteron_protocol::Event],
 ) -> Result<Option<TunablesCheckpoint>, TunablesSnapshotError> {
     let mut state = GenesisTunablesState::default();
     for event in events {

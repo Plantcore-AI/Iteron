@@ -3,7 +3,7 @@
 //! Before this module there was no setup, login or auth surface anywhere in the product: no
 //! subcommand, no slash command, no wizard, and no supported way to persist a choice — both
 //! non-test readers of the user config path were reads (I-25, I-27, I-28). A clean machine could
-//! only be made to work by hand-writing `~/.core/config.json` and exporting the right variable,
+//! only be made to work by hand-writing `~/.iteron/config.json` and exporting the right variable,
 //! and a syntactically valid but wrong key passed every startup check and failed on the first
 //! paid turn.
 //!
@@ -61,7 +61,7 @@ pub(crate) trait Ask {
 }
 
 /// Run the three questions. Answers already supplied on the command line are not asked again, so
-/// `core setup --byok glm` asks exactly one question and `core setup` asks three.
+/// `iteron setup --byok glm` asks exactly one question and `iteron setup` asks three.
 pub(crate) fn collect_answers(
     ask: &mut dyn Ask,
     kind: Option<SetupKind>,
@@ -93,7 +93,7 @@ pub(crate) fn collect_answers(
     };
     if !known_providers.iter().any(|known| known == &provider_id) {
         anyhow::bail!(
-            "provider `{provider_id}` is not configured (known: {}); declare it in ~/.core/config.json first",
+            "provider `{provider_id}` is not configured (known: {}); declare it in ~/.iteron/config.json first",
             known_providers.join(", ")
         );
     }
@@ -134,7 +134,7 @@ pub(crate) fn collect_answers(
 /// The bytes a credential file holds for one set of answers.
 ///
 /// A bare token is the simple BYOK case; a plan token becomes a document so its expiry travels
-/// with it and [`core_provider::CredentialSource`] can refresh ahead of it without a restart.
+/// with it and [`iteron_provider::CredentialSource`] can refresh ahead of it without a restart.
 pub(crate) fn credential_document(answers: &SetupAnswers) -> String {
     match answers.expires_at_unix {
         Some(expires_at_unix) => format!(
@@ -154,7 +154,7 @@ pub(crate) fn credential_document(answers: &SetupAnswers) -> String {
 pub(crate) fn persist(answers: &SetupAnswers) -> anyhow::Result<std::path::PathBuf> {
     let path = config::credential_file_path(&answers.provider_id).ok_or_else(|| {
         anyhow::anyhow!(
-            "no config root: set HOME or CORE_CONFIG_HOME before running setup, and use a plain provider id"
+            "no config root: set HOME or ITERON_CONFIG_HOME before running setup, and use a plain provider id"
         )
     })?;
     config::write_private_atomic(&path, credential_document(answers).as_bytes())?;
@@ -177,7 +177,7 @@ pub(crate) fn persist(answers: &SetupAnswers) -> anyhow::Result<std::path::PathB
     Ok(path)
 }
 
-/// `core setup`, `core setup --plan`, `core setup --byok <provider>`.
+/// `iteron setup`, `iteron setup --plan`, `iteron setup --byok <provider>`.
 pub(crate) async fn run_setup(
     kind: Option<SetupKind>,
     provider_id: Option<String>,
@@ -223,7 +223,7 @@ pub(crate) async fn run_setup(
                 Some(reason) => eprintln!("still blocked: {reason}"),
                 None => match directory.default_selection(&answers.provider_id) {
                     Some(selection) => eprintln!(
-                        "ready: {}:{} — run `core` to start",
+                        "ready: {}:{} — run `iteron` to start",
                         selection.provider_id, selection.model_id
                     ),
                     None => eprintln!("{}", directory.resolution_error(&answers.provider_id)),
@@ -235,12 +235,12 @@ pub(crate) async fn run_setup(
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core auth status [provider]` — where the current credential came from, and whether it works.
+/// `iteron auth status [provider]` — where the current credential came from, and whether it works.
 pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     let configured = user_file.providers.clone().unwrap_or_default();
     // Status reports value-free local credential provenance. It does not synchronously probe every
-    // endpoint the machine has ever configured: a black-holed provider must not hang `core auth`,
+    // endpoint the machine has ever configured: a black-holed provider must not hang `iteron auth`,
     // and absent live evidence is rendered honestly as an unknown account state.
     let directory = providers::ProviderDirectory::inspect_local(&configured)?;
     // Which provider a run would route to, and which providers this report covers, are two
@@ -289,7 +289,7 @@ pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Resu
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core auth logout [provider]` — drop the credential, keep everything else.
+/// `iteron auth logout [provider]` — drop the credential, keep everything else.
 ///
 /// The provider entry, its api_root, its declared models and its capabilities all survive: logging
 /// out of an account is not the same as deleting the route to it. Only the credential file is
@@ -338,7 +338,7 @@ pub(crate) async fn run_auth_logout(provider_id: Option<String>) -> anyhow::Resu
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core config get [key]` — the persisted operator value, never the layered runtime value.
+/// `iteron config get [key]` — the persisted operator value, never the layered runtime value.
 pub(crate) fn run_config_get(key: Option<String>) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     match key {
@@ -366,7 +366,7 @@ pub(crate) fn run_config_get(key: Option<String>) -> anyhow::Result<u8> {
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core config set <key> <value>` — THE writer. Every other persist path calls into it.
+/// `iteron config set <key> <value>` — THE writer. Every other persist path calls into it.
 pub(crate) fn run_config_set(key: &str, value: &str) -> anyhow::Result<u8> {
     let path = config::set_user_setting(key, value)?;
     println!("{key} = {value}  ({})", path.display());
@@ -384,7 +384,7 @@ impl TerminalAsk {
         use std::io::IsTerminal as _;
         if !std::io::stdin().is_terminal() {
             anyhow::bail!(
-                "core setup asks questions and needs a terminal; run it directly, or set the credential with `core config set` and an environment variable"
+                "iteron setup asks questions and needs a terminal; run it directly, or set the credential with `iteron config set` and an environment variable"
             );
         }
         Ok(Self {

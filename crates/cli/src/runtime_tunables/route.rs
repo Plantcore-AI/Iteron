@@ -7,15 +7,15 @@
 
 use crate::config::McpServerConfig;
 use crate::providers::{ModelCapabilities, ModelSelection, ProviderDirectory};
-use core_protocol::{Capability as ToolCapability, Purity};
-use core_provider::AdapterKind;
-use core_tools::{DISPATCH_AGENT, Registry, WORKFLOW_TOOL};
-use core_tunables::{CapabilityRequirement, RouteCapabilities, RouteIdentity};
+use iteron_protocol::{Capability as ToolCapability, Purity};
+use iteron_provider::AdapterKind;
+use iteron_tools::{DISPATCH_AGENT, Registry, WORKFLOW_TOOL};
+use iteron_tunables::{CapabilityRequirement, RouteCapabilities, RouteIdentity};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
 
-const ROUTE_ATTESTATION_CANONICALIZATION: &str = "core-cli-route-capability-facts-v1";
+const ROUTE_ATTESTATION_CANONICALIZATION: &str = "iteron-cli-route-capability-facts-v1";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RouteFactError {
@@ -162,7 +162,7 @@ fn provider_capabilities(
 fn add_registry_capabilities(
     capabilities: &mut BTreeSet<CapabilityRequirement>,
     registry: &Registry,
-    specs: &[core_protocol::ToolSpec],
+    specs: &[iteron_protocol::ToolSpec],
     names: &HashSet<&str>,
 ) {
     use CapabilityRequirement as C;

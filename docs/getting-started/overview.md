@@ -1,7 +1,7 @@
 # Overview
 
-Core Code is the first coding vertical of a broader agent-runtime design. The
-current product is a terminal application: the `core` executable composes a model
+Iteron is the first coding vertical of a broader agent-runtime design. The
+current product is a terminal application: the `iteron` executable composes a model
 provider, repository tools, a durable run record, permissions, sandbox policy,
 verification, and the TUI or one-shot frontend.
 
@@ -29,7 +29,7 @@ It is not yet a supported replacement for a production coding-agent workflow.
 
 ## Five invariants
 
-Core Code evaluates mechanisms against five project invariants:
+Iteron evaluates mechanisms against five project invariants:
 
 1. **Bounded** — loops, retries, queues, output, time, cost, and concurrency have
    explicit ceilings.

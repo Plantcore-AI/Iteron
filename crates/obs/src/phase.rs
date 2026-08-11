@@ -1,5 +1,5 @@
 use crate::Ledger;
-use core_protocol::Phase;
+use iteron_protocol::Phase;
 use std::time::{Duration, Instant};
 
 /// A phase span: name a phase and measure its wall-clock duration.

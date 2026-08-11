@@ -55,7 +55,7 @@ impl Agent {
         ]);
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         let context_estimator =
-            core_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
+            iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
         Agent {
             provider,
             registry,
@@ -68,7 +68,7 @@ impl Agent {
             selected_route: None,
             selected_provider: None,
             last_rate_limit: None,
-            provider_controls: core_provider::ProviderRequestControls::default(),
+            provider_controls: iteron_provider::ProviderRequestControls::default(),
             provider_governor: None,
             fallback_provider_routes: Vec::new(),
             pricing_port: None,
@@ -88,12 +88,12 @@ impl Agent {
             last_compaction_turn: None,
             context_estimator,
             deferred_tool_eager_limit: None,
-            context_budget_policy: core_ctx::ContextBudgetPolicy::default(),
-            context_materialization_policy: core_ctx::ContextMaterializationPolicy::default(),
+            context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
+            context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,
-            context_ledgers: core_ctx::ContextLedgerStore::default(),
-            memory_traces: core_ctx::MemoryTraceStore::default(),
+            context_ledgers: iteron_ctx::ContextLedgerStore::default(),
+            memory_traces: iteron_ctx::MemoryTraceStore::default(),
             session_memory_visibility: std::collections::VecDeque::new(),
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
@@ -101,7 +101,7 @@ impl Agent {
             workspace_file_count: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
-            verification_policy: core_verify::VerificationRuntimePolicy::default(),
+            verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
             verification_quarantine: std::collections::BTreeMap::new(),
             latest_workspace_checkpoint: None,
             last_workspace_checkpoint_turn: None,
@@ -132,7 +132,7 @@ impl Agent {
             workflow_progress_tx: None,
             workflow_launcher: None,
             mcp_runtime: None,
-            effort: core_protocol::Effort::default(),
+            effort: iteron_protocol::Effort::default(),
             memory_workspace: None,
             memory_benchmark_scope: None,
             context_strategy: compiled_policy_bundle.slots().context.clone(),
@@ -142,20 +142,20 @@ impl Agent {
             planner: compiled_policy_bundle.slots().planner.clone(),
             collaboration: compiled_policy_bundle.slots().collaboration.clone(),
             scheduler: compiled_policy_bundle.slots().scheduler.clone(),
-            retry_policy: core_sched::BackoffPolicy::default(),
+            retry_policy: iteron_sched::BackoffPolicy::default(),
             verifier: compiled_policy_bundle.slots().verifier.clone(),
             model_router: compiled_policy_bundle.slots().model_router.clone(),
-            context_port: std::sync::Arc::new(core_ctx::DefaultContextPort),
+            context_port: std::sync::Arc::new(iteron_ctx::DefaultContextPort),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
-            agent_catalog: std::sync::Arc::new(core_agents::AgentCatalog::builtin_only()),
+            agent_catalog: std::sync::Arc::new(iteron_agents::AgentCatalog::builtin_only()),
             agent_catalog_pinned: false,
             boot_bundle: compiled_policy_bundle.boot_bundle(),
             compiled_policy_bundle,
             policy_evidence: None,
             policy_turn_cost_baseline: None,
             policy_turn_counter_baseline: None,
-            policy_verifier_outcome: core_protocol::PolicyVerifierOutcome::NotRun,
+            policy_verifier_outcome: iteron_protocol::PolicyVerifierOutcome::NotRun,
             tunables_pin: None,
             injected: None,
             injected_trust: None,
@@ -193,7 +193,7 @@ impl Agent {
         model: String,
         system: String,
         budget: Budget,
-        resolved_tunables: std::sync::Arc<core_tunables::ResolvedTunableSet>,
+        resolved_tunables: std::sync::Arc<iteron_tunables::ResolvedTunableSet>,
     ) -> Result<Self, KernelError> {
         let pin = tunables_pin::TunablesPin::from_resolved(&resolved_tunables)?;
         Self::new_with_tunables_pin(provider, registry, rollout, model, system, budget, pin)
@@ -208,7 +208,7 @@ impl Agent {
         model: String,
         system: String,
         budget: Budget,
-        checkpoint: core_record::TunablesCheckpoint,
+        checkpoint: iteron_record::TunablesCheckpoint,
     ) -> Result<Self, KernelError> {
         let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
         Self::new_with_tunables_pin(provider, registry, rollout, model, system, budget, pin)
@@ -271,7 +271,7 @@ impl Agent {
     /// immutable execution inputs before doing new work.
     pub fn pin_agent_catalog(
         &mut self,
-        catalog: core_agents::AgentCatalog,
+        catalog: iteron_agents::AgentCatalog,
     ) -> Result<(), KernelError> {
         if self.agent_catalog_pinned {
             return Err(KernelError::AgentCatalogAlreadyResolved);
@@ -295,14 +295,14 @@ impl Agent {
     /// Clone the exact immutable catalog pinned for this runtime. Frontends receive this once at
     /// attach time; they must never rediscover definitions from a filesystem that may have changed
     /// after execution inputs were resolved.
-    pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<core_agents::AgentCatalog> {
+    pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<iteron_agents::AgentCatalog> {
         self.agent_catalog.clone()
     }
 
     /// Pin a fresh composition root's one atomic tunables result as a V2 checkpoint.
     pub fn pin_resolved_tunables(
         &mut self,
-        resolved: std::sync::Arc<core_tunables::ResolvedTunableSet>,
+        resolved: std::sync::Arc<iteron_tunables::ResolvedTunableSet>,
     ) -> Result<(), KernelError> {
         if self.tunables_pin.is_some() {
             return Err(KernelError::TunablesAlreadyResolved);
@@ -317,7 +317,7 @@ impl Agent {
     /// Pin the exact historical checkpoint recovered from this rollout. V1 remains V1.
     pub fn pin_tunables_checkpoint(
         &mut self,
-        checkpoint: core_record::TunablesCheckpoint,
+        checkpoint: iteron_record::TunablesCheckpoint,
     ) -> Result<(), KernelError> {
         if self.tunables_pin.is_some() {
             return Err(KernelError::TunablesAlreadyResolved);
@@ -329,7 +329,7 @@ impl Agent {
         Ok(())
     }
 
-    pub fn tunables_checkpoint(&self) -> Result<&core_record::TunablesCheckpoint, KernelError> {
+    pub fn tunables_checkpoint(&self) -> Result<&iteron_record::TunablesCheckpoint, KernelError> {
         self.tunables_pin
             .as_ref()
             .map(tunables_pin::TunablesPin::checkpoint)
@@ -345,7 +345,7 @@ impl Agent {
     /// The quota the provider last published on its response headers, or `None` when this route
     /// publishes none. Read before the first token of the answer, so a frontend can show a
     /// shrinking budget before the rejection rather than after it (I-53).
-    pub fn last_rate_limit(&self) -> Option<core_provider::RateLimitSnapshot> {
+    pub fn last_rate_limit(&self) -> Option<iteron_provider::RateLimitSnapshot> {
         self.last_rate_limit
     }
 
@@ -356,11 +356,11 @@ impl Agent {
     /// Plan is included because Plan is a hard denial of everything above read-only, and a posture
     /// that quietly relaxed one of its conjuncts would be the exact "quiet lie" the permission
     /// surface is built to avoid.
-    pub(super) fn operator_authority(&self) -> core_kernel::admission::OperatorAuthority {
+    pub(super) fn operator_authority(&self) -> iteron_kernel::admission::OperatorAuthority {
         if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-            core_kernel::admission::OperatorAuthority::Operator
+            iteron_kernel::admission::OperatorAuthority::Operator
         } else {
-            core_kernel::admission::OperatorAuthority::Constrained
+            iteron_kernel::admission::OperatorAuthority::Constrained
         }
     }
 

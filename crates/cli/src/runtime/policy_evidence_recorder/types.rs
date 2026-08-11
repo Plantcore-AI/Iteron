@@ -1,6 +1,6 @@
-use core_protocol::policy_evidence::PolicyEvidenceError;
-use core_protocol::slot::SlotId;
-use core_protocol::{
+use iteron_protocol::policy_evidence::PolicyEvidenceError;
+use iteron_protocol::slot::SlotId;
+use iteron_protocol::{
     PolicyActionId, PolicyDecisionDisposition, PolicyOpportunityId, PolicyRuntimeIdentity,
     PolicyTerminalOutcome, PolicyVerifierOutcome, RunId, TurnId,
 };
@@ -140,7 +140,7 @@ impl Default for PolicyRunAggregate {
 
 #[derive(Debug)]
 pub(crate) enum PolicyEvidenceRecorderError {
-    Record(core_record::RecordError),
+    Record(iteron_record::RecordError),
     InvalidEvidence(PolicyEvidenceError),
     UnknownSlot(SlotId),
     DuplicateSlot(SlotId),
@@ -242,14 +242,14 @@ impl From<PolicyEvidenceError> for PolicyEvidenceRecorderError {
     }
 }
 
-impl From<core_record::RecordError> for PolicyEvidenceRecorderError {
-    fn from(value: core_record::RecordError) -> Self {
+impl From<iteron_record::RecordError> for PolicyEvidenceRecorderError {
+    fn from(value: iteron_record::RecordError) -> Self {
         Self::Record(value)
     }
 }
 
 impl PolicyEvidenceRecorderError {
-    pub(crate) fn into_record_error(self) -> Result<core_record::RecordError, Self> {
+    pub(crate) fn into_record_error(self) -> Result<iteron_record::RecordError, Self> {
         match self {
             Self::Record(error) => Ok(error),
             other => Err(other),

@@ -18,7 +18,7 @@ pub const KERNEL_DIAGNOSTIC_SCHEMA_VERSION: u8 = 1;
 pub const KERNEL_DIAGNOSTIC_CODES: [&str; 2] =
     ["record_append_failed", "resume_redaction_degraded"];
 
-/// Secret-safe diagnostic vocabulary exported by `core-kernel`.
+/// Secret-safe diagnostic vocabulary exported by `iteron-kernel`.
 ///
 /// This enum is intentionally closed and contains only bounded numeric or enum fields. Adding a
 /// string field is a security-sensitive public-contract change because record errors and resumed

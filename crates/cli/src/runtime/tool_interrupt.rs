@@ -6,7 +6,7 @@
 //! only the common future race and the conservative unknown-result payload; the orchestrator owns
 //! settlement.
 
-use core_protocol::{ToolResult, Trust};
+use iteron_protocol::{ToolResult, Trust};
 use std::time::Duration;
 
 const TOOL_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);

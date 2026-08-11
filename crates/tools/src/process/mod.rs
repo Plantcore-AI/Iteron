@@ -14,7 +14,7 @@ mod types;
 mod tests;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use serde::Serialize;
 use std::sync::Arc;
 use supervisor::Supervisor;
@@ -507,7 +507,7 @@ fn required_u16(input: &serde_json::Value, name: &str) -> Result<u16, String> {
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| format!("{name} must be an integer within 1..=4096"))?;
-    core_sandbox::pty::WindowSize::new(
+    iteron_sandbox::pty::WindowSize::new(
         if name == "rows" { value } else { 1 },
         if name == "cols" { value } else { 1 },
     )

@@ -15,7 +15,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let body = serde_json::to_string(value).map_err(|_| LspToolError::Serialization)?;
-    let frame = core_lsp::framing::encode(&body).map_err(LspToolError::Protocol)?;
+    let frame = iteron_lsp::framing::encode(&body).map_err(LspToolError::Protocol)?;
     tokio::time::timeout(WRITE_TIMEOUT, async {
         writer.write_all(&frame).await?;
         writer.flush().await
@@ -51,7 +51,7 @@ where
 {
     let mut aggregate = 0usize;
     for _ in 0..MAX_INTERLEAVED_MESSAGES {
-        let Some((mut message, wire_bytes)) = core_lsp::framing::read_message_with_size(reader)
+        let Some((mut message, wire_bytes)) = iteron_lsp::framing::read_message_with_size(reader)
             .await
             .map_err(LspToolError::Protocol)?
         else {
@@ -184,7 +184,7 @@ mod tests {
             ] {
                 let body = serde_json::to_string(&value).unwrap();
                 server
-                    .write_all(&core_lsp::framing::encode(&body).unwrap())
+                    .write_all(&iteron_lsp::framing::encode(&body).unwrap())
                     .await
                     .unwrap();
             }
@@ -205,7 +205,7 @@ mod tests {
             let request = json!({"jsonrpc":"2.0","id":"server-1","method":"workspace/configuration","params":{"items":[{"section":"rust-analyzer"}]}});
             let body = serde_json::to_string(&request).unwrap();
             server
-                .write_all(&core_lsp::framing::encode(&body).unwrap())
+                .write_all(&iteron_lsp::framing::encode(&body).unwrap())
                 .await
                 .unwrap();
             let mut response = vec![0_u8; 256];
@@ -215,7 +215,7 @@ mod tests {
             let target = json!({"jsonrpc":"2.0","id":3,"result":null});
             let body = serde_json::to_string(&target).unwrap();
             server
-                .write_all(&core_lsp::framing::encode(&body).unwrap())
+                .write_all(&iteron_lsp::framing::encode(&body).unwrap())
                 .await
                 .unwrap();
         });

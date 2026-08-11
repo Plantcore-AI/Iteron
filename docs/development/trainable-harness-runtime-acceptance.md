@@ -7,7 +7,7 @@ Delivery rule: local worktree only; do not push, merge, publish, or change the p
 
 ## 1. Outcome
 
-Core Code is accepted only when one immutable, runtime-effective harness checkpoint controls all
+Iteron is accepted only when one immutable, runtime-effective harness checkpoint controls all
 nine `core/*` strategy slots; every selectable decision produces outcome-joinable evidence; and the
 provider, context, process, LSP, MCP, verification, and collaboration controls named below are real
 bounded production paths rather than registry-only declarations.
@@ -80,7 +80,7 @@ No parent item becomes `[x]` while one child criterion remains below `[x]`.
 - [ ] `H01.3` A fresh rollout appends the immutable 160-family snapshot immediately after
   `run_start`; resume, continue, fork, workflow children, and direct children validate/inherit the
   same effective digest instead of consulting current machine defaults.
-- [ ] `H01.4` `core config explain --effective`, `/tunables`, status output, run record, and runtime
+- [ ] `H01.4` `iteron config explain --effective`, `/tunables`, status output, run record, and runtime
   getters project the same value, provenance, profile, ceiling, and inactive reason.
 - [ ] `H01.5` Interactive, benchmark, and research profiles are explicit typed inputs. Repository
   configuration may only tighten operator authority and ceilings.
@@ -97,7 +97,7 @@ No parent item becomes `[x]` while one child criterion remains below `[x]`.
   configuration text.
 - [ ] `H02.2` Policy artifacts are content-addressed, size bounded, schema checked, and loaded only
   from an operator-trusted active bundle. Project configuration cannot select or widen one.
-- [ ] `H02.3` All nine core slots accept at least one non-baseline recognized implementation whose
+- [ ] `H02.3` All nine iteron slots accept at least one non-baseline recognized implementation whose
   decision differs observably from the baseline while respecting the same ceiling.
 - [ ] `H02.4` Unknown slot versions, unknown policy implementations, digest mismatch, malformed
   artifacts, duplicate slots, and attempts to widen authority fail closed with operator-visible
@@ -233,10 +233,10 @@ During implementation, run only the narrowest relevant commands, normally:
 cargo fmt --all -- --check
 cargo check --locked -p <changed-crate> --all-targets
 cargo test --locked -p <changed-crate> <focused-test-filter>
-cargo run --locked -p core-xtask -- boundaries check
+cargo run --locked -p iteron-xtask -- boundaries check
 ```
 
-Use a targeted `core-cli` binary check only when the composition root changes. Do not run the full
+Use a targeted `iteron-cli` binary check only when the composition root changes. Do not run the full
 workspace suite, broad benchmark ladder, soak matrix, or cross-platform matrix during this pass.
 
 ## 7. Final acceptance ledger

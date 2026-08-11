@@ -11,7 +11,7 @@ use crate::types::{
     CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
     KernelTaxObservation, OracleStatus, RunStatus, SamplingControl,
 };
-use core_sandbox::Confinement;
+use iteron_sandbox::Confinement;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::io::Write;
@@ -23,12 +23,12 @@ const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVAL_CELLS: usize = 1_000_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
-const CORE_PROCESS_MIN_GRACE_SECS: u64 = 1;
-const CORE_PROCESS_MAX_GRACE_SECS: u64 = 30;
-const CORE_PROCESS_GRACE_DIVISOR: u64 = 20;
+const ITERON_PROCESS_MIN_GRACE_SECS: u64 = 1;
+const ITERON_PROCESS_MAX_GRACE_SECS: u64 = 30;
+const ITERON_PROCESS_GRACE_DIVISOR: u64 = 20;
 // These are operational limits, not integer-storage limits. Keeping every evaluator deadline at
 // or below one day makes the corresponding std/Tokio Instant additions portable and auditable.
-const MAX_CORE_AGENT_WALL_SECS: u64 = 24 * 60 * 60;
+const MAX_ITERON_AGENT_WALL_SECS: u64 = 24 * 60 * 60;
 const MAX_CHECKOUT_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const MAX_ORACLE_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const BUILTIN_CREDENTIAL_ENVS: [&str; 6] = [
@@ -45,7 +45,7 @@ fn is_builtin_credential_env(name: &str) -> bool {
 }
 
 /// The sole credential environment name permitted to cross into Core, named by
-/// `CORE_EVAL_CREDENTIAL_ENV`.
+/// `ITERON_EVAL_CREDENTIAL_ENV`.
 ///
 /// It is read from the environment rather than taken as a flag because the credential *value*
 /// already has to be in the evaluator's environment for this to do anything: keeping the name
@@ -55,7 +55,7 @@ fn is_builtin_credential_env(name: &str) -> bool {
 /// as `Some("")`. The name is validated against the built-in list before use; values are never
 /// read or recorded by the evaluator.
 fn credential_env_from_environment() -> Option<String> {
-    normalize_credential_env(std::env::var("CORE_EVAL_CREDENTIAL_ENV").ok())
+    normalize_credential_env(std::env::var("ITERON_EVAL_CREDENTIAL_ENV").ok())
 }
 
 /// Split from the lookup so the empty-is-unset rule is testable without mutating the process
@@ -210,7 +210,7 @@ fn append_attempt(
 }
 
 struct PhysicalAttempt<'a> {
-    core: &'a Path,
+    iteron: &'a Path,
     cell_root: &'a Path,
     oracle_root: &'a Path,
     run_root: &'a Path,
@@ -264,7 +264,7 @@ pub async fn run_evaluation_parallel(
     validate_parallel_options(options)?;
     let corpus = CorpusManifest::load(&options.corpus_path)?;
     let tasks = corpus.tasks_for(options.purpose)?;
-    let core = find_core(options.core_bin.as_deref())?;
+    let iteron = find_core(options.core_bin.as_deref())?;
     std::fs::create_dir_all(&options.work_root).map_err(|source| RunnerError::CreatePath {
         path: options.work_root.display().to_string(),
         source,
@@ -356,7 +356,7 @@ pub async fn run_evaluation_parallel(
             let Some((task, config, seed)) = pending.pop_front() else {
                 break;
             };
-            let core = core.clone();
+            let iteron = iteron.clone();
             let run_root = run_root.clone();
             let options = std::sync::Arc::clone(&options);
             let legacy_options = std::sync::Arc::clone(&legacy_options);
@@ -382,7 +382,7 @@ pub async fn run_evaluation_parallel(
                     let cell_root = run_root.join(&attempt_directory);
                     let oracle_root = run_root.join(format!("{attempt_directory}-oracle"));
                     let mut cell = PhysicalAttempt {
-                        core: &core,
+                        iteron: &iteron,
                         cell_root: &cell_root,
                         oracle_root: &oracle_root,
                         run_root: &run_root,
@@ -481,7 +481,7 @@ pub async fn run_evaluation_parallel(
         crate::attestation::RunAttestation::build(crate::attestation::RunAttestationInput {
             run_id: &manifest.run_id,
             corpus: &corpus,
-            core_path: &core,
+            core_path: &iteron,
             corpus_path: &options.corpus_path,
             result_path: &options.output_path,
             attempt_ledger_path: &attempt_path,
@@ -503,7 +503,7 @@ pub async fn run_evaluation_parallel(
             },
         })?;
     attestation.verify_artifacts(
-        &core,
+        &iteron,
         &options.corpus_path,
         &options.output_path,
         &attempt_path,
@@ -552,7 +552,7 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
         )));
     }
     for (name, duration, maximum_secs) in [
-        ("run_timeout", options.run_timeout, MAX_CORE_AGENT_WALL_SECS),
+        ("run_timeout", options.run_timeout, MAX_ITERON_AGENT_WALL_SECS),
         (
             "checkout_timeout",
             options.checkout_timeout,
@@ -624,12 +624,12 @@ struct CoreProcessTiming {
 fn core_process_timing(agent_wall: Duration) -> Option<CoreProcessTiming> {
     if agent_wall.is_zero()
         || agent_wall.subsec_nanos() != 0
-        || agent_wall.as_secs() > MAX_CORE_AGENT_WALL_SECS
+        || agent_wall.as_secs() > MAX_ITERON_AGENT_WALL_SECS
     {
         return None;
     }
-    let grace_secs = (agent_wall.as_secs() / CORE_PROCESS_GRACE_DIVISOR)
-        .clamp(CORE_PROCESS_MIN_GRACE_SECS, CORE_PROCESS_MAX_GRACE_SECS);
+    let grace_secs = (agent_wall.as_secs() / ITERON_PROCESS_GRACE_DIVISOR)
+        .clamp(ITERON_PROCESS_MIN_GRACE_SECS, ITERON_PROCESS_MAX_GRACE_SECS);
     let grace = Duration::from_secs(grace_secs);
     let process_ceiling = agent_wall.checked_add(grace)?;
     Some(CoreProcessTiming {
@@ -714,7 +714,7 @@ fn snapshot_bundle(source: &Path, destination: &Path) -> Result<String, RunnerEr
 }
 
 async fn run_cell(
-    core: &Path,
+    iteron: &Path,
     workspace: &Path,
     task: &CorpusTask,
     config: HarnessConfig,
@@ -722,10 +722,10 @@ async fn run_cell(
     options: &EvalOptions,
 ) -> CellResult {
     let started = Instant::now();
-    let output = match run_core(core, workspace, task, config, options).await {
+    let output = match run_core(iteron, workspace, task, config, options).await {
         Ok(output) => output,
         Err(error) => {
-            let mut cell = errored_cell(task, config, seed, "core_spawn", error);
+            let mut cell = errored_cell(task, config, seed, "iteron_spawn", error);
             cell.elapsed_ms = millis(started.elapsed());
             return cell;
         }
@@ -738,8 +738,8 @@ async fn run_cell(
             task,
             config,
             seed,
-            "core_contract",
-            "core stdout exceeded the bounded JSON contract limit",
+            "iteron_contract",
+            "iteron stdout exceeded the bounded JSON contract limit",
         );
         cell.exit_code = Some(output.exit_code);
         cell.elapsed_ms = millis(started.elapsed());
@@ -749,7 +749,7 @@ async fn run_cell(
     let final_result = match parse_final_result(&output.stdout, output.exit_code) {
         Ok(result) => result,
         Err(error) => {
-            let mut cell = errored_cell(task, config, seed, "core_contract", error.to_string());
+            let mut cell = errored_cell(task, config, seed, "iteron_contract", error.to_string());
             cell.exit_code = Some(output.exit_code);
             cell.elapsed_ms = millis(started.elapsed());
             return cell;
@@ -797,7 +797,7 @@ async fn run_cell(
     };
 
     if cell.run_status != RunStatus::Completed {
-        cell.failure_phase = Some("core".into());
+        cell.failure_phase = Some("iteron".into());
         return cell;
     }
 
@@ -860,7 +860,7 @@ async fn attach_two_sided_verdict(
     let Some(candidate_diff) = cell.candidate_diff.as_deref() else {
         if matches!(
             cell.failure_phase.as_deref(),
-            Some("core" | "core_spawn" | "core_contract" | "core_timeout")
+            Some("iteron" | "iteron_spawn" | "iteron_contract" | "iteron_timeout")
         ) {
             return cell;
         }
@@ -958,7 +958,7 @@ async fn apply_benchmark_test_patch(
     let Some(binding) = &task.benchmark else {
         return Ok(());
     };
-    let patch_path = workspace.join(".core-eval-hidden-test.patch");
+    let patch_path = workspace.join(".iteron-eval-hidden-test.patch");
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1094,7 +1094,7 @@ async fn apply_candidate_diff(
             "candidate diff exceeds the {MAX_CANDIDATE_DIFF_BYTES}-byte bound"
         ));
     }
-    let patch_path = workspace.join(".core-eval-candidate.patch");
+    let patch_path = workspace.join(".iteron-eval-candidate.patch");
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1169,7 +1169,7 @@ fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
     if canonical_workspace != workspace {
         return Err("benchmark workspace must be canonical and absolute".into());
     }
-    match std::fs::symlink_metadata(workspace.join(".core")) {
+    match std::fs::symlink_metadata(workspace.join(".iteron")) {
         Ok(_) => {
             return Err(
                 "benchmark workspace contains .core project state; refusing a confounded arm"
@@ -1216,18 +1216,18 @@ fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
 }
 
 async fn run_core(
-    core: &Path,
+    iteron: &Path,
     workspace: &Path,
     task: &CorpusTask,
     config: HarnessConfig,
     options: &EvalOptions,
 ) -> Result<ProcessOutput, String> {
-    let spec = core_process_spec(core, workspace, task, config, options)?;
+    let spec = core_process_spec(iteron, workspace, task, config, options)?;
     run_process(&spec).await.map_err(|error| error.to_string())
 }
 
 fn core_process_spec(
-    core: &Path,
+    iteron: &Path,
     workspace: &Path,
     task: &CorpusTask,
     config: HarnessConfig,
@@ -1275,7 +1275,7 @@ fn core_process_spec(
     let mut env = vec![
         (OsString::from("HOME"), runtime.home.as_os_str().to_owned()),
         (
-            OsString::from("CORE_CONFIG_HOME"),
+            OsString::from("ITERON_CONFIG_HOME"),
             runtime.config.as_os_str().to_owned(),
         ),
         (
@@ -1310,7 +1310,7 @@ fn core_process_spec(
         inherit_env.extend(["SYSTEMROOT".into(), "COMSPEC".into(), "PATHEXT".into()]);
     }
     Ok(ProcessSpec {
-        program: core.to_owned(),
+        program: iteron.to_owned(),
         args,
         cwd: Some(workspace.to_owned()),
         clear_env: true,
@@ -1448,7 +1448,7 @@ async fn evaluate_command(workspace: &Path, command: &str, timeout: Duration) ->
     let mut confinement = Confinement::egress_off(workspace);
     confinement.timeout_secs = timeout.as_secs().max(1);
     confinement.max_output_bytes = ORACLE_OUTPUT_LIMIT;
-    match core_sandbox::platform_sandbox()
+    match iteron_sandbox::platform_sandbox()
         .run(command, &confinement)
         .await
     {
@@ -1544,8 +1544,8 @@ fn timeout_cell(
         task,
         config,
         seed,
-        "core_timeout",
-        "core process exceeded the configured wall-clock timeout",
+        "iteron_timeout",
+        "iteron process exceeded the configured wall-clock timeout",
     );
     cell.run_status = RunStatus::TimedOut;
     cell.elapsed_ms = millis(elapsed);
@@ -1608,7 +1608,7 @@ fn write_artifact_atomic(manifest: &EvaluationManifest, path: &Path) -> Result<(
         path: parent.display().to_string(),
         source,
     })?;
-    let temporary = parent.join(format!(".core-eval-{}.tmp", manifest.run_id));
+    let temporary = parent.join(format!(".iteron-eval-{}.tmp", manifest.run_id));
     let bytes = serde_json::to_vec_pretty(manifest).map_err(RunnerError::Encode)?;
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
@@ -1659,7 +1659,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "core-eval-{label}-{}-{}-{}",
+            "iteron-eval-{label}-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1781,7 +1781,7 @@ mod tests {
         }
 
         let contaminated = parent.join("contaminated");
-        std::fs::create_dir_all(contaminated.join(".core")).unwrap();
+        std::fs::create_dir_all(contaminated.join(".iteron")).unwrap();
         let contaminated = contaminated.canonicalize().unwrap();
         assert!(
             create_core_runtime(&contaminated)
@@ -1806,16 +1806,16 @@ mod tests {
         assert_eq!(capped.grace, Duration::from_secs(30));
         assert_eq!(capped.process_ceiling, Duration::from_secs(1_830));
 
-        let maximum = core_process_timing(Duration::from_secs(MAX_CORE_AGENT_WALL_SECS)).unwrap();
+        let maximum = core_process_timing(Duration::from_secs(MAX_ITERON_AGENT_WALL_SECS)).unwrap();
         assert_eq!(maximum.grace, Duration::from_secs(30));
         assert_eq!(
             maximum.process_ceiling,
-            Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 30)
+            Duration::from_secs(MAX_ITERON_AGENT_WALL_SECS + 30)
         );
 
         assert!(core_process_timing(Duration::ZERO).is_none());
         assert!(core_process_timing(Duration::from_millis(1_500)).is_none());
-        assert!(core_process_timing(Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 1)).is_none());
+        assert!(core_process_timing(Duration::from_secs(MAX_ITERON_AGENT_WALL_SECS + 1)).is_none());
         assert!(core_process_timing(Duration::from_secs(u64::MAX)).is_none());
     }
 
@@ -1845,7 +1845,7 @@ mod tests {
     async fn timeout_operational_maxima_accept_boundary_reject_next_and_do_not_mutate() {
         let root = unique_dir("timeout-operational-maxima");
         let mut exact = timeout_validation_options(&root);
-        exact.run_timeout = Duration::from_secs(MAX_CORE_AGENT_WALL_SECS);
+        exact.run_timeout = Duration::from_secs(MAX_ITERON_AGENT_WALL_SECS);
         exact.checkout_timeout = Duration::from_secs(MAX_CHECKOUT_TIMEOUT_SECS);
         exact.oracle_timeout = Duration::from_secs(MAX_ORACLE_TIMEOUT_SECS);
         validate_parallel_options(&exact).expect("all exact timeout maxima are admitted");
@@ -1859,7 +1859,7 @@ mod tests {
             let mut rejected = timeout_validation_options(&root);
             match ordinal {
                 0 => {
-                    rejected.run_timeout = Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 1);
+                    rejected.run_timeout = Duration::from_secs(MAX_ITERON_AGENT_WALL_SECS + 1);
                 }
                 1 => {
                     rejected.checkout_timeout = Duration::from_secs(MAX_CHECKOUT_TIMEOUT_SECS + 1);
@@ -1896,21 +1896,21 @@ mod tests {
         let workspace = parent.join("cell");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
-        let core = parent.join("fake-core");
+        let iteron = parent.join("fake-core");
         std::fs::write(
-            &core,
+            &iteron,
             "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"budget_exhausted\",\"reason\":\"max_wall_secs\",\"success\":false,\"assistant_text\":\"\",\"run_id\":\"deadline-edge\",\"cost_usd\":null,\"cost_status\":\"unknown\",\"cost_reason\":\"fixture\",\"turns\":1,\"exit_code\":3,\"error\":null}'\nexit 3\n",
         )
         .unwrap();
-        let mut permissions = core.metadata().unwrap().permissions();
+        let mut permissions = iteron.metadata().unwrap().permissions();
         permissions.set_mode(0o700);
-        std::fs::set_permissions(&core, permissions).unwrap();
+        std::fs::set_permissions(&iteron, permissions).unwrap();
         let fixture_task = task("https://example.invalid/repo.git".into(), "0".repeat(40));
         let options = EvalOptions {
             corpus_path: parent.join("corpus.json"),
             output_path: parent.join("result.json"),
             work_root: parent.join("work"),
-            core_bin: Some(core.clone()),
+            core_bin: Some(iteron.clone()),
             allow_local_repositories: false,
             model: "deadline-model".into(),
             provider: None,
@@ -1923,7 +1923,7 @@ mod tests {
             max_turns: 1,
             max_attempts: 1,
         };
-        let spec = core_process_spec(&core, &workspace, &fixture_task, CONFIGS[0], &options)
+        let spec = core_process_spec(&iteron, &workspace, &fixture_task, CONFIGS[0], &options)
             .expect("build isolated Core process specification");
         assert_eq!(spec.cwd.as_deref(), Some(workspace.as_path()));
         assert_eq!(spec.timeout, Duration::from_secs(2));
@@ -1943,7 +1943,7 @@ mod tests {
         let runs = PathBuf::from(arg_after("--runs-dir"));
         assert!(runs.is_absolute());
         assert_eq!(runs, runs.canonicalize().unwrap());
-        for key in ["HOME", "CORE_CONFIG_HOME", "TMPDIR"] {
+        for key in ["HOME", "ITERON_CONFIG_HOME", "TMPDIR"] {
             let value = spec
                 .env
                 .iter()
@@ -1973,11 +1973,11 @@ mod tests {
             "DYLD_INSERT_LIBRARIES",
             "PATH",
             "HOME",
-            "CORE_CONFIG_HOME",
+            "ITERON_CONFIG_HOME",
             "HTTPS_PROXY",
             "RUSTC_WRAPPER",
             "BASH_ENV_API_KEY",
-            "HARBOR_CORE_GATEWAY_API_KEY",
+            "HARBOR_ITERON_GATEWAY_API_KEY",
         ] {
             assert!(!is_builtin_credential_env(rejected), "{rejected}");
         }
@@ -2087,7 +2087,7 @@ mod tests {
             std::fs::read_to_string(checkout.join("regression.txt")).unwrap(),
             "hidden regression\n"
         );
-        assert!(!checkout.join(".core-eval-hidden-test.patch").exists());
+        assert!(!checkout.join(".iteron-eval-hidden-test.patch").exists());
         let _ = std::fs::remove_dir_all(repo);
         let _ = std::fs::remove_dir_all(checkout);
     }
@@ -2128,7 +2128,7 @@ mod tests {
         // The sandbox intentionally grants the OS temp root, so use the invoking repository as a
         // genuinely ungranted location while the confined workspace remains under temp.
         let marker = std::env::current_dir().unwrap().join(format!(
-            ".core-eval-hostile-marker-{}-{}",
+            ".iteron-eval-hostile-marker-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

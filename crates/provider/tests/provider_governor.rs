@@ -1,4 +1,4 @@
-use core_provider::{
+use iteron_provider::{
     AdmissionReason, CacheBreakpoint, CacheScope, CircuitPolicy, CircuitTransition, FailoverClass,
     FailoverRule, FailurePoint, GovernorPolicy, ProviderAdmission, ProviderControlCapabilities,
     ProviderError, ProviderGovernor, ProviderRequestControls, RateAdmissionPolicy,

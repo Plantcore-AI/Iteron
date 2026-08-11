@@ -3,24 +3,24 @@
 //! The strategies see only already-gathered observations. World access stays in `ContextPort`,
 //! while authority stays in the kernel gate and Registry.
 
-use core_ctx::{ContextPort, ContextPortInput, ContextSlotObservation, ContextStrategy};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::context::RequestId;
-use core_protocol::slot::StrategySlot;
-use core_protocol::{Capability, ToolUse, Trust, TurnId, context::ContextSource};
-use core_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
+use iteron_ctx::{ContextPort, ContextPortInput, ContextSlotObservation, ContextStrategy};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::RequestId;
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{Capability, ToolUse, Trust, TurnId, context::ContextSource};
+use iteron_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
 use std::path::Path;
 
 pub(crate) struct LiveContext {
     pub text: String,
     pub governing_trust: Trust,
     pub policy_observation: ContextSlotObservation,
-    pub policy_plan: core_ctx::ContextPlan,
+    pub policy_plan: iteron_ctx::ContextPlan,
     /// Exact bounded source projection used to assemble `text`. The runtime consumes this only for
     /// content-free decision evidence; durable provider bytes remain the authoritative record.
-    pub segments: Vec<core_protocol::context::ContextSegment>,
-    pub memory_audit: Option<core_ctx::MemoryRecallAudit>,
-    pub materialization_audit: core_ctx::ContextMaterializationAudit,
+    pub segments: Vec<iteron_protocol::context::ContextSegment>,
+    pub memory_audit: Option<iteron_ctx::MemoryRecallAudit>,
+    pub materialization_audit: iteron_ctx::ContextMaterializationAudit,
     pub benchmark_memory_rejections: u32,
 }
 
@@ -31,7 +31,7 @@ pub(crate) struct LiveContextRequest<'a> {
     pub turn: TurnId,
     pub task: &'a str,
     pub memory_benchmark_scope: Option<[u8; 32]>,
-    pub materialization: core_ctx::ContextMaterializationPolicy,
+    pub materialization: iteron_ctx::ContextMaterializationPolicy,
 }
 
 pub(crate) fn resolve_live_context(
@@ -122,7 +122,7 @@ fn all_tool_capabilities() -> CapabilitySet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::context::{ContextSegment, ContextSource};
+    use iteron_protocol::context::{ContextSegment, ContextSource};
 
     #[test]
     fn benchmark_scope_strips_memory_even_from_a_replacement_context_port() {
@@ -131,7 +131,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&workspace).unwrap();
-        let port = core_ctx::PortStub::new(vec![
+        let port = iteron_ctx::PortStub::new(vec![
             ContextSegment {
                 text: "parent memory".into(),
                 trust: Trust::Trusted,
@@ -144,8 +144,8 @@ mod tests {
             },
         ]);
         let resolved = resolve_live_context(
-            &core_ctx::ContextStrategy::default(),
-            &core_ctx::MemoryRecallStrategy::default(),
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
             &port,
             LiveContextRequest {
                 workspace: &workspace,
@@ -154,7 +154,7 @@ mod tests {
                 turn: TurnId(1),
                 task: "inspect",
                 memory_benchmark_scope: Some([7; 32]),
-                materialization: core_ctx::ContextMaterializationPolicy::default(),
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
             },
         )
         .unwrap();

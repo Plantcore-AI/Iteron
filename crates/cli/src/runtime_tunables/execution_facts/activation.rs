@@ -1,6 +1,6 @@
 use super::*;
 
-use core_protocol::input::{
+use iteron_protocol::input::{
     MAX_IMAGE_BASE64_BYTES, MAX_INPUT_IMAGES, MAX_TOTAL_IMAGE_BASE64_BYTES,
 };
 
@@ -48,12 +48,12 @@ pub(super) fn apply(
     builder.activate(
         "direct_child_allocation",
         "crates/cli/src/runtime.rs",
-        names.contains(core_tools::DISPATCH_AGENT),
+        names.contains(iteron_tools::DISPATCH_AGENT),
         registry_digest.clone(),
     )?;
     report.mark("direct_child_allocation", FactStage::Activation);
 
-    let workflow_active = names.contains(core_tools::WORKFLOW_TOOL);
+    let workflow_active = names.contains(iteron_tools::WORKFLOW_TOOL);
     builder.activate(
         "workflow_aggregate",
         "crates/workflow/src/lib.rs",

@@ -12,8 +12,8 @@
 //! liveness ones — a wall clock and a retained-output bound (invariant #1) — not security ones.
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
-use core_sandbox::{Confinement, RunOutput, Sandbox, SandboxError, platform_sandbox};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_sandbox::{Confinement, RunOutput, Sandbox, SandboxError, platform_sandbox};
 use std::fmt::Write as _;
 
 /// One hour. A build, a full test suite, or a slow clone are the commands the old 120 s ceiling cut
@@ -276,7 +276,7 @@ fn frame_stream(
         observed_bytes > budget.per_stream_bytes
     };
     let content = if exceeds_budget {
-        core_protocol::text::elide_middle(content, budget.per_stream_bytes)
+        iteron_protocol::text::elide_middle(content, budget.per_stream_bytes)
     } else {
         content.to_owned()
     };
@@ -418,7 +418,7 @@ mod tests {
         // by default, so this test drives the sandbox directly rather than through `run_bash_with`.
         let confined = Confinement::egress_off(&root);
         assert!(!confined.unconfined);
-        let refusal = core_sandbox::Unsupported
+        let refusal = iteron_sandbox::Unsupported
             .run("must-not-run", &confined)
             .await;
         let execution = finish_sandbox_run("call".into(), refusal);

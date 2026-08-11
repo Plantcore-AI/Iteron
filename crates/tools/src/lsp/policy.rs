@@ -154,32 +154,32 @@ impl Default for LspRuntimePolicy {
         };
         Self::new(
             vec![
-                route("rust", "core:rust-analyzer", "rust-analyzer", &[]),
+                route("rust", "iteron:rust-analyzer", "rust-analyzer", &[]),
                 route(
                     "typescript",
-                    "core:typescript-language-server",
+                    "iteron:typescript-language-server",
                     "typescript-language-server",
                     &["--stdio"],
                 ),
                 route(
                     "typescriptreact",
-                    "core:typescript-language-server",
+                    "iteron:typescript-language-server",
                     "typescript-language-server",
                     &["--stdio"],
                 ),
                 route(
                     "javascript",
-                    "core:typescript-language-server",
+                    "iteron:typescript-language-server",
                     "typescript-language-server",
                     &["--stdio"],
                 ),
                 route(
                     "javascriptreact",
-                    "core:typescript-language-server",
+                    "iteron:typescript-language-server",
                     "typescript-language-server",
                     &["--stdio"],
                 ),
-                route("python", "core:pyright", "pyright-langserver", &["--stdio"]),
+                route("python", "iteron:pyright", "pyright-langserver", &["--stdio"]),
             ],
             LspRecoveryPolicy::default(),
         )

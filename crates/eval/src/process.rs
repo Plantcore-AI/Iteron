@@ -110,7 +110,7 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
         }
     }
     command.envs(spec.env.iter().cloned());
-    core_sandbox::configure_process_group(&mut command);
+    iteron_sandbox::configure_process_group(&mut command);
     let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
         program: label.clone(),
         source,
@@ -135,7 +135,7 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
             (false, status.code().unwrap_or(-1))
         }
         Err(_) => {
-            core_sandbox::terminate_process_group_and_reap(&mut child).await;
+            iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
             (true, -1)
         }
     };
@@ -187,13 +187,13 @@ async fn collect_capture(
 
 #[derive(Debug, thiserror::Error)]
 pub enum FindCoreError {
-    #[error("explicit core binary `{0}` is not a regular file")]
+    #[error("explicit iteron binary `{0}` is not a regular file")]
     InvalidExplicit(String),
     #[error(
-        "cannot locate the Core CLI independent of cwd; pass --core-bin /absolute/path/to/core or run `cargo build -p core-cli`"
+        "cannot locate the Core CLI independent of cwd; pass --core-bin /absolute/path/to/core or run `cargo build -p iteron-cli`"
     )]
     NotFound,
-    #[error("cannot canonicalize core binary `{path}`: {source}")]
+    #[error("cannot canonicalize iteron binary `{path}`: {source}")]
     Canonicalize {
         path: String,
         source: std::io::Error,
@@ -208,7 +208,7 @@ pub fn find_core(explicit: Option<&Path>) -> Result<PathBuf, FindCoreError> {
         return canonicalize_core(path);
     }
 
-    let executable_name = format!("core{}", std::env::consts::EXE_SUFFIX);
+    let executable_name = format!("iteron{}", std::env::consts::EXE_SUFFIX);
     let mut candidates = Vec::new();
     if let Ok(current) = std::env::current_exe()
         && let Some(parent) = current.parent()
@@ -325,7 +325,7 @@ mod tests {
             find_core(Some(&current)).unwrap(),
             current.canonicalize().unwrap()
         );
-        let missing = std::env::temp_dir().join("definitely-missing-core-eval-binary");
+        let missing = std::env::temp_dir().join("definitely-missing-iteron-eval-binary");
         let error = find_core(Some(&missing)).unwrap_err().to_string();
         assert!(error.contains("not a regular file"));
     }

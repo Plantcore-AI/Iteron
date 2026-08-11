@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::context::{ContextSelector, InstructionScope, RequestId};
-use core_protocol::slot::StrategySlot;
-use core_protocol::{Capability, ToolUse, Trust};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::{ContextSelector, InstructionScope, RequestId};
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{Capability, ToolUse, Trust};
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -19,17 +19,17 @@ const MAX_READ_ONLY_TOOLS: usize = 256;
 const MAX_POLICY_TOOLS: usize = 256;
 const MAX_W1_PLACEMENT_ROWS: usize = 16;
 const SPAWN_SIGNATURE: &str = "    pub(super) async fn spawn_subagent(";
-const BUDGET_BINDING: &str = "let Some(budget) = core_agents::subagent_budget(";
-const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] = ["core-obs", "core-protocol", "core-record"];
+const BUDGET_BINDING: &str = "let Some(budget) = iteron_agents::subagent_budget(";
+const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] = ["iteron-obs", "iteron-protocol", "iteron-record"];
 const FORBIDDEN_WORLD_CRATES: [&str; 8] = [
-    "core_agents",
-    "core_ctx",
-    "core_provider",
-    "core_sandbox",
-    "core_sched",
-    "core_tools",
-    "core_verify",
-    "core_workflow",
+    "iteron_agents",
+    "iteron_ctx",
+    "iteron_provider",
+    "iteron_sandbox",
+    "iteron_sched",
+    "iteron_tools",
+    "iteron_verify",
+    "iteron_workflow",
 ];
 const FORBIDDEN_WORLD_PATHS: [&str; 15] = [
     "std::env",
@@ -214,7 +214,7 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
 pub fn validate(root: &Path) -> Result<()> {
     validate_read_only_registry(root)?;
     validate_tool_policy_registry(root)?;
-    // Bootstrap fixtures and older trusted bases predate this W1 seam. The direct core-ctx build
+    // Bootstrap fixtures and older trusted bases predate this W1 seam. The direct iteron-ctx build
     // dependency is the activation bit: once the registry declares it, every new checkout must
     // satisfy the placement and negative-space checks below.
     if w1_context_contract_enabled(root)? {
@@ -374,33 +374,33 @@ fn require_identical_snapshot(label: &str, frozen: &[u8], current: &[u8]) -> Res
 
 fn run_matrix_tests(root: &Path) -> Result<()> {
     const TEST_COMMANDS: &[&[&str]] = &[
-        &["test", "--locked", "-p", "core-kernel"],
+        &["test", "--locked", "-p", "iteron-kernel"],
         &[
             "test",
             "--locked",
             "-p",
-            "core-cli",
+            "iteron-cli",
             "max_tokens_is_a_hard_recorded_terminal_at_the_safe_turn_boundary",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "core-cli",
+            "iteron-cli",
             "max_tokens_fails_closed_when_provider_usage_is_missing",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "core-cli",
+            "iteron-cli",
             "readme_prompt_injection_cannot_push_through_the_effect_boundary",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "core-protocol",
+            "iteron-protocol",
             "--test",
             "abi_freeze",
         ],
@@ -408,24 +408,24 @@ fn run_matrix_tests(root: &Path) -> Result<()> {
             "test",
             "--locked",
             "-p",
-            "core-evolve",
+            "iteron-evolve",
             "d14_13_g3_rollback_and_reopen_restore_exact_prior_bundle_bytes_and_identity",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "core-evolve",
+            "iteron-evolve",
             "d14_13_g4_candidate_cannot_self_authorize_change_policy_or_relax_safety_budgets",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "core-eval",
+            "iteron-eval",
             "kernel_tax_is_a_real_separate_eval_output_line",
         ],
-        &["test", "--locked", "-p", "core-xtask", "negative_n"],
+        &["test", "--locked", "-p", "iteron-xtask", "negative_n"],
     ];
 
     for arguments in TEST_COMMANDS {
@@ -476,12 +476,12 @@ fn w1_context_contract_enabled(root: &Path) -> Result<bool> {
         2 * 1024 * 1024,
     )?)
     .context("governance/boundaries.json is not valid JSON")?;
-    Ok(registry["cargo_policy"]["packages"]["core-xtask"]["normal"]
+    Ok(registry["cargo_policy"]["packages"]["iteron-xtask"]["normal"]
         .as_array()
         .is_some_and(|dependencies| {
             dependencies
                 .iter()
-                .any(|dependency| dependency.as_str() == Some("core-ctx"))
+                .any(|dependency| dependency.as_str() == Some("iteron-ctx"))
         }))
 }
 
@@ -515,11 +515,11 @@ fn validate_w1_placement_matrix(root: &Path) -> Result<()> {
         bail!("W1 placement matrix exceeds its {MAX_W1_PLACEMENT_ROWS}-row limit");
     }
     let available_slots = [
-        core_ctx::ContextStrategy::default()
+        iteron_ctx::ContextStrategy::default()
             .slot()
             .as_persisted_str()
             .to_owned(),
-        core_tools::ToolPolicy::default()
+        iteron_tools::ToolPolicy::default()
             .slot()
             .as_persisted_str()
             .to_owned(),
@@ -575,7 +575,7 @@ fn validate_w1_placement_matrix(root: &Path) -> Result<()> {
 
 fn validate_context_selector_projection() -> Result<()> {
     let mut observation =
-        core_ctx::ContextSlotObservation::baseline(RequestId(1), "xtask conformance");
+        iteron_ctx::ContextSlotObservation::baseline(RequestId(1), "xtask conformance");
     observation.instruction_scopes = vec![
         InstructionScope::User,
         InstructionScope::Project,
@@ -583,7 +583,7 @@ fn validate_context_selector_projection() -> Result<()> {
     ];
     observation.memory_keys = vec!["named".into()];
     observation.transcript_turns = 1;
-    let plan = core_ctx::ContextStrategy::default()
+    let plan = iteron_ctx::ContextStrategy::default()
         .select(&observation, CapabilitySet::only(Capability::ReadOnly))
         .map_err(|reason| {
             anyhow::anyhow!("context strategy rejected conformance input: {reason}")
@@ -618,10 +618,10 @@ fn validate_context_selector_projection() -> Result<()> {
 
 fn validate_kernel_context_facade(root: &Path) -> Result<()> {
     const KERNEL_CONTEXT_INTERNALS: &[&str] = &[
-        "core_ctx::memory::",
-        "core_ctx::skills::",
-        "core_ctx::outline::",
-        "core_ctx::instructions::",
+        "iteron_ctx::memory::",
+        "iteron_ctx::skills::",
+        "iteron_ctx::outline::",
+        "iteron_ctx::instructions::",
         "FileMemory",
         "SkillCatalog",
         "MemoryStrategy",
@@ -654,8 +654,8 @@ fn validate_kernel_context_facade(root: &Path) -> Result<()> {
 }
 
 fn validate_tool_policy_registry(root: &Path) -> Result<()> {
-    let registry = core_tools::Registry::coding_agent(root).map_err(|error| {
-        anyhow::anyhow!("cannot construct core-tools coding-agent registry: {error}")
+    let registry = iteron_tools::Registry::coding_agent(root).map_err(|error| {
+        anyhow::anyhow!("cannot construct iteron-tools coding-agent registry: {error}")
     })?;
     let specs = registry.specs();
     if specs.len() > MAX_POLICY_TOOLS {
@@ -668,7 +668,7 @@ fn validate_tool_policy_registry(root: &Path) -> Result<()> {
         Capability::TrustMutating,
         Capability::IrreversibleExternal,
     ]);
-    let policy = core_tools::ToolPolicy::default();
+    let policy = iteron_tools::ToolPolicy::default();
     for spec in specs {
         let proposal = registry
             .propose_intent(
@@ -694,9 +694,9 @@ fn validate_tool_policy_registry(root: &Path) -> Result<()> {
 
 fn validate_tool_policy_projection(
     name: &str,
-    purity: core_protocol::Purity,
+    purity: iteron_protocol::Purity,
     capability: Capability,
-    proposal: &core_tools::ToolPolicyProposal,
+    proposal: &iteron_tools::ToolPolicyProposal,
 ) -> Result<()> {
     if proposal.intent.call.name != name
         || proposal.intent.purity != purity
@@ -711,15 +711,15 @@ fn validate_tool_policy_projection(
 }
 
 fn validate_read_only_registry(root: &Path) -> Result<()> {
-    let registry = core_tools::Registry::read_only(root).map_err(|error| {
-        anyhow::anyhow!("cannot construct core-tools read-only registry: {error}")
+    let registry = iteron_tools::Registry::read_only(root).map_err(|error| {
+        anyhow::anyhow!("cannot construct iteron-tools read-only registry: {error}")
     })?;
     let actual = registry
         .specs()
         .into_iter()
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
-    validate_read_only_names(core_agents::READ_ONLY_TOOLS, &actual)
+    validate_read_only_names(iteron_agents::READ_ONLY_TOOLS, &actual)
 }
 
 fn validate_read_only_names(expected: &[&str], actual: &[String]) -> Result<()> {
@@ -729,10 +729,10 @@ fn validate_read_only_names(expected: &[&str], actual: &[String]) -> Result<()> 
     let expected_set = expected.iter().copied().collect::<BTreeSet<_>>();
     let actual_set = actual.iter().map(String::as_str).collect::<BTreeSet<_>>();
     if expected_set.len() != expected.len() {
-        bail!("core-agents READ_ONLY_TOOLS contains duplicate names");
+        bail!("iteron-agents READ_ONLY_TOOLS contains duplicate names");
     }
     if actual_set.len() != actual.len() {
-        bail!("core-tools read-only registry contains duplicate names");
+        bail!("iteron-tools read-only registry contains duplicate names");
     }
     if actual_set != expected_set {
         let missing = expected_set
@@ -1015,15 +1015,15 @@ mod tests {
 
     #[test]
     fn w1_tool_policy_capability_mismatch_fails_conformance() {
-        let proposal = core_tools::ToolPolicyProposal {
-            intent: core_protocol::intent::ToolIntent::denied(
-                core_protocol::slot::SlotId("core/tool_policy".into()),
+        let proposal = iteron_tools::ToolPolicyProposal {
+            intent: iteron_protocol::intent::ToolIntent::denied(
+                iteron_protocol::slot::SlotId("core/tool_policy".into()),
                 ToolUse {
                     id: "mismatch".into(),
                     name: "sample".into(),
                     input: serde_json::json!({}),
                 },
-                core_protocol::Purity::Pure,
+                iteron_protocol::Purity::Pure,
                 Trust::Workspace,
             ),
             eligible: CapabilitySet::only(Capability::CodeExecuting),
@@ -1031,7 +1031,7 @@ mod tests {
         assert!(
             validate_tool_policy_projection(
                 "sample",
-                core_protocol::Purity::Pure,
+                iteron_protocol::Purity::Pure,
                 Capability::ReadOnly,
                 &proposal,
             )
@@ -1087,9 +1087,9 @@ mod tests {
     fn kernel_path_dependency_allowlist_is_exact() {
         let exact = r#"
             [dependencies]
-            core-protocol = { path = "../protocol" }
-            core-record = { path = "../record" }
-            core-obs = { path = "../obs" }
+            iteron-protocol = { path = "../protocol" }
+            iteron-record = { path = "../record" }
+            iteron-obs = { path = "../obs" }
             serde = "1"
         "#;
         assert!(validate_kernel_dependencies(exact).is_ok());
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn negative_n2_provider_access_turns_red() {
-        assert_red("fn red_team() { core_provider::Client::new(); }");
+        assert_red("fn red_team() { iteron_provider::Client::new(); }");
     }
 
     #[test]
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn negative_n4_context_selection_turns_red() {
-        assert_red("fn red_team() { core_ctx::select_context(request); }");
+        assert_red("fn red_team() { iteron_ctx::select_context(request); }");
     }
 
     #[test]

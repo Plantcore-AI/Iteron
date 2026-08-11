@@ -124,7 +124,7 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         || spec.experiment_id.trim().is_empty()
         || spec.experiment_id.len() > 128
         || !valid_digest(&spec.train_dataset_digest)
-        || spec.tunables_registry_digest != core_tunables::REGISTRY_DIGEST_SHA256
+        || spec.tunables_registry_digest != iteron_tunables::REGISTRY_DIGEST_SHA256
         || !(1..=MAX_TUNER_TRIALS).contains(&spec.max_trials)
         || !(1..=MAX_TUNER_CONCURRENCY).contains(&spec.max_concurrency)
         || spec.max_concurrency > spec.max_trials
@@ -140,7 +140,7 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
             "bounded spec invariant failed".into(),
         ));
     }
-    let registry = core_tunables::families()
+    let registry = iteron_tunables::families()
         .iter()
         .map(|family| (family.id, family.optimization.class))
         .collect::<BTreeMap<_, _>>();
@@ -158,7 +158,7 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         }
         for family in candidate.values.keys() {
             match registry.get(family.as_str()) {
-                Some(core_tunables::OptimizationClass::Pin) | None => {
+                Some(iteron_tunables::OptimizationClass::Pin) | None => {
                     return Err(TunerError::InvalidSpec(format!(
                         "family `{family}` is pinned or unknown"
                     )));

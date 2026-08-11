@@ -1,8 +1,8 @@
 //! Bounded `core/planner` strategy for selecting already-normalized investigation leaves.
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

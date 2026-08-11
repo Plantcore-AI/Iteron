@@ -1,4 +1,4 @@
-use core_eval::{
+use iteron_eval::{
     CellResult, CostStatus, InsufficientPowerReason, OracleStatus, Partition, RunStatus,
     SamplingControl, StatisticalConclusion, aggregate, compare,
 };

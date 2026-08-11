@@ -1,6 +1,6 @@
 use super::LspToolError;
 use super::policy::LspLanguageRoute;
-use core_lsp::intel::Position;
+use iteron_lsp::intel::Position;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;

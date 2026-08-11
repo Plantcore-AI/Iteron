@@ -1,9 +1,9 @@
 use super::*;
 use crate::config::ConfigOrigin;
-use core_evolve::{PolicyBundle, PolicyRef, StrategySlot as EvolveSlot};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::SlotObservation;
-use core_protocol::{Capability, Purity, ToolUse, Trust};
+use iteron_evolve::{PolicyBundle, PolicyRef, StrategySlot as EvolveSlot};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::SlotObservation;
+use iteron_protocol::{Capability, Purity, ToolUse, Trust};
 use serde::Serialize;
 use serde_json::json;
 
@@ -198,8 +198,8 @@ fn every_registered_alternative_intersects_the_caller_ceiling() {
         (
             CoreSlot::Context,
             &slots.context,
-            value(core_ctx::ContextSlotObservation::baseline(
-                core_protocol::context::RequestId(1),
+            value(iteron_ctx::ContextSlotObservation::baseline(
+                iteron_protocol::context::RequestId(1),
                 "task",
             )),
         ),
@@ -211,26 +211,26 @@ fn every_registered_alternative_intersects_the_caller_ceiling() {
         (
             CoreSlot::Memory,
             &slots.memory,
-            value(core_ctx::MemorySlotObservation::baseline(
+            value(iteron_ctx::MemorySlotObservation::baseline(
                 "task",
                 Vec::new(),
-                &core_ctx::MemBudget::default(),
+                &iteron_ctx::MemBudget::default(),
             )),
         ),
         (
             CoreSlot::Router,
             &slots.router,
-            value(core_agents::RouterSlotObservation::baseline(
+            value(iteron_agents::RouterSlotObservation::baseline(
                 "audit every module",
-                core_agents::RepoSignals::default(),
+                iteron_agents::RepoSignals::default(),
             )),
         ),
         (
             CoreSlot::Planner,
             &slots.planner,
-            value(core_agents::PlannerObservation {
-                version: core_agents::PLANNER_SLOT_VERSION,
-                class: core_agents::TaskClass::MultiFile,
+            value(iteron_agents::PlannerObservation {
+                version: iteron_agents::PLANNER_SLOT_VERSION,
+                class: iteron_agents::TaskClass::MultiFile,
                 leaves: vec!["a".into(), "b".into()],
                 max_leaves: 2,
             }),
@@ -238,8 +238,8 @@ fn every_registered_alternative_intersects_the_caller_ceiling() {
         (
             CoreSlot::Collaboration,
             &slots.collaboration,
-            value(core_workflow::CollaborationObservation {
-                version: core_workflow::COLLABORATION_SLOT_VERSION,
+            value(iteron_workflow::CollaborationObservation {
+                version: iteron_workflow::COLLABORATION_SLOT_VERSION,
                 active_workers: 4,
                 max_concurrency: 4,
             }),
@@ -248,8 +248,8 @@ fn every_registered_alternative_intersects_the_caller_ceiling() {
             CoreSlot::Scheduler,
             &slots.scheduler,
             value(
-                core_sched::SchedulerSlotObservation::baseline(
-                    core_sched::BackoffPolicy::default(),
+                iteron_sched::SchedulerSlotObservation::baseline(
+                    iteron_sched::BackoffPolicy::default(),
                     4,
                 )
                 .unwrap(),
@@ -258,13 +258,13 @@ fn every_registered_alternative_intersects_the_caller_ceiling() {
         (
             CoreSlot::Verifier,
             &slots.verifier,
-            value(core_verify::VerifierSlotObservation::advisory()),
+            value(iteron_verify::VerifierSlotObservation::advisory()),
         ),
         (
             CoreSlot::ModelRouter,
             &slots.model_router,
             value(
-                core_provider::catalog::ModelRouterObservation::single_route(
+                iteron_provider::catalog::ModelRouterObservation::single_route(
                     "provider/model",
                     None,
                     None,
@@ -287,22 +287,22 @@ fn alternatives_make_only_narrower_typed_decisions() {
     let compiled = compile_operator_bundle(Some(&all_alternatives())).unwrap();
     let baseline = compile_operator_bundle(None).unwrap();
     let ceiling = CapabilitySet::only(Capability::ReadOnly);
-    let context = core_ctx::ContextStrategy::select_with(
+    let context = iteron_ctx::ContextStrategy::select_with(
         compiled.slots().context.as_ref(),
-        &core_ctx::ContextSlotObservation::baseline(core_protocol::context::RequestId(1), "task"),
+        &iteron_ctx::ContextSlotObservation::baseline(iteron_protocol::context::RequestId(1), "task"),
         ceiling,
     )
     .unwrap();
     assert!(!context.recall_memory && !context.include_skills);
 
-    let router_input = core_agents::RouterSlotObservation::baseline(
+    let router_input = iteron_agents::RouterSlotObservation::baseline(
         "audit every module in this repository",
-        core_agents::RepoSignals {
+        iteron_agents::RepoSignals {
             has_test_command: true,
             file_count: 10_000,
         },
     );
-    let route = core_agents::RouterStrategy::route_with(
+    let route = iteron_agents::RouterStrategy::route_with(
         compiled.slots().router.as_ref(),
         &router_input,
         ceiling,
@@ -310,11 +310,11 @@ fn alternatives_make_only_narrower_typed_decisions() {
     .unwrap();
     assert_eq!(route.route.max_leaves, 0);
 
-    let planner = core_agents::PlannerStrategy::plan_with(
+    let planner = iteron_agents::PlannerStrategy::plan_with(
         compiled.slots().planner.as_ref(),
-        &core_agents::PlannerObservation {
-            version: core_agents::PLANNER_SLOT_VERSION,
-            class: core_agents::TaskClass::MultiFile,
+        &iteron_agents::PlannerObservation {
+            version: iteron_agents::PLANNER_SLOT_VERSION,
+            class: iteron_agents::TaskClass::MultiFile,
             leaves: vec!["a".into(), "b".into()],
             max_leaves: 2,
         },
@@ -324,26 +324,26 @@ fn alternatives_make_only_narrower_typed_decisions() {
     assert_eq!(planner.plan.selected, vec![0]);
 
     assert_eq!(
-        core_tools::ToolPolicy::propose_with(
+        iteron_tools::ToolPolicy::propose_with(
             compiled.slots().tool_policy.as_ref(),
             &tool_observation(Capability::CodeExecuting),
             CapabilitySet::only(Capability::CodeExecuting),
         ),
-        Err(core_tools::ToolPolicyError::NotEligible)
+        Err(iteron_tools::ToolPolicyError::NotEligible)
     );
 
-    let memory_input = core_ctx::MemorySlotObservation {
-        version: core_ctx::MEMORY_SLOT_VERSION,
+    let memory_input = iteron_ctx::MemorySlotObservation {
+        version: iteron_ctx::MEMORY_SLOT_VERSION,
         task: "alpha beta".into(),
         candidates: vec![
-            core_ctx::MemoryCandidate {
+            iteron_ctx::MemoryCandidate {
                 slug: "alpha".into(),
                 text: "alpha beta".into(),
                 framed_bytes: 16,
                 trust: Trust::Trusted,
                 modified_unix_secs: None,
             },
-            core_ctx::MemoryCandidate {
+            iteron_ctx::MemoryCandidate {
                 slug: "beta".into(),
                 text: "alpha beta".into(),
                 framed_bytes: 16,
@@ -355,16 +355,16 @@ fn alternatives_make_only_narrower_typed_decisions() {
         max_recalled: 2,
         trust_floor: Trust::Untrusted,
         reference_unix_secs: 0,
-        retrieval_policy: core_ctx::MemoryRetrievalPolicy::default(),
+        retrieval_policy: iteron_ctx::MemoryRetrievalPolicy::default(),
         write: None,
     };
-    let baseline_memory = core_ctx::MemoryRecallStrategy::select_with(
+    let baseline_memory = iteron_ctx::MemoryRecallStrategy::select_with(
         baseline.slots().memory.as_ref(),
         &memory_input,
         ceiling,
     )
     .unwrap();
-    let alternative_memory = core_ctx::MemoryRecallStrategy::select_with(
+    let alternative_memory = iteron_ctx::MemoryRecallStrategy::select_with(
         compiled.slots().memory.as_ref(),
         &memory_input,
         ceiling,
@@ -373,18 +373,18 @@ fn alternatives_make_only_narrower_typed_decisions() {
     assert_eq!(baseline_memory.plan.recalled.len(), 2);
     assert_eq!(alternative_memory.plan.recalled.len(), 1);
 
-    let collaboration_input = core_workflow::CollaborationObservation {
-        version: core_workflow::COLLABORATION_SLOT_VERSION,
+    let collaboration_input = iteron_workflow::CollaborationObservation {
+        version: iteron_workflow::COLLABORATION_SLOT_VERSION,
         active_workers: 4,
         max_concurrency: 4,
     };
-    let baseline_collaboration = core_workflow::CollaborationStrategy::select_with(
+    let baseline_collaboration = iteron_workflow::CollaborationStrategy::select_with(
         baseline.slots().collaboration.as_ref(),
         &collaboration_input,
         ceiling,
     )
     .unwrap();
-    let alternative_collaboration = core_workflow::CollaborationStrategy::select_with(
+    let alternative_collaboration = iteron_workflow::CollaborationStrategy::select_with(
         compiled.slots().collaboration.as_ref(),
         &collaboration_input,
         ceiling,
@@ -394,15 +394,15 @@ fn alternatives_make_only_narrower_typed_decisions() {
     assert_eq!(alternative_collaboration.concurrency, 1);
 
     let scheduler_input =
-        core_sched::SchedulerSlotObservation::baseline(core_sched::BackoffPolicy::default(), 4)
+        iteron_sched::SchedulerSlotObservation::baseline(iteron_sched::BackoffPolicy::default(), 4)
             .unwrap();
-    let baseline_scheduler = core_sched::SchedulerStrategy::plan_with(
+    let baseline_scheduler = iteron_sched::SchedulerStrategy::plan_with(
         baseline.slots().scheduler.as_ref(),
         &scheduler_input,
         ceiling,
     )
     .unwrap();
-    let alternative_scheduler = core_sched::SchedulerStrategy::plan_with(
+    let alternative_scheduler = iteron_sched::SchedulerStrategy::plan_with(
         compiled.slots().scheduler.as_ref(),
         &scheduler_input,
         ceiling,
@@ -412,14 +412,14 @@ fn alternatives_make_only_narrower_typed_decisions() {
     assert_eq!(alternative_scheduler.plan.max_attempts, 1);
     assert_eq!(alternative_scheduler.plan.concurrency_permits, 1);
 
-    let verifier_input = core_verify::VerifierSlotObservation::advisory();
-    let baseline_verifier = core_verify::VerifierStrategy::plan_with(
+    let verifier_input = iteron_verify::VerifierSlotObservation::advisory();
+    let baseline_verifier = iteron_verify::VerifierStrategy::plan_with(
         baseline.slots().verifier.as_ref(),
         &verifier_input,
         ceiling,
     )
     .unwrap();
-    let alternative_verifier = core_verify::VerifierStrategy::plan_with(
+    let alternative_verifier = iteron_verify::VerifierStrategy::plan_with(
         compiled.slots().verifier.as_ref(),
         &verifier_input,
         ceiling,
@@ -427,26 +427,26 @@ fn alternatives_make_only_narrower_typed_decisions() {
     .unwrap();
     assert_eq!(
         baseline_verifier.plan.scope,
-        core_verify::VerifierScope::Lane
+        iteron_verify::VerifierScope::Lane
     );
     assert_eq!(
         alternative_verifier.plan.scope,
-        core_verify::VerifierScope::Workspace
+        iteron_verify::VerifierScope::Workspace
     );
 
-    let model_router_input = core_provider::catalog::ModelRouterObservation {
-        version: core_provider::catalog::MODEL_ROUTER_SLOT_VERSION,
+    let model_router_input = iteron_provider::catalog::ModelRouterObservation {
+        version: iteron_provider::catalog::MODEL_ROUTER_SLOT_VERSION,
         resolved_routes: vec!["provider/parent".into(), "provider/requested".into()],
         definition_model: Some("provider/requested".into()),
         call_model: None,
     };
-    let baseline_route = core_provider::catalog::ModelRouterStrategy::route_with(
+    let baseline_route = iteron_provider::catalog::ModelRouterStrategy::route_with(
         baseline.slots().model_router.as_ref(),
         &model_router_input,
         ceiling,
     )
     .unwrap();
-    let alternative_route = core_provider::catalog::ModelRouterStrategy::route_with(
+    let alternative_route = iteron_provider::catalog::ModelRouterStrategy::route_with(
         compiled.slots().model_router.as_ref(),
         &model_router_input,
         ceiling,
@@ -481,7 +481,7 @@ fn recorded_genesis_fails_closed_when_a_known_bundle_names_an_unknown_version() 
     let compiled = compile_operator_bundle(Some(&all_alternatives())).unwrap();
     let mut snapshot = compiled.genesis_snapshot().clone();
     snapshot.slots[0].policy.policy_version = "future".into();
-    let snapshot = core_record::seal_policy_bundle_snapshot(snapshot)
+    let snapshot = iteron_record::seal_policy_bundle_snapshot(snapshot)
         .expect("the tampered identity is structurally valid and self-consistent");
     let failure = compile_recorded_bundle(&snapshot)
         .expect_err("resume must require an implementation registered in this build");
@@ -496,15 +496,15 @@ fn assert_rejected(bundle: PolicyBundle, expected: RejectionCode) {
     assert!(!failure.receipt.rejected_requests.is_empty());
 }
 
-fn tool_observation(capability: Capability) -> core_tools::ToolPolicyObservation {
-    core_tools::ToolPolicyObservation {
-        version: core_tools::TOOL_POLICY_SLOT_VERSION,
+fn tool_observation(capability: Capability) -> iteron_tools::ToolPolicyObservation {
+    iteron_tools::ToolPolicyObservation {
+        version: iteron_tools::TOOL_POLICY_SLOT_VERSION,
         call: ToolUse {
             id: "tool-1".into(),
             name: "sample".into(),
             input: json!({}),
         },
-        registered: core_tools::RegisteredToolPolicy {
+        registered: iteron_tools::RegisteredToolPolicy {
             name: "sample".into(),
             purity: if capability == Capability::ReadOnly {
                 Purity::Pure

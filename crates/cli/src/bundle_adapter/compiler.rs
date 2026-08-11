@@ -8,13 +8,13 @@ use super::schema::{
 };
 use super::strategies::{CompiledSlots, implementation_name};
 use crate::config::ConfigOrigin;
-use core_protocol::bundle::PolicyBundleResolver;
+use iteron_protocol::bundle::PolicyBundleResolver;
 use std::sync::Arc;
 
 /// Compile only a bundle selected by the trusted user configuration. Workspace configuration can
 /// carry the same JSON shape, but its origin is refused before any implementation lookup occurs.
 pub(crate) fn compile_configured_bundle(
-    active: Option<&core_evolve::PolicyBundle>,
+    active: Option<&iteron_evolve::PolicyBundle>,
     origin: ConfigOrigin,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
     if active.is_some() && origin != ConfigOrigin::UserConfig {
@@ -38,13 +38,13 @@ pub(crate) fn compile_configured_bundle(
 }
 
 pub(crate) fn compile_operator_bundle(
-    active: Option<&core_evolve::PolicyBundle>,
+    active: Option<&iteron_evolve::PolicyBundle>,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
     let implementation_registry = registry().map_err(registry_failure)?;
     let mut receipt = baseline_receipt_with_registry(implementation_registry);
     let Some(bundle) = active else {
         return assemble_compiled_bundle(
-            Arc::new(core_agents::BootBundle::baseline()),
+            Arc::new(iteron_agents::BootBundle::baseline()),
             CompiledSlots::baseline(),
             receipt,
         );
@@ -53,7 +53,7 @@ pub(crate) fn compile_operator_bundle(
     receipt.bundle_digest = Some(bundle.digest.clone());
 
     if let Err(error) = bundle.validate() {
-        let code = if matches!(error, core_evolve::ContractError::DuplicateSlot(_)) {
+        let code = if matches!(error, iteron_evolve::ContractError::DuplicateSlot(_)) {
             RejectionCode::DuplicateSlot
         } else {
             RejectionCode::MalformedBundle
@@ -154,7 +154,7 @@ pub(crate) fn compile_operator_bundle(
         .active_bundle()
         .map_err(|_| malformed_after_lookup(&receipt, bundle))?;
     let resolver = ResolvedOnce(resolved);
-    let boot_bundle = core_agents::BootBundle::resolve(&resolver)
+    let boot_bundle = iteron_agents::BootBundle::resolve(&resolver)
         .map_err(|_| malformed_after_lookup(&receipt, bundle))?;
     assemble_compiled_bundle(Arc::new(boot_bundle), slots, receipt)
 }
@@ -163,14 +163,14 @@ pub(crate) fn registered_implementations() -> Result<Vec<ImplementationIdentity>
     implementation_catalog()
 }
 
-struct ResolvedOnce(Option<core_protocol::bundle::ResolvedBundle>);
+struct ResolvedOnce(Option<iteron_protocol::bundle::ResolvedBundle>);
 
 impl PolicyBundleResolver for ResolvedOnce {
     fn active_bundle(
         &self,
     ) -> Result<
-        Option<core_protocol::bundle::ResolvedBundle>,
-        core_protocol::bundle::BundleResolutionError,
+        Option<iteron_protocol::bundle::ResolvedBundle>,
+        iteron_protocol::bundle::BundleResolutionError,
     > {
         Ok(self.0.clone())
     }
@@ -222,7 +222,7 @@ fn baseline_receipt_with_registry(
 
 fn apply_receipt(
     receipt: &mut BundleCompilationReceipt,
-    policy: &core_evolve::PolicyRef,
+    policy: &iteron_evolve::PolicyRef,
     slot: CoreSlot,
     entry: &ImplementationEntry,
 ) {
@@ -242,7 +242,7 @@ fn apply_receipt(
 
 fn reject_requests(
     receipt: &mut BundleCompilationReceipt,
-    bundle: &core_evolve::PolicyBundle,
+    bundle: &iteron_evolve::PolicyBundle,
     code: RejectionCode,
 ) {
     let mut policies = bundle.policies.iter().collect::<Vec<_>>();
@@ -262,7 +262,7 @@ fn reject_requests(
 
 fn reject_one(
     receipt: &mut BundleCompilationReceipt,
-    policy: &core_evolve::PolicyRef,
+    policy: &iteron_evolve::PolicyRef,
     slot: Option<CoreSlot>,
     code: RejectionCode,
 ) {
@@ -288,7 +288,7 @@ fn slot_index(slot: CoreSlot) -> usize {
     CoreSlot::ALL
         .iter()
         .position(|candidate| *candidate == slot)
-        .expect("a fixed core slot has a fixed receipt row")
+        .expect("a fixed iteron slot has a fixed receipt row")
 }
 
 fn rejection_order(
@@ -311,7 +311,7 @@ fn registry_failure(code: RejectionCode) -> BundleCompileFailure {
 
 fn malformed_after_lookup(
     receipt: &BundleCompilationReceipt,
-    bundle: &core_evolve::PolicyBundle,
+    bundle: &iteron_evolve::PolicyBundle,
 ) -> BundleCompileFailure {
     let mut receipt = receipt.clone();
     receipt.coverage = BundleCoverage::Rejected;

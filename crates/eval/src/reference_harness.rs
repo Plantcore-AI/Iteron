@@ -296,7 +296,7 @@ impl ReferenceHarnessAdapter {
         let artifact_dir = workspace
             .parent()
             .unwrap_or(&workspace)
-            .join(".core-eval-reference")
+            .join(".iteron-eval-reference")
             .join(artifact_key);
         if artifact_dir.exists() {
             return Err(ReferenceHarnessError::Execution(format!(

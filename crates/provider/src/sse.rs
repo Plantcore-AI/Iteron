@@ -18,7 +18,7 @@
 //! same code that would replay a recorded stream (ADR-006 promise (b)).
 
 use crate::UsageReport;
-use core_protocol::{Block, ProviderState, StopReason, StopReasonCode, ToolUse, Usage};
+use iteron_protocol::{Block, ProviderState, StopReason, StopReasonCode, ToolUse, Usage};
 
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -858,7 +858,7 @@ mod tests {
             ));
         }
 
-        let oversized = "x".repeat(core_protocol::MAX_STOP_REASON_CODE_BYTES + 1);
+        let oversized = "x".repeat(iteron_protocol::MAX_STOP_REASON_CODE_BYTES + 1);
         let frames = vec![message_start(0), message_delta(&oversized, 0)];
         assert_eq!(
             parse_sse_stream(&frames).unwrap_err(),

@@ -2,7 +2,7 @@
 //!
 //! The recorder owns opportunity identity, ordering, and joins. Callers supply only typed policy
 //! inputs; they cannot choose an ordinal, timestamp, run identity, tunables identity, or outcome
-//! commitment. State advances only after the owning [`core_record::Rollout`] has fsynced the
+//! commitment. State advances only after the owning [`iteron_record::Rollout`] has fsynced the
 //! evidence, and reopening a rollout reconstructs the joins and terminal guards from replay.
 
 #[path = "policy_evidence_recorder/digest.rs"]
@@ -14,7 +14,7 @@ mod types;
 
 pub(crate) use types::*;
 
-use core_protocol::{
+use iteron_protocol::{
     EventKind, MAX_POLICY_ACTIONS, POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
     POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION, PolicyDecisionDisposition, PolicyDecisionEvidence,
     PolicyEvidenceError, PolicyOpportunityId, PolicyOutcomeEvidence, PolicyOutcomeScope,
@@ -134,7 +134,7 @@ impl PolicyEvidenceRecorder {
     /// Mint a bounded token before one frozen-slot decision. A terminal scope cannot be reopened.
     pub(crate) fn begin_opportunity(
         &mut self,
-        slot_id: &core_protocol::slot::SlotId,
+        slot_id: &iteron_protocol::slot::SlotId,
         turn_id: Option<TurnId>,
     ) -> Result<PolicyOpportunity, PolicyEvidenceRecorderError> {
         if self.run_terminal {
@@ -189,7 +189,7 @@ impl PolicyEvidenceRecorder {
     /// opportunity pending and the rollout writer owns its ordinary fail-stop recovery semantics.
     pub(crate) fn append_decision(
         &mut self,
-        rollout: &mut core_record::Rollout,
+        rollout: &mut iteron_record::Rollout,
         opportunity: &PolicyOpportunity,
         input: PolicyDecisionInput,
     ) -> Result<Seq, PolicyEvidenceRecorderError> {
@@ -234,7 +234,7 @@ impl PolicyEvidenceRecorder {
             opportunity_id: opportunity.opportunity_id.clone(),
             run_id: self.run_id.clone(),
             turn_id: state.turn_id,
-            slot: core_protocol::slot::SlotId(state.slot.name().to_owned()),
+            slot: iteron_protocol::slot::SlotId(state.slot.name().to_owned()),
             policy,
             eligible_actions: input.eligible_actions,
             selected_action: input.selected_action,
@@ -256,7 +256,7 @@ impl PolicyEvidenceRecorder {
         let event = EventKind::PolicyDecision {
             evidence: evidence.clone(),
         };
-        let seq = rollout.append(&core_protocol::Event {
+        let seq = rollout.append(&iteron_protocol::Event {
             seq: Seq::ZERO,
             turn: state.turn_id.unwrap_or(TurnId(0)),
             kind: event,
@@ -287,7 +287,7 @@ impl PolicyEvidenceRecorder {
 
     pub(crate) fn append_turn_outcome(
         &mut self,
-        rollout: &mut core_record::Rollout,
+        rollout: &mut iteron_record::Rollout,
         turn: TurnId,
         expected_join: &PolicyOpportunityJoin,
         input: PolicyOutcomeInput,
@@ -308,7 +308,7 @@ impl PolicyEvidenceRecorder {
         let aggregate_input = input.clone();
         let (event, next_ordinal) =
             self.outcome_event(PolicyOutcomeScope::Turn, Some(turn), actual, input)?;
-        let seq = rollout.append(&core_protocol::Event {
+        let seq = rollout.append(&iteron_protocol::Event {
             seq: Seq::ZERO,
             turn,
             kind: event,
@@ -321,7 +321,7 @@ impl PolicyEvidenceRecorder {
 
     pub(crate) fn append_run_outcome(
         &mut self,
-        rollout: &mut core_record::Rollout,
+        rollout: &mut iteron_record::Rollout,
         event_turn: TurnId,
         expected_join: &PolicyOpportunityJoin,
         input: PolicyOutcomeInput,
@@ -355,7 +355,7 @@ impl PolicyEvidenceRecorder {
         }
         let (event, next_ordinal) =
             self.outcome_event(PolicyOutcomeScope::Run, None, actual, input)?;
-        let seq = rollout.append(&core_protocol::Event {
+        let seq = rollout.append(&iteron_protocol::Event {
             seq: Seq::ZERO,
             turn: event_turn,
             kind: event,
@@ -466,7 +466,7 @@ fn validate_machine_id(
     field: &'static str,
 ) -> Result<(), PolicyEvidenceRecorderError> {
     let valid = !value.is_empty()
-        && value.len() <= core_protocol::MAX_POLICY_MACHINE_ID_BYTES
+        && value.len() <= iteron_protocol::MAX_POLICY_MACHINE_ID_BYTES
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'+')
         });

@@ -10,17 +10,17 @@
 //! This test target is absent on the base branch, and the `with_clock` / `Clock`
 //! / `with_transport` / `HttpTransport` API it drives does not exist there, so it
 //! is RED on base and GREEN once the injected ports land. Both ports are exercised
-//! from `core-sched` (which depends on `core-provider`), keeping the oracle inside
+//! from `iteron-sched` (which depends on `iteron-provider`), keeping the oracle inside
 //! the scheduler boundary tree.
 
 use async_trait::async_trait;
-use core_protocol::{ReasoningEffort, StopReason};
-use core_provider::catalog::{DefaultHttpTransport, HttpClient, HttpTransport};
-use core_provider::{
+use iteron_protocol::{ReasoningEffort, StopReason};
+use iteron_provider::catalog::{DefaultHttpTransport, HttpClient, HttpTransport};
+use iteron_provider::{
     Anthropic, ApiRoot, OpenAiResponses, Provider, ProviderError, StreamItem, TurnRequest,
     TurnResult, UsageReport,
 };
-use core_sched::{BackoffPolicy, Clock, RetryProvider, TokioClock};
+use iteron_sched::{BackoffPolicy, Clock, RetryProvider, TokioClock};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;

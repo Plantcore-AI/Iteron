@@ -341,7 +341,7 @@ fn verify_record(
 
 fn chained_hash(previous_hash: &str, sequence: u64, content_digest: &str) -> String {
     let mut bytes = Vec::with_capacity(160);
-    bytes.extend_from_slice(b"core-evolve/promotion-journal/v1\0");
+    bytes.extend_from_slice(b"iteron-evolve/promotion-journal/v1\0");
     bytes.extend_from_slice(previous_hash.as_bytes());
     bytes.extend_from_slice(&sequence.to_le_bytes());
     bytes.extend_from_slice(content_digest.as_bytes());

@@ -1,7 +1,7 @@
 //! Bounded, operator-refreshable provider metadata.
 //!
 //! These snapshots are world data, not adapter policy. The embedded document keeps offline startup
-//! deterministic; an operator may replace it from `~/.core/provider-metadata.json` without a code
+//! deterministic; an operator may replace it from `~/.iteron/provider-metadata.json` without a code
 //! change. Every capability is explicit and route-scoped: absence remains unknown.
 
 use crate::{AdapterKind, ErrorProfile, ProviderError};

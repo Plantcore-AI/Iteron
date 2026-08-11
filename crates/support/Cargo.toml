@@ -1,10 +1,10 @@
 [package]
-name = "core-support"
+name = "iteron-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-record = { path = "../record" }
+iteron-record = { path = "../record" }
 thiserror = { workspace = true }

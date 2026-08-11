@@ -1,15 +1,15 @@
 //! Production projection from hash-verified Core records to governed policy trajectories.
 //!
-//! Unlike `core-evolve`'s fixture loader, this adapter owns no caller-supplied revocation bit. It
-//! replays the physical run through `core-record` for every projection, so exact deletion,
+//! Unlike `iteron-evolve`'s fixture loader, this adapter owns no caller-supplied revocation bit. It
+//! replays the physical run through `iteron-record` for every projection, so exact deletion,
 //! content tombstones, broken fork lineage, and corrupt hash chains all remain authoritative.
 
-use core_evolve::{
+use iteron_evolve::{
     ContractError, DataGovernance, POLICY_EVIDENCE_RUN_SCHEMA_VERSION, PolicyBundle,
     PolicyEvidenceRunFixture, PolicyEvidenceRunProjector, PolicyProjectionRewardContext, PolicyRef,
     StrategySlot, TrainingAdmissionPolicy, TrajectoryEnvelope, TrajectoryProjection,
 };
-use core_protocol::{EventKind, RunId, TenantId};
+use iteron_protocol::{EventKind, RunId, TenantId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,7 @@ pub struct RecordedPolicyRunSpec {
 #[derive(Debug, thiserror::Error)]
 pub enum RecordPolicyProjectionError {
     #[error("record replay failed: {0}")]
-    Record(#[from] core_record::RecordError),
+    Record(#[from] iteron_record::RecordError),
     #[error("run {0} has no physical events")]
     EmptyRun(String),
     #[error("run {0} has an invalid or ambiguous immutable tunables checkpoint")]
@@ -40,11 +40,11 @@ pub enum RecordPolicyProjectionError {
     #[error("record projection changed since the projector inventory was opened")]
     ProjectionChanged,
     #[error("recorded policy trajectory is invalid: {0}")]
-    Evolve(#[from] core_evolve::PolicyEvidenceRunProjectorError),
+    Evolve(#[from] iteron_evolve::PolicyEvidenceRunProjectorError),
     #[error("recorded policy trajectory contract is invalid: {0}")]
     Contract(#[from] ContractError),
     #[error("record-backed trajectory registry could not be opened: {0}")]
-    Registry(#[from] core_evolve::TrajectoryRegistryError),
+    Registry(#[from] iteron_evolve::TrajectoryRegistryError),
 }
 
 /// Live record-backed implementation of the frozen record → evolve seam.
@@ -90,8 +90,8 @@ impl RecordPolicyRunProjector {
     pub fn open_trajectory_registry(
         &self,
         directory: &Path,
-    ) -> Result<core_evolve::TrajectoryRegistry, RecordPolicyProjectionError> {
-        Ok(core_evolve::TrajectoryRegistry::open_with_content_store(
+    ) -> Result<iteron_evolve::TrajectoryRegistry, RecordPolicyProjectionError> {
+        Ok(iteron_evolve::TrajectoryRegistry::open_with_content_store(
             directory,
             &self.runs_dir,
         )?)
@@ -138,7 +138,7 @@ fn build_fixture(
     runs_dir: &Path,
     spec: &RecordedPolicyRunSpec,
 ) -> Result<PolicyEvidenceRunFixture, RecordPolicyProjectionError> {
-    let scoped = core_record::load_forked_scoped(runs_dir, &spec.run_id)?;
+    let scoped = iteron_record::load_forked_scoped(runs_dir, &spec.run_id)?;
     let physical = scoped
         .iter()
         .filter(|entry| entry.run_id == spec.run_id)
@@ -178,7 +178,7 @@ fn build_fixture(
                 })?;
             }
             EventKind::PolicyBundleSnapshot { snapshot, .. } => {
-                core_record::validate_policy_bundle_snapshot(snapshot).map_err(|_| {
+                iteron_record::validate_policy_bundle_snapshot(snapshot).map_err(|_| {
                     RecordPolicyProjectionError::PolicyCheckpoint(spec.run_id.0.clone())
                 })?;
                 set_unique(&mut policy_snapshot, snapshot.clone()).map_err(|_| {
@@ -271,12 +271,12 @@ fn set_unique<T>(slot: &mut Option<T>, value: T) -> Result<(), ()> {
     }
 }
 
-fn record_is_unavailable(error: &core_record::RecordError) -> bool {
+fn record_is_unavailable(error: &iteron_record::RecordError) -> bool {
     match error {
-        core_record::RecordError::Io(error) => error.kind() == std::io::ErrorKind::NotFound,
-        core_record::RecordError::PrivateContent(
-            core_record::ContentStoreError::Revoked { .. }
-            | core_record::ContentStoreError::Unresolved { .. },
+        iteron_record::RecordError::Io(error) => error.kind() == std::io::ErrorKind::NotFound,
+        iteron_record::RecordError::PrivateContent(
+            iteron_record::ContentStoreError::Revoked { .. }
+            | iteron_record::ContentStoreError::Unresolved { .. },
         ) => true,
         _ => false,
     }

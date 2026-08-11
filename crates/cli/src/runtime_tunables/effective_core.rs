@@ -1,17 +1,17 @@
-//! Runtime projection for the composition-root families owned by core-cli.
+//! Runtime projection for the composition-root families owned by iteron-cli.
 //!
 //! This decoder is intentionally the only place that turns the immutable resolver/checkpoint
 //! representation back into kernel types. Fresh and resumed runs therefore use the same bytes;
 //! neither path gets to rediscover a default from `Budget`, `CompactionPolicy`, or config.
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
-use core_protocol::{Budget, Capability, Effort, PermissionMode, PermissionRules, Verdict};
-use core_sched::BackoffPolicy;
-use core_tunables::{DecimalValue, ResolutionValue};
+use iteron_protocol::{Budget, Capability, Effort, PermissionMode, PermissionRules, Verdict};
+use iteron_sched::BackoffPolicy;
+use iteron_tunables::{DecimalValue, ResolutionValue};
 
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveCoreSettings {
-    pub profile: core_tunables::RuntimeProfile,
+    pub profile: iteron_tunables::RuntimeProfile,
     pub provider_id: String,
     pub model_id: String,
     pub base_url: String,
@@ -22,15 +22,15 @@ pub(crate) struct EffectiveCoreSettings {
     pub permission_rules: PermissionRules,
     pub bypass_permissions: bool,
     pub retry: BackoffPolicy,
-    pub compaction: core_ctx::CompactionPolicy,
+    pub compaction: iteron_ctx::CompactionPolicy,
     pub verify_command: Option<String>,
-    pub verification: core_verify::VerificationRuntimePolicy,
+    pub verification: iteron_verify::VerificationRuntimePolicy,
     pub prompt_cache_enabled: bool,
     pub memory_enabled: bool,
     pub session_spawn_cap: usize,
     pub deferred_tool_eager_limit: Option<usize>,
-    pub context_budget: core_ctx::ContextBudgetPolicy,
-    pub context_materialization: core_ctx::ContextMaterializationPolicy,
+    pub context_budget: iteron_ctx::ContextBudgetPolicy,
+    pub context_materialization: iteron_ctx::ContextMaterializationPolicy,
     pub provider_governor: crate::config::ResolvedProviderGovernorConfig,
     pub mcp: super::effective_mcp::EffectiveMcpSettings,
 }
@@ -147,8 +147,8 @@ impl EffectiveCoreSettings {
 fn decode_verification(
     view: &EffectiveTunablesView,
     configured_command: Option<&str>,
-) -> Result<core_verify::VerificationRuntimePolicy, EffectiveCoreError> {
-    use core_verify::{
+) -> Result<iteron_verify::VerificationRuntimePolicy, EffectiveCoreError> {
+    use iteron_verify::{
         FlakyQuarantinePolicy, VerificationCheckpointPolicy, VerificationQuorumPolicy,
         VerificationRestorePolicy, VerificationRollbackMode, VerificationRuntimePolicy,
         VerificationSelectionMode,
@@ -316,8 +316,8 @@ fn decode_context_policies(
     view: &EffectiveTunablesView,
 ) -> Result<
     (
-        core_ctx::ContextBudgetPolicy,
-        core_ctx::ContextMaterializationPolicy,
+        iteron_ctx::ContextBudgetPolicy,
+        iteron_ctx::ContextMaterializationPolicy,
     ),
     EffectiveCoreError,
 > {
@@ -373,7 +373,7 @@ fn decode_context_policies(
                 None,
             ),
         };
-    let mut budget = core_ctx::ContextBudgetPolicy::for_usable_window(
+    let mut budget = iteron_ctx::ContextBudgetPolicy::for_usable_window(
         window,
         output_reserve,
         verification_reserve,
@@ -397,9 +397,9 @@ fn decode_context_policies(
         .unwrap_or(0);
 
     let memory = view.object("memory_budgets")?;
-    let materialization = core_ctx::ContextMaterializationPolicy {
-        max_bytes: core_protocol::context::MAX_CONTEXT_GRANT_BYTES,
-        memory: core_ctx::MemBudget {
+    let materialization = iteron_ctx::ContextMaterializationPolicy {
+        max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
+        memory: iteron_ctx::MemBudget {
             recall_bytes: usizev(
                 integer_field(memory, "memory_budgets", "recall_bytes")?,
                 "memory_budgets",
@@ -471,8 +471,8 @@ fn estimated_tokens_for_byte_ceiling(bytes: usize) -> usize {
 
 fn decode_memory_retrieval(
     view: &EffectiveTunablesView,
-) -> Result<core_ctx::MemoryRetrievalPolicy, EffectiveCoreError> {
-    let mut policy = core_ctx::MemoryRetrievalPolicy::default();
+) -> Result<iteron_ctx::MemoryRetrievalPolicy, EffectiveCoreError> {
+    let mut policy = iteron_ctx::MemoryRetrievalPolicy::default();
     for (parameter, value) in view.map("bm25")? {
         let ResolutionValue::Decimal { value } = value else {
             return Err(EffectiveCoreError::WrongFieldType {
@@ -564,7 +564,7 @@ fn parse_capability(value: &str) -> Result<Capability, EffectiveCoreError> {
 
 fn decode_compaction(
     view: &EffectiveTunablesView,
-) -> Result<core_ctx::CompactionPolicy, EffectiveCoreError> {
+) -> Result<iteron_ctx::CompactionPolicy, EffectiveCoreError> {
     let family = "compaction_trigger";
     let trigger = view.object(family)?;
     let mode = enum_field(trigger, family, "mode")?;
@@ -576,13 +576,13 @@ fn decode_compaction(
         view.integer("compaction_keep_recent")?,
         "compaction_keep_recent",
     )?;
-    let mut policy = core_ctx::CompactionPolicy::default();
+    let mut policy = iteron_ctx::CompactionPolicy::default();
     policy.trigger_tokens = fallback;
     policy.keep_recent = keep_recent;
     policy.enabled = optional_boolean(view, "auto_compaction_enable")?.unwrap_or(true);
     let summary = view.object("summary_profile")?;
     let summary_effort = enum_field(summary, "summary_profile", "effort")?;
-    policy.summary_profile = core_ctx::SummaryProfile {
+    policy.summary_profile = iteron_ctx::SummaryProfile {
         max_output_tokens: u32v(
             integer_field(summary, "summary_profile", "max_output_tokens")?,
             "summary_profile",
@@ -598,7 +598,7 @@ fn decode_compaction(
     .validate()
     .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
     if let Some(fields) = optional_object(view, "compaction_cooldown_hysteresis")? {
-        policy.hysteresis = core_ctx::CompactionHysteresis {
+        policy.hysteresis = iteron_ctx::CompactionHysteresis {
             cooldown_turns: u32v(
                 integer_field(fields, "compaction_cooldown_hysteresis", "cooldown_turns")?,
                 "compaction_cooldown_hysteresis",
@@ -616,7 +616,7 @@ fn decode_compaction(
         .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
     }
     if let Some(topology) = optional_enum(view, "multi_stage_summary_topology")? {
-        policy.summary_topology = core_ctx::SummaryTopology::parse(topology)
+        policy.summary_topology = iteron_ctx::SummaryTopology::parse(topology)
             .ok_or_else(|| unknown("multi_stage_summary_topology", topology))?;
     }
     policy.coverage_check =

@@ -13,7 +13,7 @@ impl KernelSpawnerContext {
     /// Bind a fresh standalone workflow to one atomic resolver result before any child can spawn.
     pub(crate) fn pin_resolved_tunables(
         &mut self,
-        resolved: &core_tunables::ResolvedTunableSet,
+        resolved: &iteron_tunables::ResolvedTunableSet,
     ) -> Result<(), KernelError> {
         if self.tunables_pin.is_some() {
             return Err(KernelError::TunablesAlreadyResolved);
@@ -25,7 +25,7 @@ impl KernelSpawnerContext {
     /// Bind a resumed standalone workflow to its exact historical V1/V2 checkpoint.
     pub(crate) fn pin_tunables_checkpoint(
         &mut self,
-        checkpoint: core_record::TunablesCheckpoint,
+        checkpoint: iteron_record::TunablesCheckpoint,
     ) -> Result<(), KernelError> {
         if self.tunables_pin.is_some() {
             return Err(KernelError::TunablesAlreadyResolved);

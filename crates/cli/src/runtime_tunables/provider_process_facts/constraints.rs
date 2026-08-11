@@ -3,8 +3,8 @@ use super::{
     FactGapReason, FactLayer, ProviderProcessFactError, ProviderProcessFactGap,
     ProviderProcessFactsInput, ProviderProcessFactsReport, VerificationOwnerFacts,
 };
-use core_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
-use core_verify::VerifierScope;
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
+use iteron_verify::VerifierScope;
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -51,8 +51,8 @@ fn add_governor_constraints(
             (
                 "dispatch_state",
                 en(match rule.point {
-                    core_provider::FailurePoint::PreDispatch => "pre_dispatch",
-                    core_provider::FailurePoint::ProvenTerminal => "post_dispatch",
+                    iteron_provider::FailurePoint::PreDispatch => "pre_dispatch",
+                    iteron_provider::FailurePoint::ProvenTerminal => "post_dispatch",
                 }),
             ),
             ("version", super::value::text("1.0.0")),
@@ -62,7 +62,7 @@ fn add_governor_constraints(
         "failover_eligible_error_taxonomy",
         "version",
         ExternalCeiling::BenchmarkProtocol,
-        core_tunables::ConstraintValue::Exact { value: failover },
+        iteron_tunables::ConstraintValue::Exact { value: failover },
     )?;
     report.constrained(
         "failover_eligible_error_taxonomy",

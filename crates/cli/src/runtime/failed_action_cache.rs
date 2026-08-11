@@ -51,22 +51,22 @@ impl FailedActionCache {
     }
 
     /// Exact production value supplied to the trusted tunables composition root.
-    pub(crate) fn tunable_value() -> core_tunables::ResolutionValue {
-        core_tunables::ResolutionValue::Object {
+    pub(crate) fn tunable_value() -> iteron_tunables::ResolutionValue {
+        iteron_tunables::ResolutionValue::Object {
             fields: std::collections::BTreeMap::from([
                 (
                     "failed_only".to_owned(),
-                    core_tunables::ResolutionValue::Boolean { value: true },
+                    iteron_tunables::ResolutionValue::Boolean { value: true },
                 ),
                 (
                     "max_identities".to_owned(),
-                    core_tunables::ResolutionValue::Integer {
+                    iteron_tunables::ResolutionValue::Integer {
                         value: MAX_IDENTITIES as i64,
                     },
                 ),
                 (
                     "scope".to_owned(),
-                    core_tunables::ResolutionValue::Enum {
+                    iteron_tunables::ResolutionValue::Enum {
                         value: "run".to_owned(),
                     },
                 ),
@@ -115,13 +115,13 @@ mod tests {
             cache.get("tool::input").map(String::len),
             Some(MAX_PRIOR_ERROR_BYTES)
         );
-        let core_tunables::ResolutionValue::Object { fields } = FailedActionCache::tunable_value()
+        let iteron_tunables::ResolutionValue::Object { fields } = FailedActionCache::tunable_value()
         else {
             panic!("policy must be an object");
         };
         assert_eq!(
             fields.get("max_identities"),
-            Some(&core_tunables::ResolutionValue::Integer {
+            Some(&iteron_tunables::ResolutionValue::Integer {
                 value: MAX_IDENTITIES as i64
             })
         );

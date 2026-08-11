@@ -1,6 +1,6 @@
 use super::{ProviderProcessFactError, ProviderProcessFactsInput, VerificationOwnerFacts};
-use core_provider::{AccountAvailability, BalanceAvailability};
-use core_tools::Registry;
+use iteron_provider::{AccountAvailability, BalanceAvailability};
+use iteron_tools::Registry;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
@@ -14,8 +14,8 @@ pub(super) struct OwnerSnapshot {
     registered_tools: BTreeSet<String>,
     pub process_surface: bool,
     pub lsp_surface: bool,
-    process_policy: Option<core_tools::ProcessRuntimePolicy>,
-    lsp_policy: Option<core_tools::LspRuntimePolicy>,
+    process_policy: Option<iteron_tools::ProcessRuntimePolicy>,
+    lsp_policy: Option<iteron_tools::LspRuntimePolicy>,
     pub checkpoint_supported: bool,
     verification: VerificationEvidence,
 }
@@ -47,8 +47,8 @@ struct CompactionEvidence {
 enum VerificationEvidence {
     Configured {
         command_digest_sha256: String,
-        floor: core_verify::VerifierSlotObservation,
-        plan: core_verify::VerifierPlan,
+        floor: iteron_verify::VerifierSlotObservation,
+        plan: iteron_verify::VerifierPlan,
     },
     Disabled,
     GetterUnavailable,
@@ -108,7 +108,7 @@ impl OwnerSnapshot {
             process_policy,
             lsp_policy,
             registered_tools,
-            checkpoint_supported: core_record::checkpoint_supported(input.workspace),
+            checkpoint_supported: iteron_record::checkpoint_supported(input.workspace),
             verification,
         })
     }

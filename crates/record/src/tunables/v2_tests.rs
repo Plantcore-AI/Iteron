@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Rollout, replay};
-use core_protocol::{Effort, Event, EventKind, RunId, Seq, TenantId, TurnId};
-use core_tunables::{
+use iteron_protocol::{Effort, Event, EventKind, RunId, Seq, TenantId, TurnId};
+use iteron_tunables::{
     Adjustment, AdjustmentKind, EntryOutcome, EvidenceSubject, ExternalCeiling, InactiveCause,
     InactiveReason, ResolutionProvenance, ResolutionReport, ResolutionSource, ResolutionValue,
     ResolvedEntry, SourceKind, SourceTrust, families,
@@ -42,7 +42,7 @@ fn report() -> ResolutionReport {
         requested: ResolutionValue::Integer { value: 10 },
         effective: ResolutionValue::Integer { value: 5 },
         ceiling: ExternalCeiling::ParentTurns,
-        policy_id: "core://tunables/clamp/fixture-v1",
+        policy_id: "iteron://tunables/clamp/fixture-v1",
         evidence_digest_sha256: "a".repeat(64),
         subject: EvidenceSubject::Global,
     });
@@ -53,10 +53,10 @@ fn report() -> ResolutionReport {
         },
     };
     let mut report = ResolutionReport {
-        schema_version: core_tunables::RESOLUTION_SCHEMA_VERSION,
-        registry_id: core_tunables::REGISTRY_ID,
-        registry_revision: core_tunables::REGISTRY_REVISION,
-        registry_digest: core_tunables::REGISTRY_DIGEST_SHA256,
+        schema_version: iteron_tunables::RESOLUTION_SCHEMA_VERSION,
+        registry_id: iteron_tunables::REGISTRY_ID,
+        registry_revision: iteron_tunables::REGISTRY_REVISION,
+        registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256,
         input_digest_sha256: "b".repeat(64),
         effective_digest_sha256: String::new(),
         resolution_digest_sha256: "c".repeat(64),
@@ -151,7 +151,7 @@ fn v2_reconstructs_effective_and_explanation_truth_and_fails_closed_on_tamper() 
 #[test]
 fn v2_is_physical_seq_one_and_untyped_fork_copies_and_binds_it() {
     let dir = std::env::temp_dir().join(format!(
-        "core-record-v2-genesis-{}-{}",
+        "iteron-record-v2-genesis-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

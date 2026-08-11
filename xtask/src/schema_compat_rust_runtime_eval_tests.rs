@@ -10,7 +10,7 @@ fn eval_admission_and_typed_decode_cannot_be_bypassed() {
     let contract = source("crates/eval/src/contract.rs");
     validate_contract(&syn::parse_file(&contract).unwrap()).unwrap();
     let unconditional = contract.replacen(
-        "if !SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.contains(&actual) {",
+        "if !SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.contains(&actual) {",
         "if false {",
         1,
     );

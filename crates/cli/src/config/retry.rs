@@ -4,7 +4,7 @@
 //! provider retries. Only numeric environment overrides and the operator-owned user config enter
 //! the effective policy. This module contains no credential-shaped fields.
 
-use core_sched::BackoffPolicy;
+use iteron_sched::BackoffPolicy;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 
@@ -14,9 +14,9 @@ const MAX_RETRY_BASE_MS: u64 = 30_000;
 const MAX_RETRY_CAP_MS: u64 = 60_000;
 const MAX_RETRY_ATTEMPTS: u32 = 10;
 
-const ENV_BASE_MS: &str = "CORE_RETRY_BASE_MS";
-const ENV_CAP_MS: &str = "CORE_RETRY_CAP_MS";
-const ENV_MAX_ATTEMPTS: &str = "CORE_RETRY_MAX_ATTEMPTS";
+const ENV_BASE_MS: &str = "ITERON_RETRY_BASE_MS";
+const ENV_CAP_MS: &str = "ITERON_RETRY_CAP_MS";
+const ENV_MAX_ATTEMPTS: &str = "ITERON_RETRY_MAX_ATTEMPTS";
 
 /// Optional per-field overlay on [`BackoffPolicy`]. `max_attempts` includes the first request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,8 +148,8 @@ mod tests {
     use super::*;
     use crate::config::FileConfig;
     use async_trait::async_trait;
-    use core_protocol::{ReasoningEffort, StopReason};
-    use core_provider::{
+    use iteron_protocol::{ReasoningEffort, StopReason};
+    use iteron_provider::{
         AccountAvailability, AdapterKind, ApiResponseError, AvailabilityTransition, ErrorProfile,
         ErrorScope, NormalizedFailure, Provider, ProviderError, RetryDisposition, StreamItem,
         TurnRequest, TurnResult, UsageReport,
@@ -290,17 +290,17 @@ mod tests {
         assert_eq!(policy.cap_ms, 40);
         assert_eq!(policy.max_attempts, 3);
         assert_eq!(
-            core_sched::full_jitter(&policy, 0, 1.0),
+            iteron_sched::full_jitter(&policy, 0, 1.0),
             Duration::from_millis(25),
             "the configured base must reach the scheduler's first backoff ceiling"
         );
         assert_eq!(
-            core_sched::full_jitter(&policy, 1, 1.0),
+            iteron_sched::full_jitter(&policy, 1, 1.0),
             Duration::from_millis(40),
             "the configured exponential base must then clamp at the configured cap"
         );
         let calls = Arc::new(AtomicU32::new(0));
-        let provider = core_sched::RetryProvider::new(
+        let provider = iteron_sched::RetryProvider::new(
             Box::new(HintedFailures {
                 calls: Arc::clone(&calls),
             }),

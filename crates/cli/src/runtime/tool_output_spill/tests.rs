@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::Trust;
+use iteron_protocol::Trust;
 
 fn result(content: &str) -> ToolResult {
     ToolResult {

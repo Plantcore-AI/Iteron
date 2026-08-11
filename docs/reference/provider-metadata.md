@@ -8,7 +8,7 @@ prove account entitlement, billing state, or availability.
 
 The source-controlled default is
 `crates/provider/static-provider-metadata-v1.json`.
-At startup, Core uses `~/.core/provider-metadata.json` when that operator-owned file
+At startup, Core uses `~/.iteron/provider-metadata.json` when that operator-owned file
 exists; otherwise it uses the embedded default. Replacing this file is the refresh
 path and does not require rebuilding Core.
 
@@ -31,8 +31,8 @@ as model-level evidence; a generic model id is not.
 For example, after preparing and reviewing a complete replacement:
 
 ```sh
-mkdir -p ~/.core
-install -m 600 /path/to/reviewed-provider-metadata.json ~/.core/provider-metadata.json
+mkdir -p ~/.iteron
+install -m 600 /path/to/reviewed-provider-metadata.json ~/.iteron/provider-metadata.json
 ```
 
 The final file itself must have one hard link and must not be a link. On Unix it

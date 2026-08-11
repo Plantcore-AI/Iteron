@@ -14,7 +14,7 @@ use std::ffi::OsStr;
 use std::time::Instant;
 
 /// Set to any value other than empty or `0` to print the startup breakdown on stderr.
-pub(crate) const STARTUP_TIMING_ENV: &str = "CORE_STARTUP_TIMING";
+pub(crate) const STARTUP_TIMING_ENV: &str = "ITERON_STARTUP_TIMING";
 
 /// The four startup phases that stand between the process starting and the first painted frame.
 /// The list is closed: a fifth phase is a deliberate contract change, not an ad-hoc `eprintln!`.
@@ -84,7 +84,7 @@ impl StartupTiming {
         let now = Instant::now();
         self.spans.push((
             phase,
-            core_obs::duration_ms_ceil(now.duration_since(previous)),
+            iteron_obs::duration_ms_ceil(now.duration_since(previous)),
         ));
         self.previous = Some(now);
     }
@@ -101,7 +101,7 @@ impl StartupTiming {
         }
         line.push_str(&format!(
             " total={}ms",
-            core_obs::duration_ms_ceil(origin.elapsed())
+            iteron_obs::duration_ms_ceil(origin.elapsed())
         ));
         Some(line)
     }

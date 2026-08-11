@@ -1,4 +1,4 @@
-//! The sub-agent spawn seam. `core-workflow` never touches `core-kernel`; instead the JS `agent()`
+//! The sub-agent spawn seam. `iteron-workflow` never touches `iteron-kernel`; instead the JS `agent()`
 //! primitive drives this trait, which the kernel/CLI implements over a real child `Agent` (or, in
 //! the first vertical slice, a single real provider completion). Keeping the edge here — the engine
 //! depends on the trait, the executor depends on the engine — is what avoids the dependency cycle
@@ -57,7 +57,7 @@ pub struct AgentCall {
     pub label: Option<String>,
     pub phase: Option<String>,
     pub model: Option<String>,
-    pub effort: Option<core_protocol::Effort>,
+    pub effort: Option<iteron_protocol::Effort>,
     pub agent_type: Option<String>,
     /// The caller's JSON Schema (`agent(prompt, {schema})`), if any.
     pub schema: Option<serde_json::Value>,

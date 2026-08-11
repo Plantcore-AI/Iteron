@@ -1,4 +1,4 @@
-//! core-workflow — the ultracode-workflow engine (完整复刻 of Claude Code's Workflow feature).
+//! iteron-workflow — the ultracode-workflow engine (完整复刻 of Claude Code's Workflow feature).
 //!
 //! It embeds QuickJS (via `rquickjs`) and runs the `.js` workflow scripts with `agent()` /
 //! `parallel()` / `pipeline()` / `phase()` / `log()` as ambient globals backed by Rust. The single
@@ -7,9 +7,9 @@
 //! `export const meta` strip + async-fn wrap, review B1).
 //!
 //! Boundaries this crate keeps:
-//!   * It never depends on `core-kernel`. The real sub-agent spawn is the [`AgentSpawner`] trait the
+//!   * It never depends on `iteron-kernel`. The real sub-agent spawn is the [`AgentSpawner`] trait the
 //!     kernel/CLI implements (the seam that avoids the dependency cycle, §2.1).
-//!   * Concurrency is bounded by `core_sched::Governor` — one global slot pool per run.
+//!   * Concurrency is bounded by `iteron_sched::Governor` — one global slot pool per run.
 //!   * Determinism traps (Math.random / Date.now / Date() / performance.now / crypto.getRandomValues)
 //!     are installed on `globalThis` before the script runs (`prelude.js`).
 //!

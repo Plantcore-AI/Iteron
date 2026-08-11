@@ -95,8 +95,8 @@ pub(crate) enum Request {
         workspace: PathBuf,
         command: String,
         sensitive_env_names: Vec<String>,
-        mode: core_protocol::PermissionMode,
-        rules: core_protocol::PermissionRules,
+        mode: iteron_protocol::PermissionMode,
+        rules: iteron_protocol::PermissionRules,
     },
     Control {
         sender: tokio::sync::mpsc::Sender<crate::app_server::ControlRequest>,

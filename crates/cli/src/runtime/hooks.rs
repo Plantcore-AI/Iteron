@@ -4,7 +4,7 @@
 //!
 //! SECURITY (the load-bearing decision, and why the R5 review deferred external hooks): a hook runs
 //! an ARBITRARY COMMAND. It is therefore honored ONLY from the operator's USER config
-//! (`~/.core/config.json`) — NEVER from a project/`.core/config.json` that could arrive with a
+//! (`~/.iteron/config.json`) — NEVER from a project/`.iteron/config.json` that could arrive with a
 //! cloned repo. This is the same trust-by-origin discipline as skills/memory/agents (ADR-007 §6):
 //! tree-discovered config is untrusted and must not be able to run code. Hooks are the operator's
 //! own infrastructure (like the git hooks they wrote), so they run un-sandboxed but with a
@@ -100,7 +100,7 @@ pub struct LifecycleHookReport {
     pub completed: u32,
     pub failed: u32,
     pub timed_out: u32,
-    pub augmentations: Vec<core_protocol::LifecyclePayload>,
+    pub augmentations: Vec<iteron_protocol::LifecyclePayload>,
 }
 
 const MAX_LIFECYCLE_HOOK_AUGMENTATIONS: usize = 32;
@@ -108,11 +108,11 @@ const LIFECYCLE_GATE_TIMEOUT: Duration = Duration::from_secs(2);
 const LIFECYCLE_OBSERVER_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Hooks {
-    /// Load hooks from the USER config `<home>/.core/config.json` only. A project config is
+    /// Load hooks from the USER config `<home>/.iteron/config.json` only. A project config is
     /// NEVER read here — a cloned repo must not be able to run a command (trust-by-origin). A
     /// missing/malformed file yields no hooks (hooks are opt-in; a broken config does not brick).
     pub fn load_user(home: &Path) -> Hooks {
-        let path = core_protocol::home::path(home, "config.json");
+        let path = iteron_protocol::home::path(home, "config.json");
         let by_event = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<HooksFile>(&s).ok())
@@ -140,7 +140,7 @@ impl Hooks {
             HookEvent::UserPromptSubmit.key(),
             HookEvent::SessionStart.key(),
         ];
-        if !legacy.contains(&event) && !core_protocol::lifecycle::is_registered(event) {
+        if !legacy.contains(&event) && !iteron_protocol::lifecycle::is_registered(event) {
             return Err("unknown lifecycle event");
         }
         if command.is_empty() || command.len() > 4096 || command.chars().any(char::is_control) {
@@ -330,7 +330,7 @@ impl Hooks {
         drain: Option<&std::sync::atomic::AtomicBool>,
         journal: Option<&HookEffectJournal>,
     ) -> Result<LifecycleHookReport, &'static str> {
-        let Some(spec) = core_protocol::lifecycle::event_spec(event_id) else {
+        let Some(spec) = iteron_protocol::lifecycle::event_spec(event_id) else {
             return Err("unknown lifecycle event");
         };
         let Some(commands) = self.by_event.get(event_id) else {
@@ -343,7 +343,7 @@ impl Hooks {
                 augmentations: Vec::new(),
             });
         };
-        let timeout = if spec.hook_capability == core_protocol::HookCapability::Gate {
+        let timeout = if spec.hook_capability == iteron_protocol::HookCapability::Gate {
             LIFECYCLE_GATE_TIMEOUT
         } else {
             LIFECYCLE_OBSERVER_TIMEOUT
@@ -361,7 +361,7 @@ impl Hooks {
                 Some(Ok(ticket)) => Some(ticket),
                 Some(Err(_)) => {
                     report.failed = report.failed.saturating_add(1);
-                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                    if spec.hook_capability == iteron_protocol::HookCapability::Gate {
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook intent could not be recorded"
                         ));
@@ -390,7 +390,7 @@ impl Hooks {
             match outcome {
                 HookRun::Completed(output)
                     if output.code == 2
-                        && spec.hook_capability == core_protocol::HookCapability::Gate =>
+                        && spec.hook_capability == iteron_protocol::HookCapability::Gate =>
                 {
                     report.completed = report.completed.saturating_add(1);
                     report.decision = HookDecision::Deny(if output.stderr.trim().is_empty() {
@@ -404,10 +404,10 @@ impl Hooks {
                     report.completed = report.completed.saturating_add(1);
                     if output.code != 0 {
                         report.failed = report.failed.saturating_add(1);
-                    } else if spec.hook_capability == core_protocol::HookCapability::Augment
+                    } else if spec.hook_capability == iteron_protocol::HookCapability::Augment
                         && !output.stdout.trim().is_empty()
                     {
-                        let augmentation = serde_json::from_str::<core_protocol::LifecyclePayload>(
+                        let augmentation = serde_json::from_str::<iteron_protocol::LifecyclePayload>(
                             output.stdout.trim(),
                         )
                         .ok()
@@ -425,7 +425,7 @@ impl Hooks {
                 }
                 HookRun::TimedOut => {
                     report.timed_out = report.timed_out.saturating_add(1);
-                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                    if spec.hook_capability == iteron_protocol::HookCapability::Gate {
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook timed out without an allow decision"
                         ));
@@ -434,7 +434,7 @@ impl Hooks {
                 }
                 HookRun::NotStarted(_) | HookRun::Failed | HookRun::Cancelled => {
                     report.failed = report.failed.saturating_add(1);
-                    if spec.hook_capability == core_protocol::HookCapability::Gate {
+                    if spec.hook_capability == iteron_protocol::HookCapability::Gate {
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook failed without an allow decision"
                         ));
@@ -447,7 +447,7 @@ impl Hooks {
     }
 
     pub fn subscribed_lifecycle_events(&self) -> Vec<&'static str> {
-        core_protocol::lifecycle::EVENTS
+        iteron_protocol::lifecycle::EVENTS
             .into_iter()
             .filter(|event| {
                 self.by_event
@@ -653,7 +653,7 @@ async fn run_one_with_sensitive_env_names_cancellable(
     // has `/bin/sh` and no `/bin/bash`, and on a platform with neither the hook must say so
     // instead of no-opping forever.
     run_one_with_shell(
-        core_sandbox::confined_shell(),
+        iteron_sandbox::confined_shell(),
         cmd,
         ctx,
         timeout,
@@ -676,8 +676,8 @@ async fn run_one_with_shell(
     use tokio::io::AsyncWriteExt;
 
     let mut command = tokio::process::Command::new(shell);
-    core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
-    core_sandbox::configure_process_group(&mut command);
+    iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
+    iteron_sandbox::configure_process_group(&mut command);
     let spawned = command
         .arg("-c")
         .arg(cmd)
@@ -822,7 +822,7 @@ impl Drop for HookProcessGroupDropGuard {
 }
 
 async fn terminate_and_reap(child: &mut tokio::process::Child) {
-    core_sandbox::terminate_process_group_and_reap(child).await;
+    iteron_sandbox::terminate_process_group_and_reap(child).await;
 }
 
 #[cfg(test)]
@@ -831,7 +831,7 @@ mod tests {
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("core-hooks-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(d.join(".core")).unwrap();
+        std::fs::create_dir_all(d.join(".iteron")).unwrap();
         d
     }
 
@@ -839,7 +839,7 @@ mod tests {
     async fn pretooluse_hook_can_deny_a_tool() {
         let home = tmp("deny");
         std::fs::write(
-            home.join(".core").join("config.json"),
+            home.join(".iteron").join("config.json"),
             r#"{"hooks":{"PreToolUse":["grep -q secret && echo 'no secrets' >&2 && exit 2 || exit 0"]}}"#,
         )
         .unwrap();
@@ -871,7 +871,7 @@ mod tests {
     async fn a_broken_hook_does_not_wedge_allows() {
         let home = tmp("broken");
         std::fs::write(
-            home.join(".core").join("config.json"),
+            home.join(".iteron").join("config.json"),
             r#"{"hooks":{"PreToolUse":["/nonexistent/command/xyz"]}}"#,
         )
         .unwrap();
@@ -913,14 +913,14 @@ mod tests {
     async fn hook_child_gets_toolchain_env_but_no_exact_pricing_credential() {
         unsafe {
             std::env::set_var(
-                "CORE_TEST_PRICING_KEY",
+                "ITERON_TEST_PRICING_KEY",
                 "hook-pricing-sentinel-must-not-cross",
             );
             std::env::set_var("XDG_CONFIG_HOME", "hook-allowlist-sentinel-must-not-cross");
         }
-        let sensitive = vec!["CORE_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
+        let sensitive = vec!["ITERON_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
         let output = run_one_with_sensitive_env_names(
-            "test -z \"${CORE_TEST_PRICING_KEY+x}\" && test -z \"${XDG_CONFIG_HOME+x}\" && command -v sh >/dev/null",
+            "test -z \"${ITERON_TEST_PRICING_KEY+x}\" && test -z \"${XDG_CONFIG_HOME+x}\" && command -v sh >/dev/null",
             "",
             Duration::from_secs(2),
             &sensitive,
@@ -929,7 +929,7 @@ mod tests {
         .completed()
         .expect("hook should run");
         unsafe {
-            std::env::remove_var("CORE_TEST_PRICING_KEY");
+            std::env::remove_var("ITERON_TEST_PRICING_KEY");
             std::env::remove_var("XDG_CONFIG_HOME");
         }
         assert_eq!(output.code, 0);
@@ -1023,7 +1023,7 @@ mod tests {
     async fn journal_brackets_each_external_command_not_the_chain() {
         let home = tmp("journal-per-command");
         std::fs::write(
-            home.join(".core").join("config.json"),
+            home.join(".iteron").join("config.json"),
             serde_json::json!({"hooks": {"SessionStart": [":", ":"]}}).to_string(),
         )
         .unwrap();
@@ -1061,7 +1061,7 @@ mod tests {
         let pid_path = home.join("hook.pid");
         let command = format!("echo $$ > {}; exec sleep 60", shell_quote(&pid_path));
         std::fs::write(
-            home.join(".core").join("config.json"),
+            home.join(".iteron").join("config.json"),
             serde_json::json!({"hooks": {"SessionStart": [command]}}).to_string(),
         )
         .unwrap();

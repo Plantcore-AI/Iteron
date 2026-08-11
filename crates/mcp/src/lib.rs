@@ -1,4 +1,4 @@
-//! core-mcp — a Model Context Protocol client (stdio transport).
+//! iteron-mcp — a Model Context Protocol client (stdio transport).
 //!
 //! MCP is the standard tool-ecosystem protocol, and Principal.md embraces the ecosystem at
 //! standard protocol layers. This client spawns an MCP server, does the `initialize` handshake,
@@ -221,7 +221,7 @@ pub enum McpError {
     #[error("MCP HTTP session expired and must be re-initialized")]
     SessionExpired,
     /// The HTTP transport is designed, framed, and unit-tested in this crate, but no HTTP client
-    /// is admitted into `core-mcp`'s dependency graph, so nothing in-tree can perform the
+    /// is admitted into `iteron-mcp`'s dependency graph, so nothing in-tree can perform the
     /// exchange. Selecting it fails closed rather than silently falling back to stdio.
     #[error("MCP HTTP transport is not available in this build")]
     HttpTransportUnavailable,

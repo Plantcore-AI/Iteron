@@ -6,7 +6,7 @@
 //! metadata only; arguments and results never enter it.
 
 use crate::{Registry, ToolError, boxfut, err_result, ok_result};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -197,7 +197,7 @@ fn terms(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::ToolUse;
+    use iteron_protocol::ToolUse;
 
     #[tokio::test]
     async fn hidden_admitted_schema_becomes_visible_after_search() {

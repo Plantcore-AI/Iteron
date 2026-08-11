@@ -1,6 +1,6 @@
 //! Honest accounting of operator obligations across lossy transcript compaction.
 
-use core_protocol::{Block, Message, Role};
+use iteron_protocol::{Block, Message, Role};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CompactionObligations {

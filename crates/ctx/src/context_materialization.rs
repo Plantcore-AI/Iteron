@@ -5,8 +5,8 @@ use crate::{
     CacheClass, ContextDecision, ContextDecisionReason, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass,
 };
-use core_protocol::Trust;
-use core_protocol::context::{
+use iteron_protocol::Trust;
+use iteron_protocol::context::{
     ContextGrant, ContextRequest, ContextSegment, ContextSource, MAX_CONTEXT_SEGMENTS,
 };
 use sha2::{Digest, Sha256};
@@ -148,12 +148,12 @@ fn source_class(source: ContextSource) -> ContextSourceClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::context::RequestId;
+    use iteron_protocol::context::RequestId;
 
     fn request(max_bytes: u32) -> ContextRequest {
         let mut request = ContextRequest::new(
             RequestId(1),
-            core_protocol::slot::SlotId("core/context".into()),
+            iteron_protocol::slot::SlotId("core/context".into()),
             max_bytes,
         );
         request.trust_ceiling = Trust::Trusted;

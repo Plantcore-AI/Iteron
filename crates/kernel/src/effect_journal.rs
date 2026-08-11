@@ -9,7 +9,7 @@
 //! module rather than a longer one.
 
 use crate::effect_class::EffectClass;
-use core_protocol::{EffectId, Event, EventKind, TurnId};
+use iteron_protocol::{EffectId, Event, EventKind, TurnId};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

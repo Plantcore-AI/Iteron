@@ -67,7 +67,7 @@ pub(crate) fn body(
     selected_ids: Option<&[u64]>,
 ) -> Result<Vec<u8>, String> {
     let selected = selected_ids.map(|ids| ids.iter().copied().collect::<HashSet<_>>());
-    let mut body = String::from("# Core Code transcript\n\n");
+    let mut body = String::from("# Iteron transcript\n\n");
     for block in blocks {
         if selected
             .as_ref()

@@ -43,7 +43,7 @@ impl Agent {
 
     pub(super) fn ensure_record_healthy(&self) -> Result<(), KernelError> {
         if self.record_failed {
-            return Err(KernelError::Record(core_record::RecordError::Io(
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
                 std::io::Error::other(
                     "provider admission cannot continue after the durable record failed",
                 ),
@@ -90,7 +90,7 @@ impl Agent {
             self.fail_next_durable_append = None;
             self.record_failed = true;
             self.diagnostic_record_append_failed();
-            return Err(KernelError::Record(core_record::RecordError::Io(
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
                 std::io::Error::other("injected durable append failure"),
             )));
         }
@@ -360,7 +360,7 @@ impl Agent {
         payload: LifecyclePayload,
     ) -> Result<hooks::LifecycleHookReport, KernelError> {
         let mut correlation = self.lifecycle_correlation(Some(turn));
-        correlation.subagent_id = Some(core_protocol::SubagentId(subagent_id.to_owned()));
+        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
         self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, true)
             .await
     }
@@ -369,13 +369,13 @@ impl Agent {
         &mut self,
         turn: TurnId,
         event_id: &'static str,
-        correlation: core_obs::lifecycle::LifecycleCorrelation,
+        correlation: iteron_obs::lifecycle::LifecycleCorrelation,
         payload: LifecyclePayload,
         project_source: bool,
     ) -> Result<hooks::LifecycleHookReport, KernelError> {
         debug_assert_eq!(
-            core_protocol::lifecycle::event_spec(event_id).map(|spec| spec.hook_capability),
-            Some(core_protocol::HookCapability::Gate)
+            iteron_protocol::lifecycle::event_spec(event_id).map(|spec| spec.hook_capability),
+            Some(iteron_protocol::HookCapability::Gate)
         );
         if project_source {
             self.lifecycle_event_with_correlation(event_id, correlation, payload);
@@ -408,7 +408,7 @@ impl Agent {
         self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
         self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
         let context = serde_json::json!({
-            "catalog_version": core_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+            "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
             "event_id": event_id,
             "turn_id": turn.0,
         })
@@ -481,7 +481,7 @@ impl Agent {
     /// recovery refuses to replay -- a retried export would duplicate spans, and a duplicated span
     /// is a wrong dashboard rather than a missing one.
     ///
-    /// The payload is a PROJECTION: `core_obs::otel::project` reads events the record already
+    /// The payload is a PROJECTION: `iteron_obs::otel::project` reads events the record already
     /// holds and measures nothing, so the exporter cannot disagree with the audit log it exports.
     pub(super) async fn brokered_telemetry_export(
         &mut self,
@@ -492,7 +492,7 @@ impl Agent {
         };
         self.lifecycle_event("exporter.started", Some(turn), LifecyclePayload::default());
         self.lifecycle_event("replay.started", Some(turn), LifecyclePayload::default());
-        let Ok(timed) = core_record::replay_timed(self.rollout.path()) else {
+        let Ok(timed) = iteron_record::replay_timed(self.rollout.path()) else {
             // A rollout that will not replay is an audit problem, not a telemetry problem, and it
             // is already reported by every other reader. Exporting a partial projection from bytes
             // the audit path rejected is the one thing this must not do.
@@ -506,13 +506,13 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let events: Vec<&core_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
-        let timeline = core_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
-        let mut payload = core_obs::otel::project(&self.rollout.run_id().0, &events, &timeline);
+        let events: Vec<&iteron_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
+        let timeline = iteron_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
+        let mut payload = iteron_obs::otel::project(&self.rollout.run_id().0, &events, &timeline);
         payload.lifecycle = self
             .lifecycle_telemetry
             .as_ref()
-            .map(core_obs::otel::lifecycle::LifecycleTelemetryRuntime::snapshot);
+            .map(iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::snapshot);
         if payload.dropped > 0 {
             // Counted, never silent. A consumer that saw the cap and no drop count would believe
             // it had seen the whole run.

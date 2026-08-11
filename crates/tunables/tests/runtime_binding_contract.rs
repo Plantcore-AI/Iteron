@@ -1,4 +1,4 @@
-use core_tunables::{
+use iteron_tunables::{
     CatalogSnapshot, ConstraintValue, ExternalCeiling, FailureCode, ResolutionValue,
     RouteCapabilities, RouteIdentity, RuntimeAuthoritySet, RuntimeProfile,
     RuntimeResolutionBuilder, RuntimeResolutionError, SourceKind, canonical_embedded_default,
@@ -53,7 +53,7 @@ fn composition_inputs_and_authority_digests_fail_closed() {
     ));
 
     let unknown = CatalogSnapshot {
-        catalog_id: "core://tunables/catalogs/not-registered-v1".to_owned(),
+        catalog_id: "iteron://tunables/catalogs/not-registered-v1".to_owned(),
         digest_sha256: DIGEST_A.to_owned(),
         values: BTreeSet::new(),
     };
@@ -153,7 +153,7 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     }));
 
     let defaults = runtime_default_observations();
-    assert!(defaults.len() <= core_tunables::EXPECTED_FAMILY_COUNT);
+    assert!(defaults.len() <= iteron_tunables::EXPECTED_FAMILY_COUNT);
     assert!(
         defaults
             .iter()

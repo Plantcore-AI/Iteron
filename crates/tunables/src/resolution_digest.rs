@@ -43,7 +43,7 @@ pub(crate) fn effective_digest(entries: &[ResolvedEntry]) -> Result<String, Stri
         })
         .collect();
     digest_json(&EffectivePayload {
-        canonicalization: "core-tunables-effective-json-v1",
+        canonicalization: "iteron-tunables-effective-json-v1",
         registry_id: crate::REGISTRY_ID,
         registry_revision: crate::REGISTRY_REVISION,
         registry_digest: crate::REGISTRY_DIGEST_SHA256,
@@ -53,7 +53,7 @@ pub(crate) fn effective_digest(entries: &[ResolvedEntry]) -> Result<String, Stri
 
 pub(crate) fn resolution_digest(report: &ResolutionReport) -> Result<String, String> {
     digest_json(&ResolutionPayload {
-        canonicalization: "core-tunables-resolution-json-v1",
+        canonicalization: "iteron-tunables-resolution-json-v1",
         schema_version: report.schema_version,
         registry_id: report.registry_id,
         registry_revision: report.registry_revision,

@@ -9,8 +9,8 @@ use super::types::{JobState, ProcessSnapshot};
 use super::{MAX_COMMAND_BYTES, POLL_OUTPUT_BYTES_PER_STREAM, RETAINED_OUTPUT_BYTES_PER_STREAM};
 use crate::{Registry, ToolExecution};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use core_protocol::ToolResult;
-use core_protocol::{Capability, Purity, ToolUse};
+use iteron_protocol::ToolResult;
+use iteron_protocol::{Capability, Purity, ToolUse};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

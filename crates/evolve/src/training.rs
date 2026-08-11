@@ -225,7 +225,7 @@ mod tests {
         DataGovernance, EVOLUTION_SCHEMA_VERSION, PolicyBundle, PolicyRef, RewardVector,
         StrategySlot,
     };
-    use core_protocol::{RunId, TenantId};
+    use iteron_protocol::{RunId, TenantId};
 
     const D: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

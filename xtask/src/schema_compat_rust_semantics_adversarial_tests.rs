@@ -77,7 +77,7 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
     let eval_path = temp.join("crates/eval/src/contract.rs");
     let eval = std::fs::read_to_string(&eval_path).unwrap();
     let bypass = eval.replacen(
-        "if !SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.contains(&actual) {",
+        "if !SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.contains(&actual) {",
         "if false {",
         1,
     );

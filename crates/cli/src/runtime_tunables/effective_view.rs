@@ -1,7 +1,7 @@
 //! Version-neutral runtime projection of one immutable tunables truth.
 
-use core_record::TunablesCheckpoint;
-use core_tunables::{EntryOutcome, ResolutionValue, ResolvedTunableSet};
+use iteron_record::TunablesCheckpoint;
+use iteron_tunables::{EntryOutcome, ResolutionValue, ResolvedTunableSet};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ impl EffectiveTunablesView {
         let TunablesCheckpoint::V2(snapshot) = checkpoint else {
             return Err(EffectiveViewError::HistoricalIdentityOnly);
         };
-        core_record::validate_tunables_snapshot_v2(snapshot)
+        iteron_record::validate_tunables_snapshot_v2(snapshot)
             .map_err(|_| EffectiveViewError::Decode("checkpoint".into()))?;
         let mut values = BTreeMap::new();
         for entry in &snapshot.entries {
@@ -86,13 +86,13 @@ impl EffectiveTunablesView {
 
     pub(crate) fn runtime_profile(
         &self,
-    ) -> Result<core_tunables::RuntimeProfile, EffectiveViewError> {
+    ) -> Result<iteron_tunables::RuntimeProfile, EffectiveViewError> {
         let digest = self
             .profile_digest_sha256
             .as_deref()
             .ok_or(EffectiveViewError::UnknownProfile)?;
-        for profile in core_tunables::RuntimeProfile::ALL {
-            let candidate = core_tunables::runtime_profile_digest(profile)
+        for profile in iteron_tunables::RuntimeProfile::ALL {
+            let candidate = iteron_tunables::runtime_profile_digest(profile)
                 .map_err(|_| EffectiveViewError::Decode("runtime_profile".into()))?;
             if candidate == digest {
                 return Ok(profile);
@@ -128,7 +128,7 @@ impl EffectiveTunablesView {
     pub(crate) fn decimal(
         &self,
         family: &str,
-    ) -> Result<core_tunables::DecimalValue, EffectiveViewError> {
+    ) -> Result<iteron_tunables::DecimalValue, EffectiveViewError> {
         match self.value(family)? {
             ResolutionValue::Decimal { value } => Ok(*value),
             _ => Err(wrong_type(family, "decimal")),
@@ -180,7 +180,7 @@ fn wrong_type(family: &str, expected: &'static str) -> EffectiveViewError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
+    use iteron_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
 
     #[test]
     fn v1_identity_is_never_misrepresented_as_runtime_values() {

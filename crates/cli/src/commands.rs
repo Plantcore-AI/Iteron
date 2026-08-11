@@ -122,7 +122,7 @@ pub struct Cmd {
     pub help: &'static str,
 }
 
-/// Every slash command core's TUI supports. Help and completion consume these canonical spellings;
+/// Every slash command iteron's TUI supports. Help and completion consume these canonical spellings;
 /// parsing resolves each entry to the typed identity matched by the live dispatcher.
 pub const COMMANDS: &[Cmd] = &[
     Cmd {
@@ -321,7 +321,7 @@ pub const COMMANDS: &[Cmd] = &[
         command: SlashCommand::Login,
         name: "login",
         args: "",
-        help: "check the current credential against the provider (setup runs in `core setup`)",
+        help: "check the current credential against the provider (setup runs in `iteron setup`)",
     },
     Cmd {
         command: SlashCommand::Theme,
@@ -333,7 +333,7 @@ pub const COMMANDS: &[Cmd] = &[
         command: SlashCommand::Init,
         name: "init",
         args: "",
-        help: "scaffold .core/config.json + AGENTS.md",
+        help: "scaffold .iteron/config.json + AGENTS.md",
     },
     Cmd {
         command: SlashCommand::Quit,

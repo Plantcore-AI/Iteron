@@ -2,7 +2,7 @@ use super::{
     AgentMemoryMode, ChildToolDisposition, ExtensionFactError, McpTransport, MessagingTopology,
     OAuthLifecycleMode, ReplayOwnerObservation, SessionIsolationProfile,
 };
-use core_tunables::{ConstraintValue, ExternalCeiling, ResolutionValue, RuntimeResolutionBuilder};
+use iteron_tunables::{ConstraintValue, ExternalCeiling, ResolutionValue, RuntimeResolutionBuilder};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,4 +1,4 @@
-//! Trustworthy fixed-model evaluation for Core Code.
+//! Trustworthy fixed-model evaluation for Iteron.
 //!
 //! The harness consumes a versioned external corpus, materializes pinned repositories, invokes
 //! Core through its JSON process contract, and runs corpus oracles only inside the egress-off

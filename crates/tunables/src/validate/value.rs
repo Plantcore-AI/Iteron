@@ -7,14 +7,14 @@ use std::collections::BTreeSet;
 
 pub(super) fn validate_family_value(family: &crate::Family) -> Result<(), RegistryError> {
     let invalid = |reason| Err(RegistryError::InvalidValueDomain(family.id, reason));
-    let expected_schema_id = format!("core://tunables/families/{}/value-v1", family.id);
+    let expected_schema_id = format!("iteron://tunables/families/{}/value-v1", family.id);
     if family.value_schema.schema_id != expected_schema_id {
         return invalid("schema ID does not match the stable family ID");
     }
     validate_schema(family.value_schema)
         .map_err(|reason| RegistryError::InvalidValueDomain(family.id, reason))?;
     if let DefaultResolver::GovernedCatalog { catalog_id } = family.default.resolver {
-        let expected = format!("core://tunables/catalogs/{}-v1", family.id);
+        let expected = format!("iteron://tunables/catalogs/{}-v1", family.id);
         let inline_matches = matches!(
             family.value_schema.domain,
             StructuredValueDomain::Catalog { catalog_id: schema_catalog, .. }
@@ -39,7 +39,7 @@ pub(super) fn validate_family_value(family: &crate::Family) -> Result<(), Regist
 }
 
 fn validate_schema(schema: ValueSchema) -> Result<(), &'static str> {
-    if !schema.schema_id.starts_with("core://tunables/families/")
+    if !schema.schema_id.starts_with("iteron://tunables/families/")
         || !schema.schema_id.ends_with("/value-v1")
     {
         return Err("invalid family schema ID");
@@ -102,7 +102,7 @@ fn validate_schema(schema: ValueSchema) -> Result<(), &'static str> {
             entry_fields,
         } => {
             if schema.kind != ValueKind::Catalog
-                || !catalog_id.starts_with("core://tunables/catalogs/")
+                || !catalog_id.starts_with("iteron://tunables/catalogs/")
                 || !catalog_id.ends_with("-v1")
                 || min_entries > max_entries
                 || max_entries == 0
@@ -314,7 +314,7 @@ fn validate_rule(root: StructuredValueDomain, rule: CrossFieldRule) -> Result<()
                     (
                         ConstraintRelation::AttestedDomain,
                         ConstraintViolation::DegradeAttested {
-                            policy_id: "core://tunables/degrade/provider-attested-preferred-v1",
+                            policy_id: "iteron://tunables/degrade/provider-attested-preferred-v1",
                         },
                     ) => ceiling == ExternalCeiling::ProviderCapability,
                     (ConstraintRelation::AttestedDomain, ConstraintViolation::Reject) => {

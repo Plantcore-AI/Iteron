@@ -233,7 +233,7 @@ pub struct ContextMaterializationPolicy {
 impl Default for ContextMaterializationPolicy {
     fn default() -> Self {
         Self {
-            max_bytes: core_protocol::context::MAX_CONTEXT_GRANT_BYTES,
+            max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
             memory: MemBudget::default(),
             memory_retrieval: crate::MemoryRetrievalPolicy::default(),
             skill_listing_bytes: 2_000,

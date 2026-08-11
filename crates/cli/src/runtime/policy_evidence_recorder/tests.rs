@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::{
+use iteron_protocol::{
     PolicyActionId, PolicyDecisionDisposition, PolicyTerminalOutcome, PolicyVerifierOutcome,
     TenantId, policy_evidence::PolicyEvidenceError, slot::SlotId,
 };
@@ -19,9 +19,9 @@ fn bindings() -> Vec<FrozenSlotPolicyBinding> {
         .map(|(index, slot)| FrozenSlotPolicyBinding {
             slot: SlotId((*slot).to_owned()),
             policy: PolicyRuntimeIdentity {
-                bundle_id: "core:runtime-bundle-v1".into(),
+                bundle_id: "iteron:runtime-bundle-v1".into(),
                 bundle_digest_sha256: digest('a'),
-                policy_id: format!("core:policy:{index}"),
+                policy_id: format!("iteron:policy:{index}"),
                 policy_version: "1.0.0".into(),
                 policy_digest_sha256: digest('b'),
             },
@@ -33,7 +33,7 @@ fn recorder(run: &str) -> PolicyEvidenceRecorder {
     PolicyEvidenceRecorder::new(RunId(run.into()), digest('f'), bindings()).unwrap()
 }
 
-fn rollout(label: &str, run: &str) -> (std::path::PathBuf, core_record::Rollout) {
+fn rollout(label: &str, run: &str) -> (std::path::PathBuf, iteron_record::Rollout) {
     let root = std::env::temp_dir().join(format!(
         "core-policy-evidence-{label}-{}-{}",
         std::process::id(),
@@ -41,7 +41,7 @@ fn rollout(label: &str, run: &str) -> (std::path::PathBuf, core_record::Rollout)
     ));
     std::fs::create_dir_all(&root).unwrap();
     let rollout =
-        core_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
+        iteron_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
     (root, rollout)
 }
 
@@ -52,7 +52,7 @@ fn decision(action: &str) -> PolicyDecisionInput {
         disposition: PolicyDecisionDisposition::Selected,
         selected_score_micros: Some(42),
         propensity_ppm: Some(1_000_000),
-        feature_schema_id: "core:policy-features-v1".into(),
+        feature_schema_id: "iteron:policy-features-v1".into(),
         feature_digest_sha256: digest('c'),
         fixed_invariants_digest_sha256: digest('d'),
     }
@@ -87,18 +87,18 @@ fn aggregate_outcome(recorder: &PolicyEvidenceRecorder) -> PolicyOutcomeInput {
 
 fn append_selected(
     recorder: &mut PolicyEvidenceRecorder,
-    rollout: &mut core_record::Rollout,
+    rollout: &mut iteron_record::Rollout,
     slot: &str,
     turn: TurnId,
     action: &str,
-) -> core_protocol::PolicyDecisionEvidence {
+) -> iteron_protocol::PolicyDecisionEvidence {
     let opportunity = recorder
         .begin_opportunity(&SlotId(slot.into()), Some(turn))
         .unwrap();
     recorder
         .append_decision(rollout, &opportunity, decision(action))
         .unwrap();
-    let events = core_record::replay(rollout.path()).unwrap();
+    let events = iteron_record::replay(rollout.path()).unwrap();
     let EventKind::PolicyDecision { evidence } = events.last().unwrap().kind.clone() else {
         panic!("last durable event is not a policy decision")
     };
@@ -115,7 +115,7 @@ fn every_frozen_slot_is_durable_unique_and_monotone() {
 
     for (ordinal, slot) in FROZEN_POLICY_SLOT_NAMES.iter().enumerate() {
         let evidence = append_selected(&mut recorder, &mut rollout, slot, TurnId(7), "baseline");
-        assert!(evidence.opportunity_id.0.len() <= core_protocol::MAX_POLICY_MACHINE_ID_BYTES);
+        assert!(evidence.opportunity_id.0.len() <= iteron_protocol::MAX_POLICY_MACHINE_ID_BYTES);
         assert!(ids.insert(evidence.opportunity_id.0.clone()));
         assert_eq!(evidence.slot.as_persisted_str(), *slot);
         assert_eq!(evidence.decision_ordinal, ordinal as u64);
@@ -249,7 +249,7 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
     let path = rollout.path().to_path_buf();
     drop(rollout);
 
-    let events = core_record::replay_timed(&path).unwrap();
+    let events = iteron_record::replay_timed(&path).unwrap();
     let mut restored =
         PolicyEvidenceRecorder::restore(RunId(run.into()), digest('f'), bindings(), &events)
             .unwrap();
@@ -260,7 +260,7 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
     ));
 
     let mut reopened =
-        core_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
+        iteron_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
     let evidence = append_selected(
         &mut restored,
         &mut reopened,
@@ -333,7 +333,7 @@ fn turn_and_run_outcomes_commit_exact_order_once() {
         Err(PolicyEvidenceRecorderError::RunAlreadyTerminal)
     ));
 
-    let serialized = serde_json::to_string(&core_record::replay(rollout.path()).unwrap()).unwrap();
+    let serialized = serde_json::to_string(&iteron_record::replay(rollout.path()).unwrap()).unwrap();
     for forbidden in ["prompt", "path", "arguments", "tool_args", "source_text"] {
         assert!(!serialized.contains(forbidden));
     }
@@ -350,13 +350,13 @@ fn graceful_close_begins_a_new_policy_run_while_crash_restore_keeps_the_open_one
     let path = rollout.path().to_path_buf();
     drop(rollout);
 
-    let events = core_record::replay_timed(&path).unwrap();
+    let events = iteron_record::replay_timed(&path).unwrap();
     let mut crash_restored =
         PolicyEvidenceRecorder::restore_or_begin(&run, digest('f'), bindings(), &events).unwrap();
     assert_eq!(crash_restored.run_id, run);
     assert_eq!(crash_restored.next_decision_ordinal, 1);
 
-    let mut reopened = core_record::Rollout::open(&root, &run, TenantId::default()).unwrap();
+    let mut reopened = iteron_record::Rollout::open(&root, &run, TenantId::default()).unwrap();
     let turn_join = crash_restored.turn_join(TurnId(1));
     crash_restored
         .append_turn_outcome(&mut reopened, TurnId(1), &turn_join, outcome())
@@ -368,7 +368,7 @@ fn graceful_close_begins_a_new_policy_run_while_crash_restore_keeps_the_open_one
         .unwrap();
     drop(reopened);
 
-    let events = core_record::replay_timed(&path).unwrap();
+    let events = iteron_record::replay_timed(&path).unwrap();
     let next =
         PolicyEvidenceRecorder::restore_or_begin(&run, digest('f'), bindings(), &events).unwrap();
     assert_ne!(next.run_id, run);

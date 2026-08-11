@@ -6,8 +6,8 @@ const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_milli
 
 pub(super) struct OperatorStatusSources {
     runtime: crate::runtime::RuntimeOperatorStatusSources,
-    processes: Option<core_tools::ProcessControl>,
-    language_servers: Option<core_tools::LspControl>,
+    processes: Option<iteron_tools::ProcessControl>,
+    language_servers: Option<iteron_tools::LspControl>,
     mcp: Option<crate::mcp::McpRuntimeControl>,
     workflows: Arc<crate::workflow::WorkflowSupervisor>,
 }
@@ -15,7 +15,7 @@ pub(super) struct OperatorStatusSources {
 #[derive(Debug, Clone)]
 pub(crate) struct OperatorStatusSnapshot {
     pub(crate) runtime: crate::runtime::RuntimeOperatorStatusSnapshot,
-    pub(crate) processes: Option<core_tools::ProcessHealth>,
+    pub(crate) processes: Option<iteron_tools::ProcessHealth>,
     pub(crate) language_servers: LanguageServerStatus,
     pub(crate) mcp: Vec<crate::mcp::McpServerHealth>,
     pub(crate) workflows: WorkflowHealth,
@@ -25,7 +25,7 @@ pub(crate) struct OperatorStatusSnapshot {
 pub(crate) enum LanguageServerStatus {
     Unavailable,
     Busy,
-    Available(core_tools::LspHealth),
+    Available(iteron_tools::LspHealth),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -41,8 +41,8 @@ pub(crate) struct WorkflowHealth {
 impl OperatorStatusSources {
     pub(super) fn capture(
         agent: &Agent,
-        processes: Option<core_tools::ProcessControl>,
-        language_servers: Option<core_tools::LspControl>,
+        processes: Option<iteron_tools::ProcessControl>,
+        language_servers: Option<iteron_tools::LspControl>,
         mcp: Option<crate::mcp::McpRuntimeControl>,
         workflows: Arc<crate::workflow::WorkflowSupervisor>,
     ) -> Self {
@@ -95,7 +95,7 @@ impl OperatorStatusSources {
             processes: self
                 .processes
                 .as_ref()
-                .map(core_tools::ProcessControl::health),
+                .map(iteron_tools::ProcessControl::health),
             language_servers,
             mcp: self
                 .mcp

@@ -5,15 +5,15 @@
 //! resolver accepts; it never copies configuration text, prompts, paths, credentials, or tool
 //! arguments into the checkpoint.
 
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::{Budget, PermissionMode, PermissionRules, TenantId};
-use core_tools::Registry;
-use core_tunables::{ExternalCeiling, RuntimeAuthoritySet, RuntimeProfile, RuntimeResolutionError};
-use core_verify::{VerifierPlan, VerifierSlotObservation};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Budget, PermissionMode, PermissionRules, TenantId};
+use iteron_tools::Registry;
+use iteron_tunables::{ExternalCeiling, RuntimeAuthoritySet, RuntimeProfile, RuntimeResolutionError};
+use iteron_verify::{VerifierPlan, VerifierSlotObservation};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-const CANONICALIZATION: &str = "core-cli-runtime-authority-v1";
+const CANONICALIZATION: &str = "iteron-cli-runtime-authority-v1";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum VerificationAuthority<'a> {

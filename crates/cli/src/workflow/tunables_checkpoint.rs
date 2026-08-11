@@ -1,7 +1,7 @@
 //! Immutable V2 runtime-tunables sidecar for standalone workflow runs.
 
-use core_protocol::RunGenesisTunablesSnapshotV2;
-use core_record::TunablesCheckpoint;
+use iteron_protocol::RunGenesisTunablesSnapshotV2;
+use iteron_record::TunablesCheckpoint;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ pub(crate) fn persist(
     let TunablesCheckpoint::V2(snapshot) = checkpoint else {
         anyhow::bail!("fresh workflow runs require a complete V2 tunables checkpoint");
     };
-    core_record::validate_tunables_snapshot_v2(snapshot)?;
+    iteron_record::validate_tunables_snapshot_v2(snapshot)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
     if bytes.len() > MAX_TUNABLES_CHECKPOINT_BYTES {
         anyhow::bail!(
@@ -91,6 +91,6 @@ fn load_path(path: &PathBuf) -> anyhow::Result<RunGenesisTunablesSnapshotV2> {
         );
     }
     let snapshot: RunGenesisTunablesSnapshotV2 = serde_json::from_slice(&bytes)?;
-    core_record::validate_tunables_snapshot_v2(&snapshot)?;
+    iteron_record::validate_tunables_snapshot_v2(&snapshot)?;
     Ok(snapshot)
 }

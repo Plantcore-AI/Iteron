@@ -151,7 +151,7 @@ impl McpSpillStore {
         let base = std::env::temp_dir();
         for _ in 0..64 {
             let sequence = STORE_SEQ.fetch_add(1, Ordering::SeqCst);
-            let root = base.join(format!("core-mcp-spill-{}-{sequence}", std::process::id()));
+            let root = base.join(format!("iteron-mcp-spill-{}-{sequence}", std::process::id()));
             let mut builder = DirBuilder::new();
             #[cfg(unix)]
             {

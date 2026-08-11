@@ -55,7 +55,7 @@ impl std::fmt::Debug for McpServerIdentity {
 }
 
 fn supervisor_binding(config: Arc<[u8]>, filter: &McpToolFilter, lineage: u64) -> Arc<[u8]> {
-    let mut binding = b"core-mcp-supervisor-binding-v2\0".to_vec();
+    let mut binding = b"iteron-mcp-supervisor-binding-v2\0".to_vec();
     binding.extend_from_slice(&lineage.to_be_bytes());
     binding.extend_from_slice(&(config.len() as u64).to_be_bytes());
     binding.extend_from_slice(&config);

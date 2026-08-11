@@ -5,7 +5,7 @@ use super::{
     ContentStoreError, Layout, OwnerLock, StoreLock, ensure_layout, lock_owner, lock_store,
     read_edges, read_state, write_state, write_tombstone,
 };
-use core_protocol::{
+use iteron_protocol::{
     ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, RunId, TenantId,
 };
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ pub(crate) struct ContentRevocationSummary {
     pub(crate) references: u32,
     pub(crate) affected_sessions: u32,
     pub(crate) generation: u64,
-    pub(crate) coverage: core_protocol::ErasurePropagationCoverage,
+    pub(crate) coverage: iteron_protocol::ErasurePropagationCoverage,
 }
 
 /// Holds the tenant content lock and every referenced rollout lock across all destructive phases.

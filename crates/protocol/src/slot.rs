@@ -2,7 +2,7 @@
 //!
 //! # Two things are called "strategy slot" and they are not the same
 //!
-//! `core_evolve::StrategySlot` is a `#[serde(transparent)]` newtype over a `String`: the persisted
+//! `iteron_evolve::StrategySlot` is a `#[serde(transparent)]` newtype over a `String`: the persisted
 //! *identity* of a slot inside a policy bundle. It answers "which slot is this artefact for".
 //!
 //! This trait answers "what does the kernel call". They are deliberately separate types with
@@ -13,7 +13,7 @@
 //! # The two grammars are not equal, and the inequality has a direction
 //!
 //! A first cut of this module claimed the two types accept "the same string". They did not: this
-//! side accepted `[A-Za-z0-9_-]` with exactly one `/`, while `core_evolve::StrategySlot` accepts
+//! side accepted `[A-Za-z0-9_-]` with exactly one `/`, while `iteron_evolve::StrategySlot` accepts
 //! lowercase with `.` and any number of `/`. Each accepted identities the other rejected, in both
 //! directions - `Acme/Router` here and `db/query.planner` there - so a pack could register a slot
 //! the kernel honoured but no policy bundle could ever name. That slot would silently fall back to
@@ -22,7 +22,7 @@
 //! The freeze therefore fixes a direction rather than a claim of equality. [`SlotId`] is a **strict
 //! subset** of the evolve grammar, so:
 //!
-//! > every valid [`SlotId`] is a valid `core_evolve::StrategySlot`.
+//! > every valid [`SlotId`] is a valid `iteron_evolve::StrategySlot`.
 //!
 //! That is the direction that has to hold. A bundle naming a slot the kernel does not have is
 //! inert and harmless; a kernel slot no bundle can name is an ungovernable hole. The conversion is
@@ -52,7 +52,7 @@ pub const MAX_SLOT_ID_BYTES: usize = 128;
 /// The vocabulary is intentionally open. `core/tool_policy` and `acme-verticals/triage_router`
 /// are equally valid; the kernel does not enumerate them, so adding a slot is not a kernel change.
 ///
-/// The *grammar* is not open. It is deliberately the strict subset of `core_evolve::StrategySlot`
+/// The *grammar* is not open. It is deliberately the strict subset of `iteron_evolve::StrategySlot`
 /// described in the module docs: lowercase only, so no pack can mint a kernel slot that no policy
 /// bundle is able to name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -93,10 +93,10 @@ impl SlotId {
 
     /// The identity as the evolve side persists it.
     ///
-    /// `core-protocol` cannot depend on `core-evolve` (the dependency runs the other way), so this
+    /// `iteron-protocol` cannot depend on `iteron-evolve` (the dependency runs the other way), so this
     /// hands back the borrowed string rather than constructing the evolve newtype. The guarantee
     /// is the one the module docs state: for any `SlotId` that passes [`SlotId::validate`], this
-    /// string is accepted by `core_evolve::StrategySlot::new`. `crates/evolve` owns the test that
+    /// string is accepted by `iteron_evolve::StrategySlot::new`. `crates/evolve` owns the test that
     /// proves it, because only that side can call both validators.
     pub fn as_persisted_str(&self) -> &str {
         &self.0
@@ -107,7 +107,7 @@ impl SlotId {
 ///
 /// The caller gathers this; the slot does not reach for anything else. That is what makes a slot
 /// replaceable without auditing it for ambient authority.
-/// Owned rather than borrowed on purpose: `core-xtask boundaries check` refuses generics,
+/// Owned rather than borrowed on purpose: `iteron-xtask boundaries check` refuses generics,
 /// including lifetimes, on any struct at the record boundary, because a borrowed field cannot be
 /// serialised into the durable record the boundary exists to guarantee.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -217,7 +217,7 @@ mod tests {
                 "{good} should parse"
             );
         }
-        for bad in ["", "core", "core/", "/role", "core/a/b", "core/tool policy"] {
+        for bad in ["", "iteron", "core/", "/role", "core/a/b", "core/tool policy"] {
             assert!(
                 SlotId(bad.into()).validate().is_err(),
                 "{bad:?} should be rejected"
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn uppercase_is_refused_so_this_grammar_stays_a_subset_of_the_evolve_one() {
-        // `core_evolve::StrategySlot::new` accepts lowercase only. While this side accepted
+        // `iteron_evolve::StrategySlot::new` accepts lowercase only. While this side accepted
         // uppercase, a pack could register `Acme/Router`, have the kernel honour it, and leave it
         // ungovernable: no policy bundle could name it, so it would silently fall back to the
         // built-in strategy. `crates/evolve` owns the test that runs both validators together.

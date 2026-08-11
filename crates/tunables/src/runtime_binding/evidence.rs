@@ -23,19 +23,19 @@ pub(super) fn evidence_digest(
 
 pub(super) fn resolver_id(resolver: DefaultResolver) -> String {
     match resolver {
-        DefaultResolver::Literal => "core://tunables/resolvers/literal-v1".to_owned(),
+        DefaultResolver::Literal => "iteron://tunables/resolvers/literal-v1".to_owned(),
         DefaultResolver::Builtin { resolver_id } => resolver_id.to_owned(),
         DefaultResolver::ModelMetadata { field } => {
-            format!("core://tunables/resolvers/model-metadata/{field}-v1")
+            format!("iteron://tunables/resolvers/model-metadata/{field}-v1")
         }
         DefaultResolver::ProviderCapability { capability } => {
-            format!("core://tunables/resolvers/provider-capability/{capability}-v1")
+            format!("iteron://tunables/resolvers/provider-capability/{capability}-v1")
         }
         DefaultResolver::Transport { field } => {
-            format!("core://tunables/resolvers/transport/{field}-v1")
+            format!("iteron://tunables/resolvers/transport/{field}-v1")
         }
         DefaultResolver::RuntimeObservation { field } => {
-            format!("core://tunables/resolvers/runtime-observation/{field}-v1")
+            format!("iteron://tunables/resolvers/runtime-observation/{field}-v1")
         }
         DefaultResolver::GovernedCatalog { catalog_id } => catalog_id.to_owned(),
         DefaultResolver::Operator { input_id } => input_id.to_owned(),

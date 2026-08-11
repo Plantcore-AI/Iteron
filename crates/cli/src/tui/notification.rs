@@ -7,7 +7,7 @@
 //! that prefix before poisoning the writer, so later frame bytes cannot be consumed as OSC text.
 
 use crate::runtime::UiEvent;
-use core_protocol::SubmissionId;
+use iteron_protocol::SubmissionId;
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
 use std::sync::{Arc, Mutex, TryLockError};
@@ -20,12 +20,12 @@ const NOTIFICATION_QUEUE_CAPACITY: usize = 4;
 const MAX_ENV_VALUE_BYTES: usize = 128;
 const CANCEL_SEQUENCE: &[u8; 1] = b"\x18";
 
-const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
-const OSC9_APPROVAL_REQUIRED: &[u8] = b"\x1b]9;Core Code: approval required\x07";
-const OSC9_LONG_IDLE: &[u8] = b"\x1b]9;Core Code: run is waiting\x07";
-const OSC777_RUN_COMPLETE: &[u8] = b"\x1b]777;notify;Core Code;Run complete\x07";
-const OSC777_APPROVAL_REQUIRED: &[u8] = b"\x1b]777;notify;Core Code;Approval required\x07";
-const OSC777_LONG_IDLE: &[u8] = b"\x1b]777;notify;Core Code;Run is waiting\x07";
+const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Iteron: run complete\x07";
+const OSC9_APPROVAL_REQUIRED: &[u8] = b"\x1b]9;Iteron: approval required\x07";
+const OSC9_LONG_IDLE: &[u8] = b"\x1b]9;Iteron: run is waiting\x07";
+const OSC777_RUN_COMPLETE: &[u8] = b"\x1b]777;notify;Iteron;Run complete\x07";
+const OSC777_APPROVAL_REQUIRED: &[u8] = b"\x1b]777;notify;Iteron;Approval required\x07";
+const OSC777_LONG_IDLE: &[u8] = b"\x1b]777;notify;Iteron;Run is waiting\x07";
 
 const _: () = assert!(OSC9_RUN_COMPLETE.len() <= MAX_NOTIFICATION_BYTES);
 const _: () = assert!(OSC9_APPROVAL_REQUIRED.len() <= MAX_NOTIFICATION_BYTES);
@@ -1028,9 +1028,9 @@ mod tests {
             TerminalNotifier::with_settings(true, Protocol::Bell, LONG_IDLE_AFTER, now);
         notifier.begin_run_at(now);
         let end = UiEvent::TurnEnd {
-            cost: core_obs::CostState::default(),
-            usage: core_protocol::Usage::default(),
-            context: core_ctx::ContextEstimate {
+            cost: iteron_obs::CostState::default(),
+            usage: iteron_protocol::Usage::default(),
+            context: iteron_ctx::ContextEstimate {
                 system_tokens: 0,
                 tool_tokens: 0,
                 conversation_tokens: 0,
@@ -1039,20 +1039,20 @@ mod tests {
                 transcript_tokens: 0,
                 framing_tokens: 0,
                 total_tokens: 0,
-                provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
             },
             model_context_window: None,
             reserved_output_tokens: 0,
             compaction_trigger_tokens: 0,
-            effort: core_provider::EffortApplication::Unsupported {
-                requested: core_protocol::ReasoningEffort::Medium,
+            effort: iteron_provider::EffortApplication::Unsupported {
+                requested: iteron_protocol::ReasoningEffort::Medium,
             },
         };
 
         assert_eq!(notifier.trigger_for_event_at(&end, now), None);
         assert_eq!(notifier.trigger_for_event_at(&end, now), None);
         assert_eq!(
-            notifier.trigger_for_event_at(&UiEvent::Phase(core_protocol::Phase::Model), now,),
+            notifier.trigger_for_event_at(&UiEvent::Phase(iteron_protocol::Phase::Model), now,),
             None
         );
         assert_eq!(

@@ -4,7 +4,7 @@ use crate::measurement::{
     KernelTaxLine, MeasurementError, PairedEvaluationReport, compare_manifests,
 };
 use crate::types::{CostStatus, EvaluationManifest, EvaluationPurpose, Partition};
-use core_evolve::{ArtifactKind, EvolutionMethod};
+use iteron_evolve::{ArtifactKind, EvolutionMethod};
 use serde::{Deserialize, Serialize};
 
 pub const TRAINED_REPORT_SCHEMA_VERSION: u32 = 1;

@@ -2,7 +2,7 @@
 //!
 //! This is deliberately separate from the model-facing `git_diff` tool. A porcelain status is a
 //! byte protocol: filenames may contain newlines and must therefore remain NUL-delimited until the
-//! typed `core-changeset` parser sees them. The command uses the same absolute executable,
+//! typed `iteron-changeset` parser sees them. The command uses the same absolute executable,
 //! contained git-dir, configuration neutralisation, deadline, process-group teardown, and output
 //! ceilings as every other production Git observation in this crate.
 

@@ -5,7 +5,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use core_protocol::ToolUse;
+use iteron_protocol::ToolUse;
 
 const MAX_BOUNDARY_PATHS_PER_CALL: usize = 64;
 

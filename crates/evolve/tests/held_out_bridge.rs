@@ -1,4 +1,4 @@
-use core_evolve::{
+use iteron_evolve::{
     BaseModelId, DeploymentStage, EvaluationSuite, EvaluationTask, GovernedTrainingDataset,
     HeldOutEvalReport, HeldOutEvidenceBridge, HeldOutEvidenceRegistration, HeldOutEvidenceStore,
     HeldOutTrainingCorpus, IndependentEvaluator, PromotionAssessment, PromotionAuthorityKey,

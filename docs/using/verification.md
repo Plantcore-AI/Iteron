@@ -4,13 +4,13 @@
 model's completion statement.
 
 ```sh
-core -p --allow-code \
+iteron -p --allow-code \
   --verify "cargo test --workspace --all-targets --locked" \
   "Fix the failing test and verify the change"
 ```
 
 The option requires `--allow-code` because the verification command executes
-repository-controlled code. If the command fails, Core Code refuses to accept a
+repository-controlled code. If the command fails, Iteron refuses to accept a
 successful completion and feeds the failure back into the bounded run.
 
 ## Choose a bounded command

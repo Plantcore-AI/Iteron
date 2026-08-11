@@ -7,7 +7,7 @@ fn scratch(label: &str) -> std::path::PathBuf {
         .expect("clock")
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "core-tunables-view-{label}-{}-{nonce}",
+        "iteron-tunables-view-{label}-{}-{nonce}",
         std::process::id()
     ))
 }
@@ -60,16 +60,16 @@ fn assert_detail_bound(detail: &Detail) {
 
 fn minimal_request() -> String {
     format!(
-        r#"{{"schema_version":1,"registry_id":"core-tunables","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":[],"constraint_evidence":[],"runtime":{{}}}}"#,
-        core_tunables::REGISTRY_REVISION,
-        core_tunables::REGISTRY_DIGEST_SHA256,
+        r#"{{"schema_version":1,"registry_id":"iteron-tunables","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":[],"constraint_evidence":[],"runtime":{{}}}}"#,
+        iteron_tunables::REGISTRY_REVISION,
+        iteron_tunables::REGISTRY_DIGEST_SHA256,
     )
 }
 
 #[test]
 fn catalog_exposes_all_families_and_all_truthful_detail_fields() {
     let catalog = registry_catalog();
-    assert_eq!(catalog.entries.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(catalog.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
     assert!(catalog.title.contains("simulation only"));
     assert_text_bound(
         &catalog.title,
@@ -78,7 +78,7 @@ fn catalog_exposes_all_families_and_all_truthful_detail_fields() {
     );
     for (index, entry) in catalog.entries.iter().enumerate() {
         assert_detail_bound(entry);
-        assert_eq!(entry.family_id, core_tunables::families()[index].id);
+        assert_eq!(entry.family_id, iteron_tunables::families()[index].id);
         let labels: Vec<_> = entry.rows.iter().map(|row| row.0.as_str()).collect();
         for required in [
             "surface",
@@ -159,7 +159,7 @@ fn frozen_request_failure_still_yields_a_redacted_atomic_report() {
     let request = minimal_request();
     let catalog = catalog_from_bytes(request.as_bytes()).expect("valid frozen request");
     assert!(catalog.title.contains("active resolution failed"));
-    assert_eq!(catalog.entries.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+    assert_eq!(catalog.entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
     assert!(
         catalog
             .entries

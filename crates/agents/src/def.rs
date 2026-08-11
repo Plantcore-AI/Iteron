@@ -6,7 +6,7 @@
 //! **narrow** a fixed read-only registry (ADR-001, single writer); and a definition that names a
 //! write/exec/dispatch tool is a **load error surfaced at catalog build**, never a silent grant.
 
-use core_protocol::{Budget, Trust};
+use iteron_protocol::{Budget, Trust};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,7 +19,7 @@ const MAX_AGENT_TOOL_NAMES: usize = 128;
 const MAX_AGENT_TOOL_NAME_BYTES: usize = 256;
 
 /// The read-only tool set an agent may use — the base every fan-out worker gets, which `ToolFilter`
-/// can only narrow. Mirrors `core_tools::Registry::read_only` (`crates/tools/src/lib.rs`), which
+/// can only narrow. Mirrors `iteron_tools::Registry::read_only` (`crates/tools/src/lib.rs`), which
 /// registers the five filesystem discovery tools plus confined Git observations,
 /// progressive-disclosure memory recall, and on-demand skill loading. Hard-coded here because this
 /// pure policy crate must not depend on the executor's `tools` crate; the build-plane conformance
@@ -640,16 +640,16 @@ fn kv_get_list(kv: &[(String, String)], key: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
 
-    /// `core-ctx` duplicates this list because the reverse dependency edge would be a cycle.
+    /// `iteron-ctx` duplicates this list because the reverse dependency edge would be a cycle.
     ///
-    /// A duplicated security list is only safe while something notices it drifting. `core-agents`
+    /// A duplicated security list is only safe while something notices it drifting. `iteron-agents`
     /// can see both, so the check lives here: every name this crate refuses must also be refused
     /// by the skill catalog, or a skill could declare a writer that an agent definition could not.
     #[test]
     fn the_skill_catalog_refuses_everything_this_crate_refuses() {
         for refused in WRITE_EXEC_DISPATCH {
             assert!(
-                core_ctx::skills::SKILL_REFUSED_TOOLS
+                iteron_ctx::skills::SKILL_REFUSED_TOOLS
                     .iter()
                     .any(|name| name.eq_ignore_ascii_case(refused)),
                 "`{refused}` is refused for agent definitions but not for skills; the two lists \
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn allow_list_naming_a_writer_is_a_load_error() {
-        // The core narrowing invariant: `tools:` (an allowlist) may not grant a writer.
+        // The iteron narrowing invariant: `tools:` (an allowlist) may not grant a writer.
         let text =
             "---\nname: sneaky\ndescription: tries to write\ntools: [read_file, edit]\n---\nbody\n";
         let e = parse_def("sneaky.md", text, Trust::Workspace).unwrap_err();

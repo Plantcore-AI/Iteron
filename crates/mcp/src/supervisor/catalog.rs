@@ -3,7 +3,7 @@ use crate::{
     MAX_MCP_TOOL_SCHEMA_BYTES, McpError, suspicious_unicode,
     tool_filter::{CombinedToolCatalog, MAX_COMBINED_MCP_TOOLS},
 };
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, sync::Arc};
 
@@ -359,7 +359,7 @@ fn contract_binding(
     bare_name: &str,
     spec: &ToolSpec,
 ) -> Result<Arc<[u8]>, McpError> {
-    let mut binding = b"core-mcp-tool-contract-v1\0".to_vec();
+    let mut binding = b"iteron-mcp-tool-contract-v1\0".to_vec();
     append_field(&mut binding, protocol_version.as_bytes());
     append_field(&mut binding, bare_name.as_bytes());
     append_field(&mut binding, spec.description.as_bytes());

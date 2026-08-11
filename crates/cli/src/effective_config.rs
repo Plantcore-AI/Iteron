@@ -1,6 +1,6 @@
 //! Operator projection of the immutable runtime-effective tunables checkpoint.
 
-use core_protocol::{RunGenesisTunableEntryV2, RunGenesisTunablesSnapshotV2};
+use iteron_protocol::{RunGenesisTunableEntryV2, RunGenesisTunablesSnapshotV2};
 use serde::Serialize;
 use std::io::Write as _;
 

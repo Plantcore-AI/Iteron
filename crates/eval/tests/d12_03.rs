@@ -1,4 +1,4 @@
-//! D12-03 oracle: `core-eval` reads the versioned JSON contract, never the human stderr ledger.
+//! D12-03 oracle: `iteron-eval` reads the versioned JSON contract, never the human stderr ledger.
 //!
 //! The gap under closure is "Eval parses the human stderr ledger line instead of the versioned JSON
 //! contract". A consumer that scraped the CLI's human ledger on stderr (`turns=... | cost=$...`)
@@ -7,17 +7,17 @@
 //! as opaque diagnostics only.
 //!
 //! These tests pin that invariant end to end:
-//!   * [`core_eval::parse_final_result`] takes ONLY stdout bytes and the process exit code — stderr is
+//!   * [`iteron_eval::parse_final_result`] takes ONLY stdout bytes and the process exit code — stderr is
 //!     not even an input — and a human ledger line fed where the JSON belongs is rejected, never
 //!     scraped into a result;
-//!   * driven through the real [`core_eval::run_evaluation`] pipeline, a Core process that floods
+//!   * driven through the real [`iteron_eval::run_evaluation`] pipeline, a Core process that floods
 //!     stderr with a conflicting ledger (`turns=999999 | cost=$9.99`) yields cells whose metrics come
 //!     from the stdout JSON (`turns=2`), and the stderr number never reaches any metric.
 //!
 //! The whole target is a new file, absent on the base branch, so acceptance is RED there and GREEN
 //! once this oracle is present against the trustworthy runner.
 
-use core_eval::{ContractError, RunStatus, parse_final_result};
+use iteron_eval::{ContractError, RunStatus, parse_final_result};
 
 // A valid versioned result on stdout. Its authoritative metrics (turns=2, budget_exhausted, unknown
 // cost) deliberately disagree with the conflicting human ledger the producer would print to stderr.
@@ -83,10 +83,10 @@ fn a_process_exit_that_disagrees_with_the_json_is_a_contract_error() {
 /// the stderr `turns=999999` never reaches a metric on any cell.
 #[cfg(unix)]
 mod pipeline {
-    use core_eval::corpus::{
+    use iteron_eval::corpus::{
         CORPUS_SCHEMA_VERSION, CorpusManifest, CorpusTask, Provenance, digest_tasks,
     };
-    use core_eval::{EvalOptions, EvaluationPurpose, Partition, RunStatus, run_evaluation};
+    use iteron_eval::{EvalOptions, EvaluationPurpose, Partition, RunStatus, run_evaluation};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -100,7 +100,7 @@ mod pipeline {
                 .expect("clock after epoch")
                 .as_nanos();
             let path = std::env::temp_dir()
-                .join(format!("core-eval-d12-03-{}-{nonce:x}", std::process::id()));
+                .join(format!("iteron-eval-d12-03-{}-{nonce:x}", std::process::id()));
             std::fs::create_dir(&path).expect("create isolated D12-03 root");
             Self(path)
         }
@@ -144,9 +144,9 @@ mod pipeline {
             &repo,
             &[
                 "-c",
-                "user.name=core-eval",
+                "user.name=iteron-eval",
                 "-c",
-                "user.email=core-eval@example.invalid",
+                "user.email=iteron-eval@example.invalid",
                 "commit",
                 "--quiet",
                 "-m",
@@ -168,7 +168,7 @@ mod pipeline {
     fn fake_core(root: &TempRoot) -> PathBuf {
         let path = root.join("fake-core");
         let script = "#!/bin/sh\n\
-printf 'core run LEDGER turns=999999 | cost=$9.99 | tokens in=123 out=456 | D12_03_STDERR_MARKER\\n' 1>&2\n\
+printf 'iteron run LEDGER turns=999999 | cost=$9.99 | tokens in=123 out=456 | D12_03_STDERR_MARKER\\n' 1>&2\n\
 case \"$*\" in\n\
   *malformed*)\n\
     printf '%s' '{\"schema_version\":4,'\n\
@@ -179,12 +179,12 @@ case \"$*\" in\n\
     exit 3\n\
     ;;\n\
 esac\n";
-        std::fs::write(&path, script).expect("write fake core");
+        std::fs::write(&path, script).expect("write fake iteron");
         let mut permissions = std::fs::metadata(&path)
-            .expect("stat fake core")
+            .expect("stat fake iteron")
             .permissions();
         permissions.set_mode(0o700);
-        std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+        std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
         path
     }
 
@@ -299,7 +299,7 @@ esac\n";
         assert_eq!(malformed.len(), 2);
         for cell in &malformed {
             assert_eq!(cell.run_status, RunStatus::Errored);
-            assert_eq!(cell.failure_phase.as_deref(), Some("core_contract"));
+            assert_eq!(cell.failure_phase.as_deref(), Some("iteron_contract"));
             assert_eq!(cell.exit_code, Some(2));
             assert_eq!(
                 cell.turns, None,

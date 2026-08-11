@@ -4,7 +4,7 @@ use super::schema::{
 };
 use super::strategies::CompiledSlots;
 use crate::runtime::policy_evidence_recorder::FrozenSlotPolicyBinding;
-use core_protocol::{
+use iteron_protocol::{
     PolicyBundleCoverage as GenesisCoverage, PolicyRuntimeIdentity, PolicySlotApplicationStatus,
     RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION, RunGenesisPolicyBundleSnapshot,
     RunGenesisPolicyBundleVersion, RunGenesisPolicySlotBinding, slot::SlotId,
@@ -12,7 +12,7 @@ use core_protocol::{
 use std::sync::{Arc, OnceLock};
 
 pub(crate) struct CompiledPolicyBundle {
-    boot_bundle: Arc<core_agents::BootBundle>,
+    boot_bundle: Arc<iteron_agents::BootBundle>,
     slots: CompiledSlots,
     receipt: BundleCompilationReceipt,
     runtime_bindings: Vec<FrozenSlotPolicyBinding>,
@@ -29,7 +29,7 @@ impl std::fmt::Debug for CompiledPolicyBundle {
 }
 
 impl CompiledPolicyBundle {
-    pub(crate) fn boot_bundle(&self) -> Arc<core_agents::BootBundle> {
+    pub(crate) fn boot_bundle(&self) -> Arc<iteron_agents::BootBundle> {
         self.boot_bundle.clone()
     }
 
@@ -71,7 +71,7 @@ pub(crate) fn baseline_compiled_bundle() -> Arc<CompiledPolicyBundle> {
 pub(crate) fn compile_recorded_bundle(
     snapshot: &RunGenesisPolicyBundleSnapshot,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
-    core_record::validate_policy_bundle_snapshot(snapshot)
+    iteron_record::validate_policy_bundle_snapshot(snapshot)
         .map_err(|_| malformed_snapshot_failure())?;
     let compiled = match snapshot.coverage {
         GenesisCoverage::Baseline => compile_operator_bundle(None)?,
@@ -81,8 +81,8 @@ pub(crate) fn compile_recorded_bundle(
                 .iter()
                 .filter(|row| row.requested)
                 .map(|row| {
-                    Ok(core_evolve::PolicyRef {
-                        slot: core_evolve::StrategySlot::new(row.slot.as_persisted_str())
+                    Ok(iteron_evolve::PolicyRef {
+                        slot: iteron_evolve::StrategySlot::new(row.slot.as_persisted_str())
                             .map_err(|_| malformed_snapshot_failure())?,
                         policy_id: row.policy.policy_id.clone(),
                         version: row.policy.policy_version.clone(),
@@ -90,7 +90,7 @@ pub(crate) fn compile_recorded_bundle(
                     })
                 })
                 .collect::<Result<Vec<_>, BundleCompileFailure>>()?;
-            compile_operator_bundle(Some(&core_evolve::PolicyBundle {
+            compile_operator_bundle(Some(&iteron_evolve::PolicyBundle {
                 bundle_id: snapshot.bundle_id.clone(),
                 digest: snapshot.bundle_digest_sha256.clone(),
                 policies,
@@ -112,7 +112,7 @@ pub(crate) fn install_compiled_bundle(
 }
 
 pub(super) fn assemble_compiled_bundle(
-    boot_bundle: Arc<core_agents::BootBundle>,
+    boot_bundle: Arc<iteron_agents::BootBundle>,
     slots: CompiledSlots,
     receipt: BundleCompilationReceipt,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
@@ -137,13 +137,13 @@ pub(super) fn assemble_compiled_bundle(
 fn snapshot_from_receipt(
     receipt: &BundleCompilationReceipt,
     bindings: &[FrozenSlotPolicyBinding],
-) -> Result<RunGenesisPolicyBundleSnapshot, core_record::PolicyBundleCheckpointError> {
+) -> Result<RunGenesisPolicyBundleSnapshot, iteron_record::PolicyBundleCheckpointError> {
     let coverage = match receipt.coverage {
         BundleCoverage::Baseline => GenesisCoverage::Baseline,
         BundleCoverage::Partial => GenesisCoverage::Partial,
         BundleCoverage::Full => GenesisCoverage::Full,
         BundleCoverage::Rejected => {
-            return Err(core_record::PolicyBundleCheckpointError::Invalid(
+            return Err(iteron_record::PolicyBundleCheckpointError::Invalid(
                 "a rejected bundle cannot become run genesis",
             ));
         }
@@ -158,14 +158,14 @@ fn snapshot_from_receipt(
                 SlotReceiptStatus::Baseline => PolicySlotApplicationStatus::Baseline,
                 SlotReceiptStatus::Applied => PolicySlotApplicationStatus::Applied,
                 SlotReceiptStatus::Rejected => {
-                    return Err(core_record::PolicyBundleCheckpointError::Invalid(
+                    return Err(iteron_record::PolicyBundleCheckpointError::Invalid(
                         "a rejected slot cannot become run genesis",
                     ));
                 }
             };
             Ok(RunGenesisPolicySlotBinding {
                 ordinal: u8::try_from(index + 1).map_err(|_| {
-                    core_record::PolicyBundleCheckpointError::Invalid("slot ordinal overflow")
+                    iteron_record::PolicyBundleCheckpointError::Invalid("slot ordinal overflow")
                 })?,
                 slot: binding.slot.clone(),
                 requested: row.requested,
@@ -174,15 +174,15 @@ fn snapshot_from_receipt(
                 policy: binding.policy.clone(),
             })
         })
-        .collect::<Result<Vec<_>, core_record::PolicyBundleCheckpointError>>()?;
-    core_record::seal_policy_bundle_snapshot(RunGenesisPolicyBundleSnapshot {
+        .collect::<Result<Vec<_>, iteron_record::PolicyBundleCheckpointError>>()?;
+    iteron_record::seal_policy_bundle_snapshot(RunGenesisPolicyBundleSnapshot {
         version: RunGenesisPolicyBundleVersion::V1,
         canonicalization: RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION.to_owned(),
         bundle_id: receipt.bundle_id.clone().ok_or(
-            core_record::PolicyBundleCheckpointError::Invalid("compiled receipt has no bundle id"),
+            iteron_record::PolicyBundleCheckpointError::Invalid("compiled receipt has no bundle id"),
         )?,
         bundle_digest_sha256: receipt.bundle_digest.clone().ok_or(
-            core_record::PolicyBundleCheckpointError::Invalid(
+            iteron_record::PolicyBundleCheckpointError::Invalid(
                 "compiled receipt has no bundle digest",
             ),
         )?,

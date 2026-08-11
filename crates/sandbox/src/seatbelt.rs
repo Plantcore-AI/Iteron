@@ -39,7 +39,7 @@ const PROTECTED_HOME_SUBPATHS: &[&str] = &[
     ".config/claude",
     ".codex",
     ".config/codex",
-    ".core",
+    ".iteron",
     ".config/core",
     ".cursor",
     ".continue",

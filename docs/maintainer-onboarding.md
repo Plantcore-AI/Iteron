@@ -1,6 +1,6 @@
 # Maintainer onboarding
 
-Core Code maintainership is organized around claimable responsibility units, not fixed
+Iteron maintainership is organized around claimable responsibility units, not fixed
 seats. One person may own several coherent boundaries, and a boundary can be split
 when its review or incident load becomes too large. The human Owner/Project Lead
 retains final override authority.
@@ -10,13 +10,13 @@ retains final override authority.
 List the currently open responsibility units:
 
 ```sh
-cargo run --locked -p core-xtask -- boundaries list --open
+cargo run --locked -p iteron-xtask -- boundaries list --open
 ```
 
 Inspect the exact owner and invariant reviewers for a path:
 
 ```sh
-cargo run --locked -p core-xtask -- boundaries explain crates/provider/src/openai.rs
+cargo run --locked -p iteron-xtask -- boundaries explain crates/provider/src/openai.rs
 ```
 
 The complete contracts and checks are generated in
@@ -57,8 +57,8 @@ so nobody is the only reviewer of their own primary responsibility.
 6. Regenerate and validate:
 
    ```sh
-   cargo run --locked -p core-xtask -- boundaries generate
-   cargo run --locked -p core-xtask -- boundaries check
+   cargo run --locked -p iteron-xtask -- boundaries generate
+   cargo run --locked -p iteron-xtask -- boundaries check
    ```
 
 7. Submit the registry and both generated views in one pull request. A registry
@@ -67,7 +67,7 @@ so nobody is the only reviewer of their own primary responsibility.
 Before enabling the public Ruleset, obtain an exact readiness report:
 
 ```sh
-cargo run --locked -p core-xtask -- boundaries readiness
+cargo run --locked -p iteron-xtask -- boundaries readiness
 ```
 
 Critical boundaries require an independent human reviewer. Active enforcement

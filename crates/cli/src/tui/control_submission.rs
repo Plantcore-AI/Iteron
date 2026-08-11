@@ -7,7 +7,7 @@ pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport
         return;
     }
     for line in &stopped.lines {
-        eprintln!("core: {line}");
+        eprintln!("iteron: {line}");
     }
 }
 
@@ -192,8 +192,8 @@ pub(super) fn show_side_status(
 
 /// Why a side ask produced nothing. A local label rather than `output::outcome_name`, which is a
 /// frozen machine-contract token and must not grow a second, human-facing caller.
-pub(super) fn side_outcome_label(outcome: &core_protocol::Outcome) -> &'static str {
-    use core_protocol::Outcome;
+pub(super) fn side_outcome_label(outcome: &iteron_protocol::Outcome) -> &'static str {
+    use iteron_protocol::Outcome;
     match outcome {
         Outcome::Done => "the model answered with nothing",
         Outcome::Drained => "drained before answering",
@@ -362,11 +362,11 @@ pub(super) fn submit_operation(
     op: Op,
 ) -> Option<SubmissionId> {
     let first_prompt_title = match &op {
-        Op::UserInput { text } => Some(core_record::session::title_from_text(text)),
+        Op::UserInput { text } => Some(iteron_record::session::title_from_text(text)),
         Op::UserInputV2 { segments } => {
-            Some(core_record::session::title_from_text(segments.text()))
+            Some(iteron_record::session::title_from_text(segments.text()))
         }
-        Op::UserInputV3 { text, .. } => Some(core_record::session::title_from_text(text)),
+        Op::UserInputV3 { text, .. } => Some(iteron_record::session::title_from_text(text)),
         _ => None,
     };
     match session.submit_identified(op) {

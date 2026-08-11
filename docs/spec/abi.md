@@ -2,7 +2,7 @@
 
 ### 4.1 为什么需要一个稳定的 seam
 
-前面几节确立了 Core Code 的承重不变式：microkernel（TCB）冻结，其余每个 module 都是一个可 tune / train / evolve 的 strategy slot。这条不变式只有在**module 与 kernel、module 与 module 之间存在一个稳定、类型化、版本化的接缝（seam）**时才成立。这个接缝就是 **Stable Typed ABI**。
+前面几节确立了 Iteron 的承重不变式：microkernel（TCB）冻结，其余每个 module 都是一个可 tune / train / evolve 的 strategy slot。这条不变式只有在**module 与 kernel、module 与 module 之间存在一个稳定、类型化、版本化的接缝（seam）**时才成立。这个接缝就是 **Stable Typed ABI**。
 
 它回答一个反复出现的疑问：*模块之间到底怎么连接？演进（evolution）会不会把接口本身改掉？* 明确的答案是：
 
@@ -10,7 +10,7 @@
 
 这条区分是整个 trainable-harness 论断能落地的原因。如果每次进化一个 module 都要改动接口，那么"冻结核 + 可进化外围"就是一句空话：接口漂移会把 authority 重新引回 TCB，把互换性（interchangeability）摧毁。因此 ABI 的稳定性**本身就是一条安全不变式**，与 kernel 冻结同级。
 
-Core Code 把这个接缝收敛成**恰好五个 typed contract**。任何 strategy module、任何 model adapter、任何 vertical pack 想要参与运行，都**只能**通过这五个契约与系统对话：它们不能直接调用 kernel 的内部函数，不能彼此直接调用，不能自己执行 effect。它们**只提议（propose）typed 值**；kernel 审计、裁决、执行。
+Iteron 把这个接缝收敛成**恰好五个 typed contract**。任何 strategy module、任何 model adapter、任何 vertical pack 想要参与运行，都**只能**通过这五个契约与系统对话：它们不能直接调用 kernel 的内部函数，不能彼此直接调用，不能自己执行 effect。它们**只提议（propose）typed 值**；kernel 审计、裁决、执行。
 
 | # | 契约 | 方向 | 一句话职责 | protocol 里的现有种子 |
 |---|---|---|---|---|
@@ -117,13 +117,13 @@ pub enum Quantifier {
 - `ceiling` **MUST** 由 kernel 强制为所有下游提议授权的上界。任何 module **MUST NOT** 提议超出该上限的 capability。
 - `trust` **MUST** 随值传播；一个 `TaskInput::Text` 里出现的祈使句 **MUST NOT** 被任何 module 当作 operator authority（untrusted-input 原则）。
 - 任何跨接缝的 authority **MUST** 以**集合**（`CapabilitySet`）承载，**MUST NOT** 表示为某个序上的一个点。`Capability` 的 `Ord` 只为 `BTreeSet` 存储而存在，是声明序而非授权序：以单个 class 作上限并用 `<=` 判定，会让一个只意在「可 egress」的上限静默放行 `CodeExecuting` 与 `TrustMutating`。合并运算**只有** intersection：widening 在类型上不可表达。
-- 冻结的 `Budget` 就是 `core_protocol::Budget`（`crates/protocol/src/lib.rs`），它已随 `EventKind::ChildStarted` 落在 durable 记录上，形状不可另铸；token 轴按 §4.3(b)3 以 `max_tokens: Option<u64>` + `skip_serializing_if` 追加，归属 #18，追加后两个载体的字节都逐字节不变。
+- 冻结的 `Budget` 就是 `iteron_protocol::Budget`（`crates/protocol/src/lib.rs`），它已随 `EventKind::ChildStarted` 落在 durable 记录上，形状不可另铸；token 轴按 §4.3(b)3 以 `max_tokens: Option<u64>` + `skip_serializing_if` 追加，归属 #18，追加后两个载体的字节都逐字节不变。
 - `profile_ref` 是 §4.2.1 里唯一可以事后无损追加的字段：当第一个真实消费者出现时，按 §4.3(b)3 以 `#[serde(default, skip_serializing_if = "Option::is_none")] pub profile_ref: Option<ArtifactRef>` 追加，`None` 与今天的字节逐字节一致。今天的 bundle 解析走 boot-time `PolicyBundleResolver`（进程级、只读），不经过 envelope。
 
-  该 port 声明在 **`core_protocol::bundle`**，不在 `crates/evolve`。这一条是被一次合并后复审改正的：冻结时它被声明为 `core_evolve::PolicyBundleResolver`，签名里三个类型（`PolicyBundle` / `StrategySlot` / `ContractError`）全部来自 `core-evolve`，于是 #28 要在 `crates/agents` 里实现它就必须先引入 `core-evolve`，正是 #26 验收条目 5 用 grep 守着的那条禁止依赖。该 grep 当时为绿，只因为那个 trait 没有任何实现者与调用者：它测的是「没人用」，不是「不变式成立」。
-  port 落在 `core-protocol` 后，producing 侧（`crates/evolve`）与 consuming 侧（`crates/agents`）都已依赖它，**两侧零新增依赖**。跨接缝传的是 `ResolvedBundle` 这个只读投影（只带 slot 身份与 digest，不带 policy 本体、locator 或 lineage），由 `PolicyBundle::resolve()` 生成，并在 `SlotId` 无法表达某个 slot 时**整体拒绝**而非丢弃该条：丢弃会让那个 slot 跑内置策略，而 promotion journal 记录它已被治理。
+  该 port 声明在 **`iteron_protocol::bundle`**，不在 `crates/evolve`。这一条是被一次合并后复审改正的：冻结时它被声明为 `iteron_evolve::PolicyBundleResolver`，签名里三个类型（`PolicyBundle` / `StrategySlot` / `ContractError`）全部来自 `iteron-evolve`，于是 #28 要在 `crates/agents` 里实现它就必须先引入 `iteron-evolve`，正是 #26 验收条目 5 用 grep 守着的那条禁止依赖。该 grep 当时为绿，只因为那个 trait 没有任何实现者与调用者：它测的是「没人用」，不是「不变式成立」。
+  port 落在 `iteron-protocol` 后，producing 侧（`crates/evolve`）与 consuming 侧（`crates/agents`）都已依赖它，**两侧零新增依赖**。跨接缝传的是 `ResolvedBundle` 这个只读投影（只带 slot 身份与 digest，不带 policy 本体、locator 或 lineage），由 `PolicyBundle::resolve()` 生成，并在 `SlotId` 无法表达某个 slot 时**整体拒绝**而非丢弃该条：丢弃会让那个 slot 跑内置策略，而 promotion journal 记录它已被治理。
 
-`Acceptance` 是必带字段，不是 `Option`：一个 task 总要说清「怎么算做完」，哪怕答案是空集。v1 冻结形状里没有 `oracle` / `min_strength` / `objective_digest`：`AcceptanceCheck.id` 是 check 在 task 内的稳定句柄，由 verifier slot 解析到具体 oracle；oracle 引用类型、强度序数与 held-out digest 按 §4.3(b)3 以 `Option` + `skip_serializing_if` 追加，归属 #51（`crates/verify` 的所有权 issue）：今天的 `crates/verify/src/oracle.rs::OracleStrength` 不带 serde 且 `core-verify` 依赖 `core-protocol`，反向依赖会成环。
+`Acceptance` 是必带字段，不是 `Option`：一个 task 总要说清「怎么算做完」，哪怕答案是空集。v1 冻结形状里没有 `oracle` / `min_strength` / `objective_digest`：`AcceptanceCheck.id` 是 check 在 task 内的稳定句柄，由 verifier slot 解析到具体 oracle；oracle 引用类型、强度序数与 held-out digest 按 §4.3(b)3 以 `Option` + `skip_serializing_if` 追加，归属 #51（`crates/verify` 的所有权 issue）：今天的 `crates/verify/src/oracle.rs::OracleStrength` 不带 serde 且 `iteron-verify` 依赖 `iteron-protocol`，反向依赖会成环。
 
 #### 4.2.2 `ContextRequest` ， 对已授权 context 的类型化请求
 
@@ -180,7 +180,7 @@ pub struct ContextSegment {
 - 一个 `ContextRequest` **MUST NOT** 自行读文件、遍历 workspace 或读 env：它只**声明意图**；实际物化由 kernel 的受审边界完成（kernel 的 negative space 里"读文件/读 env"是 kernel 也不做的，由受 capability 约束的 provider/tool 边界做，但**选择**逻辑在 context slot）。
 - 一组 segment 的 **governing trust** **MUST** 是各段 trust 的**最小值**（`min`）；合并 **MUST NOT** 抬高 trust。空集**没有** governing tier，**MUST** 由调用方显式 fail-closed 处理，**MUST NOT** 隐式取 `Trusted`（空集的数学恒等元）。`Trust` 是封闭的三级安全格（`Untrusted < Workspace < Trusted`），其 skew 契约是 fail-closed 拒绝，**MUST NOT** 追加 `Unknown` 之类的降级臂：那会在 derived `Ord` 下排在 `Trusted` 之上并使 `min` 失效（见 Errors.md 2026-07-27e 已记录的回归）。这直接对应 `DurableInstructionContext` 中 environment 段独立带 trust 的设计。
 - 注入的总字节 **MUST** 被 bound：一次 grant **MUST NOT** 超过 request 的 `max_bytes`，且 **MUST NOT** 超过 protocol 侧的硬上限 `MAX_CONTEXT_GRANT_BYTES`。二者是**各自独立**的上界，不是联合封顶。kernel 侧的 per-source 常量（如 `MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES`）继续**各自**约束各自的来源，不参与总量封顶。
-- `SlotId` 是跨接缝的**身份**，与 kernel 调用的 `StrategySlot` trait 是两个类型。其文法 **MUST** 是 `core_evolve::StrategySlot` 的严格子集：**每一个合法的 `SlotId` 都是合法的 `core_evolve::StrategySlot`，反之不成立**。方向不可颠倒：policy bundle 指向一个 kernel 没有的 slot 是惰性的、无害的；kernel 拥有一个任何 bundle 都无法命名的 slot 是不可治理的空洞。
+- `SlotId` 是跨接缝的**身份**，与 kernel 调用的 `StrategySlot` trait 是两个类型。其文法 **MUST** 是 `iteron_evolve::StrategySlot` 的严格子集：**每一个合法的 `SlotId` 都是合法的 `iteron_evolve::StrategySlot`，反之不成立**。方向不可颠倒：policy bundle 指向一个 kernel 没有的 slot 是惰性的、无害的；kernel 拥有一个任何 bundle 都无法命名的 slot 是不可治理的空洞。
 
 > 一个 per-request 的 `purpose: Option<String>` 若日后需要，**MAY** 按 §4.3(b)3 以 `Option` + `skip_serializing_if` 追加，线格式零代价。per-**selector** 的 purpose 则不行：`ContextSelector` 是 internally tagged enum，没有承载「所有变体共有字段」的位置，逐变体添加是破坏性 diff。
 
@@ -315,7 +315,7 @@ ABI 的价值全在于它**稳定且可演化**：两者不矛盾，靠的是把
 
 | 版本量 | 作用域 | 现值 | 规则 |
 |---|---|---|---|
-| `PROTOCOL_VERSION`（`wire.rs`） | SQ/EQ 线格式，以及它钉死的那一代五契约形状 | `1` | 任何**改变已发布形状**的改动 **MUST** bump 它：删除或改写任一 surface 的字段、tag、`version_field`、`selector` 或 fixture 集，五契约自 freeze 起同受此约束（§4.3(c)）。**纯新增 MUST NOT** bump 它：一个全新的顶层 tag，或一个 `Option` + `skip_serializing_if` 的追加字段，§4.3(b) 第 2、3 条已保证这两者的线格式逐字节不变；W1 freeze 新增五契约 surface 即属此类。`core-xtask boundaries check-base` / `check-pr` 以受信基线的 surface 集比对判定，防止悄悄改形 |
+| `PROTOCOL_VERSION`（`wire.rs`） | SQ/EQ 线格式，以及它钉死的那一代五契约形状 | `1` | 任何**改变已发布形状**的改动 **MUST** bump 它：删除或改写任一 surface 的字段、tag、`version_field`、`selector` 或 fixture 集，五契约自 freeze 起同受此约束（§4.3(c)）。**纯新增 MUST NOT** bump 它：一个全新的顶层 tag，或一个 `Option` + `skip_serializing_if` 的追加字段，§4.3(b) 第 2、3 条已保证这两者的线格式逐字节不变；W1 freeze 新增五契约 surface 即属此类。`iteron-xtask boundaries check-base` / `check-pr` 以受信基线的 surface 集比对判定，防止悄悄改形 |
 | `EVOLUTION_SCHEMA_VERSION`（`evolve`） | PolicyManifest / dataset / trajectory 文档 | `3` | evolution 产物的 schema 版本；与运行时 ABI 解耦升级 |
 
 `SqEnvelope` / `EqEnvelope` 给每条跨接缝的消息盖 `protocol_version`。`into_current()` 对版本 skew **硬拒**（`ProtocolVersionError`）：一次 run 只接受**恰好一个** `PROTOCOL_VERSION` 的消息。这是"一次 run 钉死一个 ABI 版本"的机械实现。
@@ -340,7 +340,7 @@ ABI 的价值全在于它**稳定且可演化**：两者不矛盾，靠的是把
 
 下面用一个**修 bug 的编码 task**，走通"TaskEnvelope 进 -> module 返回 ContextRequest / ToolIntent 提议 -> kernel admit 一个 EffectProposal -> ArtifactRef 出"的全程。每一步标注它落哪个 EQ 事件（Observable 不变式），并显示 trust 与 capability 如何一路收紧。
 
-**场景**：operator 要求"修复 `parser` 对空输入的 panic，并让 `cargo test -p parser` 通过"。垂类 profile = core baseline。`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`（本 task 不允许 egress，也不允许改 trust）。集合逐项列全这次 run 真正需要的类：没有序可依，`{ReversibleLocal}` 并不隐含 `ReadOnly`，跑测试也要显式的 `CodeExecuting`。
+**场景**：operator 要求"修复 `parser` 对空输入的 panic，并让 `cargo test -p parser` 通过"。垂类 profile = iteron baseline。`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`（本 task 不允许 egress，也不允许改 trust）。集合逐项列全这次 run 真正需要的类：没有序可依，`{ReversibleLocal}` 并不隐含 `ReadOnly`，跑测试也要显式的 `CodeExecuting`。
 
 **步骤 0 ， TaskEnvelope 入口。** frontend 把 operator 输入包成 `SqEnvelope { protocol_version: 1, op: UserInput }`，kernel 据此构造 `TaskEnvelope`：`trust = Trusted`（operator 亲自输入），`acceptance.checks = [{ id: "suite::parser", quantifier: MustFlipToPass }]`，`budget` 见下，`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`。
 -> 落事件：`RunStart`（genesis，seq-0，携带 `created_at`、`config_digest`、`max_usd`）。若 composition root 已经准入一个原子成功的 `ResolvedTunableSet`，record API 立即在 physical seq-1 落唯一的 `TunablesSnapshot`，并在任何 provider/tool effect 前 fsync；resume/replay/fork 的 checked API 比对完整快照，legacy 缺失只能显式降级为 `LegacyUnpinned`，不伪造迁移或准入。

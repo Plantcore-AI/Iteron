@@ -1,12 +1,12 @@
 //! Operator-owned provider instances and their dynamic model catalogs.
 //!
 //! This module is the CLI-side composition layer. Wire protocols and error classification live in
-//! `core-provider`; this layer supplies built-in instance definitions, merges trusted user config,
+//! `iteron-provider`; this layer supplies built-in instance definitions, merges trusted user config,
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
 use crate::config::{ProviderConfig, ProviderCredential};
-use core_provider::catalog::glm_standard_schema_catalog;
-use core_provider::{
+use iteron_provider::catalog::glm_standard_schema_catalog;
+use iteron_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, CredentialSource,
     ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError,
@@ -65,7 +65,7 @@ const PROBE_CACHE_VERSION: u32 = 1;
 const PROBE_CACHE_TTL_SECS: u64 = 15 * 60;
 /// A failing probe backs off exponentially instead of costing a round trip on every launch: one
 /// minute, then two, four… up to a day. A key rejected weeks ago is retried once a day, not once
-/// per `core` invocation.
+/// per `iteron` invocation.
 const PROBE_BACKOFF_BASE_SECS: u64 = 60;
 const PROBE_BACKOFF_CAP_SECS: u64 = 24 * 60 * 60;
 const MAX_PROBE_FAILURE_EXPONENT: u32 = 32;
@@ -173,7 +173,7 @@ impl ProviderEntry {
         self.instance.display_name()
     }
 
-    /// Value-free credential provenance for `/status`, `/config`, and `core auth status`.
+    /// Value-free credential provenance for `/status`, `/config`, and `iteron auth status`.
     pub fn credential_display(&self) -> String {
         self.instance.credential_status().display()
     }
@@ -538,7 +538,7 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> 
     }
     if result.is_ok() && file_name == CATALOG_CACHE_FILE {
         // A cache-format bump renames the file, so every earlier generation just stayed in
-        // `~/.core/cache/providers` forever — a full stale catalog nobody reads and nothing
+        // `~/.iteron/cache/providers` forever — a full stale catalog nobody reads and nothing
         // deletes. Reclaim them once the current generation is durable on disk.
         for superseded in 1..CATALOG_CACHE_VERSION {
             let _ = fs::remove_file(parent.join(format!("catalogs-v{superseded}.json")));
@@ -551,7 +551,7 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> 
 ///
 /// The catalog cache short-circuits only the `/models` request; the account probe used to run on
 /// every launch even on a cache hit, and a failed probe was never written back at all. A key that
-/// has been rejected for weeks therefore still cost a round trip each time `core` started.
+/// has been rejected for weeks therefore still cost a round trip each time `iteron` started.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProbeCache {
@@ -1416,8 +1416,8 @@ fn load_existing_scope_key(path: &Path) -> io::Result<CatalogCacheScopeKey> {
 }
 
 fn default_catalog_cache_path() -> Option<PathBuf> {
-    let home = core_protocol::home::operator()?;
-    Some(core_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
+    let home = iteron_protocol::home::operator()?;
+    Some(iteron_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
 }
 
 /// The probe cache lives beside the catalog cache and shares its directory guarantees.
@@ -1426,15 +1426,15 @@ fn probe_cache_path_for(catalog_cache_path: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn default_static_provider_metadata_path() -> Option<PathBuf> {
-    let home = core_protocol::home::operator()?;
-    Some(core_protocol::home::path(
+    let home = iteron_protocol::home::operator()?;
+    Some(iteron_protocol::home::path(
         &home,
         STATIC_PROVIDER_METADATA_FILE,
     ))
 }
 
 /// Operator opt-in that restores fail-closed loading of the metadata override.
-const STRICT_STATIC_PROVIDER_METADATA_ENV: &str = "CORE_STRICT_PROVIDER_METADATA";
+const STRICT_STATIC_PROVIDER_METADATA_ENV: &str = "ITERON_STRICT_PROVIDER_METADATA";
 
 fn strict_static_provider_metadata() -> bool {
     std::env::var(STRICT_STATIC_PROVIDER_METADATA_ENV)
@@ -1451,7 +1451,7 @@ fn strict_static_provider_metadata() -> bool {
 fn resolve_static_provider_metadata(
     path: Option<&std::path::Path>,
     strict: bool,
-) -> Result<(Arc<StaticProviderMetadata>, Option<String>), core_provider::ProviderError> {
+) -> Result<(Arc<StaticProviderMetadata>, Option<String>), iteron_provider::ProviderError> {
     let Some(path) = path else {
         return Ok((StaticProviderMetadata::embedded(), None));
     };
@@ -1508,7 +1508,7 @@ fn catalog_failure_blocks_inference(error: &ProviderError) -> bool {
         _ => error.normalized().is_some_and(|failure| {
             matches!(
                 failure.availability,
-                core_provider::AvailabilityTransition::Account(
+                iteron_provider::AvailabilityTransition::Account(
                     AccountAvailability::AuthenticationBlocked
                         | AccountAvailability::BillingBlocked
                 )
@@ -1777,7 +1777,7 @@ impl ProviderDirectory {
 
     /// Build the operator-visible directory without starting catalog or account network probes.
     ///
-    /// Credential provenance and presence are local facts. Commands such as `core auth status`
+    /// Credential provenance and presence are local facts. Commands such as `iteron auth status`
     /// must remain bounded even when a configured endpoint black-holes DNS or TCP; health remains
     /// honestly unknown until a launch or explicit setup validation produces evidence.
     pub fn inspect_local(user: &[ProviderConfig]) -> anyhow::Result<Self> {
@@ -2240,7 +2240,7 @@ impl ProviderDirectory {
         let Some(entry) = self.entry(provider_id) else {
             let known: Vec<&str> = self.entries.iter().map(ProviderEntry::id).collect();
             return format!(
-                "provider `{provider_id}` is not configured (known: {}); run `core setup` or declare it in ~/.core/config.json",
+                "provider `{provider_id}` is not configured (known: {}); run `iteron setup` or declare it in ~/.iteron/config.json",
                 known.join(", ")
             );
         };
@@ -2248,10 +2248,10 @@ impl ProviderDirectory {
             Some(reason) => {
                 let remedy = match self.health(entry.id()).availability {
                     AccountAvailability::MissingCredential => format!(
-                        "; run `core setup --byok {provider_id}`, or set it in the environment"
+                        "; run `iteron setup --byok {provider_id}`, or set it in the environment"
                     ),
                     AccountAvailability::AuthenticationBlocked => format!(
-                        "; the credential ({}) was rejected — run `core setup --byok {provider_id}` to replace it",
+                        "; the credential ({}) was rejected — run `iteron setup --byok {provider_id}` to replace it",
                         entry.credential.display()
                     ),
                     _ => String::new(),
@@ -2515,7 +2515,7 @@ impl ProviderDirectory {
         } else {
             entry.catalog_provenance.clone()
         };
-        hash_part(&mut catalog, b"core-provider-catalog-v2");
+        hash_part(&mut catalog, b"iteron-provider-catalog-v2");
         hash_part(&mut catalog, entry.id().as_bytes());
         hash_part(&mut catalog, entry.instance.api_root().as_str().as_bytes());
         hash_part(
@@ -2557,7 +2557,7 @@ impl ProviderDirectory {
         }
 
         let mut capability = Sha256::new();
-        hash_part(&mut capability, b"core-provider-capability-v2");
+        hash_part(&mut capability, b"iteron-provider-capability-v2");
         hash_part(&mut capability, entry.id().as_bytes());
         hash_part(&mut capability, selection.model_id.as_bytes());
         hash_part(
@@ -2846,7 +2846,7 @@ fn builtin_entries_with_metadata(
                 declared_capabilities: BTreeMap::new(),
             })
         })
-        .collect::<Result<Vec<_>, core_provider::ProviderError>>()
+        .collect::<Result<Vec<_>, iteron_provider::ProviderError>>()
         .map_err(Into::into)
 }
 
@@ -3054,7 +3054,7 @@ enum CatalogOverlay {
     OpenAi,
 }
 
-fn apply_model_overlay(policy: CatalogOverlay, model: &mut core_provider::ModelDescriptor) {
+fn apply_model_overlay(policy: CatalogOverlay, model: &mut iteron_provider::ModelDescriptor) {
     if model.compatibility != Compatibility::Unknown {
         return;
     }
@@ -3083,7 +3083,7 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
         .any(|prefix| base.starts_with(prefix))
 }
 
-/// Every provider id this configuration can route to, built-ins first. `core setup` offers these
+/// Every provider id this configuration can route to, built-ins first. `iteron setup` offers these
 /// and refuses anything else, so a typo is caught before a credential is written for a route that
 /// does not exist.
 pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
@@ -3100,7 +3100,7 @@ pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
 }
 
 /// Build the exact route a provider id resolves to, with a candidate credential supplied directly
-/// and nothing persisted. This is what lets `core setup` reject a wrong key BEFORE writing it.
+/// and nothing persisted. This is what lets `iteron setup` reject a wrong key BEFORE writing it.
 fn candidate_instance(
     provider_id: &str,
     user: &[ProviderConfig],
@@ -3155,13 +3155,13 @@ pub(crate) async fn validate_credential(
     let request = TurnRequest {
         model: model_id.clone(),
         system: String::new(),
-        messages: vec![core_protocol::Message::user_text("ping")],
+        messages: vec![iteron_protocol::Message::user_text("ping")],
         input_images: Vec::new(),
         tools: Vec::new(),
         max_tokens: 16,
         cache_system: false,
         thinking_budget: 0,
-        reasoning_effort: core_protocol::ReasoningEffort::Low,
+        reasoning_effort: iteron_protocol::ReasoningEffort::Low,
         controls: Default::default(),
     };
     match provider.turn(&request, &mut |_item: StreamItem| {}).await {
@@ -3217,7 +3217,7 @@ fn describe_validation_failure(error: &ProviderError) -> String {
             status => format!("the provider refused the validating request (HTTP {status})"),
         },
         ProviderError::UnsupportedCatalog { reason, .. } => format!(
-            "this endpoint publishes no model list ({reason}); declare `models` for it in ~/.core/config.json"
+            "this endpoint publishes no model list ({reason}); declare `models` for it in ~/.iteron/config.json"
         ),
         other => format!("the validating request failed: {other}"),
     }
@@ -3248,7 +3248,7 @@ fn credential_source(credential: &ProviderCredential) -> CredentialSource {
 ///
 /// The environment variable still wins: exporting a key is the explicit, per-invocation override
 /// and must behave exactly as before. Only when it is absent does a built-in fall back to the
-/// credential file `core setup` writes, which is what makes the wizard reach a working first turn
+/// credential file `iteron setup` writes, which is what makes the wizard reach a working first turn
 /// without asking an operator to edit `providers` by hand (a built-in id may not be redeclared
 /// there at all).
 fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCredential {
@@ -3272,7 +3272,7 @@ fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCrede
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_provider::{ModelDescriptor, ModelFamily, RawModel};
+    use iteron_provider::{ModelDescriptor, ModelFamily, RawModel};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
@@ -3284,7 +3284,7 @@ mod tests {
         let id = CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
             .join(format!(
-                "core-provider-cache-{label}-{}-{id}",
+                "iteron-provider-cache-{label}-{}-{id}",
                 std::process::id()
             ))
             .join(CATALOG_CACHE_FILE)
@@ -3541,7 +3541,7 @@ mod tests {
     }
 
     /// I-46. A cache-format bump renames the file, so every earlier generation kept sitting in
-    /// `~/.core/cache/providers` holding a full stale catalog nobody reads. Writing the current
+    /// `~/.iteron/cache/providers` holding a full stale catalog nobody reads. Writing the current
     /// generation reclaims them, and touches nothing else in the directory.
     #[test]
     fn d11_46_writing_the_current_catalog_cache_reclaims_the_superseded_one() {
@@ -4183,19 +4183,19 @@ mod tests {
                 catalogued_entry("fatal-cache", "https://gateway.example/v1", "gpt-4o-mini");
             entry.catalog_stale = true;
             let health = ProviderHealthStore::new(4);
-            let error = ProviderError::ApiResponse(core_provider::ApiResponseError {
+            let error = ProviderError::ApiResponse(iteron_provider::ApiResponseError {
                 status: 403,
                 body: "raw provider body".into(),
                 body_truncated: false,
                 retry_after: None,
-                normalized: Box::new(core_provider::NormalizedFailure {
+                normalized: Box::new(iteron_provider::NormalizedFailure {
                     adapter: AdapterKind::OpenAiCompatibleChat,
                     error_profile: ErrorProfile::CustomConservative,
                     code: Some("fatal".into()),
                     public_message: "account unavailable",
-                    scope: core_provider::ErrorScope::Account,
-                    availability: core_provider::AvailabilityTransition::Account(availability),
-                    retry: core_provider::RetryDisposition::Never,
+                    scope: iteron_provider::ErrorScope::Account,
+                    availability: iteron_provider::AvailabilityTransition::Account(availability),
+                    retry: iteron_provider::RetryDisposition::Never,
                     request_id: None,
                 }),
             });
@@ -4242,21 +4242,21 @@ mod tests {
             catalogued_entry("list-denied", "https://gateway.example/v1", "cached-model");
         entry.catalog_stale = true;
         let health = ProviderHealthStore::new(4);
-        let error = ProviderError::ApiResponse(core_provider::ApiResponseError {
+        let error = ProviderError::ApiResponse(iteron_provider::ApiResponseError {
             status: 403,
             body: "secret provider payload".into(),
             body_truncated: false,
             retry_after: None,
-            normalized: Box::new(core_provider::NormalizedFailure {
+            normalized: Box::new(iteron_provider::NormalizedFailure {
                 adapter: AdapterKind::OpenAiCompatibleChat,
                 error_profile: ErrorProfile::CustomConservative,
                 code: Some("permission_denied".into()),
                 public_message: "provider permission is unavailable",
-                scope: core_provider::ErrorScope::Account,
-                availability: core_provider::AvailabilityTransition::Account(
+                scope: iteron_provider::ErrorScope::Account,
+                availability: iteron_provider::AvailabilityTransition::Account(
                     AccountAvailability::PermissionBlocked,
                 ),
-                retry: core_provider::RetryDisposition::Never,
+                retry: iteron_provider::RetryDisposition::Never,
                 request_id: None,
             }),
         });
@@ -4294,21 +4294,21 @@ mod tests {
     #[test]
     fn catalog_then_authoritative_probe_has_deterministic_recovery_semantics() {
         let billing_error = || {
-            ProviderError::ApiResponse(core_provider::ApiResponseError {
+            ProviderError::ApiResponse(iteron_provider::ApiResponseError {
                 status: 429,
                 body: "private provider payload".into(),
                 body_truncated: false,
                 retry_after: None,
-                normalized: Box::new(core_provider::NormalizedFailure {
+                normalized: Box::new(iteron_provider::NormalizedFailure {
                     adapter: AdapterKind::OpenAiCompatibleChat,
                     error_profile: ErrorProfile::DeepSeek,
                     code: Some("insufficient_quota".into()),
                     public_message: "provider billing or quota is unavailable",
-                    scope: core_provider::ErrorScope::Account,
-                    availability: core_provider::AvailabilityTransition::Account(
+                    scope: iteron_provider::ErrorScope::Account,
+                    availability: iteron_provider::AvailabilityTransition::Account(
                         AccountAvailability::BillingBlocked,
                     ),
-                    retry: core_provider::RetryDisposition::Never,
+                    retry: iteron_provider::RetryDisposition::Never,
                     request_id: Some("catalog-request".into()),
                 }),
             })
@@ -4843,12 +4843,12 @@ mod tests {
             max_tokens: 1_024,
             cache_system: true,
             thinking_budget: 4_096,
-            reasoning_effort: core_protocol::ReasoningEffort::Medium,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
             controls: Default::default(),
         };
         assert!(matches!(
             provider.effort_application(&request),
-            core_provider::EffortApplication::Mapped { .. }
+            iteron_provider::EffortApplication::Mapped { .. }
         ));
         let notice = provider.run_notice(&request).unwrap();
         assert_eq!(notice.code, "static_metadata");
@@ -4874,7 +4874,7 @@ mod tests {
         assert!(directory.default_selection("glm").is_none());
         let missing = directory.resolution_error("glm");
         assert!(missing.contains("GLM_API_KEY"), "{missing}");
-        assert!(missing.contains("core setup --byok glm"), "{missing}");
+        assert!(missing.contains("iteron setup --byok glm"), "{missing}");
         assert!(
             !missing.contains("has no selectable discovered model"),
             "the unactionable line must not survive: {missing}"
@@ -4887,21 +4887,21 @@ mod tests {
                 .unwrap();
         directory.health.update_from_error(
             "glm",
-            &ProviderError::ApiResponse(core_provider::ApiResponseError {
+            &ProviderError::ApiResponse(iteron_provider::ApiResponseError {
                 status: 401,
                 body: String::new(),
                 body_truncated: false,
                 retry_after: None,
-                normalized: Box::new(core_provider::NormalizedFailure {
+                normalized: Box::new(iteron_provider::NormalizedFailure {
                     adapter: AdapterKind::OpenAiCompatibleChat,
                     error_profile: ErrorProfile::Glm,
                     code: Some("invalid_api_key".into()),
                     public_message: "authentication failed",
-                    scope: core_provider::ErrorScope::Account,
-                    availability: core_provider::AvailabilityTransition::Account(
+                    scope: iteron_provider::ErrorScope::Account,
+                    availability: iteron_provider::AvailabilityTransition::Account(
                         AccountAvailability::AuthenticationBlocked,
                     ),
-                    retry: core_provider::RetryDisposition::Never,
+                    retry: iteron_provider::RetryDisposition::Never,
                     request_id: None,
                 }),
             }),
@@ -5200,7 +5200,7 @@ mod tests {
             adapter: "anthropic_messages".into(),
             error_profile: Some("anthropic".into()),
             api_root: "https://api.anthropic.com/v1".into(),
-            key_env: Some("CORE_TEST_ABSENT_ANTHROPIC_KEY".into()),
+            key_env: Some("ITERON_TEST_ABSENT_ANTHROPIC_KEY".into()),
             credential: None,
             enabled: true,
             catalog: false,
@@ -5249,7 +5249,7 @@ mod tests {
     #[test]
     fn a_malformed_metadata_override_warns_and_falls_back_unless_strict() {
         let dir = std::env::temp_dir().join(format!(
-            "core-provider-metadata-override-{}",
+            "iteron-provider-metadata-override-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -5446,19 +5446,19 @@ mod tests {
         health.update_from_turn_error(
             "gateway",
             "model-a",
-            &ProviderError::ApiResponse(core_provider::ApiResponseError {
+            &ProviderError::ApiResponse(iteron_provider::ApiResponseError {
                 status: 404,
                 body: String::new(),
                 body_truncated: false,
                 retry_after: None,
-                normalized: Box::new(core_provider::NormalizedFailure {
+                normalized: Box::new(iteron_provider::NormalizedFailure {
                     adapter: AdapterKind::OpenAiCompatibleChat,
-                    error_profile: core_provider::ErrorProfile::CustomConservative,
+                    error_profile: iteron_provider::ErrorProfile::CustomConservative,
                     code: Some("model_not_found".into()),
                     public_message: "model unavailable",
-                    scope: core_provider::ErrorScope::Model,
-                    availability: core_provider::AvailabilityTransition::ModelUnavailable,
-                    retry: core_provider::RetryDisposition::Never,
+                    scope: iteron_provider::ErrorScope::Model,
+                    availability: iteron_provider::AvailabilityTransition::ModelUnavailable,
+                    retry: iteron_provider::RetryDisposition::Never,
                     request_id: None,
                 }),
             }),
@@ -5492,19 +5492,19 @@ mod tests {
         let entry = catalogued_entry("retry-gateway", "https://gateway.example/v1", "model-a");
         let health = ProviderHealthStore::new(4);
         health.mark_ready("retry-gateway");
-        let model_failure = ProviderError::ApiResponse(core_provider::ApiResponseError {
+        let model_failure = ProviderError::ApiResponse(iteron_provider::ApiResponseError {
             status: 404,
             body: String::new(),
             body_truncated: false,
             retry_after: None,
-            normalized: Box::new(core_provider::NormalizedFailure {
+            normalized: Box::new(iteron_provider::NormalizedFailure {
                 adapter: AdapterKind::OpenAiCompatibleChat,
-                error_profile: core_provider::ErrorProfile::CustomConservative,
+                error_profile: iteron_provider::ErrorProfile::CustomConservative,
                 code: Some("model_not_found".into()),
                 public_message: "model unavailable",
-                scope: core_provider::ErrorScope::Model,
-                availability: core_provider::AvailabilityTransition::ModelUnavailable,
-                retry: core_provider::RetryDisposition::Never,
+                scope: iteron_provider::ErrorScope::Model,
+                availability: iteron_provider::AvailabilityTransition::ModelUnavailable,
+                retry: iteron_provider::RetryDisposition::Never,
                 request_id: None,
             }),
         });
@@ -5534,21 +5534,21 @@ mod tests {
         health.update_from_turn_error("retry-gateway", "model-a", &model_failure);
         health.update_from_error(
             "retry-gateway",
-            &ProviderError::ApiResponse(core_provider::ApiResponseError {
+            &ProviderError::ApiResponse(iteron_provider::ApiResponseError {
                 status: 429,
                 body: String::new(),
                 body_truncated: false,
                 retry_after: None,
-                normalized: Box::new(core_provider::NormalizedFailure {
+                normalized: Box::new(iteron_provider::NormalizedFailure {
                     adapter: AdapterKind::OpenAiCompatibleChat,
-                    error_profile: core_provider::ErrorProfile::OpenAi,
+                    error_profile: iteron_provider::ErrorProfile::OpenAi,
                     code: Some("insufficient_quota".into()),
                     public_message: "provider billing or quota is unavailable",
-                    scope: core_provider::ErrorScope::Account,
-                    availability: core_provider::AvailabilityTransition::Account(
+                    scope: iteron_provider::ErrorScope::Account,
+                    availability: iteron_provider::AvailabilityTransition::Account(
                         AccountAvailability::BillingBlocked,
                     ),
-                    retry: core_provider::RetryDisposition::Never,
+                    retry: iteron_provider::RetryDisposition::Never,
                     request_id: None,
                 }),
             }),

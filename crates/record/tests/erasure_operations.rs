@@ -1,9 +1,9 @@
-use core_protocol::{
+use iteron_protocol::{
     Effort, ErasureAuthorityId, ErasureContentDigest, ErasureFailureCode, ErasureOperationId,
     ErasureRequest, ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId,
     ErasureVerification, Event, EventKind, RunId, Seq, TenantId, TurnId,
 };
-use core_record::{ErasureError, Rollout, execute_erasure, read_erasure_receipt};
+use iteron_record::{ErasureError, Rollout, execute_erasure, read_erasure_receipt};
 use std::path::{Path, PathBuf};
 
 fn now_ms() -> u64 {

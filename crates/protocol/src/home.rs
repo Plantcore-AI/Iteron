@@ -1,7 +1,7 @@
 //! Core's single on-disk home directory and operator-home resolution.
 //!
 //! This is an intentionally breaking contract: runtime state, configuration, skills, agents and
-//! memory are read from and written to `.core/` only. Discovery does not union historical product
+//! memory are read from and written to `.iteron/` only. Discovery does not union historical product
 //! directories and no compatibility fallback exists. Unix keeps `HOME` authority. Windows
 //! preserves that precedence for shells that deliberately set it, then uses `USERPROFILE` and
 //! finally the native `HOMEDRIVE` + `HOMEPATH` pair.
@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The only product home-directory name understood by Core.
-pub const HOME_DIR: &str = ".core";
+pub const HOME_DIR: &str = ".iteron";
 
 #[derive(Clone, Copy)]
 enum Platform {
@@ -36,7 +36,7 @@ pub fn operator() -> Option<PathBuf> {
     )
 }
 
-/// Build `<base>/.core/<sub>` deterministically.
+/// Build `<base>/.iteron/<sub>` deterministically.
 pub fn path(base: &Path, sub: &str) -> PathBuf {
     base.join(HOME_DIR).join(sub)
 }
@@ -132,11 +132,11 @@ mod tests {
     fn path_has_one_unambiguous_home() {
         assert_eq!(
             path(Path::new("/repo"), "skills"),
-            PathBuf::from("/repo/.core/skills")
+            PathBuf::from("/repo/.iteron/skills")
         );
-        assert!(is_home_dir(".core"));
+        assert!(is_home_dir(".iteron"));
         assert!(!is_home_dir(".git"));
-        assert!(!is_home_dir("core"));
+        assert!(!is_home_dir("iteron"));
     }
 
     #[test]

@@ -28,7 +28,7 @@ impl Agent {
 
     pub(crate) async fn cleanup_mcp_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
+        boundary: iteron_mcp::McpSpillCleanup,
     ) -> Result<(), super::KernelError> {
         match &self.mcp_runtime {
             Some(runtime) => runtime

@@ -70,7 +70,7 @@ impl Agent {
             .map(|remaining| remaining.as_secs().max(1))
             .unwrap_or(300);
         let remaining_turns = self.remaining_inference_turns();
-        let Some(budget) = core_agents::subagent_budget(
+        let Some(budget) = iteron_agents::subagent_budget(
             remaining_turns,
             remaining_wall,
             self.remaining_provider_tokens(),
@@ -103,7 +103,7 @@ impl Agent {
         };
         let _effective_tools = crate::bundle_adapter::narrow_child_registry(
             &mut registry,
-            &core_agents::ToolFilter::All,
+            &iteron_agents::ToolFilter::All,
             &self.boot_bundle,
         );
         let tunables_pin = self
@@ -127,7 +127,7 @@ impl Agent {
         {
             return Err("subagent was not started: parent record failed".into());
         }
-        let agent_def = core_agents::AgentDef::generic();
+        let agent_def = iteron_agents::AgentDef::generic();
         let agent_definition_tag = agent_def.execution_tag();
         let child_deadline = self.child_run_deadline(&budget);
         let mut sub = Agent::new_with_tunables_pin(
@@ -167,8 +167,8 @@ impl Agent {
         sub.hooks = self.hooks.clone();
         sub.hook_effect_journal = self.hook_effect_journal.clone();
         sub.delegation_depth = self.delegation_depth.saturating_add(1);
-        let child_effort = if self.effort == core_protocol::Effort::Ultracode {
-            core_protocol::Effort::Max
+        let child_effort = if self.effort == iteron_protocol::Effort::Ultracode {
+            iteron_protocol::Effort::Max
         } else {
             self.effort
         };
@@ -252,41 +252,41 @@ impl Agent {
                 if s.is_empty() {
                     (
                         Err("subagent completed without a summary".into()),
-                        core_protocol::WorkflowChildOutcome::Failed,
+                        iteron_protocol::WorkflowChildOutcome::Failed,
                         Some("empty_report".into()),
                         Some("direct investigator completed without a report".into()),
                     )
                 } else {
-                    (Ok(s), core_protocol::WorkflowChildOutcome::Done, None, None)
+                    (Ok(s), iteron_protocol::WorkflowChildOutcome::Done, None, None)
                 }
             }
             Ok(Outcome::Interrupted) => (
                 Err("subagent interrupted at a safe point".into()),
-                core_protocol::WorkflowChildOutcome::Interrupted,
+                iteron_protocol::WorkflowChildOutcome::Interrupted,
                 Some("operator_stop".into()),
                 Some("direct investigator interrupted at a safe point".into()),
             ),
             Ok(Outcome::Drained) => (
                 Err("subagent drained after a checkpoint".into()),
-                core_protocol::WorkflowChildOutcome::Drained,
+                iteron_protocol::WorkflowChildOutcome::Drained,
                 Some("operator_drain".into()),
                 Some("direct investigator drained after a durable checkpoint".into()),
             ),
             Ok(Outcome::BudgetExhausted(_)) => (
                 Err("subagent exhausted its bounded budget".into()),
-                core_protocol::WorkflowChildOutcome::Failed,
+                iteron_protocol::WorkflowChildOutcome::Failed,
                 Some("child_budget_exhausted".into()),
                 Some("direct investigator exhausted its bounded budget".into()),
             ),
             Ok(Outcome::Stuck) => (
                 Err("subagent reached the tool-error limit".into()),
-                core_protocol::WorkflowChildOutcome::Failed,
+                iteron_protocol::WorkflowChildOutcome::Failed,
                 Some("child_tool_error_limit".into()),
                 Some("direct investigator reached the tool-error limit".into()),
             ),
             Ok(Outcome::HarnessError) => (
                 Err("subagent stopped on a harness error".into()),
-                core_protocol::WorkflowChildOutcome::Failed,
+                iteron_protocol::WorkflowChildOutcome::Failed,
                 Some("child_harness_error".into()),
                 Some("direct investigator stopped on a harness error".into()),
             ),
@@ -294,7 +294,7 @@ impl Agent {
                 let detail = error.public_summary();
                 (
                     Err(format!("subagent error: {detail}")),
-                    core_protocol::WorkflowChildOutcome::Failed,
+                    iteron_protocol::WorkflowChildOutcome::Failed,
                     Some("child_kernel_error".into()),
                     Some(detail),
                 )
@@ -308,13 +308,13 @@ impl Agent {
             ),
             Err(_) => (None, 0),
         };
-        let child_succeeded = matches!(&child_outcome, core_protocol::WorkflowChildOutcome::Done);
+        let child_succeeded = matches!(&child_outcome, iteron_protocol::WorkflowChildOutcome::Done);
         let child_outcome_code = format!("{child_outcome:?}").to_ascii_lowercase();
         let child_run_id = sub_run.0.clone();
         self.emit_durable(
             TurnId(self.seq_turn),
             EventKind::SubagentFinishedV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 sub_run: sub_run.0,
                 outcome: child_outcome,
                 metrics,

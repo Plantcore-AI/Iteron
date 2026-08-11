@@ -6,7 +6,7 @@ use crate::git_harness::{
     resolve_repository_layout, run_command_bounded,
 };
 use crate::{Registry, ToolError, boxfut, err_result, ok_result};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::Path;

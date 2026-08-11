@@ -1,5 +1,5 @@
 [package]
-name = "core-xtask"
+name = "iteron-xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,11 +7,11 @@ publish.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-core-agents = { path = "../crates/agents" }
-core-ctx = { path = "../crates/ctx" }
-core-protocol = { path = "../crates/protocol" }
-core-tools = { path = "../crates/tools" }
-core-tunables = { path = "../crates/tunables" }
+iteron-agents = { path = "../crates/agents" }
+iteron-ctx = { path = "../crates/ctx" }
+iteron-protocol = { path = "../crates/protocol" }
+iteron-tools = { path = "../crates/tools" }
+iteron-tunables = { path = "../crates/tunables" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

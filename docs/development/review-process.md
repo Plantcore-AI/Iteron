@@ -14,8 +14,8 @@ request when their scope is unambiguous.
 The registry is the source of truth:
 
 ```sh
-cargo run --locked -p core-xtask -- boundaries explain path/to/file
-cargo run --locked -p core-xtask -- boundaries affected --base origin/main
+cargo run --locked -p iteron-xtask -- boundaries explain path/to/file
+cargo run --locked -p iteron-xtask -- boundaries affected --base origin/main
 ```
 
 Copy the exact primary boundary and invariant-overlay identifiers into the pull

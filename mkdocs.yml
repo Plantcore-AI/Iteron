@@ -1,10 +1,10 @@
-site_name: Core Code
+site_name: Iteron
 site_description: >-
-  Documentation for Core Code, a pre-alpha terminal coding agent and modular
+  Documentation for Iteron, a pre-alpha terminal coding agent and modular
   Rust substrate for bounded, recoverable agent runtimes.
-site_url: https://plantcore-ai.github.io/core/
-repo_url: https://github.com/Plantcore-AI/core
-repo_name: Plantcore-AI/core
+site_url: https://plantcore-ai.github.io/Iteron/
+repo_url: https://github.com/Plantcore-AI/Iteron
+repo_name: Plantcore-AI/Iteron
 edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
@@ -17,8 +17,8 @@ hooks:
 theme:
   name: material
   language: en
-  logo: assets/brand/core-code-mark.svg
-  favicon: assets/brand/core-code-mark.svg
+  logo: assets/brand/iteron-mark.svg
+  favicon: assets/brand/iteron-mark.svg
   icon:
     repo: fontawesome/brands/github
   palette:
@@ -79,7 +79,7 @@ nav:
       - Quickstart: getting-started/quickstart.md
       - Configure a provider: getting-started/providers.md
       - First session: getting-started/first-session.md
-  - Using Core Code:
+  - Using Iteron:
       - Terminal UI: using/tui.md
       - One-shot and automation: using/one-shot.md
       - Models and providers: using/models-and-providers.md
@@ -149,11 +149,11 @@ validation:
   absolute_links: warn
   unrecognized_links: warn
 
-copyright: Core Code contributors · Apache-2.0
+copyright: Iteron contributors · Apache-2.0
 
 extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/Plantcore-AI/core
-      name: Core Code on GitHub
+      link: https://github.com/Plantcore-AI/Iteron
+      name: Iteron on GitHub

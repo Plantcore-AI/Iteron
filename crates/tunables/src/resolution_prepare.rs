@@ -270,19 +270,19 @@ fn default_subject_matches(
 
 pub(crate) fn default_resolver_id(resolver: DefaultResolver) -> String {
     match resolver {
-        DefaultResolver::Literal => "core://tunables/resolvers/literal-v1".into(),
+        DefaultResolver::Literal => "iteron://tunables/resolvers/literal-v1".into(),
         DefaultResolver::Builtin { resolver_id } => resolver_id.into(),
         DefaultResolver::ModelMetadata { field } => {
-            format!("core://tunables/resolvers/model-metadata/{field}-v1")
+            format!("iteron://tunables/resolvers/model-metadata/{field}-v1")
         }
         DefaultResolver::ProviderCapability { capability } => {
-            format!("core://tunables/resolvers/provider-capability/{capability}-v1")
+            format!("iteron://tunables/resolvers/provider-capability/{capability}-v1")
         }
         DefaultResolver::Transport { field } => {
-            format!("core://tunables/resolvers/transport/{field}-v1")
+            format!("iteron://tunables/resolvers/transport/{field}-v1")
         }
         DefaultResolver::RuntimeObservation { field } => {
-            format!("core://tunables/resolvers/runtime-observation/{field}-v1")
+            format!("iteron://tunables/resolvers/runtime-observation/{field}-v1")
         }
         DefaultResolver::GovernedCatalog { catalog_id } => catalog_id.into(),
         DefaultResolver::Operator { input_id } => input_id.into(),

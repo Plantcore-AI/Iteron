@@ -1,6 +1,6 @@
 //! Content-free evidence explaining how a provider request's context was assembled.
 
-use core_protocol::{Trust, TurnId};
+use iteron_protocol::{Trust, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTEXT_LEDGER_SEGMENTS: usize = 512;

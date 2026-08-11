@@ -8,7 +8,7 @@ use super::{
     ContentReferenceSurface, ContentStoreError, PrivateContentRetention, digest_bytes,
     ensure_content_bound,
 };
-use core_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
+use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Read;

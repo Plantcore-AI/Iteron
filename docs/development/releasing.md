@@ -1,6 +1,6 @@
 # Release engineering
 
-Only the human Project Owner can authorize a Core Code release. A release is a
+Only the human Project Owner can authorize a Iteron release. A release is a
 supply-chain event, not a local `cargo build` plus an uploaded binary.
 
 ## Preconditions
@@ -24,7 +24,7 @@ be green before the Owner creates the tag.
 
 ## Required artifacts
 
-Every platform archive contains the `core` or `core.exe` binary, `LICENSE`, `README.md`, audited
+Every platform archive contains the `iteron` or `iteron.exe` binary, `LICENSE`, `README.md`, audited
 third-party licenses and notices, an SPDX SBOM, and build metadata. The release
 also publishes `SHA256SUMS`, a versioned machine-readable manifest, a receipt containing the
 SHA-256 and size of the final canonical manifest bytes, the POSIX installer, and GitHub artifact

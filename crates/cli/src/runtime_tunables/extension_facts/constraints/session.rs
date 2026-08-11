@@ -4,7 +4,7 @@ use crate::runtime_tunables::extension_facts::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport, ExtensionGapReason, FactLayer,
     GapImpact,
 };
-use core_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,

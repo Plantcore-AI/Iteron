@@ -7,7 +7,7 @@
 //!
 //! This module makes that a slot decision. It chooses; it never runs anything. No process is
 //! spawned here, no file is read, no network is touched — [`crate::oracle`] owns execution and
-//! [`core_sandbox`] owns the confinement it runs under.
+//! [`iteron_sandbox`] owns the confinement it runs under.
 //!
 //! Two rules are structural rather than advisory:
 //!
@@ -22,8 +22,8 @@
 //! and whose workspace suite did not.
 
 use crate::oracle::{OracleStrength, VerificationOutcome};
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

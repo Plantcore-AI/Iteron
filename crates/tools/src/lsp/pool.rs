@@ -2,7 +2,7 @@ use super::input::SourceDocument;
 use super::policy::{LspLanguageRoute, LspRuntimePolicy, MAX_LSP_POOL_SERVERS};
 use super::session::{Driver, LiveResult, RunFailure};
 use super::{LspHealth, LspToolError, QueryKind};
-use core_sandbox::{Confinement, SandboxError, spawn_confined_process_from_workspace};
+use iteron_sandbox::{Confinement, SandboxError, spawn_confined_process_from_workspace};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

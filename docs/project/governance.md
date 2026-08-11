@@ -1,6 +1,6 @@
 # Governance
 
-Core Code has one human Owner/Project Lead and an open-ended group of human
+Iteron has one human Owner/Project Lead and an open-ended group of human
 maintainer/engineers. Maintainer count follows accountable work; it is not a fixed
 set of seats.
 
@@ -29,6 +29,6 @@ merge, claim ownership, negotiate cross-boundary contracts, dispatch an agent
 swarm, or exercise Owner override.
 
 Read the canonical
-[GOVERNANCE.md](https://github.com/Plantcore-AI/core/blob/main/GOVERNANCE.md),
-[ownership registry](https://github.com/Plantcore-AI/core/blob/main/OWNERSHIP.md),
+[GOVERNANCE.md](https://github.com/Plantcore-AI/Iteron/blob/main/GOVERNANCE.md),
+[ownership registry](https://github.com/Plantcore-AI/Iteron/blob/main/OWNERSHIP.md),
 and [maintainer onboarding](../maintainer-onboarding.md).

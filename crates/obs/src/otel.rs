@@ -27,7 +27,7 @@
 //! safety valve: a consumer that sees 512 spans and no drop count will believe it saw the run.
 
 use crate::timeline::Timeline;
-use core_protocol::{Event, EventKind};
+use iteron_protocol::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 
 pub mod catalog;
@@ -80,7 +80,7 @@ pub struct Export {
 /// Project a replayed run into the export payload.
 ///
 /// Pure. `timeline` supplies the already-computed distributions (#104) so this module never
-/// recomputes a statistic and cannot drift from what `core --timeline` reports for the same run.
+/// recomputes a statistic and cannot drift from what `iteron --timeline` reports for the same run.
 pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
     let mut export = Export {
         run_id: run_id.to_string(),
@@ -145,10 +145,10 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
     }
 
     // Metrics are read straight off the timeline, never recomputed, so a dashboard and
-    // `core --timeline` can never disagree about the same run.
+    // `iteron --timeline` can never disagree about the same run.
     for (class, distribution) in &timeline.effects {
         export.metrics.push(Metric {
-            name: "core.effect.duration_ms".into(),
+            name: "iteron.effect.duration_ms".into(),
             value: distribution.total_ms,
             attributes: vec![
                 ("effect.class".into(), class.clone()),
@@ -158,7 +158,7 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
     }
     if let Some(p50) = timeline.turns.ttft.p50_ms {
         export.metrics.push(Metric {
-            name: "core.turn.ttft_ms.p50".into(),
+            name: "iteron.turn.ttft_ms.p50".into(),
             value: p50,
             attributes: Vec::new(),
         });
@@ -169,7 +169,7 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{EffectId, Seq, TurnId, Usage};
+    use iteron_protocol::{EffectId, Seq, TurnId, Usage};
 
     fn event(seq: u64, kind: EventKind) -> Event {
         Event {
@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// Metrics are read off the timeline, never recomputed here, so the dashboard and
-    /// `core --timeline` cannot disagree about the same run.
+    /// `iteron --timeline` cannot disagree about the same run.
     #[test]
     fn metrics_are_read_from_the_timeline_rather_than_recomputed() {
         let done = event(
@@ -295,7 +295,7 @@ mod tests {
         let metric = export
             .metrics
             .iter()
-            .find(|metric| metric.name == "core.effect.duration_ms")
+            .find(|metric| metric.name == "iteron.effect.duration_ms")
             .expect("effect metric");
         assert_eq!(metric.value, timeline.effects["provider"].total_ms);
     }

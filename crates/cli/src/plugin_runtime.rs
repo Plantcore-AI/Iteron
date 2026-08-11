@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use core_marketplace::{
+use iteron_marketplace::{
     ActivePlugin, Binding, Contribution, PluginStore, RuntimeScope, Slot, Surface, Wiring,
     compose_governed,
 };
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
 
 use crate::config::{McpServerConfig, McpTransportConfig};
 
@@ -273,7 +273,7 @@ fn contribution_artifact(contribution: &Contribution, root: &Path) -> Option<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_marketplace::{Manifest, compose};
+    use iteron_marketplace::{Manifest, compose};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);

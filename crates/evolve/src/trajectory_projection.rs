@@ -13,7 +13,7 @@ use crate::{
     TrainingAdmissionPolicy, TrajectoryEnvelope, TrajectoryProjection, validate_collection,
     validate_digest, validate_nonempty_string,
 };
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

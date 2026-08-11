@@ -1,14 +1,14 @@
 //! Reconstructable V2 tunables checkpoint projection and validation.
 
 use super::{TunablesSnapshotError, digest_json, is_sha256, safe_id};
-use core_protocol::{
+use iteron_protocol::{
     MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
     MAX_RUN_GENESIS_TUNABLES_V2_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_DEPTH,
     MAX_RUN_GENESIS_TUNABLES_V2_NODES, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
     RunGenesisTunableEntryV2, RunGenesisTunableState, RunGenesisTunablesSnapshotV2,
     RunGenesisTunablesVersion,
 };
-use core_tunables::{
+use iteron_tunables::{
     EntryOutcome, EntryState, ResolutionReport, ResolutionSource, ResolutionValue,
 };
 use serde::Serialize;
@@ -52,7 +52,7 @@ struct EffectiveReportEntry<'a> {
     ordinal: u16,
     family_id: &'static str,
     state: EntryState,
-    effective: &'a Option<core_tunables::ResolutionValue>,
+    effective: &'a Option<iteron_tunables::ResolutionValue>,
 }
 
 #[derive(Serialize)]
@@ -151,7 +151,7 @@ fn invalid<T>(reason: &'static str) -> Result<T, TunablesSnapshotError> {
 }
 
 fn validate_projection_text(value: &str) -> Result<(), TunablesSnapshotError> {
-    if value.len() > core_tunables::RESOLUTION_INPUT_MAX_BYTES
+    if value.len() > iteron_tunables::RESOLUTION_INPUT_MAX_BYTES
         || value
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
@@ -200,7 +200,7 @@ fn recompute_effective_digest(
         })
         .collect::<Result<Vec<_>, TunablesSnapshotError>>()?;
     digest_json(&EffectivePayloadV2 {
-        canonicalization: "core-tunables-effective-json-v1",
+        canonicalization: "iteron-tunables-effective-json-v1",
         registry_id: &snapshot.registry_id,
         registry_revision: snapshot.registry_revision,
         registry_digest: &snapshot.registry_digest_sha256,
@@ -222,7 +222,7 @@ pub(super) fn effective_digest_from_report(
         })
         .collect();
     digest_json(&EffectiveReportPayload {
-        canonicalization: "core-tunables-effective-json-v1",
+        canonicalization: "iteron-tunables-effective-json-v1",
         registry_id: report.registry_id,
         registry_revision: report.registry_revision,
         registry_digest: report.registry_digest,
@@ -243,7 +243,7 @@ pub fn validate_tunables_snapshot_v2(
         || snapshot.registry_schema_version == 0
         || snapshot.family_schema_version == 0
         || snapshot.registry_revision == 0
-        || snapshot.registry_id != core_tunables::REGISTRY_ID
+        || snapshot.registry_id != iteron_tunables::REGISTRY_ID
     {
         return invalid("V2 registry identity or schema version is invalid");
     }
@@ -402,8 +402,8 @@ pub(super) fn snapshot_v2_from_report(
         canonicalization: RUN_GENESIS_TUNABLES_V2_CANONICALIZATION.to_owned(),
         resolution_schema_version: report.schema_version,
         registry_id: report.registry_id.to_owned(),
-        registry_schema_version: core_tunables::REGISTRY_SCHEMA_VERSION,
-        family_schema_version: core_tunables::FAMILY_SCHEMA_VERSION,
+        registry_schema_version: iteron_tunables::REGISTRY_SCHEMA_VERSION,
+        family_schema_version: iteron_tunables::FAMILY_SCHEMA_VERSION,
         registry_revision: report.registry_revision,
         registry_digest_sha256: report.registry_digest.to_owned(),
         input_digest_sha256: report.input_digest_sha256.clone(),

@@ -1,4 +1,4 @@
-use core_protocol::{PolicyOpportunityId, PolicyOpportunityJoinDigest};
+use iteron_protocol::{PolicyOpportunityId, PolicyOpportunityJoinDigest};
 use sha2::{Digest, Sha256};
 
 const OPPORTUNITY_ID_DOMAIN: &[u8] = b"core-policy-opportunity-id-v1\0";

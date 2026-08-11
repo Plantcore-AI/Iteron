@@ -92,7 +92,7 @@ pub(super) async fn handle(app: &mut App, session: &mut Session) {
 
 fn append_policy_bundle(
     rows: &mut Vec<block::PanelRow>,
-    bundle: &core_protocol::RunGenesisPolicyBundleSnapshot,
+    bundle: &iteron_protocol::RunGenesisPolicyBundleSnapshot,
 ) {
     rows.push(block::PanelRow::Note(
         "policy bundle · immutable run genesis".into(),
@@ -129,7 +129,7 @@ fn append_policy_bundle(
 
 fn append_tunables(
     rows: &mut Vec<block::PanelRow>,
-    checkpoint: Option<&core_record::TunablesCheckpoint>,
+    checkpoint: Option<&iteron_record::TunablesCheckpoint>,
 ) {
     rows.push(block::PanelRow::Note(
         "tunables · immutable resolution receipt".into(),
@@ -139,7 +139,7 @@ fn append_tunables(
         return;
     };
     let (version, registry, registry_digest, resolution, profile, entries) = match checkpoint {
-        core_record::TunablesCheckpoint::V1(snapshot) => (
+        iteron_record::TunablesCheckpoint::V1(snapshot) => (
             "v1 identity-only",
             format!("{} r{}", snapshot.registry_id, snapshot.registry_revision),
             snapshot.registry_digest_sha256.as_str(),
@@ -147,7 +147,7 @@ fn append_tunables(
             snapshot.profile_digest_sha256.as_deref(),
             snapshot.entries.len(),
         ),
-        core_record::TunablesCheckpoint::V2(snapshot) => (
+        iteron_record::TunablesCheckpoint::V2(snapshot) => (
             "v2 reconstructable",
             format!("{} r{}", snapshot.registry_id, snapshot.registry_revision),
             snapshot.registry_digest_sha256.as_str(),
@@ -174,8 +174,8 @@ fn append_tunables(
 
 fn append_governor(
     rows: &mut Vec<block::PanelRow>,
-    governor: Option<&core_provider::ProviderGovernorSnapshot>,
-    policy: Option<&core_provider::GovernorPolicy>,
+    governor: Option<&iteron_provider::ProviderGovernorSnapshot>,
+    policy: Option<&iteron_provider::GovernorPolicy>,
 ) {
     rows.push(block::PanelRow::Note(
         "provider governor · live admission state".into(),
@@ -252,15 +252,15 @@ fn append_governor(
 
 fn append_context(
     rows: &mut Vec<block::PanelRow>,
-    budget: core_ctx::ContextBudgetPolicy,
-    ledger: &core_ctx::ContextLedgerSnapshot,
+    budget: iteron_ctx::ContextBudgetPolicy,
+    ledger: &iteron_ctx::ContextLedgerSnapshot,
 ) {
     rows.push(block::PanelRow::Note(
         "context · separated ceilings and last decision ledger".into(),
     ));
     rows.extend([
         kv(
-            "context core",
+            "context iteron",
             &format!(
                 "stable {} · instructions {} · task {} · memory {} · transcript {}",
                 budget.stable_prefix_tokens,
@@ -333,7 +333,7 @@ fn append_context(
 
 fn append_tool_health(
     rows: &mut Vec<block::PanelRow>,
-    processes: Option<core_tools::ProcessHealth>,
+    processes: Option<iteron_tools::ProcessHealth>,
     language_servers: app_server::LanguageServerStatus,
     mcp: &[crate::mcp::McpServerHealth],
 ) {
@@ -439,18 +439,18 @@ fn append_collaboration(
     ]);
 }
 
-fn coverage_label(coverage: core_protocol::PolicyBundleCoverage) -> &'static str {
+fn coverage_label(coverage: iteron_protocol::PolicyBundleCoverage) -> &'static str {
     match coverage {
-        core_protocol::PolicyBundleCoverage::Baseline => "baseline",
-        core_protocol::PolicyBundleCoverage::Partial => "partial",
-        core_protocol::PolicyBundleCoverage::Full => "full",
+        iteron_protocol::PolicyBundleCoverage::Baseline => "baseline",
+        iteron_protocol::PolicyBundleCoverage::Partial => "partial",
+        iteron_protocol::PolicyBundleCoverage::Full => "full",
     }
 }
 
-fn application_label(status: core_protocol::PolicySlotApplicationStatus) -> &'static str {
+fn application_label(status: iteron_protocol::PolicySlotApplicationStatus) -> &'static str {
     match status {
-        core_protocol::PolicySlotApplicationStatus::Baseline => "baseline",
-        core_protocol::PolicySlotApplicationStatus::Applied => "applied",
+        iteron_protocol::PolicySlotApplicationStatus::Baseline => "baseline",
+        iteron_protocol::PolicySlotApplicationStatus::Applied => "applied",
     }
 }
 
@@ -458,21 +458,21 @@ fn millionths(value: u32) -> String {
     format!("{}.{:01}%", value / 10_000, (value % 10_000) / 1_000)
 }
 
-fn circuit_label(circuit: core_provider::RouteCircuitSnapshot) -> String {
+fn circuit_label(circuit: iteron_provider::RouteCircuitSnapshot) -> String {
     match circuit {
-        core_provider::RouteCircuitSnapshot::Closed { failures } => {
+        iteron_provider::RouteCircuitSnapshot::Closed { failures } => {
             format!("closed ({failures} failures)")
         }
-        core_provider::RouteCircuitSnapshot::Open { remaining_ms } => {
+        iteron_provider::RouteCircuitSnapshot::Open { remaining_ms } => {
             format!("open ({remaining_ms}ms left)")
         }
-        core_provider::RouteCircuitSnapshot::HalfOpen { successes, probes } => {
+        iteron_provider::RouteCircuitSnapshot::HalfOpen { successes, probes } => {
             format!("half-open ({successes}/{probes})")
         }
     }
 }
 
-fn failover_label(policy: &core_provider::GovernorPolicy) -> String {
+fn failover_label(policy: &iteron_provider::GovernorPolicy) -> String {
     if policy.failover.is_empty() {
         return "none".into();
     }
@@ -481,8 +481,8 @@ fn failover_label(policy: &core_provider::GovernorPolicy) -> String {
         .iter()
         .map(|rule| {
             let point = match rule.point {
-                core_provider::FailurePoint::PreDispatch => "pre-dispatch",
-                core_provider::FailurePoint::ProvenTerminal => "proven-terminal",
+                iteron_provider::FailurePoint::PreDispatch => "pre-dispatch",
+                iteron_provider::FailurePoint::ProvenTerminal => "proven-terminal",
             };
             format!("{}@{point}", rule.class.label())
         })

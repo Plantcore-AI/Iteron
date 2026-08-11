@@ -1,7 +1,7 @@
 use super::*;
 use crate::edit::MAX_NORMALIZED_LINES;
 use crate::{Memo, Registry};
-use core_protocol::{Capability, Purity, ToolUse};
+use iteron_protocol::{Capability, Purity, ToolUse};
 use serde_json::{Value, json};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};

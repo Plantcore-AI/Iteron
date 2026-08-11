@@ -3,7 +3,7 @@ use crate::runtime_tunables::extension_facts::value::{en, int};
 use crate::runtime_tunables::extension_facts::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport,
 };
-use core_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,
@@ -195,7 +195,7 @@ pub(super) fn apply(
             input
                 .run_limits
                 .max_agent_calls()
-                .min(core_workflow::MAX_TASK_ATTEMPTS),
+                .min(iteron_workflow::MAX_TASK_ATTEMPTS),
             "task_retry_reassignment_policy",
         )?),
     )?;

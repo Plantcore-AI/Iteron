@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::Capability;
+use iteron_protocol::Capability;
 
 fn ceiling() -> CapabilitySet {
     CapabilitySet::from_iter_capabilities([Capability::ReadOnly, Capability::CodeExecuting])

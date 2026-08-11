@@ -5,13 +5,13 @@
   },
   "payload": {
     "schema_version": 3,
-    "registry_id": "core-tunables",
+    "registry_id": "iteron-tunables",
     "registry_revision": 7,
-    "canonicalization": "core-tunables-json-v3",
+    "canonicalization": "iteron-tunables-json-v3",
     "family_count": 160,
     "scalar_catalogs": [
       {
-        "id": "core://tunables/catalogs/providers-v1",
+        "id": "iteron://tunables/catalogs/providers-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -20,7 +20,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/models-v1",
+        "id": "iteron://tunables/catalogs/models-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -29,7 +29,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/provider-reasoning-levels-v1",
+        "id": "iteron://tunables/catalogs/provider-reasoning-levels-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -38,7 +38,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/token-estimators-v1",
+        "id": "iteron://tunables/catalogs/token-estimators-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -47,7 +47,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/tool-capabilities-v1",
+        "id": "iteron://tunables/catalogs/tool-capabilities-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -56,7 +56,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/model-routes-v1",
+        "id": "iteron://tunables/catalogs/model-routes-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -65,7 +65,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/provider-service-tiers-v1",
+        "id": "iteron://tunables/catalogs/provider-service-tiers-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -74,7 +74,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/agent-roles-v1",
+        "id": "iteron://tunables/catalogs/agent-roles-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -83,7 +83,7 @@
         }
       },
       {
-        "id": "core://tunables/catalogs/binary-inspectors-v1",
+        "id": "iteron://tunables/catalogs/binary-inspectors-v1",
         "value_domain": {
           "type": "text",
           "min_bytes": 1,
@@ -101,7 +101,7 @@
         "schema_version": 2,
         "ordinal": 1,
         "id": "provider",
-        "semantic_key": "core.control.provider.route_selection",
+        "semantic_key": "iteron.control.provider.route_selection",
         "aliases": [
           "provider_id"
         ],
@@ -144,7 +144,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_PROVIDER",
+              "locator": "ITERON_PROVIDER",
               "merge": "override"
             },
             {
@@ -162,14 +162,14 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider/value-v1",
+          "schema_id": "iteron://tunables/families/provider/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
             "domain": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/providers-v1"
+              "catalog_id": "iteron://tunables/catalogs/providers-v1"
             }
           },
           "rules": [
@@ -181,7 +181,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -212,7 +212,7 @@
         "schema_version": 2,
         "ordinal": 2,
         "id": "model",
-        "semantic_key": "core.control.provider.model_selection",
+        "semantic_key": "iteron.control.provider.model_selection",
         "aliases": [
           "model_id"
         ],
@@ -256,7 +256,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_MODEL",
+              "locator": "ITERON_MODEL",
               "merge": "override"
             },
             {
@@ -268,7 +268,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json",
+              "locator": ".iteron/config.json",
               "merge": "route_suggestion"
             },
             {
@@ -280,14 +280,14 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/model/value-v1",
+          "schema_id": "iteron://tunables/families/model/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
             "domain": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/models-v1"
+              "catalog_id": "iteron://tunables/catalogs/models-v1"
             }
           },
           "rules": [
@@ -299,7 +299,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -330,7 +330,7 @@
         "schema_version": 2,
         "ordinal": 3,
         "id": "base_url",
-        "semantic_key": "core.control.provider.api_endpoint",
+        "semantic_key": "iteron.control.provider.api_endpoint",
         "aliases": [],
         "domain": "provider",
         "summary": "Override the provider API root.",
@@ -353,7 +353,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/base_url-v1"
+            "resolver_id": "iteron://tunables/resolvers/base_url-v1"
           },
           "requirement": "optional",
           "value": null
@@ -369,7 +369,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_BASE_URL",
+              "locator": "ITERON_BASE_URL",
               "merge": "override"
             },
             {
@@ -381,7 +381,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/base_url/value-v1",
+          "schema_id": "iteron://tunables/families/base_url/value-v1",
           "kind": "string",
           "domain": {
             "type": "scalar",
@@ -431,7 +431,7 @@
         "schema_version": 2,
         "ordinal": 4,
         "id": "effort",
-        "semantic_key": "core.control.reasoning.effort_tier",
+        "semantic_key": "iteron.control.reasoning.effort_tier",
         "aliases": [
           "reasoning_effort"
         ],
@@ -475,7 +475,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_EFFORT",
+              "locator": "ITERON_EFFORT",
               "merge": "override"
             },
             {
@@ -493,7 +493,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/effort/value-v1",
+          "schema_id": "iteron://tunables/families/effort/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -519,7 +519,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -550,7 +550,7 @@
         "schema_version": 2,
         "ordinal": 5,
         "id": "max_turns",
-        "semantic_key": "core.control.budget.turn_ceiling",
+        "semantic_key": "iteron.control.budget.turn_ceiling",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound provider attempts for one run.",
@@ -591,7 +591,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_MAX_TURNS",
+              "locator": "ITERON_MAX_TURNS",
               "merge": "override"
             },
             {
@@ -603,7 +603,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json",
+              "locator": ".iteron/config.json",
               "merge": "tighten_maximum"
             },
             {
@@ -615,7 +615,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/max_turns/value-v1",
+          "schema_id": "iteron://tunables/families/max_turns/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -665,7 +665,7 @@
         "schema_version": 2,
         "ordinal": 6,
         "id": "max_usd",
-        "semantic_key": "core.control.budget.cost_ceiling_usd",
+        "semantic_key": "iteron.control.budget.cost_ceiling_usd",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound signed monetary spend for one run.",
@@ -694,7 +694,7 @@
           "kind": "dynamic",
           "resolver": {
             "type": "operator",
-            "input_id": "core://tunables/operator-inputs/max_usd-v1"
+            "input_id": "iteron://tunables/operator-inputs/max_usd-v1"
           },
           "requirement": "required",
           "value": null
@@ -710,7 +710,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_MAX_USD",
+              "locator": "ITERON_MAX_USD",
               "merge": "override"
             },
             {
@@ -722,13 +722,13 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json",
+              "locator": ".iteron/config.json",
               "merge": "tighten_maximum"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/max_usd/value-v1",
+          "schema_id": "iteron://tunables/families/max_usd/value-v1",
           "kind": "decimal",
           "domain": {
             "type": "scalar",
@@ -785,7 +785,7 @@
         "schema_version": 2,
         "ordinal": 7,
         "id": "max_tokens",
-        "semantic_key": "core.control.budget.token_ceiling",
+        "semantic_key": "iteron.control.budget.token_ceiling",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound aggregate token use for one run.",
@@ -811,7 +811,7 @@
           "kind": "dynamic",
           "resolver": {
             "type": "operator",
-            "input_id": "core://tunables/operator-inputs/max_tokens-v1"
+            "input_id": "iteron://tunables/operator-inputs/max_tokens-v1"
           },
           "requirement": "required",
           "value": null
@@ -827,7 +827,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/max_tokens/value-v1",
+          "schema_id": "iteron://tunables/families/max_tokens/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -877,7 +877,7 @@
         "schema_version": 2,
         "ordinal": 8,
         "id": "max_wall_secs",
-        "semantic_key": "core.control.budget.wall_time_ceiling",
+        "semantic_key": "iteron.control.budget.wall_time_ceiling",
         "aliases": [
           "wall_timeout"
         ],
@@ -926,7 +926,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json",
+              "locator": ".iteron/config.json",
               "merge": "tighten_maximum"
             },
             {
@@ -938,7 +938,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/max_wall_secs/value-v1",
+          "schema_id": "iteron://tunables/families/max_wall_secs/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -988,7 +988,7 @@
         "schema_version": 2,
         "ordinal": 9,
         "id": "allow_code",
-        "semantic_key": "core.control.governance.code_execution_admission",
+        "semantic_key": "iteron.control.governance.code_execution_admission",
         "aliases": [],
         "domain": "governance",
         "summary": "Admit repository code execution when the operator allows it.",
@@ -1035,7 +1035,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json",
+              "locator": ".iteron/config.json",
               "merge": "tighten_boolean_grant"
             },
             {
@@ -1047,7 +1047,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/allow_code/value-v1",
+          "schema_id": "iteron://tunables/families/allow_code/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -1094,7 +1094,7 @@
         "schema_version": 2,
         "ordinal": 10,
         "id": "permission_mode",
-        "semantic_key": "core.control.governance.permission_posture",
+        "semantic_key": "iteron.control.governance.permission_posture",
         "aliases": [],
         "domain": "governance",
         "summary": "Select the operator permission posture.",
@@ -1141,7 +1141,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/permission_mode/value-v1",
+          "schema_id": "iteron://tunables/families/permission_mode/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -1195,7 +1195,7 @@
         "schema_version": 2,
         "ordinal": 11,
         "id": "permission_rules",
-        "semantic_key": "core.control.governance.capability_rules",
+        "semantic_key": "iteron.control.governance.capability_rules",
         "aliases": [],
         "domain": "governance",
         "summary": "Set per-capability allow, ask, or deny rules.",
@@ -1218,7 +1218,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/permission_rules-v1"
+            "resolver_id": "iteron://tunables/resolvers/permission_rules-v1"
           },
           "requirement": "optional",
           "value": null
@@ -1234,7 +1234,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/permission_rules/value-v1",
+          "schema_id": "iteron://tunables/families/permission_rules/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -1298,7 +1298,7 @@
         "schema_version": 2,
         "ordinal": 12,
         "id": "bypass_permissions",
-        "semantic_key": "core.control.governance.permission_prompt_bypass",
+        "semantic_key": "iteron.control.governance.permission_prompt_bypass",
         "aliases": [],
         "domain": "governance",
         "summary": "Explicitly bypass interactive permission prompts.",
@@ -1345,7 +1345,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/bypass_permissions/value-v1",
+          "schema_id": "iteron://tunables/families/bypass_permissions/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -1392,7 +1392,7 @@
         "schema_version": 2,
         "ordinal": 13,
         "id": "compaction_trigger",
-        "semantic_key": "core.control.context.compaction_activation",
+        "semantic_key": "iteron.control.context.compaction_activation",
         "aliases": [],
         "domain": "context",
         "summary": "Choose when context compaction starts.",
@@ -1416,7 +1416,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/compaction_trigger-v1"
+            "resolver_id": "iteron://tunables/resolvers/compaction_trigger-v1"
           },
           "requirement": "optional",
           "value": {
@@ -1467,7 +1467,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/compaction_trigger/value-v1",
+          "schema_id": "iteron://tunables/families/compaction_trigger/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -1555,7 +1555,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -1586,7 +1586,7 @@
         "schema_version": 2,
         "ordinal": 14,
         "id": "verify_command",
-        "semantic_key": "core.control.verification.command_selection",
+        "semantic_key": "iteron.control.verification.command_selection",
         "aliases": [
           "verification_command"
         ],
@@ -1614,7 +1614,7 @@
           "kind": "dynamic",
           "resolver": {
             "type": "operator",
-            "input_id": "core://tunables/operator-inputs/verify_command-v1"
+            "input_id": "iteron://tunables/operator-inputs/verify_command-v1"
           },
           "requirement": "required",
           "value": null
@@ -1630,7 +1630,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/verify_command/value-v1",
+          "schema_id": "iteron://tunables/families/verify_command/value-v1",
           "kind": "string",
           "domain": {
             "type": "scalar",
@@ -1690,7 +1690,7 @@
         "schema_version": 2,
         "ordinal": 15,
         "id": "retry_backoff_base",
-        "semantic_key": "core.control.runtime.provider_retry_initial_delay",
+        "semantic_key": "iteron.control.runtime.provider_retry_initial_delay",
         "aliases": [],
         "domain": "runtime",
         "summary": "Set the initial provider retry delay.",
@@ -1727,7 +1727,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_BASE_MS",
+              "locator": "ITERON_RETRY_BASE_MS",
               "merge": "override"
             },
             {
@@ -1739,13 +1739,13 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default",
+              "locator": "iteron_sched::BackoffPolicy::default",
               "merge": "override"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/retry_backoff_base/value-v1",
+          "schema_id": "iteron://tunables/families/retry_backoff_base/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -1795,7 +1795,7 @@
         "schema_version": 2,
         "ordinal": 16,
         "id": "retry_backoff_cap",
-        "semantic_key": "core.control.runtime.provider_retry_maximum_delay",
+        "semantic_key": "iteron.control.runtime.provider_retry_maximum_delay",
         "aliases": [],
         "domain": "runtime",
         "summary": "Cap provider retry delay.",
@@ -1832,7 +1832,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_CAP_MS",
+              "locator": "ITERON_RETRY_CAP_MS",
               "merge": "override"
             },
             {
@@ -1844,13 +1844,13 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default",
+              "locator": "iteron_sched::BackoffPolicy::default",
               "merge": "override"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/retry_backoff_cap/value-v1",
+          "schema_id": "iteron://tunables/families/retry_backoff_cap/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -1900,7 +1900,7 @@
         "schema_version": 2,
         "ordinal": 17,
         "id": "retry_max_attempts",
-        "semantic_key": "core.control.runtime.provider_retry_attempt_ceiling",
+        "semantic_key": "iteron.control.runtime.provider_retry_attempt_ceiling",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound staged provider retries.",
@@ -1937,7 +1937,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_MAX_ATTEMPTS",
+              "locator": "ITERON_RETRY_MAX_ATTEMPTS",
               "merge": "override"
             },
             {
@@ -1949,13 +1949,13 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default",
+              "locator": "iteron_sched::BackoffPolicy::default",
               "merge": "override"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/retry_max_attempts/value-v1",
+          "schema_id": "iteron://tunables/families/retry_max_attempts/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -2005,7 +2005,7 @@
         "schema_version": 2,
         "ordinal": 18,
         "id": "egress_allow",
-        "semantic_key": "core.control.governance.egress_allowlist",
+        "semantic_key": "iteron.control.governance.egress_allowlist",
         "aliases": [],
         "domain": "governance",
         "summary": "Declare an egress allow policy surface.",
@@ -2046,7 +2046,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/egress_allow/value-v1",
+          "schema_id": "iteron://tunables/families/egress_allow/value-v1",
           "kind": "list",
           "domain": {
             "type": "list",
@@ -2099,7 +2099,7 @@
         "schema_version": 2,
         "ordinal": 19,
         "id": "request_output_cap",
-        "semantic_key": "core.control.provider.response_token_ceiling",
+        "semantic_key": "iteron.control.provider.response_token_ceiling",
         "aliases": [],
         "domain": "provider",
         "summary": "Reserve and cap provider response tokens.",
@@ -2160,7 +2160,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/request_output_cap/value-v1",
+          "schema_id": "iteron://tunables/families/request_output_cap/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -2180,7 +2180,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -2221,7 +2221,7 @@
         "schema_version": 2,
         "ordinal": 20,
         "id": "effort_reasoning_map",
-        "semantic_key": "core.control.reasoning.effort_to_reasoning",
+        "semantic_key": "iteron.control.reasoning.effort_to_reasoning",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Map effort tiers onto provider reasoning controls.",
@@ -2245,7 +2245,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/effort_reasoning_map-v1"
+            "resolver_id": "iteron://tunables/resolvers/effort_reasoning_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -2261,7 +2261,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/effort_reasoning_map/value-v1",
+          "schema_id": "iteron://tunables/families/effort_reasoning_map/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -2284,7 +2284,7 @@
               "domain": {
                 "type": "enum",
                 "values": [],
-                "catalog_id": "core://tunables/catalogs/provider-reasoning-levels-v1"
+                "catalog_id": "iteron://tunables/catalogs/provider-reasoning-levels-v1"
               }
             }
           },
@@ -2297,7 +2297,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -2328,7 +2328,7 @@
         "schema_version": 2,
         "ordinal": 21,
         "id": "thinking_map",
-        "semantic_key": "core.control.reasoning.effort_to_thinking_budget",
+        "semantic_key": "iteron.control.reasoning.effort_to_thinking_budget",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Map effort onto explicit thinking budgets.",
@@ -2352,7 +2352,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/thinking_map-v1"
+            "resolver_id": "iteron://tunables/resolvers/thinking_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -2368,7 +2368,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/thinking_map/value-v1",
+          "schema_id": "iteron://tunables/families/thinking_map/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -2405,7 +2405,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -2446,7 +2446,7 @@
         "schema_version": 2,
         "ordinal": 22,
         "id": "orchestration_map",
-        "semantic_key": "core.control.orchestration.effort_to_topology",
+        "semantic_key": "iteron.control.orchestration.effort_to_topology",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Map effort onto orchestration eligibility.",
@@ -2470,7 +2470,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/orchestration_map-v1"
+            "resolver_id": "iteron://tunables/resolvers/orchestration_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -2486,7 +2486,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/orchestration_map/value-v1",
+          "schema_id": "iteron://tunables/families/orchestration_map/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -2555,7 +2555,7 @@
         "schema_version": 2,
         "ordinal": 23,
         "id": "prompt_cache",
-        "semantic_key": "core.control.provider.prompt_cache_emission",
+        "semantic_key": "iteron.control.provider.prompt_cache_emission",
         "aliases": [],
         "domain": "provider",
         "summary": "Enable or disable prompt-cache breakpoint emission for one built provider route.",
@@ -2591,19 +2591,19 @@
             {
               "kind": "rust_builder",
               "trust": "operator",
-              "locator": "core_provider::ProviderInstance::with_prompt_cache",
+              "locator": "iteron_provider::ProviderInstance::with_prompt_cache",
               "merge": "override"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_provider::ProviderInstance::new",
+              "locator": "iteron_provider::ProviderInstance::new",
               "merge": "override"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/prompt_cache/value-v1",
+          "schema_id": "iteron://tunables/families/prompt_cache/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -2620,7 +2620,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -2651,7 +2651,7 @@
         "schema_version": 2,
         "ordinal": 24,
         "id": "compaction_adaptive",
-        "semantic_key": "core.control.context.compaction_adaptation",
+        "semantic_key": "iteron.control.context.compaction_adaptation",
         "aliases": [],
         "domain": "context",
         "summary": "Adapt compaction to model and transcript state.",
@@ -2674,7 +2674,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/compaction_adaptive-v1"
+            "resolver_id": "iteron://tunables/resolvers/compaction_adaptive-v1"
           },
           "requirement": "optional",
           "value": {
@@ -2718,7 +2718,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/compaction_adaptive/value-v1",
+          "schema_id": "iteron://tunables/families/compaction_adaptive/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -2811,7 +2811,7 @@
         "schema_version": 2,
         "ordinal": 25,
         "id": "compaction_keep_recent",
-        "semantic_key": "core.control.context.recent_turn_retention",
+        "semantic_key": "iteron.control.context.recent_turn_retention",
         "aliases": [],
         "domain": "context",
         "summary": "Choose the verbatim recent-turn retention window.",
@@ -2834,7 +2834,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/compaction_keep_recent-v1"
+            "resolver_id": "iteron://tunables/resolvers/compaction_keep_recent-v1"
           },
           "requirement": "optional",
           "value": {
@@ -2853,7 +2853,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/compaction_keep_recent/value-v1",
+          "schema_id": "iteron://tunables/families/compaction_keep_recent/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -2903,7 +2903,7 @@
         "schema_version": 2,
         "ordinal": 26,
         "id": "token_estimator",
-        "semantic_key": "core.control.context.token_estimation",
+        "semantic_key": "iteron.control.context.token_estimation",
         "aliases": [],
         "domain": "context",
         "summary": "Estimate tokens for admission and compaction.",
@@ -2927,7 +2927,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/token_estimator-v1"
+            "resolver_id": "iteron://tunables/resolvers/token_estimator-v1"
           },
           "requirement": "optional",
           "value": null
@@ -2943,7 +2943,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/token_estimator/value-v1",
+          "schema_id": "iteron://tunables/families/token_estimator/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -2956,7 +2956,7 @@
                   "domain": {
                     "type": "enum",
                     "values": [],
-                    "catalog_id": "core://tunables/catalogs/token-estimators-v1"
+                    "catalog_id": "iteron://tunables/catalogs/token-estimators-v1"
                   }
                 }
               },
@@ -3011,7 +3011,7 @@
         "schema_version": 2,
         "ordinal": 27,
         "id": "summary_profile",
-        "semantic_key": "core.control.context.summary_shape",
+        "semantic_key": "iteron.control.context.summary_shape",
         "aliases": [],
         "domain": "context",
         "summary": "Choose the compaction summary shape and budget.",
@@ -3037,7 +3037,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/summary_profile-v1"
+            "resolver_id": "iteron://tunables/resolvers/summary_profile-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3053,7 +3053,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/summary_profile/value-v1",
+          "schema_id": "iteron://tunables/families/summary_profile/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -3122,7 +3122,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -3153,7 +3153,7 @@
         "schema_version": 2,
         "ordinal": 28,
         "id": "compaction_failure",
-        "semantic_key": "core.control.context.compaction_failure_handling",
+        "semantic_key": "iteron.control.context.compaction_failure_handling",
         "aliases": [],
         "domain": "context",
         "summary": "Choose bounded behavior when compaction fails.",
@@ -3176,7 +3176,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/compaction_failure-v1"
+            "resolver_id": "iteron://tunables/resolvers/compaction_failure-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3192,7 +3192,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/compaction_failure/value-v1",
+          "schema_id": "iteron://tunables/families/compaction_failure/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -3245,7 +3245,7 @@
         "schema_version": 2,
         "ordinal": 29,
         "id": "instruction_discovery_render",
-        "semantic_key": "core.control.context.instruction_discovery_rendering",
+        "semantic_key": "iteron.control.context.instruction_discovery_rendering",
         "aliases": [],
         "domain": "context",
         "summary": "Discover and render repository instruction files.",
@@ -3269,7 +3269,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/instruction_discovery_render-v1"
+            "resolver_id": "iteron://tunables/resolvers/instruction_discovery_render-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3285,7 +3285,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/instruction_discovery_render/value-v1",
+          "schema_id": "iteron://tunables/families/instruction_discovery_render/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -3389,7 +3389,7 @@
         "schema_version": 2,
         "ordinal": 30,
         "id": "memory_enable",
-        "semantic_key": "core.control.memory.durable_memory_admission",
+        "semantic_key": "iteron.control.memory.durable_memory_admission",
         "aliases": [],
         "domain": "memory",
         "summary": "Enable durable memory retrieval and writes.",
@@ -3431,7 +3431,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/memory_enable/value-v1",
+          "schema_id": "iteron://tunables/families/memory_enable/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -3478,7 +3478,7 @@
         "schema_version": 2,
         "ordinal": 31,
         "id": "memory_budgets",
-        "semantic_key": "core.control.memory.retrieval_render_write_budgets",
+        "semantic_key": "iteron.control.memory.retrieval_render_write_budgets",
         "aliases": [],
         "domain": "memory",
         "summary": "Bound memory retrieval, render, and write work.",
@@ -3503,7 +3503,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/memory_budgets-v1"
+            "resolver_id": "iteron://tunables/resolvers/memory_budgets-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3519,7 +3519,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/memory_budgets/value-v1",
+          "schema_id": "iteron://tunables/families/memory_budgets/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -3627,7 +3627,7 @@
         "schema_version": 2,
         "ordinal": 32,
         "id": "bm25",
-        "semantic_key": "core.control.context.lexical_retrieval_scoring",
+        "semantic_key": "iteron.control.context.lexical_retrieval_scoring",
         "aliases": [],
         "domain": "context",
         "summary": "Tune lexical retrieval scoring.",
@@ -3650,7 +3650,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/bm25-v1"
+            "resolver_id": "iteron://tunables/resolvers/bm25-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3666,7 +3666,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/bm25/value-v1",
+          "schema_id": "iteron://tunables/families/bm25/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -3726,7 +3726,7 @@
         "schema_version": 2,
         "ordinal": 33,
         "id": "skill_listing_budget",
-        "semantic_key": "core.control.context.skill_catalog_render_budget",
+        "semantic_key": "iteron.control.context.skill_catalog_render_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound skill catalog text exposed to the model.",
@@ -3750,7 +3750,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/skill_listing_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/skill_listing_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3766,7 +3766,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/skill_listing_budget/value-v1",
+          "schema_id": "iteron://tunables/families/skill_listing_budget/value-v1",
           "kind": "bytes",
           "domain": {
             "type": "scalar",
@@ -3816,7 +3816,7 @@
         "schema_version": 2,
         "ordinal": 34,
         "id": "max_consecutive_tool_errors",
-        "semantic_key": "core.control.budget.consecutive_tool_error_ceiling",
+        "semantic_key": "iteron.control.budget.consecutive_tool_error_ceiling",
         "aliases": [],
         "domain": "budget",
         "summary": "Stop a run after repeated tool failures.",
@@ -3840,7 +3840,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/max_consecutive_tool_errors-v1"
+            "resolver_id": "iteron://tunables/resolvers/max_consecutive_tool_errors-v1"
           },
           "requirement": "optional",
           "value": {
@@ -3865,7 +3865,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/max_consecutive_tool_errors/value-v1",
+          "schema_id": "iteron://tunables/families/max_consecutive_tool_errors/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -3915,7 +3915,7 @@
         "schema_version": 2,
         "ordinal": 35,
         "id": "pure_overlap",
-        "semantic_key": "core.control.orchestration.pure_tool_overlap",
+        "semantic_key": "iteron.control.orchestration.pure_tool_overlap",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Allow eligible pure tools to overlap inference.",
@@ -3939,7 +3939,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/pure_overlap-v1"
+            "resolver_id": "iteron://tunables/resolvers/pure_overlap-v1"
           },
           "requirement": "optional",
           "value": null
@@ -3955,7 +3955,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/pure_overlap/value-v1",
+          "schema_id": "iteron://tunables/families/pure_overlap/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -4002,7 +4002,7 @@
         "schema_version": 2,
         "ordinal": 36,
         "id": "pure_concurrency",
-        "semantic_key": "core.control.orchestration.pure_tool_concurrency",
+        "semantic_key": "iteron.control.orchestration.pure_tool_concurrency",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound concurrent pure tool calls.",
@@ -4026,7 +4026,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/pure_concurrency-v1"
+            "resolver_id": "iteron://tunables/resolvers/pure_concurrency-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4042,7 +4042,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/pure_concurrency/value-v1",
+          "schema_id": "iteron://tunables/families/pure_concurrency/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -4092,7 +4092,7 @@
         "schema_version": 2,
         "ordinal": 37,
         "id": "failed_action_dedup",
-        "semantic_key": "core.control.tooling.failed_action_suppression",
+        "semantic_key": "iteron.control.tooling.failed_action_suppression",
         "aliases": [],
         "domain": "tooling",
         "summary": "Suppress repeated identical failed actions.",
@@ -4115,7 +4115,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/failed_action_dedup-v1"
+            "resolver_id": "iteron://tunables/resolvers/failed_action_dedup-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4131,7 +4131,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/failed_action_dedup/value-v1",
+          "schema_id": "iteron://tunables/families/failed_action_dedup/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4216,7 +4216,7 @@
         "schema_version": 2,
         "ordinal": 38,
         "id": "pure_memo_cache",
-        "semantic_key": "core.control.tooling.deterministic_result_memo",
+        "semantic_key": "iteron.control.tooling.deterministic_result_memo",
         "aliases": [],
         "domain": "tooling",
         "summary": "Memoize deterministic pure tool results.",
@@ -4239,7 +4239,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/pure_memo_cache-v1"
+            "resolver_id": "iteron://tunables/resolvers/pure_memo_cache-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4255,7 +4255,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/pure_memo_cache/value-v1",
+          "schema_id": "iteron://tunables/families/pure_memo_cache/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4338,7 +4338,7 @@
         "schema_version": 2,
         "ordinal": 39,
         "id": "shell_timeout_output",
-        "semantic_key": "core.control.tooling.shell_execution_envelope",
+        "semantic_key": "iteron.control.tooling.shell_execution_envelope",
         "aliases": [
           "shell_execution_envelope"
         ],
@@ -4404,7 +4404,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/shell_timeout_output/value-v1",
+          "schema_id": "iteron://tunables/families/shell_timeout_output/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4510,7 +4510,7 @@
         "schema_version": 2,
         "ordinal": 40,
         "id": "read_file_limits",
-        "semantic_key": "core.control.tooling.file_read_envelope",
+        "semantic_key": "iteron.control.tooling.file_read_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound file-read bytes and line ranges.",
@@ -4535,7 +4535,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/read_file_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/read_file_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4551,7 +4551,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/read_file_limits/value-v1",
+          "schema_id": "iteron://tunables/families/read_file_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4642,7 +4642,7 @@
         "schema_version": 2,
         "ordinal": 41,
         "id": "list_dir_limits",
-        "semantic_key": "core.control.tooling.directory_listing_envelope",
+        "semantic_key": "iteron.control.tooling.directory_listing_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound directory listing work and output.",
@@ -4667,7 +4667,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/list_dir_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/list_dir_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4683,7 +4683,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/list_dir_limits/value-v1",
+          "schema_id": "iteron://tunables/families/list_dir_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4769,7 +4769,7 @@
         "schema_version": 2,
         "ordinal": 42,
         "id": "glob_limits",
-        "semantic_key": "core.control.tooling.glob_traversal_envelope",
+        "semantic_key": "iteron.control.tooling.glob_traversal_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound glob traversal and results.",
@@ -4794,7 +4794,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/glob_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/glob_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4810,7 +4810,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/glob_limits/value-v1",
+          "schema_id": "iteron://tunables/families/glob_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -4896,7 +4896,7 @@
         "schema_version": 2,
         "ordinal": 43,
         "id": "grep_limits",
-        "semantic_key": "core.control.tooling.text_search_envelope",
+        "semantic_key": "iteron.control.tooling.text_search_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound text search traversal and output.",
@@ -4921,7 +4921,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/grep_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/grep_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -4937,7 +4937,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/grep_limits/value-v1",
+          "schema_id": "iteron://tunables/families/grep_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -5028,7 +5028,7 @@
         "schema_version": 2,
         "ordinal": 44,
         "id": "repo_map",
-        "semantic_key": "core.control.context.repository_map_envelope",
+        "semantic_key": "iteron.control.context.repository_map_envelope",
         "aliases": [],
         "domain": "context",
         "summary": "Bound and shape repository-map construction.",
@@ -5053,7 +5053,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/repo_map-v1"
+            "resolver_id": "iteron://tunables/resolvers/repo_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5069,7 +5069,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/repo_map/value-v1",
+          "schema_id": "iteron://tunables/families/repo_map/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -5155,7 +5155,7 @@
         "schema_version": 2,
         "ordinal": 45,
         "id": "git_limits",
-        "semantic_key": "core.control.tooling.git_observation_envelope",
+        "semantic_key": "iteron.control.tooling.git_observation_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound Git observation and diff output.",
@@ -5180,7 +5180,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/git_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/git_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5196,7 +5196,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/git_limits/value-v1",
+          "schema_id": "iteron://tunables/families/git_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -5305,7 +5305,7 @@
         "schema_version": 2,
         "ordinal": 46,
         "id": "web_fetch_limits",
-        "semantic_key": "core.control.tooling.web_fetch_envelope",
+        "semantic_key": "iteron.control.tooling.web_fetch_envelope",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound fetched bytes, redirects, and elapsed time.",
@@ -5330,7 +5330,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/web_fetch_limits-v1"
+            "resolver_id": "iteron://tunables/resolvers/web_fetch_limits-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5346,7 +5346,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/web_fetch_limits/value-v1",
+          "schema_id": "iteron://tunables/families/web_fetch_limits/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -5455,7 +5455,7 @@
         "schema_version": 2,
         "ordinal": 47,
         "id": "web_search_cap",
-        "semantic_key": "core.control.tooling.web_search_result_ceiling",
+        "semantic_key": "iteron.control.tooling.web_search_result_ceiling",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound web-search results admitted to context.",
@@ -5479,7 +5479,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/web_search_cap-v1"
+            "resolver_id": "iteron://tunables/resolvers/web_search_cap-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5495,7 +5495,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/web_search_cap/value-v1",
+          "schema_id": "iteron://tunables/families/web_search_cap/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -5545,7 +5545,7 @@
         "schema_version": 2,
         "ordinal": 48,
         "id": "verifier_attempts",
-        "semantic_key": "core.control.verification.repair_attempt_ceiling",
+        "semantic_key": "iteron.control.verification.repair_attempt_ceiling",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound verification repair attempts.",
@@ -5569,7 +5569,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/verifier_attempts-v1"
+            "resolver_id": "iteron://tunables/resolvers/verifier_attempts-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5585,7 +5585,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/verifier_attempts/value-v1",
+          "schema_id": "iteron://tunables/families/verifier_attempts/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -5635,7 +5635,7 @@
         "schema_version": 2,
         "ordinal": 49,
         "id": "verifier_feedback_tails",
-        "semantic_key": "core.control.verification.failure_feedback_tail",
+        "semantic_key": "iteron.control.verification.failure_feedback_tail",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound failure feedback returned to the model.",
@@ -5660,7 +5660,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/verifier_feedback_tails-v1"
+            "resolver_id": "iteron://tunables/resolvers/verifier_feedback_tails-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5676,7 +5676,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/verifier_feedback_tails/value-v1",
+          "schema_id": "iteron://tunables/families/verifier_feedback_tails/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -5770,7 +5770,7 @@
         "schema_version": 2,
         "ordinal": 50,
         "id": "verifier_timeout",
-        "semantic_key": "core.control.verification.command_deadline",
+        "semantic_key": "iteron.control.verification.command_deadline",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound each verification command.",
@@ -5794,7 +5794,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/verifier_timeout-v1"
+            "resolver_id": "iteron://tunables/resolvers/verifier_timeout-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5810,7 +5810,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/verifier_timeout/value-v1",
+          "schema_id": "iteron://tunables/families/verifier_timeout/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -5860,7 +5860,7 @@
         "schema_version": 2,
         "ordinal": 51,
         "id": "route_topology",
-        "semantic_key": "core.control.orchestration.execution_topology",
+        "semantic_key": "iteron.control.orchestration.execution_topology",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose direct versus orchestrated run topology.",
@@ -5884,7 +5884,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/route_topology-v1"
+            "resolver_id": "iteron://tunables/resolvers/route_topology-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5900,7 +5900,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/route_topology/value-v1",
+          "schema_id": "iteron://tunables/families/route_topology/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -5952,7 +5952,7 @@
         "schema_version": 2,
         "ordinal": 52,
         "id": "decomposition_profile",
-        "semantic_key": "core.control.orchestration.task_decomposition",
+        "semantic_key": "iteron.control.orchestration.task_decomposition",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose task decomposition shape.",
@@ -5977,7 +5977,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/decomposition_profile-v1"
+            "resolver_id": "iteron://tunables/resolvers/decomposition_profile-v1"
           },
           "requirement": "optional",
           "value": null
@@ -5993,7 +5993,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/decomposition_profile/value-v1",
+          "schema_id": "iteron://tunables/families/decomposition_profile/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -6065,7 +6065,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -6096,7 +6096,7 @@
         "schema_version": 2,
         "ordinal": 53,
         "id": "fan_breadth",
-        "semantic_key": "core.control.orchestration.investigator_fanout",
+        "semantic_key": "iteron.control.orchestration.investigator_fanout",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound investigator fan-out breadth.",
@@ -6120,7 +6120,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/fan_breadth-v1"
+            "resolver_id": "iteron://tunables/resolvers/fan_breadth-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6136,7 +6136,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/fan_breadth/value-v1",
+          "schema_id": "iteron://tunables/families/fan_breadth/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -6186,7 +6186,7 @@
         "schema_version": 2,
         "ordinal": 54,
         "id": "admission",
-        "semantic_key": "core.control.orchestration.child_admission",
+        "semantic_key": "iteron.control.orchestration.child_admission",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Admit bounded child work under parent ceilings.",
@@ -6210,7 +6210,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/admission-v1"
+            "resolver_id": "iteron://tunables/resolvers/admission-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6226,7 +6226,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/admission/value-v1",
+          "schema_id": "iteron://tunables/families/admission/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -6319,7 +6319,7 @@
         "schema_version": 2,
         "ordinal": 55,
         "id": "writer_fan_turn_split",
-        "semantic_key": "core.control.orchestration.writer_investigator_turn_allocation",
+        "semantic_key": "iteron.control.orchestration.writer_investigator_turn_allocation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split turns between investigators and the writer.",
@@ -6343,7 +6343,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/writer_fan_turn_split-v1"
+            "resolver_id": "iteron://tunables/resolvers/writer_fan_turn_split-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6359,7 +6359,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/writer_fan_turn_split/value-v1",
+          "schema_id": "iteron://tunables/families/writer_fan_turn_split/value-v1",
           "kind": "ratio",
           "domain": {
             "type": "scalar",
@@ -6416,7 +6416,7 @@
         "schema_version": 2,
         "ordinal": 56,
         "id": "worker_min_turns",
-        "semantic_key": "core.control.orchestration.child_minimum_turns",
+        "semantic_key": "iteron.control.orchestration.child_minimum_turns",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Reserve a minimum useful child turn allocation.",
@@ -6440,7 +6440,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/worker_min_turns-v1"
+            "resolver_id": "iteron://tunables/resolvers/worker_min_turns-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6456,7 +6456,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/worker_min_turns/value-v1",
+          "schema_id": "iteron://tunables/families/worker_min_turns/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -6506,7 +6506,7 @@
         "schema_version": 2,
         "ordinal": 57,
         "id": "wall_split",
-        "semantic_key": "core.control.orchestration.child_wall_time_allocation",
+        "semantic_key": "iteron.control.orchestration.child_wall_time_allocation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split remaining wall time across child work.",
@@ -6530,7 +6530,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/wall_split-v1"
+            "resolver_id": "iteron://tunables/resolvers/wall_split-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6546,7 +6546,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/wall_split/value-v1",
+          "schema_id": "iteron://tunables/families/wall_split/value-v1",
           "kind": "ratio",
           "domain": {
             "type": "scalar",
@@ -6603,7 +6603,7 @@
         "schema_version": 2,
         "ordinal": 58,
         "id": "token_split",
-        "semantic_key": "core.control.orchestration.child_token_allocation",
+        "semantic_key": "iteron.control.orchestration.child_token_allocation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split remaining tokens across child work.",
@@ -6627,7 +6627,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/token_split-v1"
+            "resolver_id": "iteron://tunables/resolvers/token_split-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6643,7 +6643,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/token_split/value-v1",
+          "schema_id": "iteron://tunables/families/token_split/value-v1",
           "kind": "ratio",
           "domain": {
             "type": "scalar",
@@ -6700,7 +6700,7 @@
         "schema_version": 2,
         "ordinal": 59,
         "id": "fan_concurrency",
-        "semantic_key": "core.control.orchestration.investigator_concurrency",
+        "semantic_key": "iteron.control.orchestration.investigator_concurrency",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound simultaneous investigator agents.",
@@ -6724,7 +6724,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/fan_concurrency-v1"
+            "resolver_id": "iteron://tunables/resolvers/fan_concurrency-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6740,7 +6740,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/fan_concurrency/value-v1",
+          "schema_id": "iteron://tunables/families/fan_concurrency/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -6790,7 +6790,7 @@
         "schema_version": 2,
         "ordinal": 60,
         "id": "child_ceiling",
-        "semantic_key": "core.control.orchestration.child_resource_ceiling",
+        "semantic_key": "iteron.control.orchestration.child_resource_ceiling",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Intersect every child with an immutable parent ceiling.",
@@ -6814,7 +6814,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/child_ceiling-v1"
+            "resolver_id": "iteron://tunables/resolvers/child_ceiling-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6830,7 +6830,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/child_ceiling/value-v1",
+          "schema_id": "iteron://tunables/families/child_ceiling/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -6952,7 +6952,7 @@
         "schema_version": 2,
         "ordinal": 61,
         "id": "direct_child_allocation",
-        "semantic_key": "core.control.orchestration.direct_child_budget",
+        "semantic_key": "iteron.control.orchestration.direct_child_budget",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Allocate budget to directly spawned children.",
@@ -6977,7 +6977,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/direct_child_allocation-v1"
+            "resolver_id": "iteron://tunables/resolvers/direct_child_allocation-v1"
           },
           "requirement": "optional",
           "value": null
@@ -6993,7 +6993,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/direct_child_allocation/value-v1",
+          "schema_id": "iteron://tunables/families/direct_child_allocation/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -7099,7 +7099,7 @@
         "schema_version": 2,
         "ordinal": 62,
         "id": "subagent_effort_inheritance",
-        "semantic_key": "core.control.orchestration.child_reasoning_effort",
+        "semantic_key": "iteron.control.orchestration.child_reasoning_effort",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose bounded subagent reasoning effort.",
@@ -7125,7 +7125,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/subagent_effort_inheritance-v1"
+            "resolver_id": "iteron://tunables/resolvers/subagent_effort_inheritance-v1"
           },
           "requirement": "optional",
           "value": null
@@ -7141,7 +7141,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/subagent_effort_inheritance/value-v1",
+          "schema_id": "iteron://tunables/families/subagent_effort_inheritance/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -7167,7 +7167,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -7198,7 +7198,7 @@
         "schema_version": 2,
         "ordinal": 63,
         "id": "report_budget",
-        "semantic_key": "core.control.orchestration.child_report_size",
+        "semantic_key": "iteron.control.orchestration.child_report_size",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound child report size admitted to the writer.",
@@ -7222,7 +7222,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/report_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/report_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -7238,7 +7238,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/report_budget/value-v1",
+          "schema_id": "iteron://tunables/families/report_budget/value-v1",
           "kind": "bytes",
           "domain": {
             "type": "scalar",
@@ -7288,7 +7288,7 @@
         "schema_version": 2,
         "ordinal": 64,
         "id": "join_reduce",
-        "semantic_key": "core.control.orchestration.result_reduction",
+        "semantic_key": "iteron.control.orchestration.result_reduction",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose deterministic join and reduction policy.",
@@ -7311,7 +7311,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/join_reduce-v1"
+            "resolver_id": "iteron://tunables/resolvers/join_reduce-v1"
           },
           "requirement": "optional",
           "value": null
@@ -7327,7 +7327,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/join_reduce/value-v1",
+          "schema_id": "iteron://tunables/families/join_reduce/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -7414,7 +7414,7 @@
         "schema_version": 2,
         "ordinal": 65,
         "id": "workflow_aggregate",
-        "semantic_key": "core.control.orchestration.workflow_aggregate_budget",
+        "semantic_key": "iteron.control.orchestration.workflow_aggregate_budget",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound aggregate workflow calls and resources.",
@@ -7439,7 +7439,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/workflow_aggregate-v1"
+            "resolver_id": "iteron://tunables/resolvers/workflow_aggregate-v1"
           },
           "requirement": "optional",
           "value": null
@@ -7455,7 +7455,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/workflow_aggregate/value-v1",
+          "schema_id": "iteron://tunables/families/workflow_aggregate/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -7574,7 +7574,7 @@
         "schema_version": 2,
         "ordinal": 66,
         "id": "schema_retry_jitter",
-        "semantic_key": "core.control.runtime.schema_repair_schedule",
+        "semantic_key": "iteron.control.runtime.schema_repair_schedule",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound schema-repair retries and jitter.",
@@ -7599,7 +7599,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/schema_retry_jitter-v1"
+            "resolver_id": "iteron://tunables/resolvers/schema_retry_jitter-v1"
           },
           "requirement": "optional",
           "value": null
@@ -7615,7 +7615,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/schema_retry_jitter/value-v1",
+          "schema_id": "iteron://tunables/families/schema_retry_jitter/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -7706,7 +7706,7 @@
         "schema_version": 2,
         "ordinal": 67,
         "id": "provider_connect_tls_timeout",
-        "semantic_key": "core.control.provider.connection_deadline",
+        "semantic_key": "iteron.control.provider.connection_deadline",
         "aliases": [
           "connect_tls_timeout",
           "http_connect_timeout"
@@ -7750,7 +7750,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_connect_tls_timeout/value-v1",
+          "schema_id": "iteron://tunables/families/provider_connect_tls_timeout/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -7800,7 +7800,7 @@
         "schema_version": 2,
         "ordinal": 68,
         "id": "multimodal_input_admission_decode_envelope",
-        "semantic_key": "core.control.runtime.multimodal_decode_envelope",
+        "semantic_key": "iteron.control.runtime.multimodal_decode_envelope",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound image count, bytes, dimensions, frames, and decode work.",
@@ -7879,7 +7879,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/multimodal_input_admission_decode_envelope/value-v1",
+          "schema_id": "iteron://tunables/families/multimodal_input_admission_decode_envelope/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -7976,7 +7976,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -8007,7 +8007,7 @@
         "schema_version": 2,
         "ordinal": 69,
         "id": "app_server_sq_eq_backpressure",
-        "semantic_key": "core.control.runtime.app_server_queue_backpressure",
+        "semantic_key": "iteron.control.runtime.app_server_queue_backpressure",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound submission and event queues with typed drop policy.",
@@ -8086,7 +8086,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/app_server_sq_eq_backpressure/value-v1",
+          "schema_id": "iteron://tunables/families/app_server_sq_eq_backpressure/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -8212,7 +8212,7 @@
         "schema_version": 2,
         "ordinal": 70,
         "id": "provider_discovery_account_probe_cache_policy",
-        "semantic_key": "core.control.provider.discovery_probe_cache",
+        "semantic_key": "iteron.control.provider.discovery_probe_cache",
         "aliases": [],
         "domain": "provider",
         "summary": "Bound provider startup discovery, probe freshness, and failure backoff.",
@@ -8283,7 +8283,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_discovery_account_probe_cache_policy/value-v1",
+          "schema_id": "iteron://tunables/families/provider_discovery_account_probe_cache_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -8387,7 +8387,7 @@
         "schema_version": 2,
         "ordinal": 71,
         "id": "operator_prompt_stream",
-        "semantic_key": "core.control.context.operator_input_stream",
+        "semantic_key": "iteron.control.context.operator_input_stream",
         "aliases": [],
         "domain": "context",
         "summary": "Operator-authored task and steering text.",
@@ -8414,7 +8414,7 @@
           "kind": "dynamic",
           "resolver": {
             "type": "operator",
-            "input_id": "core://tunables/operator-inputs/operator_prompt_stream-v1"
+            "input_id": "iteron://tunables/operator-inputs/operator_prompt_stream-v1"
           },
           "requirement": "required",
           "value": null
@@ -8424,13 +8424,13 @@
             {
               "kind": "operator_input",
               "trust": "operator",
-              "locator": "core_protocol::Op",
+              "locator": "iteron_protocol::Op",
               "merge": "override"
             }
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/operator_prompt_stream/value-v1",
+          "schema_id": "iteron://tunables/families/operator_prompt_stream/value-v1",
           "kind": "string",
           "domain": {
             "type": "scalar",
@@ -8490,7 +8490,7 @@
         "schema_version": 2,
         "ordinal": 72,
         "id": "builtin_prompt_corpus",
-        "semantic_key": "core.control.reasoning.system_prompt_catalog",
+        "semantic_key": "iteron.control.reasoning.system_prompt_catalog",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Built-in system and workflow prompt corpus.",
@@ -8514,7 +8514,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/builtin_prompt_corpus-v1"
+            "catalog_id": "iteron://tunables/catalogs/builtin_prompt_corpus-v1"
           },
           "requirement": "optional",
           "value": null
@@ -8530,11 +8530,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/builtin_prompt_corpus/value-v1",
+          "schema_id": "iteron://tunables/families/builtin_prompt_corpus/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/builtin_prompt_corpus-v1",
+            "catalog_id": "iteron://tunables/catalogs/builtin_prompt_corpus-v1",
             "min_entries": 0,
             "max_entries": 1024,
             "entry_fields": [
@@ -8631,7 +8631,7 @@
         "schema_version": 2,
         "ordinal": 73,
         "id": "instruction_bundle",
-        "semantic_key": "core.control.context.repository_instruction_set",
+        "semantic_key": "iteron.control.context.repository_instruction_set",
         "aliases": [],
         "domain": "context",
         "summary": "Repository and user instruction content.",
@@ -8654,7 +8654,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/instruction_bundle-v1"
+            "catalog_id": "iteron://tunables/catalogs/instruction_bundle-v1"
           },
           "requirement": "optional",
           "value": null
@@ -8670,11 +8670,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/instruction_bundle/value-v1",
+          "schema_id": "iteron://tunables/families/instruction_bundle/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/instruction_bundle-v1",
+            "catalog_id": "iteron://tunables/catalogs/instruction_bundle-v1",
             "min_entries": 0,
             "max_entries": 4096,
             "entry_fields": [
@@ -8773,7 +8773,7 @@
         "schema_version": 2,
         "ordinal": 74,
         "id": "memory_corpus",
-        "semantic_key": "core.control.memory.admitted_record_corpus",
+        "semantic_key": "iteron.control.memory.admitted_record_corpus",
         "aliases": [],
         "domain": "memory",
         "summary": "Durable admitted memory records.",
@@ -8796,7 +8796,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/memory_corpus-v1"
+            "catalog_id": "iteron://tunables/catalogs/memory_corpus-v1"
           },
           "requirement": "optional",
           "value": null
@@ -8812,11 +8812,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/memory_corpus/value-v1",
+          "schema_id": "iteron://tunables/families/memory_corpus/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/memory_corpus-v1",
+            "catalog_id": "iteron://tunables/catalogs/memory_corpus-v1",
             "min_entries": 0,
             "max_entries": 100000,
             "entry_fields": [
@@ -8926,7 +8926,7 @@
         "schema_version": 2,
         "ordinal": 75,
         "id": "skill_catalog",
-        "semantic_key": "core.control.extensibility.skill_definition_catalog",
+        "semantic_key": "iteron.control.extensibility.skill_definition_catalog",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Discovered skill metadata and instructions.",
@@ -8950,7 +8950,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/skill_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/skill_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -8966,11 +8966,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/skill_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/skill_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/skill_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/skill_catalog-v1",
             "min_entries": 0,
             "max_entries": 10000,
             "entry_fields": [
@@ -9070,7 +9070,7 @@
         "schema_version": 2,
         "ordinal": 76,
         "id": "agent_catalog",
-        "semantic_key": "core.control.extensibility.agent_definition_catalog",
+        "semantic_key": "iteron.control.extensibility.agent_definition_catalog",
         "aliases": [
           "agent_definition_catalog"
         ],
@@ -9098,7 +9098,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/agent_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/agent_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9114,11 +9114,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/agent_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/agent_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/agent_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/agent_catalog-v1",
             "min_entries": 0,
             "max_entries": 4096,
             "entry_fields": [
@@ -9218,7 +9218,7 @@
         "schema_version": 2,
         "ordinal": 77,
         "id": "provider_model_capability_catalog",
-        "semantic_key": "core.control.provider.model_capability_evidence",
+        "semantic_key": "iteron.control.provider.model_capability_evidence",
         "aliases": [],
         "domain": "provider",
         "summary": "Provider and model capability evidence.",
@@ -9241,7 +9241,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/provider_model_capability_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/provider_model_capability_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9275,11 +9275,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_model_capability_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/provider_model_capability_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/provider_model_capability_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/provider_model_capability_catalog-v1",
             "min_entries": 0,
             "max_entries": 100000,
             "entry_fields": [
@@ -9394,7 +9394,7 @@
         "schema_version": 2,
         "ordinal": 78,
         "id": "mcp_topology_tool_catalog",
-        "semantic_key": "core.control.extensibility.mcp_server_tool_topology",
+        "semantic_key": "iteron.control.extensibility.mcp_server_tool_topology",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Configured MCP servers and their tool schemas.",
@@ -9420,7 +9420,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/mcp_topology_tool_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/mcp_topology_tool_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9436,11 +9436,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/mcp_topology_tool_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/mcp_topology_tool_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/mcp_topology_tool_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/mcp_topology_tool_catalog-v1",
             "min_entries": 0,
             "max_entries": 10000,
             "entry_fields": [
@@ -9539,7 +9539,7 @@
         "schema_version": 2,
         "ordinal": 79,
         "id": "hooks_map",
-        "semantic_key": "core.control.extensibility.lifecycle_hook_bindings",
+        "semantic_key": "iteron.control.extensibility.lifecycle_hook_bindings",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Lifecycle hook declarations and selectors.",
@@ -9565,7 +9565,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/hooks_map-v1"
+            "catalog_id": "iteron://tunables/catalogs/hooks_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9581,7 +9581,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/hooks_map/value-v1",
+          "schema_id": "iteron://tunables/families/hooks_map/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -9683,7 +9683,7 @@
         "schema_version": 2,
         "ordinal": 80,
         "id": "workflow_graph",
-        "semantic_key": "core.control.orchestration.workflow_task_graph",
+        "semantic_key": "iteron.control.orchestration.workflow_task_graph",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Declared workflow task graph.",
@@ -9707,7 +9707,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/workflow_graph-v1"
+            "catalog_id": "iteron://tunables/catalogs/workflow_graph-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9723,7 +9723,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/workflow_graph/value-v1",
+          "schema_id": "iteron://tunables/families/workflow_graph/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -9823,7 +9823,7 @@
         "schema_version": 2,
         "ordinal": 81,
         "id": "tool_action_space",
-        "semantic_key": "core.control.tooling.registered_action_space",
+        "semantic_key": "iteron.control.tooling.registered_action_space",
         "aliases": [],
         "domain": "tooling",
         "summary": "Registered tool schemas and capability classes.",
@@ -9846,7 +9846,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/tool_action_space-v1"
+            "catalog_id": "iteron://tunables/catalogs/tool_action_space-v1"
           },
           "requirement": "optional",
           "value": null
@@ -9862,11 +9862,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/tool_action_space/value-v1",
+          "schema_id": "iteron://tunables/families/tool_action_space/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/tool_action_space-v1",
+            "catalog_id": "iteron://tunables/catalogs/tool_action_space-v1",
             "min_entries": 0,
             "max_entries": 10000,
             "entry_fields": [
@@ -9891,7 +9891,7 @@
                   "domain": {
                     "type": "enum",
                     "values": [],
-                    "catalog_id": "core://tunables/catalogs/tool-capabilities-v1"
+                    "catalog_id": "iteron://tunables/catalogs/tool-capabilities-v1"
                   }
                 }
               },
@@ -9967,7 +9967,7 @@
         "schema_version": 2,
         "ordinal": 82,
         "id": "rate_card_catalog",
-        "semantic_key": "core.control.observability.provider_rate_card",
+        "semantic_key": "iteron.control.observability.provider_rate_card",
         "aliases": [],
         "domain": "observability",
         "summary": "Signed provider pricing evidence.",
@@ -9991,7 +9991,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/rate_card_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/rate_card_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -10013,11 +10013,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/rate_card_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/rate_card_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/rate_card_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/rate_card_catalog-v1",
             "min_entries": 0,
             "max_entries": 100000,
             "entry_fields": [
@@ -10114,7 +10114,7 @@
         "schema_version": 2,
         "ordinal": 83,
         "id": "router_lexicons",
-        "semantic_key": "core.control.reasoning.routing_signal_lexicon",
+        "semantic_key": "iteron.control.reasoning.routing_signal_lexicon",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Lexical signals used by routing policy.",
@@ -10138,7 +10138,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/router_lexicons-v1"
+            "catalog_id": "iteron://tunables/catalogs/router_lexicons-v1"
           },
           "requirement": "optional",
           "value": null
@@ -10154,11 +10154,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/router_lexicons/value-v1",
+          "schema_id": "iteron://tunables/families/router_lexicons/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/router_lexicons-v1",
+            "catalog_id": "iteron://tunables/catalogs/router_lexicons-v1",
             "min_entries": 0,
             "max_entries": 100000,
             "entry_fields": [
@@ -10262,7 +10262,7 @@
         "schema_version": 2,
         "ordinal": 84,
         "id": "environment_snapshot",
-        "semantic_key": "core.control.context.run_environment_snapshot",
+        "semantic_key": "iteron.control.context.run_environment_snapshot",
         "aliases": [],
         "domain": "context",
         "summary": "Durable bounded repository and process environment facts.",
@@ -10301,7 +10301,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/environment_snapshot/value-v1",
+          "schema_id": "iteron://tunables/families/environment_snapshot/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -10362,7 +10362,7 @@
         "schema_version": 2,
         "ordinal": 85,
         "id": "web_search_backend_catalog",
-        "semantic_key": "core.control.extensibility.web_search_backend_catalog",
+        "semantic_key": "iteron.control.extensibility.web_search_backend_catalog",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Available web-search backend definitions.",
@@ -10389,7 +10389,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/web_search_backend_catalog-v1"
+            "catalog_id": "iteron://tunables/catalogs/web_search_backend_catalog-v1"
           },
           "requirement": "optional",
           "value": null
@@ -10405,11 +10405,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/web_search_backend_catalog/value-v1",
+          "schema_id": "iteron://tunables/families/web_search_backend_catalog/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/web_search_backend_catalog-v1",
+            "catalog_id": "iteron://tunables/catalogs/web_search_backend_catalog-v1",
             "min_entries": 0,
             "max_entries": 1024,
             "entry_fields": [
@@ -10516,7 +10516,7 @@
         "schema_version": 2,
         "ordinal": 86,
         "id": "model_fallback_chain",
-        "semantic_key": "core.control.provider.route_fallback_order",
+        "semantic_key": "iteron.control.provider.route_fallback_order",
         "aliases": [],
         "domain": "provider",
         "summary": "Choose an ordered model fallback chain.",
@@ -10557,7 +10557,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/model_fallback_chain/value-v1",
+          "schema_id": "iteron://tunables/families/model_fallback_chain/value-v1",
           "kind": "list",
           "domain": {
             "type": "list",
@@ -10566,7 +10566,7 @@
             "item": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/model-routes-v1"
+              "catalog_id": "iteron://tunables/catalogs/model-routes-v1"
             },
             "unique_items": true
           },
@@ -10579,7 +10579,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -10610,7 +10610,7 @@
         "schema_version": 2,
         "ordinal": 87,
         "id": "failover_eligible_error_taxonomy",
-        "semantic_key": "core.control.provider.failover_error_classes",
+        "semantic_key": "iteron.control.provider.failover_error_classes",
         "aliases": [],
         "domain": "provider",
         "summary": "Classify provider errors that may admit failover.",
@@ -10686,11 +10686,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/failover_eligible_error_taxonomy/value-v1",
+          "schema_id": "iteron://tunables/families/failover_eligible_error_taxonomy/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/failover_eligible_error_taxonomy-v1",
+            "catalog_id": "iteron://tunables/catalogs/failover_eligible_error_taxonomy-v1",
             "min_entries": 0,
             "max_entries": 1024,
             "entry_fields": [
@@ -10787,7 +10787,7 @@
         "schema_version": 2,
         "ordinal": 88,
         "id": "route_quality_cost_latency_objective_weights",
-        "semantic_key": "core.control.reasoning.routing_objective_weights",
+        "semantic_key": "iteron.control.reasoning.routing_objective_weights",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Weight route quality, cost, and latency objectives.",
@@ -10812,7 +10812,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/route_quality_cost_latency_objective_weights-v1"
+            "resolver_id": "iteron://tunables/resolvers/route_quality_cost_latency_objective_weights-v1"
           },
           "requirement": "optional",
           "value": null
@@ -10828,7 +10828,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/route_quality_cost_latency_objective_weights/value-v1",
+          "schema_id": "iteron://tunables/families/route_quality_cost_latency_objective_weights/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -10888,7 +10888,7 @@
         "schema_version": 2,
         "ordinal": 89,
         "id": "provider_health_circuit_breaker_state_policy",
-        "semantic_key": "core.control.provider.health_circuit_breaker",
+        "semantic_key": "iteron.control.provider.health_circuit_breaker",
         "aliases": [],
         "domain": "provider",
         "summary": "Derive route health and circuit-breaker state.",
@@ -10929,7 +10929,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_health_circuit_breaker_state_policy/value-v1",
+          "schema_id": "iteron://tunables/families/provider_health_circuit_breaker_state_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -11038,7 +11038,7 @@
         "schema_version": 2,
         "ordinal": 90,
         "id": "hedged_request_policy",
-        "semantic_key": "core.control.provider.hedged_request_schedule",
+        "semantic_key": "iteron.control.provider.hedged_request_schedule",
         "aliases": [],
         "domain": "provider",
         "summary": "Choose bounded duplicate-request hedging.",
@@ -11108,7 +11108,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/hedged_request_policy/value-v1",
+          "schema_id": "iteron://tunables/families/hedged_request_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -11220,7 +11220,7 @@
         "schema_version": 2,
         "ordinal": 91,
         "id": "provider_service_tier",
-        "semantic_key": "core.control.provider.service_tier",
+        "semantic_key": "iteron.control.provider.service_tier",
         "aliases": [],
         "domain": "provider",
         "summary": "Select a provider service tier.",
@@ -11259,14 +11259,14 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_service_tier/value-v1",
+          "schema_id": "iteron://tunables/families/provider_service_tier/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
             "domain": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/provider-service-tiers-v1"
+              "catalog_id": "iteron://tunables/catalogs/provider-service-tiers-v1"
             }
           },
           "rules": [
@@ -11278,7 +11278,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -11319,7 +11319,7 @@
         "schema_version": 2,
         "ordinal": 92,
         "id": "response_verbosity",
-        "semantic_key": "core.control.reasoning.response_detail",
+        "semantic_key": "iteron.control.reasoning.response_detail",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Select response verbosity independently of effort.",
@@ -11360,7 +11360,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/response_verbosity/value-v1",
+          "schema_id": "iteron://tunables/families/response_verbosity/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -11383,7 +11383,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -11424,7 +11424,7 @@
         "schema_version": 2,
         "ordinal": 93,
         "id": "role_specific_model_map",
-        "semantic_key": "core.control.orchestration.role_model_assignment",
+        "semantic_key": "iteron.control.orchestration.role_model_assignment",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Map agent roles to admitted model routes.",
@@ -11450,7 +11450,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/role_specific_model_map-v1"
+            "resolver_id": "iteron://tunables/resolvers/role_specific_model_map-v1"
           },
           "requirement": "optional",
           "value": null
@@ -11466,7 +11466,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/role_specific_model_map/value-v1",
+          "schema_id": "iteron://tunables/families/role_specific_model_map/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -11475,14 +11475,14 @@
             "key": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/agent-roles-v1"
+              "catalog_id": "iteron://tunables/catalogs/agent-roles-v1"
             },
             "value": {
               "type": "scalar",
               "domain": {
                 "type": "enum",
                 "values": [],
-                "catalog_id": "core://tunables/catalogs/model-routes-v1"
+                "catalog_id": "iteron://tunables/catalogs/model-routes-v1"
               }
             }
           },
@@ -11495,7 +11495,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -11536,7 +11536,7 @@
         "schema_version": 2,
         "ordinal": 94,
         "id": "provider_request_total_deadline",
-        "semantic_key": "core.control.provider.request_deadline",
+        "semantic_key": "iteron.control.provider.request_deadline",
         "aliases": [
           "provider_request_deadline"
         ],
@@ -11561,7 +11561,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/provider_request_total_deadline-v1"
+            "resolver_id": "iteron://tunables/resolvers/provider_request_total_deadline-v1"
           },
           "requirement": "optional",
           "value": {
@@ -11580,7 +11580,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/provider_request_total_deadline/value-v1",
+          "schema_id": "iteron://tunables/families/provider_request_total_deadline/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -11630,7 +11630,7 @@
         "schema_version": 2,
         "ordinal": 95,
         "id": "stream_idle_watchdog",
-        "semantic_key": "core.control.provider.stream_idle_deadline",
+        "semantic_key": "iteron.control.provider.stream_idle_deadline",
         "aliases": [
           "stream_idle_timeout"
         ],
@@ -11673,7 +11673,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/stream_idle_watchdog/value-v1",
+          "schema_id": "iteron://tunables/families/stream_idle_watchdog/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -11723,7 +11723,7 @@
         "schema_version": 2,
         "ordinal": 96,
         "id": "context_window_override_reserve",
-        "semantic_key": "core.control.context.model_window_reserve",
+        "semantic_key": "iteron.control.context.model_window_reserve",
         "aliases": [],
         "domain": "context",
         "summary": "Resolve the effective context window and output reserve.",
@@ -11782,7 +11782,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/context_window_override_reserve/value-v1",
+          "schema_id": "iteron://tunables/families/context_window_override_reserve/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -11859,7 +11859,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -11890,7 +11890,7 @@
         "schema_version": 2,
         "ordinal": 97,
         "id": "system_prefix_budget",
-        "semantic_key": "core.control.context.system_prefix_allocation",
+        "semantic_key": "iteron.control.context.system_prefix_allocation",
         "aliases": [],
         "domain": "context",
         "summary": "Bound the stable system prefix.",
@@ -11914,7 +11914,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/system_prefix_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/system_prefix_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -11930,7 +11930,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/system_prefix_budget/value-v1",
+          "schema_id": "iteron://tunables/families/system_prefix_budget/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -11980,7 +11980,7 @@
         "schema_version": 2,
         "ordinal": 98,
         "id": "conversation_history_budget",
-        "semantic_key": "core.control.context.conversation_history_allocation",
+        "semantic_key": "iteron.control.context.conversation_history_allocation",
         "aliases": [],
         "domain": "context",
         "summary": "Bound conversation history admitted to a request.",
@@ -12004,7 +12004,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/conversation_history_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/conversation_history_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -12020,7 +12020,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/conversation_history_budget/value-v1",
+          "schema_id": "iteron://tunables/families/conversation_history_budget/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -12070,7 +12070,7 @@
         "schema_version": 2,
         "ordinal": 99,
         "id": "tool_result_history_budget",
-        "semantic_key": "core.control.context.tool_result_history_allocation",
+        "semantic_key": "iteron.control.context.tool_result_history_allocation",
         "aliases": [],
         "domain": "context",
         "summary": "Bound retained tool-result history.",
@@ -12094,7 +12094,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/tool_result_history_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/tool_result_history_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -12110,7 +12110,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/tool_result_history_budget/value-v1",
+          "schema_id": "iteron://tunables/families/tool_result_history_budget/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -12160,7 +12160,7 @@
         "schema_version": 2,
         "ordinal": 100,
         "id": "multimodal_token_budget",
-        "semantic_key": "core.control.context.multimodal_allocation",
+        "semantic_key": "iteron.control.context.multimodal_allocation",
         "aliases": [],
         "domain": "context",
         "summary": "Bound multimodal content admitted to model context.",
@@ -12201,7 +12201,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/multimodal_token_budget/value-v1",
+          "schema_id": "iteron://tunables/families/multimodal_token_budget/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -12231,7 +12231,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -12262,7 +12262,7 @@
         "schema_version": 2,
         "ordinal": 101,
         "id": "auto_compaction_enable",
-        "semantic_key": "core.control.context.automatic_compaction_admission",
+        "semantic_key": "iteron.control.context.automatic_compaction_admission",
         "aliases": [],
         "domain": "context",
         "summary": "Enable automatic bounded context compaction.",
@@ -12303,7 +12303,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/auto_compaction_enable/value-v1",
+          "schema_id": "iteron://tunables/families/auto_compaction_enable/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -12350,7 +12350,7 @@
         "schema_version": 2,
         "ordinal": 102,
         "id": "compaction_cooldown_hysteresis",
-        "semantic_key": "core.control.context.compaction_hysteresis",
+        "semantic_key": "iteron.control.context.compaction_hysteresis",
         "aliases": [],
         "domain": "context",
         "summary": "Avoid repeated compaction around the trigger boundary.",
@@ -12374,7 +12374,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/compaction_cooldown_hysteresis-v1"
+            "resolver_id": "iteron://tunables/resolvers/compaction_cooldown_hysteresis-v1"
           },
           "requirement": "optional",
           "value": null
@@ -12390,7 +12390,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/compaction_cooldown_hysteresis/value-v1",
+          "schema_id": "iteron://tunables/families/compaction_cooldown_hysteresis/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -12495,7 +12495,7 @@
         "schema_version": 2,
         "ordinal": 103,
         "id": "multi_stage_summary_topology",
-        "semantic_key": "core.control.context.summary_stage_topology",
+        "semantic_key": "iteron.control.context.summary_stage_topology",
         "aliases": [],
         "domain": "context",
         "summary": "Choose a bounded summary-stage topology.",
@@ -12537,7 +12537,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/multi_stage_summary_topology/value-v1",
+          "schema_id": "iteron://tunables/families/multi_stage_summary_topology/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -12590,7 +12590,7 @@
         "schema_version": 2,
         "ordinal": 104,
         "id": "summary_consistency_coverage_check",
-        "semantic_key": "core.control.verification.summary_coverage",
+        "semantic_key": "iteron.control.verification.summary_coverage",
         "aliases": [],
         "domain": "verification",
         "summary": "Check summary consistency and evidence coverage.",
@@ -12633,7 +12633,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/summary_consistency_coverage_check/value-v1",
+          "schema_id": "iteron://tunables/families/summary_consistency_coverage_check/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -12680,7 +12680,7 @@
         "schema_version": 2,
         "ordinal": 105,
         "id": "hybrid_retrieval_fusion_weights",
-        "semantic_key": "core.control.memory.hybrid_retrieval_fusion",
+        "semantic_key": "iteron.control.memory.hybrid_retrieval_fusion",
         "aliases": [],
         "domain": "memory",
         "summary": "Fuse lexical and optional retrieval signals.",
@@ -12735,7 +12735,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/hybrid_retrieval_fusion_weights/value-v1",
+          "schema_id": "iteron://tunables/families/hybrid_retrieval_fusion_weights/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -12796,7 +12796,7 @@
         "schema_version": 2,
         "ordinal": 106,
         "id": "retrieval_recency_decay",
-        "semantic_key": "core.control.memory.recency_weight_decay",
+        "semantic_key": "iteron.control.memory.recency_weight_decay",
         "aliases": [],
         "domain": "memory",
         "summary": "Apply bounded recency decay to retrieval scores.",
@@ -12840,7 +12840,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/retrieval_recency_decay/value-v1",
+          "schema_id": "iteron://tunables/families/retrieval_recency_decay/value-v1",
           "kind": "ratio",
           "domain": {
             "type": "scalar",
@@ -12897,7 +12897,7 @@
         "schema_version": 2,
         "ordinal": 107,
         "id": "context_novelty_dedup_threshold",
-        "semantic_key": "core.control.context.novelty_deduplication",
+        "semantic_key": "iteron.control.context.novelty_deduplication",
         "aliases": [],
         "domain": "context",
         "summary": "Suppress duplicate or low-novelty context.",
@@ -12923,7 +12923,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/context_novelty_dedup_threshold-v1"
+            "resolver_id": "iteron://tunables/resolvers/context_novelty_dedup_threshold-v1"
           },
           "requirement": "optional",
           "value": null
@@ -12939,7 +12939,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/context_novelty_dedup_threshold/value-v1",
+          "schema_id": "iteron://tunables/families/context_novelty_dedup_threshold/value-v1",
           "kind": "ratio",
           "domain": {
             "type": "scalar",
@@ -12996,7 +12996,7 @@
         "schema_version": 2,
         "ordinal": 108,
         "id": "persistent_pty_backend",
-        "semantic_key": "core.control.tooling.terminal_backend",
+        "semantic_key": "iteron.control.tooling.terminal_backend",
         "aliases": [],
         "domain": "tooling",
         "summary": "Select a persistent PTY backend.",
@@ -13037,7 +13037,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/persistent_pty_backend/value-v1",
+          "schema_id": "iteron://tunables/families/persistent_pty_backend/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -13100,7 +13100,7 @@
         "schema_version": 2,
         "ordinal": 109,
         "id": "concurrent_background_job_cap",
-        "semantic_key": "core.control.tooling.background_job_concurrency",
+        "semantic_key": "iteron.control.tooling.background_job_concurrency",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound concurrent background jobs.",
@@ -13142,7 +13142,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/concurrent_background_job_cap/value-v1",
+          "schema_id": "iteron://tunables/families/concurrent_background_job_cap/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -13192,7 +13192,7 @@
         "schema_version": 2,
         "ordinal": 110,
         "id": "job_idle_stall_timeout",
-        "semantic_key": "core.control.tooling.background_job_idle_deadline",
+        "semantic_key": "iteron.control.tooling.background_job_idle_deadline",
         "aliases": [],
         "domain": "tooling",
         "summary": "Stop a background job that is idle or stalled.",
@@ -13215,7 +13215,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/job_idle_stall_timeout-v1"
+            "resolver_id": "iteron://tunables/resolvers/job_idle_stall_timeout-v1"
           },
           "requirement": "optional",
           "value": null
@@ -13231,7 +13231,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/job_idle_stall_timeout/value-v1",
+          "schema_id": "iteron://tunables/families/job_idle_stall_timeout/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -13281,7 +13281,7 @@
         "schema_version": 2,
         "ordinal": 111,
         "id": "interactive_stdin_wait_policy",
-        "semantic_key": "core.control.tooling.interactive_stdin_wait",
+        "semantic_key": "iteron.control.tooling.interactive_stdin_wait",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound waits for interactive process input.",
@@ -13320,7 +13320,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/interactive_stdin_wait_policy/value-v1",
+          "schema_id": "iteron://tunables/families/interactive_stdin_wait_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -13408,7 +13408,7 @@
         "schema_version": 2,
         "ordinal": 112,
         "id": "process_signal_kill_escalation",
-        "semantic_key": "core.control.tooling.process_termination_escalation",
+        "semantic_key": "iteron.control.tooling.process_termination_escalation",
         "aliases": [],
         "domain": "tooling",
         "summary": "Escalate process-group termination and reap children.",
@@ -13449,7 +13449,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/process_signal_kill_escalation/value-v1",
+          "schema_id": "iteron://tunables/families/process_signal_kill_escalation/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -13500,7 +13500,7 @@
         "schema_version": 2,
         "ordinal": 113,
         "id": "process_cwd_continuity",
-        "semantic_key": "core.control.tooling.process_working_directory",
+        "semantic_key": "iteron.control.tooling.process_working_directory",
         "aliases": [],
         "domain": "tooling",
         "summary": "Preserve process and working-directory continuity.",
@@ -13564,7 +13564,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/process_cwd_continuity/value-v1",
+          "schema_id": "iteron://tunables/families/process_cwd_continuity/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -13650,7 +13650,7 @@
         "schema_version": 2,
         "ordinal": 114,
         "id": "child_process_environment_reuse",
-        "semantic_key": "core.control.tooling.child_environment_inheritance",
+        "semantic_key": "iteron.control.tooling.child_environment_inheritance",
         "aliases": [],
         "domain": "tooling",
         "summary": "Reuse a bounded child-process environment snapshot.",
@@ -13721,7 +13721,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/child_process_environment_reuse/value-v1",
+          "schema_id": "iteron://tunables/families/child_process_environment_reuse/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -13830,7 +13830,7 @@
         "schema_version": 2,
         "ordinal": 115,
         "id": "effecting_tool_concurrency",
-        "semantic_key": "core.control.orchestration.effecting_tool_concurrency",
+        "semantic_key": "iteron.control.orchestration.effecting_tool_concurrency",
         "aliases": [
           "effecting_tool_parallelism"
         ],
@@ -13874,7 +13874,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/effecting_tool_concurrency/value-v1",
+          "schema_id": "iteron://tunables/families/effecting_tool_concurrency/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -13934,7 +13934,7 @@
         "schema_version": 2,
         "ordinal": 116,
         "id": "write_set_conflict_admission",
-        "semantic_key": "core.control.tooling.write_set_conflict_gate",
+        "semantic_key": "iteron.control.tooling.write_set_conflict_gate",
         "aliases": [],
         "domain": "tooling",
         "summary": "Admit concurrent writes only when declared write sets do not overlap.",
@@ -13997,7 +13997,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/write_set_conflict_admission/value-v1",
+          "schema_id": "iteron://tunables/families/write_set_conflict_admission/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -14084,7 +14084,7 @@
         "schema_version": 2,
         "ordinal": 117,
         "id": "tool_output_spill_to_disk_policy",
-        "semantic_key": "core.control.tooling.tool_output_spill",
+        "semantic_key": "iteron.control.tooling.tool_output_spill",
         "aliases": [],
         "domain": "tooling",
         "summary": "Spill bounded tool output outside model context.",
@@ -14108,7 +14108,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/tool_output_spill_to_disk_policy-v1"
+            "resolver_id": "iteron://tunables/resolvers/tool_output_spill_to_disk_policy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -14124,7 +14124,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/tool_output_spill_to_disk_policy/value-v1",
+          "schema_id": "iteron://tunables/families/tool_output_spill_to_disk_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -14228,7 +14228,7 @@
         "schema_version": 2,
         "ordinal": 118,
         "id": "binary_media_inspection_routing",
-        "semantic_key": "core.control.tooling.binary_media_router",
+        "semantic_key": "iteron.control.tooling.binary_media_router",
         "aliases": [],
         "domain": "tooling",
         "summary": "Route binary and media inspection by capability.",
@@ -14276,7 +14276,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/binary_media_inspection_routing/value-v1",
+          "schema_id": "iteron://tunables/families/binary_media_inspection_routing/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -14297,7 +14297,7 @@
                   "value": {
                     "type": "enum",
                     "values": [],
-                    "catalog_id": "core://tunables/catalogs/binary-inspectors-v1"
+                    "catalog_id": "iteron://tunables/catalogs/binary-inspectors-v1"
                   }
                 }
               },
@@ -14381,7 +14381,7 @@
         "schema_version": 2,
         "ordinal": 119,
         "id": "lsp_server_language_selection",
-        "semantic_key": "core.control.tooling.language_server_selection",
+        "semantic_key": "iteron.control.tooling.language_server_selection",
         "aliases": [],
         "domain": "tooling",
         "summary": "Select LSP servers for discovered languages.",
@@ -14420,11 +14420,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/lsp_server_language_selection/value-v1",
+          "schema_id": "iteron://tunables/families/lsp_server_language_selection/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/lsp_server_language_selection-v1",
+            "catalog_id": "iteron://tunables/catalogs/lsp_server_language_selection-v1",
             "min_entries": 0,
             "max_entries": 1024,
             "entry_fields": [
@@ -14524,7 +14524,7 @@
         "schema_version": 2,
         "ordinal": 120,
         "id": "lsp_timeout_restart_policy",
-        "semantic_key": "core.control.tooling.language_server_recovery",
+        "semantic_key": "iteron.control.tooling.language_server_recovery",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound LSP requests and server restarts.",
@@ -14547,7 +14547,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/lsp_timeout_restart_policy-v1"
+            "resolver_id": "iteron://tunables/resolvers/lsp_timeout_restart_policy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -14563,7 +14563,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/lsp_timeout_restart_policy/value-v1",
+          "schema_id": "iteron://tunables/families/lsp_timeout_restart_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -14667,7 +14667,7 @@
         "schema_version": 2,
         "ordinal": 121,
         "id": "lsp_result_context_budget",
-        "semantic_key": "core.control.context.language_server_result_budget",
+        "semantic_key": "iteron.control.context.language_server_result_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound LSP evidence admitted to context.",
@@ -14693,7 +14693,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/lsp_result_context_budget-v1"
+            "resolver_id": "iteron://tunables/resolvers/lsp_result_context_budget-v1"
           },
           "requirement": "optional",
           "value": null
@@ -14709,7 +14709,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/lsp_result_context_budget/value-v1",
+          "schema_id": "iteron://tunables/families/lsp_result_context_budget/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -14759,7 +14759,7 @@
         "schema_version": 2,
         "ordinal": 122,
         "id": "tool_result_cache_ttl",
-        "semantic_key": "core.control.tooling.result_cache_lifetime",
+        "semantic_key": "iteron.control.tooling.result_cache_lifetime",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound deterministic tool-result cache reuse.",
@@ -14783,7 +14783,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/tool_result_cache_ttl-v1"
+            "resolver_id": "iteron://tunables/resolvers/tool_result_cache_ttl-v1"
           },
           "requirement": "optional",
           "value": null
@@ -14799,7 +14799,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/tool_result_cache_ttl/value-v1",
+          "schema_id": "iteron://tunables/families/tool_result_cache_ttl/value-v1",
           "kind": "duration",
           "domain": {
             "type": "scalar",
@@ -14849,7 +14849,7 @@
         "schema_version": 2,
         "ordinal": 123,
         "id": "test_selection_strategy",
-        "semantic_key": "core.control.verification.test_selection",
+        "semantic_key": "iteron.control.verification.test_selection",
         "aliases": [],
         "domain": "verification",
         "summary": "Select the verification command and evidence scope.",
@@ -14872,7 +14872,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/test_selection_strategy-v1"
+            "resolver_id": "iteron://tunables/resolvers/test_selection_strategy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -14888,7 +14888,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/test_selection_strategy/value-v1",
+          "schema_id": "iteron://tunables/families/test_selection_strategy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -14991,7 +14991,7 @@
         "schema_version": 2,
         "ordinal": 124,
         "id": "incremental_versus_full_verification",
-        "semantic_key": "core.control.verification.incremental_full_mode",
+        "semantic_key": "iteron.control.verification.incremental_full_mode",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose incremental or full verification by risk.",
@@ -15015,7 +15015,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/incremental_versus_full_verification-v1"
+            "resolver_id": "iteron://tunables/resolvers/incremental_versus_full_verification-v1"
           },
           "requirement": "optional",
           "value": null
@@ -15031,7 +15031,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/incremental_versus_full_verification/value-v1",
+          "schema_id": "iteron://tunables/families/incremental_versus_full_verification/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -15084,7 +15084,7 @@
         "schema_version": 2,
         "ordinal": 125,
         "id": "flaky_test_detection_quarantine",
-        "semantic_key": "core.control.verification.flaky_test_quarantine",
+        "semantic_key": "iteron.control.verification.flaky_test_quarantine",
         "aliases": [],
         "domain": "verification",
         "summary": "Detect disagreement and quarantine flaky evidence.",
@@ -15155,7 +15155,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/flaky_test_detection_quarantine/value-v1",
+          "schema_id": "iteron://tunables/families/flaky_test_detection_quarantine/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -15256,7 +15256,7 @@
         "schema_version": 2,
         "ordinal": 126,
         "id": "failure_classification_taxonomy",
-        "semantic_key": "core.control.verification.failure_taxonomy",
+        "semantic_key": "iteron.control.verification.failure_taxonomy",
         "aliases": [],
         "domain": "verification",
         "summary": "Classify verification failures with a versioned taxonomy.",
@@ -15279,7 +15279,7 @@
           "kind": "derived",
           "resolver": {
             "type": "governed_catalog",
-            "catalog_id": "core://tunables/catalogs/failure_classification_taxonomy-v1"
+            "catalog_id": "iteron://tunables/catalogs/failure_classification_taxonomy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -15295,11 +15295,11 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/failure_classification_taxonomy/value-v1",
+          "schema_id": "iteron://tunables/families/failure_classification_taxonomy/value-v1",
           "kind": "catalog",
           "domain": {
             "type": "catalog",
-            "catalog_id": "core://tunables/catalogs/failure_classification_taxonomy-v1",
+            "catalog_id": "iteron://tunables/catalogs/failure_classification_taxonomy-v1",
             "min_entries": 0,
             "max_entries": 1024,
             "entry_fields": [
@@ -15398,7 +15398,7 @@
         "schema_version": 2,
         "ordinal": 127,
         "id": "retry_eligibility_policy",
-        "semantic_key": "core.control.verification.retry_admission",
+        "semantic_key": "iteron.control.verification.retry_admission",
         "aliases": [],
         "domain": "verification",
         "summary": "Retry only verification outcomes that are eligible.",
@@ -15422,7 +15422,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/retry_eligibility_policy-v1"
+            "resolver_id": "iteron://tunables/resolvers/retry_eligibility_policy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -15438,7 +15438,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/retry_eligibility_policy/value-v1",
+          "schema_id": "iteron://tunables/families/retry_eligibility_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -15539,7 +15539,7 @@
         "schema_version": 2,
         "ordinal": 128,
         "id": "rollback_on_verification_failure",
-        "semantic_key": "core.control.verification.failure_rollback",
+        "semantic_key": "iteron.control.verification.failure_rollback",
         "aliases": [],
         "domain": "verification",
         "summary": "Rollback selected workspace changes after verification failure.",
@@ -15580,7 +15580,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/rollback_on_verification_failure/value-v1",
+          "schema_id": "iteron://tunables/families/rollback_on_verification_failure/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -15633,7 +15633,7 @@
         "schema_version": 2,
         "ordinal": 129,
         "id": "workspace_checkpoint_cadence",
-        "semantic_key": "core.control.verification.checkpoint_schedule",
+        "semantic_key": "iteron.control.verification.checkpoint_schedule",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose durable workspace checkpoint boundaries.",
@@ -15706,7 +15706,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/workspace_checkpoint_cadence/value-v1",
+          "schema_id": "iteron://tunables/families/workspace_checkpoint_cadence/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -15796,7 +15796,7 @@
         "schema_version": 2,
         "ordinal": 130,
         "id": "selective_restore_scope",
-        "semantic_key": "core.control.verification.restore_selection",
+        "semantic_key": "iteron.control.verification.restore_selection",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose an explicit user-authorized restore scope.",
@@ -15854,7 +15854,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/selective_restore_scope/value-v1",
+          "schema_id": "iteron://tunables/families/selective_restore_scope/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -15942,7 +15942,7 @@
         "schema_version": 2,
         "ordinal": 131,
         "id": "verification_quorum_consensus",
-        "semantic_key": "core.control.verification.quorum_consensus",
+        "semantic_key": "iteron.control.verification.quorum_consensus",
         "aliases": [],
         "domain": "verification",
         "summary": "Require bounded verifier agreement.",
@@ -16008,7 +16008,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/verification_quorum_consensus/value-v1",
+          "schema_id": "iteron://tunables/families/verification_quorum_consensus/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -16096,7 +16096,7 @@
         "schema_version": 2,
         "ordinal": 132,
         "id": "recovery_escalation_policy",
-        "semantic_key": "core.control.verification.recovery_escalation",
+        "semantic_key": "iteron.control.verification.recovery_escalation",
         "aliases": [],
         "domain": "verification",
         "summary": "Escalate verification recovery from retry to replan to stop.",
@@ -16138,7 +16138,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/recovery_escalation_policy/value-v1",
+          "schema_id": "iteron://tunables/families/recovery_escalation_policy/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -16191,7 +16191,7 @@
         "schema_version": 2,
         "ordinal": 133,
         "id": "per_agent_model",
-        "semantic_key": "core.control.orchestration.agent_model_assignment",
+        "semantic_key": "iteron.control.orchestration.agent_model_assignment",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose a model for one admitted agent.",
@@ -16216,7 +16216,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_agent_model-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_agent_model-v1"
           },
           "requirement": "optional",
           "value": null
@@ -16232,14 +16232,14 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_agent_model/value-v1",
+          "schema_id": "iteron://tunables/families/per_agent_model/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
             "domain": {
               "type": "enum",
               "values": [],
-              "catalog_id": "core://tunables/catalogs/model-routes-v1"
+              "catalog_id": "iteron://tunables/catalogs/model-routes-v1"
             }
           },
           "rules": [
@@ -16251,7 +16251,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -16292,7 +16292,7 @@
         "schema_version": 2,
         "ordinal": 134,
         "id": "per_agent_effort_thinking",
-        "semantic_key": "core.control.orchestration.agent_reasoning_assignment",
+        "semantic_key": "iteron.control.orchestration.agent_reasoning_assignment",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose effort and thinking for one admitted agent.",
@@ -16318,7 +16318,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_agent_effort_thinking-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_agent_effort_thinking-v1"
           },
           "requirement": "optional",
           "value": null
@@ -16334,7 +16334,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_agent_effort_thinking/value-v1",
+          "schema_id": "iteron://tunables/families/per_agent_effort_thinking/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -16360,7 +16360,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -16401,7 +16401,7 @@
         "schema_version": 2,
         "ordinal": 135,
         "id": "per_agent_tool_profile",
-        "semantic_key": "core.control.orchestration.agent_tool_capabilities",
+        "semantic_key": "iteron.control.orchestration.agent_tool_capabilities",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Narrow the tool profile for one admitted agent.",
@@ -16426,7 +16426,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_agent_tool_profile-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_agent_tool_profile-v1"
           },
           "requirement": "optional",
           "value": null
@@ -16442,7 +16442,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_agent_tool_profile/value-v1",
+          "schema_id": "iteron://tunables/families/per_agent_tool_profile/value-v1",
           "kind": "map",
           "domain": {
             "type": "map",
@@ -16506,7 +16506,7 @@
         "schema_version": 2,
         "ordinal": 136,
         "id": "per_agent_memory_scope",
-        "semantic_key": "core.control.memory.agent_scope_isolation",
+        "semantic_key": "iteron.control.memory.agent_scope_isolation",
         "aliases": [],
         "domain": "memory",
         "summary": "Choose isolated or explicitly shared agent memory.",
@@ -16565,7 +16565,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_agent_memory_scope/value-v1",
+          "schema_id": "iteron://tunables/families/per_agent_memory_scope/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -16651,7 +16651,7 @@
         "schema_version": 2,
         "ordinal": 137,
         "id": "spawn_depth_control",
-        "semantic_key": "core.control.orchestration.spawn_depth_ceiling",
+        "semantic_key": "iteron.control.orchestration.spawn_depth_ceiling",
         "aliases": [
           "agent_spawn_depth"
         ],
@@ -16695,7 +16695,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/spawn_depth_control/value-v1",
+          "schema_id": "iteron://tunables/families/spawn_depth_control/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -16745,7 +16745,7 @@
         "schema_version": 2,
         "ordinal": 138,
         "id": "per_session_spawn_cap",
-        "semantic_key": "core.control.orchestration.session_spawn_budget",
+        "semantic_key": "iteron.control.orchestration.session_spawn_budget",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound total agent spawns in one session.",
@@ -16769,7 +16769,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_session_spawn_cap-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_session_spawn_cap-v1"
           },
           "requirement": "optional",
           "value": null
@@ -16785,7 +16785,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_session_spawn_cap/value-v1",
+          "schema_id": "iteron://tunables/families/per_session_spawn_cap/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -16835,7 +16835,7 @@
         "schema_version": 2,
         "ordinal": 139,
         "id": "task_priority_scheduling",
-        "semantic_key": "core.control.orchestration.ready_task_priority",
+        "semantic_key": "iteron.control.orchestration.ready_task_priority",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Schedule ready tasks by bounded priority.",
@@ -16899,7 +16899,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/task_priority_scheduling/value-v1",
+          "schema_id": "iteron://tunables/families/task_priority_scheduling/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -16984,7 +16984,7 @@
         "schema_version": 2,
         "ordinal": 140,
         "id": "speculative_sibling_count",
-        "semantic_key": "core.control.orchestration.speculative_sibling_ceiling",
+        "semantic_key": "iteron.control.orchestration.speculative_sibling_ceiling",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound speculative sibling agents.",
@@ -17025,7 +17025,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/speculative_sibling_count/value-v1",
+          "schema_id": "iteron://tunables/families/speculative_sibling_count/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -17085,7 +17085,7 @@
         "schema_version": 2,
         "ordinal": 141,
         "id": "speculative_sibling_cancellation",
-        "semantic_key": "core.control.orchestration.speculative_sibling_cancellation",
+        "semantic_key": "iteron.control.orchestration.speculative_sibling_cancellation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Cancel losing speculative siblings from evidence.",
@@ -17108,7 +17108,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/speculative_sibling_cancellation-v1"
+            "resolver_id": "iteron://tunables/resolvers/speculative_sibling_cancellation-v1"
           },
           "requirement": "optional",
           "value": null
@@ -17124,7 +17124,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/speculative_sibling_cancellation/value-v1",
+          "schema_id": "iteron://tunables/families/speculative_sibling_cancellation/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -17230,7 +17230,7 @@
         "schema_version": 2,
         "ordinal": 142,
         "id": "early_stop_quorum_policy",
-        "semantic_key": "core.control.orchestration.evidence_quorum_stop",
+        "semantic_key": "iteron.control.orchestration.evidence_quorum_stop",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Stop a fan only after required evidence reaches quorum.",
@@ -17295,7 +17295,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/early_stop_quorum_policy/value-v1",
+          "schema_id": "iteron://tunables/families/early_stop_quorum_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -17378,7 +17378,7 @@
         "schema_version": 2,
         "ordinal": 143,
         "id": "writer_worktree_isolation_mode",
-        "semantic_key": "core.control.governance.writer_worktree_isolation",
+        "semantic_key": "iteron.control.governance.writer_worktree_isolation",
         "aliases": [],
         "domain": "governance",
         "summary": "Isolate write-capable agents in worktrees.",
@@ -17420,7 +17420,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/writer_worktree_isolation_mode/value-v1",
+          "schema_id": "iteron://tunables/families/writer_worktree_isolation_mode/value-v1",
           "kind": "bool",
           "domain": {
             "type": "scalar",
@@ -17467,7 +17467,7 @@
         "schema_version": 2,
         "ordinal": 144,
         "id": "merge_conflict_arbitration",
-        "semantic_key": "core.control.verification.child_merge_arbitration",
+        "semantic_key": "iteron.control.verification.child_merge_arbitration",
         "aliases": [],
         "domain": "verification",
         "summary": "Arbitrate verified child merges and conflicts.",
@@ -17491,7 +17491,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/merge_conflict_arbitration-v1"
+            "resolver_id": "iteron://tunables/resolvers/merge_conflict_arbitration-v1"
           },
           "requirement": "optional",
           "value": null
@@ -17507,7 +17507,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/merge_conflict_arbitration/value-v1",
+          "schema_id": "iteron://tunables/families/merge_conflict_arbitration/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -17605,7 +17605,7 @@
         "schema_version": 2,
         "ordinal": 145,
         "id": "inter_agent_messaging_topology",
-        "semantic_key": "core.control.orchestration.agent_message_routing",
+        "semantic_key": "iteron.control.orchestration.agent_message_routing",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Route bounded agent reports through the parent.",
@@ -17646,7 +17646,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/inter_agent_messaging_topology/value-v1",
+          "schema_id": "iteron://tunables/families/inter_agent_messaging_topology/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -17709,7 +17709,7 @@
         "schema_version": 2,
         "ordinal": 146,
         "id": "task_retry_reassignment_policy",
-        "semantic_key": "core.control.orchestration.failed_task_reassignment",
+        "semantic_key": "iteron.control.orchestration.failed_task_reassignment",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Retry or reassign a failed agent task.",
@@ -17733,7 +17733,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/task_retry_reassignment_policy-v1"
+            "resolver_id": "iteron://tunables/resolvers/task_retry_reassignment_policy-v1"
           },
           "requirement": "optional",
           "value": null
@@ -17749,7 +17749,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/task_retry_reassignment_policy/value-v1",
+          "schema_id": "iteron://tunables/families/task_retry_reassignment_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -17845,7 +17845,7 @@
         "schema_version": 2,
         "ordinal": 147,
         "id": "mcp_transport_selection",
-        "semantic_key": "core.control.extensibility.mcp_transport",
+        "semantic_key": "iteron.control.extensibility.mcp_transport",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Select an admitted MCP transport.",
@@ -17900,7 +17900,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/mcp_transport_selection/value-v1",
+          "schema_id": "iteron://tunables/families/mcp_transport_selection/value-v1",
           "kind": "list",
           "domain": {
             "type": "list",
@@ -17955,7 +17955,7 @@
         "schema_version": 2,
         "ordinal": 148,
         "id": "deferred_discovery_threshold",
-        "semantic_key": "core.control.extensibility.tool_schema_discovery_deferral",
+        "semantic_key": "iteron.control.extensibility.tool_schema_discovery_deferral",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Defer registered tool schemas after a bounded eager threshold.",
@@ -17999,7 +17999,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/deferred_discovery_threshold/value-v1",
+          "schema_id": "iteron://tunables/families/deferred_discovery_threshold/value-v1",
           "kind": "count",
           "domain": {
             "type": "scalar",
@@ -18038,7 +18038,7 @@
         "schema_version": 2,
         "ordinal": 149,
         "id": "mcp_reconnect_backoff",
-        "semantic_key": "core.control.extensibility.mcp_reconnect_schedule",
+        "semantic_key": "iteron.control.extensibility.mcp_reconnect_schedule",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Bound MCP reconnect attempts and delay.",
@@ -18061,7 +18061,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/mcp_reconnect_backoff-v1"
+            "resolver_id": "iteron://tunables/resolvers/mcp_reconnect_backoff-v1"
           },
           "requirement": "optional",
           "value": null
@@ -18077,7 +18077,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/mcp_reconnect_backoff/value-v1",
+          "schema_id": "iteron://tunables/families/mcp_reconnect_backoff/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18168,7 +18168,7 @@
         "schema_version": 2,
         "ordinal": 150,
         "id": "per_server_startup_deadline",
-        "semantic_key": "core.control.extensibility.mcp_server_startup_deadline",
+        "semantic_key": "iteron.control.extensibility.mcp_server_startup_deadline",
         "aliases": [
           "mcp_server_startup_timeout"
         ],
@@ -18193,7 +18193,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_server_startup_deadline-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_server_startup_deadline-v1"
           },
           "requirement": "optional",
           "value": null
@@ -18209,7 +18209,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_server_startup_deadline/value-v1",
+          "schema_id": "iteron://tunables/families/per_server_startup_deadline/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18292,7 +18292,7 @@
         "schema_version": 2,
         "ordinal": 151,
         "id": "per_tool_mcp_deadline",
-        "semantic_key": "core.control.extensibility.mcp_tool_deadline",
+        "semantic_key": "iteron.control.extensibility.mcp_tool_deadline",
         "aliases": [
           "mcp_tool_timeout"
         ],
@@ -18317,7 +18317,7 @@
           "kind": "derived",
           "resolver": {
             "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/per_tool_mcp_deadline-v1"
+            "resolver_id": "iteron://tunables/resolvers/per_tool_mcp_deadline-v1"
           },
           "requirement": "optional",
           "value": null
@@ -18333,7 +18333,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/per_tool_mcp_deadline/value-v1",
+          "schema_id": "iteron://tunables/families/per_tool_mcp_deadline/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18416,7 +18416,7 @@
         "schema_version": 2,
         "ordinal": 152,
         "id": "mcp_result_cap_spill_policy",
-        "semantic_key": "core.control.extensibility.mcp_result_spill",
+        "semantic_key": "iteron.control.extensibility.mcp_result_spill",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Cap or spill MCP results before model exposure.",
@@ -18489,7 +18489,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/mcp_result_cap_spill_policy/value-v1",
+          "schema_id": "iteron://tunables/families/mcp_result_cap_spill_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18584,7 +18584,7 @@
         "schema_version": 2,
         "ordinal": 153,
         "id": "oauth_auth_lifecycle_policy",
-        "semantic_key": "core.control.extensibility.mcp_oauth_lifecycle",
+        "semantic_key": "iteron.control.extensibility.mcp_oauth_lifecycle",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Manage MCP OAuth and authentication lifecycle.",
@@ -18632,7 +18632,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/oauth_auth_lifecycle_policy/value-v1",
+          "schema_id": "iteron://tunables/families/oauth_auth_lifecycle_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18798,7 +18798,7 @@
         "schema_version": 2,
         "ordinal": 154,
         "id": "resource_prompt_plugin_capability_exposure",
-        "semantic_key": "core.control.extensibility.mcp_resource_prompt_exposure",
+        "semantic_key": "iteron.control.extensibility.mcp_resource_prompt_exposure",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Expose trusted MCP resources, prompts, and plugin capabilities.",
@@ -18878,7 +18878,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/resource_prompt_plugin_capability_exposure/value-v1",
+          "schema_id": "iteron://tunables/families/resource_prompt_plugin_capability_exposure/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -18989,7 +18989,7 @@
         "schema_version": 2,
         "ordinal": 155,
         "id": "request_compression_policy",
-        "semantic_key": "core.control.provider.request_compression",
+        "semantic_key": "iteron.control.provider.request_compression",
         "aliases": [],
         "domain": "provider",
         "summary": "Select provider request compression.",
@@ -19028,7 +19028,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/request_compression_policy/value-v1",
+          "schema_id": "iteron://tunables/families/request_compression_policy/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -19051,7 +19051,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             }
           ]
@@ -19082,7 +19082,7 @@
         "schema_version": 2,
         "ordinal": 156,
         "id": "http_pool_keepalive_idle_policy",
-        "semantic_key": "core.control.provider.connection_pool_lifetime",
+        "semantic_key": "iteron.control.provider.connection_pool_lifetime",
         "aliases": [],
         "domain": "provider",
         "summary": "Bound HTTP pool idle and TCP keepalive behavior.",
@@ -19145,7 +19145,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/http_pool_keepalive_idle_policy/value-v1",
+          "schema_id": "iteron://tunables/families/http_pool_keepalive_idle_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -19228,7 +19228,7 @@
         "schema_version": 2,
         "ordinal": 157,
         "id": "rate_limit_aware_admission",
-        "semantic_key": "core.control.provider.rate_limit_admission",
+        "semantic_key": "iteron.control.provider.rate_limit_admission",
         "aliases": [],
         "domain": "provider",
         "summary": "Gate new provider work from observed rate-limit headroom.",
@@ -19301,7 +19301,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/rate_limit_aware_admission/value-v1",
+          "schema_id": "iteron://tunables/families/rate_limit_aware_admission/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -19372,7 +19372,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -19413,7 +19413,7 @@
         "schema_version": 2,
         "ordinal": 158,
         "id": "prompt_cache_ttl_breakpoint_strategy",
-        "semantic_key": "core.control.provider.prompt_cache_policy",
+        "semantic_key": "iteron.control.provider.prompt_cache_policy",
         "aliases": [],
         "domain": "context",
         "summary": "Declare prompt-cache lifetime and breakpoint strategy when an independent control is implemented.",
@@ -19454,7 +19454,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/prompt_cache_ttl_breakpoint_strategy/value-v1",
+          "schema_id": "iteron://tunables/families/prompt_cache_ttl_breakpoint_strategy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",
@@ -19526,7 +19526,7 @@
               "relation": "attested_domain",
               "violation": {
                 "type": "degrade_attested",
-                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+                "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
               }
             },
             {
@@ -19567,7 +19567,7 @@
         "schema_version": 2,
         "ordinal": 159,
         "id": "session_isolation_profile",
-        "semantic_key": "core.control.governance.session_isolation",
+        "semantic_key": "iteron.control.governance.session_isolation",
         "aliases": [],
         "domain": "governance",
         "summary": "Choose an isolation profile for sessions and evaluations.",
@@ -19610,7 +19610,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/session_isolation_profile/value-v1",
+          "schema_id": "iteron://tunables/families/session_isolation_profile/value-v1",
           "kind": "enum",
           "domain": {
             "type": "scalar",
@@ -19673,7 +19673,7 @@
         "schema_version": 2,
         "ordinal": 160,
         "id": "replay_divergence_detection_policy",
-        "semantic_key": "core.control.verification.replay_divergence_rejection",
+        "semantic_key": "iteron.control.verification.replay_divergence_rejection",
         "aliases": [],
         "domain": "verification",
         "summary": "Reject replay state that diverges from durable evidence.",
@@ -19745,7 +19745,7 @@
           ]
         },
         "value_schema": {
-          "schema_id": "core://tunables/families/replay_divergence_detection_policy/value-v1",
+          "schema_id": "iteron://tunables/families/replay_divergence_detection_policy/value-v1",
           "kind": "policy",
           "domain": {
             "type": "object",

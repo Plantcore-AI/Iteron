@@ -1,5 +1,5 @@
 [package]
-name = "core-evolve"
+name = "iteron-evolve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,8 +12,8 @@ path = "src/main.rs"
 # The evolution control plane is deliberately outside the runtime TCB. It consumes recorded
 # trajectories and emits versioned policy artifacts; it cannot execute tools or grant capability.
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-record = { path = "../record" }
+iteron-protocol = { path = "../protocol" }
+iteron-record = { path = "../record" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

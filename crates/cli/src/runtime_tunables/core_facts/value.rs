@@ -115,13 +115,13 @@ pub(super) fn rules(rules: &PermissionRules) -> Result<ResolutionValue, CoreFact
     Ok(ResolutionValue::Map { entries })
 }
 
-const fn capability_name(capability: core_protocol::Capability) -> &'static str {
+const fn capability_name(capability: iteron_protocol::Capability) -> &'static str {
     match capability {
-        core_protocol::Capability::ReadOnly => "read_only",
-        core_protocol::Capability::ReversibleLocal => "reversible_local",
-        core_protocol::Capability::CodeExecuting => "code_executing",
-        core_protocol::Capability::TrustMutating => "trust_mutating",
-        core_protocol::Capability::IrreversibleExternal => "irreversible_external",
+        iteron_protocol::Capability::ReadOnly => "read_only",
+        iteron_protocol::Capability::ReversibleLocal => "reversible_local",
+        iteron_protocol::Capability::CodeExecuting => "code_executing",
+        iteron_protocol::Capability::TrustMutating => "trust_mutating",
+        iteron_protocol::Capability::IrreversibleExternal => "irreversible_external",
     }
 }
 

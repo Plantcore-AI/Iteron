@@ -1,4 +1,4 @@
-//! D12-04 oracle: `core-eval` never silently converts an unknown cost into a numeric $0.
+//! D12-04 oracle: `iteron-eval` never silently converts an unknown cost into a numeric $0.
 //!
 //! The gap under closure is "Eval silently converts unknown cost to $0". A run whose Core process
 //! could not establish a dollar amount (no verified rate card) must stay *typed* as unknown from
@@ -7,7 +7,7 @@
 //! `$0.0000`: a priced-zero cell that then drags a config's average toward zero and makes an
 //! unpriced comparison look "fully priced" with a fabricated $0 delta.
 //!
-//! These tests pin the honest-cost invariant at every layer core-eval owns:
+//! These tests pin the honest-cost invariant at every layer iteron-eval owns:
 //!   * the contract reader ([`parse_final_result`] -> [`CliFinalResult::cost`]) yields
 //!     `usd == None` for an unknown cost, while a genuine `known` `$0.00` is preserved as
 //!     `Some(0.0)` — proving the fix distinguishes "no amount" from "an amount that is zero";
@@ -20,8 +20,8 @@
 //! once this oracle runs against the honest-cost runner. Every assertion below would FAIL under the
 //! "unknown -> $0" coercion, so the oracle is non-vacuous.
 
-use core_eval::types::CostObservation;
-use core_eval::{
+use iteron_eval::types::CostObservation;
+use iteron_eval::{
     CellResult, CostStatus, OracleStatus, Partition, RunStatus, SamplingControl, aggregate,
     compare, parse_final_result,
 };

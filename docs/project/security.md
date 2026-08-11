@@ -1,6 +1,6 @@
 # Security
 
-Core Code executes model-proposed operations against source trees, so permission,
+Iteron executes model-proposed operations against source trees, so permission,
 sandbox, provider routing, records, extensions, and release provenance are
 security boundaries rather than optional polish.
 
@@ -17,13 +17,13 @@ security boundaries rather than optional polish.
 - Run records are tamper-evident, not encrypted.
 
 Review the full
-[SECURITY.md](https://github.com/Plantcore-AI/core/blob/main/SECURITY.md) before
-using Core Code with valuable source.
+[SECURITY.md](https://github.com/Plantcore-AI/Iteron/blob/main/SECURITY.md) before
+using Iteron with valuable source.
 
 ## Report a vulnerability
 
 Use GitHub's private
-[Report a vulnerability](https://github.com/Plantcore-AI/core/security/advisories/new)
+[Report a vulnerability](https://github.com/Plantcore-AI/Iteron/security/advisories/new)
 flow. Do not open a public issue and do not attach live credentials, customer
 data, proprietary source, or weaponized exploit material.
 

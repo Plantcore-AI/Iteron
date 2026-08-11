@@ -43,9 +43,9 @@ pub enum RuntimeProfile {
 impl RuntimeProfile {
     pub const fn id(self) -> &'static str {
         match self {
-            Self::Interactive => "core:interactive",
-            Self::Benchmark => "core:benchmark",
-            Self::Research => "core:research",
+            Self::Interactive => "iteron:interactive",
+            Self::Benchmark => "iteron:benchmark",
+            Self::Research => "iteron:research",
         }
     }
 

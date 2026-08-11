@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D14-05 oracle: the `core-eval` measurement machinery in `crates/eval/src/main.rs` has
+//! D14-05 oracle: the `iteron-eval` measurement machinery in `crates/eval/src/main.rs` has
 //! black-box coverage of its two load-bearing behaviors — the process exit-code contract and the
 //! human-readable summary — driven through the ACTUAL compiled binary rather than only its library
 //! internals.
@@ -26,16 +26,16 @@
 //! No cell reaches a terminal model outcome, so the egress-off sandbox / ground-truth oracle is
 //! never entered; the test stays deterministic and sandbox-free on the gate (mirroring d14_01).
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{CorpusManifest, CorpusTask, EvaluationManifest, Partition, RunStatus};
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{CorpusManifest, CorpusTask, EvaluationManifest, Partition, RunStatus};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The compiled `core-eval` binary under test. Cargo builds it and exports this path before running
+/// The compiled `iteron-eval` binary under test. Cargo builds it and exports this path before running
 /// this integration target, so the measurement machinery is exercised exactly as an operator runs it.
-const CORE_EVAL_BIN: &str = env!("CARGO_BIN_EXE_core-eval");
+const ITERON_EVAL_BIN: &str = env!("CARGO_BIN_EXE_iteron-eval");
 
 struct TempRoot(PathBuf);
 
@@ -46,7 +46,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d14-05-{label}-{}-{nonce:x}",
+            "iteron-eval-d14-05-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D14-05 root");
@@ -93,9 +93,9 @@ fn create_repository(root: &TempRoot) -> (String, String) {
         &repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -116,12 +116,12 @@ fn create_repository(root: &TempRoot) -> (String, String) {
 fn create_fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-        .expect("write executable fake core");
+        .expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -166,7 +166,7 @@ fn write_corpus(root: &TempRoot, repo_url: &str, commit: &str) -> PathBuf {
 fn missing_corpus_is_a_harness_error_that_exits_two_and_names_the_tool() {
     let root = TempRoot::new("harness-error");
     let artifact = root.join("out/evaluation.json");
-    let output = Command::new(CORE_EVAL_BIN)
+    let output = Command::new(ITERON_EVAL_BIN)
         .arg("--corpus")
         .arg(root.join("does-not-exist.json"))
         .arg("--model")
@@ -176,7 +176,7 @@ fn missing_corpus_is_a_harness_error_that_exits_two_and_names_the_tool() {
         .arg("--output")
         .arg(&artifact)
         .output()
-        .expect("run core-eval binary");
+        .expect("run iteron-eval binary");
 
     assert_eq!(
         output.status.code(),
@@ -187,7 +187,7 @@ fn missing_corpus_is_a_harness_error_that_exits_two_and_names_the_tool() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("core-eval:"),
+        stderr.contains("iteron-eval:"),
         "the harness error must be reported on stderr under the tool name, got: {stderr:?}"
     );
     // A harness error produces no artifact — the run never reached aggregation.
@@ -209,7 +209,7 @@ fn recorded_run_failures_finalize_a_nonzero_exit_and_print_the_summary() {
     let corpus_path = write_corpus(&root, &repo_url, &commit);
     let artifact = root.join("out/evaluation.json");
 
-    let output = Command::new(CORE_EVAL_BIN)
+    let output = Command::new(ITERON_EVAL_BIN)
         .arg("--corpus")
         .arg(&corpus_path)
         .arg("--model")
@@ -226,7 +226,7 @@ fn recorded_run_failures_finalize_a_nonzero_exit_and_print_the_summary() {
         .arg("--output")
         .arg(&artifact)
         .output()
-        .expect("run core-eval binary");
+        .expect("run iteron-eval binary");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

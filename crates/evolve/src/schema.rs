@@ -10,7 +10,7 @@ use crate::{
     PolicyBundle, PolicyManifest, PolicyRef, ProtocolRange, RewardVector, StrategyDecision,
     TrajectoryEnvelope,
 };
-use core_protocol::{Capability, RunId, TenantId};
+use iteron_protocol::{Capability, RunId, TenantId};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;

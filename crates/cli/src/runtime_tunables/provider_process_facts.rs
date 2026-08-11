@@ -27,11 +27,11 @@ mod value;
 pub(crate) use types::*;
 
 use crate::providers::{ModelCapabilities, ModelSelection, ProviderDirectory};
-use core_ctx::CompactionPolicy;
-use core_protocol::Budget;
-use core_tools::Registry;
-use core_tunables::{CapabilityRequirement, RouteCapabilities, RuntimeResolutionBuilder};
-use core_verify::{VerifierPlan, VerifierSlotObservation};
+use iteron_ctx::CompactionPolicy;
+use iteron_protocol::Budget;
+use iteron_tools::Registry;
+use iteron_tunables::{CapabilityRequirement, RouteCapabilities, RuntimeResolutionBuilder};
+use iteron_verify::{VerifierPlan, VerifierSlotObservation};
 use owner::OwnerSnapshot;
 use std::path::Path;
 
@@ -60,7 +60,7 @@ pub(crate) struct ProviderProcessFactsInput<'a> {
     pub verification: VerificationOwnerFacts<'a>,
     pub provider_governor: &'a crate::config::ResolvedProviderGovernorConfig,
     pub provider_governor_configured: bool,
-    pub provider_control_capabilities: &'a core_provider::ProviderControlCapabilities,
+    pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
 }
 
 /// Add every representable owner fact for ordinals 86..=132. A successful return means the facts
@@ -126,7 +126,7 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
         .registry
         .specs()
         .iter()
-        .any(|spec| spec.purity == core_protocol::Purity::Pure);
+        .any(|spec| spec.purity == iteron_protocol::Purity::Pure);
     let capabilities = &input.route.capabilities;
     let consistent = capabilities.contains(&CapabilityRequirement::PersistentProcess) == process
         && capabilities.contains(&CapabilityRequirement::LanguageServer) == lsp

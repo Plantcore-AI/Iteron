@@ -31,7 +31,7 @@ impl<'de> Visitor<'de> for MachineValueVisitor {
     type Value = Value;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a core machine JSON value without duplicate object keys")
+        formatter.write_str("a iteron machine JSON value without duplicate object keys")
     }
 
     fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {

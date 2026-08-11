@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const DOMAIN: &[u8] = b"core-eval/offline-tuner-journal/v1\0";
+const DOMAIN: &[u8] = b"iteron-eval/offline-tuner-journal/v1\0";
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 

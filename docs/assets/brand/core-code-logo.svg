@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title description">
-  <title id="title">Core Code</title>
-  <desc id="description">Core Code logo with bounded code brackets and a central core.</desc>
+  <title id="title">Iteron</title>
+  <desc id="description">Iteron logo with bounded code brackets and a central iteron.</desc>
   <rect x="1" y="1" width="718" height="178" rx="28" fill="#0b1020" stroke="#27324a" stroke-width="2"/>
   <g transform="translate(25 19) scale(.55)">
     <rect width="256" height="256" rx="52" fill="#10172a"/>
@@ -10,6 +10,6 @@
     <rect x="116" y="116" width="24" height="24" rx="7" fill="#f8fafc"/>
   </g>
   <path d="M183 42v96" stroke="#27324a" stroke-width="2"/>
-  <text x="218" y="89" fill="#f8fafc" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="56" font-weight="700" letter-spacing="1.5">Core Code</text>
+  <text x="218" y="89" fill="#f8fafc" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="56" font-weight="700" letter-spacing="1.5">Iteron</text>
   <text x="221" y="122" fill="#9aa8c2" font-family="SFMono-Regular, Consolas, Liberation Mono, monospace" font-size="15" font-weight="600" letter-spacing="2.2">CODING AGENT · MODULAR RUST RUNTIME</text>
 </svg>

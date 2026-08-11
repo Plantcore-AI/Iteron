@@ -1,5 +1,5 @@
-use core_protocol::{Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId};
-use core_record::Rollout;
+use iteron_protocol::{Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId};
+use iteron_record::Rollout;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -15,7 +15,7 @@ impl Scratch {
     fn new() -> Self {
         let serial = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root =
-            std::env::temp_dir().join(format!("core-cli-reindex-{}-{serial}", std::process::id()));
+            std::env::temp_dir().join(format!("iteron-cli-reindex-{}-{serial}", std::process::id()));
         std::fs::create_dir_all(root.join("repo")).unwrap();
         std::fs::create_dir_all(root.join("runs")).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
@@ -42,7 +42,7 @@ impl Drop for Scratch {
 }
 
 fn run_core(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
         .env("HOME", home)
@@ -77,7 +77,7 @@ fn run_core(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("core maintenance command exceeded {PROCESS_TIMEOUT:?}");
+            panic!("iteron maintenance command exceeded {PROCESS_TIMEOUT:?}");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -200,7 +200,7 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     assert_eq!(contract["cli_stream_versions"], serde_json::json!([4, 5]));
     assert_eq!(
         contract["resident_protocol_version"],
-        core_protocol::wire::PROTOCOL_VERSION
+        iteron_protocol::wire::PROTOCOL_VERSION
     );
 
     let repo_arg = scratch.repo().display().to_string();
@@ -254,7 +254,7 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     assert_eq!(forked["status"], "created");
     let child = RunId(forked["child_run_id"].as_str().unwrap().to_owned());
     assert_eq!(
-        core_record::meta(&scratch.runs(), &child)
+        iteron_record::meta(&scratch.runs(), &child)
             .unwrap()
             .agent_definition_tag
             .as_deref(),
@@ -294,7 +294,7 @@ fn write_session(runs: &Path, run: &RunId, cwd: &Path, title: &str) {
         .unwrap();
 }
 
-/// I-06. Nine call sites used the raw `.core/runs` default, so the audit record landed beside
+/// I-06. Nine call sites used the raw `.iteron/runs` default, so the audit record landed beside
 /// whatever directory the process started in rather than under `-C`. An absolute `--runs-dir` is
 /// still taken verbatim.
 #[test]
@@ -311,15 +311,15 @@ fn d11_06_a_relative_runs_dir_resolves_against_dash_c_not_the_process_directory(
     );
     assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
     assert!(
-        stdout.contains(&canonical.join(".core/runs").display().to_string()),
+        stdout.contains(&canonical.join(".iteron/runs").display().to_string()),
         "{stdout}"
     );
     assert!(
-        canonical.join(".core/runs").is_dir(),
+        canonical.join(".iteron/runs").is_dir(),
         "the runs dir belongs to -C"
     );
     assert!(
-        !scratch.0.join(".core").exists(),
+        !scratch.0.join(".iteron").exists(),
         "nothing is written beside the process working directory"
     );
 

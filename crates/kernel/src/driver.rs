@@ -30,7 +30,7 @@ use crate::turn_action::ActionRequest;
 use crate::turn_command::Command;
 use crate::turn_protocol::{ProviderFailure, ProviderTermination};
 use crate::turn_state::TurnState;
-use core_protocol::Outcome;
+use iteron_protocol::Outcome;
 use std::collections::VecDeque;
 
 /// Hard ceiling on port replies queued inside the driver.

@@ -2,7 +2,7 @@
 //!
 //! The `output.rs` unit tests freeze the pure producer functions, and `one_shot_output.rs`
 //! freezes the provider-backed *success* path. What was missing is a PROCESS-level golden that
-//! spawns the real `core` binary and pins the machine-output contract end to end for a fully
+//! spawns the real `iteron` binary and pins the machine-output contract end to end for a fully
 //! deterministic, provider-free run. This closes that gap using the `--max-usd 0` budget path,
 //! which terminates at turn admission before any provider call, so the emitted terminal is
 //! hermetic and byte-stable.
@@ -13,7 +13,7 @@
 //!      streamed record is a versioned machine record.
 //!   3. `evaluation`  — the terminal `exit_code` equals the real OS exit status and
 //!      `success == (outcome in {done, drained})`: the exact coherence the
-//!      `core-eval` consumer (`parse_final_result`) enforces at the process seam.
+//!      `iteron-eval` consumer (`parse_final_result`) enforces at the process seam.
 
 use serde_json::{Value, json};
 use std::fs;
@@ -26,12 +26,12 @@ use std::time::{Duration, Instant};
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 const PROVIDER_ID: &str = "golden";
 const MODEL_ID: &str = "golden-model";
-const TEST_KEY_ENV: &str = "CORE_GOLDEN_TEST_KEY";
+const TEST_KEY_ENV: &str = "ITERON_GOLDEN_TEST_KEY";
 const TEST_KEY: &str = "integration-test-placeholder";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Isolated HOME + repo + rollout tree for one hermetic `core` invocation.
+/// Isolated HOME + repo + rollout tree for one hermetic `iteron` invocation.
 struct Scratch {
     root: PathBuf,
 }
@@ -40,12 +40,12 @@ impl Scratch {
     fn new(label: &str) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "core-cli-d13-15-{label}-{}-{id}",
+            "iteron-cli-d13-15-{label}-{}-{id}",
             std::process::id()
         ));
         let scratch = Self { root };
         fs::create_dir_all(scratch.repo()).expect("create isolated repository");
-        fs::create_dir_all(scratch.home().join(".core")).expect("create isolated Core home");
+        fs::create_dir_all(scratch.home().join(".iteron")).expect("create isolated Core home");
         fs::create_dir_all(scratch.runs()).expect("create isolated rollout directory");
 
         // The loopback discard port is never contacted: `--max-usd 0` exhausts the budget before
@@ -69,7 +69,7 @@ impl Scratch {
             }]
         });
         fs::write(
-            scratch.home().join(".core/config.json"),
+            scratch.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).expect("encode test config"),
         )
         .expect("write isolated test config");
@@ -95,9 +95,9 @@ impl Drop for Scratch {
     }
 }
 
-/// Spawn the real `core` binary on the deterministic budget path and collect its bounded output.
+/// Spawn the real `iteron` binary on the deterministic budget path and collect its bounded output.
 fn run_budget(scratch: &Scratch, format: &str) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, or user config. The only credential visible to
     // the child is the inert placeholder, and no origin is ever contacted on the budget path.
     command
@@ -145,19 +145,19 @@ fn run_budget(scratch: &Scratch, format: &str) -> Output {
         }
     }
 
-    let mut child = command.spawn().expect("spawn the real core binary");
+    let mut child = command.spawn().expect("spawn the real iteron binary");
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
-        match child.try_wait().expect("poll core child") {
-            Some(_) => return child.wait_with_output().expect("collect core output"),
+        match child.try_wait().expect("poll iteron child") {
+            Some(_) => return child.wait_with_output().expect("collect iteron output"),
             None if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             None => {
                 let _ = child.kill();
                 let output = child
                     .wait_with_output()
-                    .expect("collect timed-out core output");
+                    .expect("collect timed-out iteron output");
                 panic!(
-                    "core exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
+                    "iteron exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -319,7 +319,7 @@ fn d13_15_process_exit_matches_the_machine_result_exit_code() {
         let process_exit = output
             .status
             .code()
-            .expect("core exits with a numeric status");
+            .expect("iteron exits with a numeric status");
 
         let terminal = json_lines(&output.stdout)
             .into_iter()
@@ -327,7 +327,7 @@ fn d13_15_process_exit_matches_the_machine_result_exit_code() {
             .find(|value| value["type"] == "result")
             .expect("a terminal result record is present");
 
-        // This is exactly the invariant the core-eval consumer enforces at the process seam:
+        // This is exactly the invariant the iteron-eval consumer enforces at the process seam:
         // the OS exit status and the embedded machine exit_code cannot disagree.
         assert_eq!(
             terminal["exit_code"].as_i64(),

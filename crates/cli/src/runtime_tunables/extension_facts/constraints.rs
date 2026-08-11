@@ -12,7 +12,7 @@ use super::{
     ExtensionFactError, ExtensionFactsInput, ExtensionFactsReport, ExtensionGapReason, FactLayer,
     GapImpact,
 };
-use core_tunables::{ExternalCeiling, ResolutionValue, RuntimeResolutionBuilder};
+use iteron_tunables::{ExternalCeiling, ResolutionValue, RuntimeResolutionBuilder};
 
 pub(super) fn apply(
     builder: &mut RuntimeResolutionBuilder,

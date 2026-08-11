@@ -1,6 +1,6 @@
 # Configuration
 
-Core Code uses strict JSON configuration. Unknown fields are rejected and each
+Iteron uses strict JSON configuration. Unknown fields are rejected and each
 file is limited to 1 MiB.
 
 The current file schema is `schema_version: 2`. Configs written before the version field existed
@@ -12,8 +12,8 @@ guesses at future semantics.
 
 | Location | Authority |
 | --- | --- |
-| `~/.core/config.json` | Operator-owned; may select providers, endpoints, signed rate cards, effort, MCP processes, hooks, and grants |
-| `<repo>/.core/config.json` | Repository input; may select a bare model and tighten selected ceilings or grants, but cannot redirect provider traffic or spawn commands |
+| `~/.iteron/config.json` | Operator-owned; may select providers, endpoints, signed rate cards, effort, MCP processes, hooks, and grants |
+| `<repo>/.iteron/config.json` | Repository input; may select a bare model and tighten selected ceilings or grants, but cannot redirect provider traffic or spawn commands |
 
 A repository config symlink is rejected. An operator may intentionally symlink
 their own user config, but its contents are still bounded and strictly parsed.
@@ -94,13 +94,13 @@ control output.
 `prompt_history` controls the TUI's text-only history and draft restoration. `project` (the
 default) hashes the canonical workspace identity and keeps unrelated repositories in separate
 files; `global` intentionally shares one operator-wide history; `disabled` creates no history path
-or writer. Files live below `~/.core/history/`, retain at most 200 entries, are scrubbed before
+or writer. Files live below `~/.iteron/history/`, retain at most 200 entries, are scrubbed before
 serialization, and use private directory/file permissions where the platform supports them. Image
 attachments and their paths are never serialized. Ctrl-R searches newest-to-oldest; when an empty
 composer has a failed turn, Ctrl-R retains retry compatibility and Ctrl-Shift-R explicitly starts an
 empty-query history walk. Repository configuration cannot choose the operator's retention policy.
 
-`tui_keymap` is operator-owned and reloads on the first key event after `~/.core/config.json`
+`tui_keymap` is operator-owned and reloads on the first key event after `~/.iteron/config.json`
 changes. The only remappable actions are `external_editor`, `reverse_search`, `restore_draft`,
 `toggle_fold`, and `transcript_viewer`; duplicate chords and unknown actions are refused. Ctrl-C,
 Ctrl-D, Ctrl-J, Ctrl-T,
@@ -179,7 +179,7 @@ Ctrl-G invokes `external_editor` as an exact argv with the current repository as
 directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or
 `EDITOR` value is accepted; environment values containing arguments are refused. Core writes only
 the text draft (never image attachments or paths) to a private, uniquely created file below
-`~/.core/tmp`, temporarily restores the native terminal, strips provider/pricing names and ambient
+`~/.iteron/tmp`, temporarily restores the native terminal, strips provider/pricing names and ambient
 secret-shaped variables from the child, and accepts at most 64 KiB of valid UTF-8 on a successful
 exit. Spawn, timeout, exit,
 read, type, or size failure preserves the original in-memory draft, and the temporary file is
@@ -188,8 +188,8 @@ take over terminal keys.
 
 `retry` contains only bounded numeric policy: `base_ms` is `1..=30000`, `cap_ms` is between
 `base_ms` and `60000`, and `max_attempts` (including the initial request) is `1..=10`. Numeric
-environment overrides use `CORE_RETRY_BASE_MS`, `CORE_RETRY_CAP_MS`, and
-`CORE_RETRY_MAX_ATTEMPTS`, with environment taking precedence over user config. Repository retry
+environment overrides use `ITERON_RETRY_BASE_MS`, `ITERON_RETRY_CAP_MS`, and
+`ITERON_RETRY_MAX_ATTEMPTS`, with environment taking precedence over user config. Repository retry
 policy is always ignored because it can change paid-request timing and count.
 
 !!! warning "Retry overrides are staged, not active"
@@ -264,7 +264,7 @@ catalog and capability digests recorded by `ModelSelected`, and its half-open va
 be active. A positive `max_usd` with no exact active verified card is refused before a provider
 request. Repository `rate_cards` are warned about and ignored.
 
-The signing format is the canonical `core_obs::sign_rate_card` v1 format so operator pricing tools
+The signing format is the canonical `iteron_obs::sign_rate_card` v1 format so operator pricing tools
 can produce the public artifact offline. Durable projections retain the card digest and signed
 projection timestamp; authenticated replay therefore does not consult a current price catalog.
 

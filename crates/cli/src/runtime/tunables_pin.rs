@@ -1,10 +1,10 @@
 //! Immutable, version-neutral tunables identity shared by one execution lineage.
 
 use super::KernelError;
-use core_protocol::{
+use iteron_protocol::{
     Event, EventKind, RunGenesisTunablesInheritance, RunGenesisTunablesVersion, RunId, Seq,
 };
-use core_record::{Rollout, TunablesCheckpoint, TunablesSnapshotError};
+use iteron_record::{Rollout, TunablesCheckpoint, TunablesSnapshotError};
 use std::sync::Arc;
 
 /// One validated physical-sequence-one checkpoint shared by a root and every child.
@@ -20,10 +20,10 @@ pub(crate) struct TunablesPin {
 impl TunablesPin {
     /// Project a fresh atomic resolver result exactly once into the current V2 record identity.
     pub(crate) fn from_resolved(
-        resolved: &core_tunables::ResolvedTunableSet,
+        resolved: &iteron_tunables::ResolvedTunableSet,
     ) -> Result<Self, KernelError> {
-        let snapshot = core_record::snapshot_v2_from_resolved(resolved)
-            .map_err(core_record::RecordError::from)?;
+        let snapshot = iteron_record::snapshot_v2_from_resolved(resolved)
+            .map_err(iteron_record::RecordError::from)?;
         Ok(Self {
             checkpoint: Arc::new(TunablesCheckpoint::V2(snapshot)),
         })
@@ -31,7 +31,7 @@ impl TunablesPin {
 
     /// Admit the exact checkpoint recovered from a held rollout. No resolver is consulted.
     pub(crate) fn from_checkpoint(checkpoint: TunablesCheckpoint) -> Result<Self, KernelError> {
-        validate(&checkpoint).map_err(core_record::RecordError::from)?;
+        validate(&checkpoint).map_err(iteron_record::RecordError::from)?;
         Ok(Self {
             checkpoint: Arc::new(checkpoint),
         })
@@ -55,7 +55,7 @@ impl TunablesPin {
         rollout: &mut Rollout,
         run_start: &Event,
         parent_run: Option<&RunId>,
-    ) -> Result<(Seq, Seq), core_record::RecordError> {
+    ) -> Result<(Seq, Seq), iteron_record::RecordError> {
         if !rollout.is_empty() {
             return Err(snapshot_error("genesis append requires an empty rollout"));
         }
@@ -90,8 +90,8 @@ impl TunablesPin {
         let mut validation_snapshot = snapshot_event.clone();
         validation_snapshot.seq = Seq(1);
         let projected =
-            core_record::tunables_checkpoint_from_events(&[validation_start, validation_snapshot])
-                .map_err(core_record::RecordError::from)?;
+            iteron_record::tunables_checkpoint_from_events(&[validation_start, validation_snapshot])
+                .map_err(iteron_record::RecordError::from)?;
         if projected.as_ref() != Some(self.checkpoint()) {
             return Err(snapshot_error(
                 "validated genesis did not preserve the pinned checkpoint",
@@ -106,19 +106,19 @@ impl TunablesPin {
 
 fn validate(checkpoint: &TunablesCheckpoint) -> Result<(), TunablesSnapshotError> {
     match checkpoint {
-        TunablesCheckpoint::V1(snapshot) => core_record::validate_tunables_snapshot(snapshot),
-        TunablesCheckpoint::V2(snapshot) => core_record::validate_tunables_snapshot_v2(snapshot),
+        TunablesCheckpoint::V1(snapshot) => iteron_record::validate_tunables_snapshot(snapshot),
+        TunablesCheckpoint::V2(snapshot) => iteron_record::validate_tunables_snapshot_v2(snapshot),
     }
 }
 
-fn snapshot_error(reason: &'static str) -> core_record::RecordError {
+fn snapshot_error(reason: &'static str) -> iteron_record::RecordError {
     TunablesSnapshotError::GenesisOrder { reason }.into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
+    use iteron_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
 
     fn invalid_v1() -> TunablesCheckpoint {
         TunablesCheckpoint::V1(RunGenesisTunablesSnapshot {

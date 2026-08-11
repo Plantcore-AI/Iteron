@@ -8,7 +8,7 @@ use super::types::{
 use super::{
     CONTROL_RESPONSE_SECS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS, ProcessLifecycleObserver,
 };
-use core_sandbox::{
+use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyProcess, ConfinedPtyResize, Confinement, PersistentBackend,
     SandboxError, pty::WindowSize, spawn_confined_pty_process,
 };

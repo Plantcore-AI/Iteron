@@ -7,41 +7,41 @@ impl Agent {
     /// submission. No class may borrow unused capacity from another class.
     pub(super) fn context_component_usage(
         &self,
-        messages: &[core_protocol::Message],
-        estimate: &core_ctx::ContextEstimate,
-    ) -> core_ctx::ContextComponentUsage {
+        messages: &[iteron_protocol::Message],
+        estimate: &iteron_ctx::ContextEstimate,
+    ) -> iteron_ctx::ContextComponentUsage {
         let mut instruction_tokens = 0usize;
         let mut memory_tokens = 0usize;
         let mut injected_task_tokens = 0usize;
         for segment in &self.context_source_evidence {
             if !matches!(
                 segment.decision,
-                core_ctx::ContextDecision::Selected
-                    | core_ctx::ContextDecision::Truncated
-                    | core_ctx::ContextDecision::Compacted
+                iteron_ctx::ContextDecision::Selected
+                    | iteron_ctx::ContextDecision::Truncated
+                    | iteron_ctx::ContextDecision::Compacted
             ) {
                 continue;
             }
             let tokens = usize::try_from(segment.estimated_tokens).unwrap_or(usize::MAX);
             match segment.source_class {
-                core_ctx::ContextSourceClass::OperatorInstructions
-                | core_ctx::ContextSourceClass::ProjectInstructions
-                | core_ctx::ContextSourceClass::DirectoryInstructions => {
+                iteron_ctx::ContextSourceClass::OperatorInstructions
+                | iteron_ctx::ContextSourceClass::ProjectInstructions
+                | iteron_ctx::ContextSourceClass::DirectoryInstructions => {
                     instruction_tokens = instruction_tokens.saturating_add(tokens);
                 }
-                core_ctx::ContextSourceClass::UserMemory
-                | core_ctx::ContextSourceClass::WorkspaceMemory
-                | core_ctx::ContextSourceClass::SessionMemory => {
+                iteron_ctx::ContextSourceClass::UserMemory
+                | iteron_ctx::ContextSourceClass::WorkspaceMemory
+                | iteron_ctx::ContextSourceClass::SessionMemory => {
                     memory_tokens = memory_tokens.saturating_add(tokens);
                 }
-                core_ctx::ContextSourceClass::Environment
-                | core_ctx::ContextSourceClass::WorkspaceOutline
-                | core_ctx::ContextSourceClass::SkillIndex
-                | core_ctx::ContextSourceClass::SkillReference
-                | core_ctx::ContextSourceClass::WorkflowEvidence
-                | core_ctx::ContextSourceClass::SubagentEvidence
-                | core_ctx::ContextSourceClass::Steering
-                | core_ctx::ContextSourceClass::QueuedSubmission => {
+                iteron_ctx::ContextSourceClass::Environment
+                | iteron_ctx::ContextSourceClass::WorkspaceOutline
+                | iteron_ctx::ContextSourceClass::SkillIndex
+                | iteron_ctx::ContextSourceClass::SkillReference
+                | iteron_ctx::ContextSourceClass::WorkflowEvidence
+                | iteron_ctx::ContextSourceClass::SubagentEvidence
+                | iteron_ctx::ContextSourceClass::Steering
+                | iteron_ctx::ContextSourceClass::QueuedSubmission => {
                     injected_task_tokens = injected_task_tokens.saturating_add(tokens);
                 }
                 _ => {}
@@ -51,18 +51,18 @@ impl Agent {
         let active_task_with_attachments = messages
             .iter()
             .rfind(|message| {
-                message.role == core_protocol::Role::User
+                message.role == iteron_protocol::Role::User
                     && message
                         .content
                         .iter()
-                        .any(|block| matches!(block, core_protocol::Block::Text { .. }))
+                        .any(|block| matches!(block, iteron_protocol::Block::Text { .. }))
             })
             .map(|message| {
                 message
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        core_protocol::Block::Text { text } => {
+                        iteron_protocol::Block::Text { text } => {
                             Some(self.context_estimator.estimate_text(text))
                         }
                         _ => None,
@@ -80,7 +80,7 @@ impl Agent {
             .saturating_add(memory_tokens)
             .saturating_add(injected_task_tokens);
 
-        core_ctx::ContextComponentUsage {
+        iteron_ctx::ContextComponentUsage {
             stable_prefix_tokens: estimate.system_tokens.saturating_sub(classified_system),
             instruction_tokens,
             task_context_tokens: injected_task_tokens.saturating_add(active_task_tokens),
@@ -100,8 +100,8 @@ impl Agent {
     /// binary payload would make the model answer placeholders as if it saw the image.
     pub(super) fn admit_input_images<'a>(
         &self,
-        input_images: &'a [core_protocol::ImageContent],
-    ) -> Result<&'a [core_protocol::ImageContent], KernelError> {
+        input_images: &'a [iteron_protocol::ImageContent],
+    ) -> Result<&'a [iteron_protocol::ImageContent], KernelError> {
         let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
             total.saturating_add(
                 self.context_estimator
@@ -133,7 +133,7 @@ impl Agent {
     /// resume) — it does NOT touch the disk, so the stable prefix is byte-stable across a run and a
     /// replay reproduces instructions, memory, and skills exactly.
     pub(super) fn effective_system(&self) -> String {
-        core_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+        iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
     }
 
     /// The tool set advertised to the model for this turn.
@@ -143,9 +143,9 @@ impl Agent {
     /// NEVER admit is pure waste — every call the model makes to it is refused by the gate.
     ///
     /// Only the two UNCONDITIONAL denials are filtered, so nothing that could be admitted is
-    /// hidden: `core_protocol::gate` makes Plan a hard read-only overlay that no session rule may
+    /// hidden: `iteron_protocol::gate` makes Plan a hard read-only overlay that no session rule may
     /// punch through (and `bypass_permissions` explicitly excludes Plan), and
-    /// `core_kernel::admission::constrain` denies any capability outside the intersection of the
+    /// `iteron_kernel::admission::constrain` denies any capability outside the intersection of the
     /// admitted task ceiling and the selected policy manifest. An `Ask` is not filtered: the
     /// operator can still answer it.
     ///
@@ -159,14 +159,14 @@ impl Agent {
     /// Plan rewrites the stable prefix and breaks the prompt cache for that one turn. That is a
     /// rare operator action; carrying an unusable schema block on every turn of a read-only session
     /// is not.
-    pub(super) fn advertised_tool_specs(&self) -> Vec<core_protocol::ToolSpec> {
+    pub(super) fn advertised_tool_specs(&self) -> Vec<iteron_protocol::ToolSpec> {
         self.advertised_tool_specs_for_task("")
     }
 
     pub(super) fn advertised_tool_specs_for_task(
         &self,
         task: &str,
-    ) -> Vec<core_protocol::ToolSpec> {
+    ) -> Vec<iteron_protocol::ToolSpec> {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let all = self.registry.specs();
         let total = all.len();
@@ -264,8 +264,8 @@ impl Agent {
 
     pub fn set_context_runtime_policy(
         &mut self,
-        budget: core_ctx::ContextBudgetPolicy,
-        materialization: core_ctx::ContextMaterializationPolicy,
+        budget: iteron_ctx::ContextBudgetPolicy,
+        materialization: iteron_ctx::ContextMaterializationPolicy,
     ) -> Result<(), KernelError> {
         self.context_materialization_policy = materialization
             .validate()
@@ -325,7 +325,7 @@ impl Agent {
         if let Some((context_text, context_trust, durable_instructions)) = recorded.injection {
             if let Some(instructions) = durable_instructions {
                 let (text, trust) =
-                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                    iteron_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -344,7 +344,7 @@ impl Agent {
                     },
                 )?;
                 let (text, trust) =
-                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
+                    iteron_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
                 self.observe_recorded_context(turn, &text, trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
@@ -389,7 +389,7 @@ impl Agent {
                         policy_evidence::PolicyDecisionDraft::selected(
                             &["materialize"],
                             "materialize",
-                            "core:context-features-v1",
+                            "iteron:context-features-v1",
                             &(&resolved.policy_observation, &resolved.policy_plan),
                             &"world_reads_remain_in_context_port",
                         )?,
@@ -401,7 +401,7 @@ impl Agent {
                         context_opportunity,
                         policy_evidence::PolicyDecisionDraft::abstained(
                             &["materialize"],
-                            "core:context-features-v1",
+                            "iteron:context-features-v1",
                             &(turn.0, task.len()),
                             &"context_failure_is_fail_closed",
                         )?,
@@ -422,7 +422,7 @@ impl Agent {
                     policy_evidence::PolicyDecisionDraft::selected(
                         &["no_recall", "recall"],
                         action,
-                        "core:memory-features-v1",
+                        "iteron:memory-features-v1",
                         &(&audit.observation, &audit.selected, &audit.scores_ppm),
                         &"selection_is_bounded_to_gathered_candidates",
                     )?,
@@ -466,7 +466,7 @@ impl Agent {
         let (text, trust) = match &durable_instructions {
             Some(instructions) => {
                 let (text, trust) =
-                    core_ctx::assemble_recorded_context(instructions, context_text, context_trust);
+                    iteron_ctx::assemble_recorded_context(instructions, context_text, context_trust);
                 (text, Some(trust))
             }
             None => (context_text, should_record.then_some(context_trust)),

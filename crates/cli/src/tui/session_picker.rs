@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn session_picker_items(
-    mut sessions: Vec<core_record::SessionMeta>,
+    mut sessions: Vec<iteron_record::SessionMeta>,
     current_run: &str,
     runs: &Path,
 ) -> Vec<PickItem> {
@@ -80,7 +80,7 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
         .and_then(|presentation| presentation.title)
         .filter(|title| !title.trim().is_empty());
     let recorded = || {
-        core_record::list(runs, &core_protocol::TenantId::default())
+        iteron_record::list(runs, &iteron_protocol::TenantId::default())
             .into_iter()
             .find(|metadata| metadata.run_id.0 == run)
             .map(|metadata| metadata.title)
@@ -117,7 +117,7 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
     let items = session_picker_items(
-        core_record::list(&runs, &core_protocol::TenantId::default()),
+        iteron_record::list(&runs, &iteron_protocol::TenantId::default()),
         current_run,
         &runs,
     );
@@ -174,11 +174,11 @@ pub(super) async fn handle_sessions_command(
             adopt_session(app, session, directory, run).await
         }
         "preview" if !run.is_empty() => {
-            let identity = core_protocol::RunId(run.to_owned());
-            let metadata = core_record::list(&runs, &core_protocol::TenantId::default())
+            let identity = iteron_protocol::RunId(run.to_owned());
+            let metadata = iteron_record::list(&runs, &iteron_protocol::TenantId::default())
                 .into_iter()
                 .find(|metadata| metadata.run_id == identity);
-            match (metadata, core_record::load_forked(&runs, &identity)) {
+            match (metadata, iteron_record::load_forked(&runs, &identity)) {
                 (Some(metadata), Ok(events)) => {
                     let presentation = session_management::load(&runs, run).unwrap_or_default();
                     let mut rows = vec![
@@ -279,21 +279,21 @@ pub(super) async fn handle_sessions_command(
                 std::process::id(),
                 crate::erasure_now_unix_ms()
             );
-            let request = core_record::authorize_local_erasure(&runs).and_then(|authority| {
-                Ok(core_protocol::ErasureRequest {
-                    operation_id: core_protocol::ErasureOperationId::new(operation_id.clone())?,
+            let request = iteron_record::authorize_local_erasure(&runs).and_then(|authority| {
+                Ok(iteron_protocol::ErasureRequest {
+                    operation_id: iteron_protocol::ErasureOperationId::new(operation_id.clone())?,
                     authority_id: authority.id().clone(),
                     requested_at_unix_ms: crate::erasure_now_unix_ms(),
-                    target: core_protocol::ErasureTarget::ExactSession {
-                        scope_id: core_protocol::ErasureScopeId::new(
-                            core_protocol::TenantId::default().0,
+                    target: iteron_protocol::ErasureTarget::ExactSession {
+                        scope_id: iteron_protocol::ErasureScopeId::new(
+                            iteron_protocol::TenantId::default().0,
                         )?,
-                        run_id: core_protocol::ErasureTargetId::new(run.to_owned())?,
+                        run_id: iteron_protocol::ErasureTargetId::new(run.to_owned())?,
                     },
                 })
             });
-            match request.and_then(|request| core_record::execute_erasure(&runs, request)) {
-                Ok(receipt) if receipt.state() == core_protocol::ErasureState::Verified => {
+            match request.and_then(|request| iteron_record::execute_erasure(&runs, request)) {
+                Ok(receipt) if receipt.state() == iteron_protocol::ErasureState::Verified => {
                     let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
                     if std::fs::symlink_metadata(&hook_journal).is_ok() {
                         let _ = std::fs::remove_file(hook_journal);
@@ -301,10 +301,10 @@ pub(super) async fn handle_sessions_command(
                     let _ = session_management::remove(&runs, run);
                     session.record_lifecycle(
                         "session.deleted",
-                        core_protocol::LifecyclePayload {
+                        iteron_protocol::LifecyclePayload {
                             outcome_code: Some("deleted".into()),
                             reason_code: Some(operation_id),
-                            ..core_protocol::LifecyclePayload::default()
+                            ..iteron_protocol::LifecyclePayload::default()
                         },
                     );
                     app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
@@ -366,8 +366,8 @@ pub(super) async fn create_fresh_session(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let run = core_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-    let rollout = match core_record::Rollout::open(&runs, &run, core_protocol::TenantId::default())
+    let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
+    let rollout = match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default())
     {
         Ok(rollout) => rollout,
         Err(error) => {

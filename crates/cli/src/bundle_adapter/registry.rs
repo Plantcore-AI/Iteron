@@ -4,7 +4,7 @@ use super::schema::{
     RejectionCode,
 };
 use super::strategies::{implementation_name, instantiate};
-use core_protocol::slot::StrategySlot;
+use iteron_protocol::slot::StrategySlot;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};

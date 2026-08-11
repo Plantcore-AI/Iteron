@@ -72,11 +72,11 @@ jobs:
       - name: install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: enforce the complete microkernel conformance matrix
-        run: cargo run --locked -p core-xtask -- conformance kernel
+        run: cargo run --locked -p iteron-xtask -- conformance kernel
       # The CLI reference is generated from the argument parser. A shipped flag with no doc entry
       # (the permission bypass was one) is a red build, not a documentation backlog item.
       - name: enforce the generated CLI reference
-        run: cargo run --locked -p core-xtask -- docs check
+        run: cargo run --locked -p iteron-xtask -- docs check
       - name: verify captured client runtime evidence on main
         if: github.event_name == 'push'
         shell: bash
@@ -104,7 +104,7 @@ jobs:
           python3 -I release-tools/client_runtime_receipt.py "${arguments[@]}"
       - name: validate ownership and dependency contract on main
         if: github.event_name == 'push'
-        run: cargo run --locked -p core-xtask -- boundaries check
+        run: cargo run --locked -p iteron-xtask -- boundaries check
       - name: materialize trusted base policy
         id: policy
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
@@ -265,7 +265,7 @@ jobs:
       - name: build trusted base validator
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
-        run: cargo build --locked -p core-xtask
+        run: cargo build --locked -p iteron-xtask
       - name: verify captured client runtime evidence with trusted base policy
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
@@ -273,7 +273,7 @@ jobs:
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
           GH_TOKEN: ${{ github.token }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
           POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -345,7 +345,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
           set -euo pipefail
@@ -408,9 +408,9 @@ jobs:
           (
             cd "$release_policy_root"
             CARGO_TARGET_DIR="$release_policy_target" \
-              cargo build --locked -p core-xtask
+              cargo build --locked -p iteron-xtask
           )
-          "$release_policy_target/debug/core-xtask" \
+          "$release_policy_target/debug/iteron-xtask" \
             --repo "$CANDIDATE_ROOT" \
             schema-compat check-release --base "$previous_commit"
       - name: validate candidate against its immediate trusted base
@@ -418,11 +418,11 @@ jobs:
         env:
           DIFF_BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
           set -euo pipefail
-          check='core-xtask boundaries check-base --base <rev>'
+          check='iteron-xtask boundaries check-base --base <rev>'
           if jq -e --arg check "$check" '
             .boundaries[]
             | select(.id == "protocol-compat")
@@ -441,31 +441,31 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: summarize pull request boundary impact
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
       - name: validate pull request responsibility contract
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
-          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
           PR_BODY: ${{ github.event.pull_request.body }}
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check-pr --base "$BASE_SHA"'
       - name: build one-time compatibility validator
         if: steps.compatibility.outputs.active == 'true'
         working-directory: ${{ runner.temp }}/core-policy-compatibility
-        run: cargo build --locked -p core-xtask
+        run: cargo build --locked -p iteron-xtask
       - name: validate real candidate with one-time compatibility policy
         if: steps.compatibility.outputs.active == 'true'
         env:
-          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/core-xtask
+          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/iteron-xtask
         run: >-
           "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
           boundaries check
@@ -543,19 +543,19 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo check --locked -p core-cli --all-targets
+            cargo check --locked -p iteron-cli --all-targets
           else
             cargo check --workspace --all-targets --locked
           fi
       - name: build the explicit windows-msvc client target
         if: runner.os == 'Windows'
         shell: bash
-        run: cargo build --locked --target x86_64-pc-windows-msvc -p core-cli
+        run: cargo build --locked --target x86_64-pc-windows-msvc -p iteron-cli
       - name: clippy (deny warnings)
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo clippy --locked -p core-cli --all-targets -- -D warnings
+            cargo clippy --locked -p iteron-cli --all-targets -- -D warnings
           else
             cargo clippy --workspace --all-targets --locked -- -D warnings
           fi
@@ -563,12 +563,12 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo test --locked -p core-cli --test windows_conpty
-            cargo test --locked -p core-cli --test headless_serve \
+            cargo test --locked -p iteron-cli --test windows_conpty
+            cargo test --locked -p iteron-cli --test headless_serve \
               no_tty_skew_reconnect_and_result_v5_share_one_headless_server -- --exact
-            cargo test --locked -p core-cli --test one_shot_output \
+            cargo test --locked -p iteron-cli --test one_shot_output \
               text_one_shot_process_contract_is_byte_exact -- --exact
-            cargo test --locked -p core-cli
+            cargo test --locked -p iteron-cli
           else
             cargo test --workspace --all-targets --locked
           fi
@@ -579,7 +579,7 @@ jobs:
   # loopback fixture provider and asserts a loose ceiling on `kernel_tax`, the harness's own
   # admission/broker/fsync microseconds, so the provider contributes nothing to the number. The
   # budget sits at 1.75x an observed min-of-5 floor: a 2x regression fails it, ordinary variance
-  # does not. `CORE_HARNESS_TAX_BUDGET_US` re-bases it if this runner is simply slower.
+  # does not. `ITERON_HARNESS_TAX_BUDGET_US` re-bases it if this runner is simply slower.
   harness-latency:
     name: perf / harness latency
     runs-on: ubuntu-24.04
@@ -595,7 +595,7 @@ jobs:
       # this job never blocks a merge on a runner having a bad minute.
       - name: harness-attributable latency budget
         run: >-
-          cargo test --locked -p core-cli --test harness_latency --
+          cargo test --locked -p iteron-cli --test harness_latency --
           --ignored --nocapture
 
   evolution-gate:
@@ -615,18 +615,18 @@ jobs:
       # world module that is not on disk, or leaves a proven module or algebra operator unclaimed.
       # There is no target-only state to suppress: an unbacked row is a red gate.
       - name: evolution conformance rows
-        run: cargo run --locked -p core-evolve --bin evolve-transcript -- gate rows --repo .
+        run: cargo run --locked -p iteron-evolve --bin evolve-transcript -- gate rows --repo .
       # Runs the offline transcript twice under each producer order, verifies both hash chains,
       # replays each promotion journal, exercises the checkpoint algebra, and proves the evaluator
       # and promotion roles are not interchangeable. Non-zero exit means a module is unproven.
       - name: evolution-proven gate artifact
         run: >-
-          cargo run --locked -p core-evolve --bin evolve-transcript -- gate prove --repo .
+          cargo run --locked -p iteron-evolve --bin evolve-transcript -- gate prove --repo .
           --scratch "$RUNNER_TEMP/evolution-gate"
       # The gate's own determinism and no-overclaim assertions. Kept separate from the binary run so
       # a report that passes for the wrong reason still turns this job red.
       - name: evolution gate assertions
-        run: cargo test --locked -p core-evolve --all-targets
+        run: cargo test --locked -p iteron-evolve --all-targets
 
   release-build:
     name: release build / ${{ matrix.os }}
@@ -647,6 +647,6 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: build release
         shell: bash
-        run: cargo build --release -p core-cli --locked
+        run: cargo build --release -p iteron-cli --locked
       # This main-branch smoke build never distributes a naked binary. Only the
       # protected tag workflow packages licenses, notices, SBOMs, and provenance.

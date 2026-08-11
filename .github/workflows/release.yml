@@ -14,7 +14,7 @@ permissions:
 concurrency:
   # Serialize every release candidate so two immutable tags cannot race to
   # publish or replace the repository's `latest` release pointer.
-  group: core-code-release
+  group: iteron-release
   queue: max
   cancel-in-progress: false
 
@@ -363,7 +363,7 @@ jobs:
             (
               cd "$candidate_root"
               CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target" \
-                cargo +"$RUST_VERSION" run --locked -p core-xtask -- \
+                cargo +"$RUST_VERSION" run --locked -p iteron-xtask -- \
                   schema-compat check-bootstrap
             )
             validate_cargo_workspace_versions
@@ -400,9 +400,9 @@ jobs:
           (
             cd "$policy_root"
             CARGO_TARGET_DIR="$policy_target" \
-              cargo +"$RUST_VERSION" build --locked -p core-xtask
+              cargo +"$RUST_VERSION" build --locked -p iteron-xtask
           )
-          "$policy_target/debug/core-xtask" \
+          "$policy_target/debug/iteron-xtask" \
             --repo "$candidate_root" \
             schema-compat check-release --base "$previous_commit"
           validate_cargo_workspace_versions
@@ -435,7 +435,7 @@ jobs:
       - name: Validate release tooling
         run: release-tools/validate.sh
       - name: Validate ownership and dependency contract
-        run: cargo +"$RUST_VERSION" run --locked -p core-xtask -- boundaries check
+        run: cargo +"$RUST_VERSION" run --locked -p iteron-xtask -- boundaries check
       - name: Format
         run: cargo +"$RUST_VERSION" fmt --all -- --check
       - name: Check
@@ -490,7 +490,7 @@ jobs:
             x86_64-unknown-linux-musl \
             x86_64-pc-windows-msvc
           do
-            cargo +"$RUST_VERSION" tree --locked -p core-cli \
+            cargo +"$RUST_VERSION" tree --locked -p iteron-cli \
               --target "$target" -e normal --prefix none --format '{p}' \
               > "$RUNNER_TEMP/cargo-tree-$target.txt"
           done
@@ -530,35 +530,35 @@ jobs:
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: macos-15-intel
             host: darwin-x86_64
             target: x86_64-apple-darwin
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: ubuntu-24.04-arm
             host: linux-arm64
             target: aarch64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: ubuntu-24.04
             host: linux-x86_64
             target: x86_64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: windows-2025
             host: windows-x86_64
             target: x86_64-pc-windows-msvc
             python: python
             tool-suffix: .exe
             archive-suffix: zip
-            binary: core.exe
+            binary: iteron.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -630,24 +630,24 @@ jobs:
         shell: bash
         run: >-
           cargo +"$RUST_VERSION" test
-          --locked -p core-cli --bin core
+          --locked -p iteron-cli --bin iteron
           --target "${{ matrix.target }}"
           output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
       # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
-      # reported `core 0.0.1`, so a user could not tell which one they had and an aged binary had
+      # reported `iteron 0.0.1`, so a user could not tell which one they had and an aged binary had
       # no way to say so. `--version` carries these; `-V` stays the bare semver matched below.
       - name: Build an auditable release binary
         shell: bash
         env:
-          CORE_BUILD_COMMIT: ${{ needs.validate.outputs.commit }}
+          ITERON_BUILD_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
           # Derived from SOURCE_DATE_EPOCH, not the wall clock, so the stamp stays reproducible.
           # `date -d @` is GNU-only and this matrix includes macOS; python3 is on both runners.
-          CORE_BUILD_DATE=$(python3 -c 'import os, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(os.environ["SOURCE_DATE_EPOCH"]))))')
-          export CORE_BUILD_DATE
+          ITERON_BUILD_DATE=$(python3 -c 'import os, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(os.environ["SOURCE_DATE_EPOCH"]))))')
+          export ITERON_BUILD_DATE
           cargo +"$RUST_VERSION" auditable build \
-            --release --locked -p core-cli \
+            --release --locked -p iteron-cli \
             --target "${{ matrix.target }}"
       - name: Verify architecture, linkage, and executable smoke tests
         if: matrix.target != 'x86_64-pc-windows-msvc'
@@ -657,7 +657,7 @@ jobs:
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           target=${{ matrix.target }}
           test -x "$binary"
-          test "$("$binary" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$binary" -V)" = "iteron ${{ needs.validate.outputs.version }}"
           long_version=$("$binary" --version)
           grep -q "${{ needs.validate.outputs.commit }}" <<<"$long_version"
           grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$long_version"
@@ -686,23 +686,23 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $binary = Join-Path $env:CARGO_TARGET_DIR "${{ matrix.target }}/release/${{ matrix.binary }}"
-          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "core.exe missing" }
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "iteron.exe missing" }
           $header = [System.IO.File]::ReadAllBytes($binary)
           if ($header.Length -lt 2 -or $header[0] -ne 0x4d -or $header[1] -ne 0x5a) {
-            throw "core.exe is not a PE image"
+            throw "iteron.exe is not a PE image"
           }
-          if ((& $binary --version) -ne "core ${{ needs.validate.outputs.version }}") {
-            throw "core.exe reported the wrong version"
+          if ((& $binary --version) -ne "iteron ${{ needs.validate.outputs.version }}") {
+            throw "iteron.exe reported the wrong version"
           }
           & $binary --help | Out-Null
           $contractPath = Join-Path $env:RUNNER_TEMP "MACHINE-CONTRACT.json"
           & $binary --machine-contract | Out-File -LiteralPath $contractPath -Encoding utf8NoBOM
           $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
           if ($contract.schema_version -ne 1 -or $contract.type -ne "machine_contract") {
-            throw "core.exe returned the wrong capability schema"
+            throw "iteron.exe returned the wrong capability schema"
           }
           if (-not ($contract.cli_stream_versions -contains 4)) {
-            throw "core.exe does not retain CLI stream schema 4"
+            throw "iteron.exe does not retain CLI stream schema 4"
           }
       - name: Complete one task with the native release client
         id: native-client
@@ -752,22 +752,22 @@ jobs:
           }
 
           run_exact tui \
-            cargo +"$RUST_VERSION" test --locked -p core-cli --bin core \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
               --target "$target" \
               tui::app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \
-            cargo +"$RUST_VERSION" test --locked -p core-cli \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test one_shot_output --target "$target" \
               one_shot_refuses_app_server_version_skew_before_provider_dispatch \
               -- --exact
           run_exact headless \
-            cargo +"$RUST_VERSION" test --locked -p core-cli \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test headless_serve --target "$target" \
               no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
               -- --exact
           if [[ "$target" == x86_64-pc-windows-msvc ]]; then
             run_exact conpty \
-              cargo +"$RUST_VERSION" test --locked -p core-cli \
+              cargo +"$RUST_VERSION" test --locked -p iteron-cli \
                 --test windows_conpty --target "$target" \
                 native_conpty_rejects_version_skew_before_terminal_takeover \
                 -- --exact
@@ -811,7 +811,7 @@ jobs:
             --target "${{ matrix.target }}" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --output-dir dist
-          archive_name="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
+          archive_name="iteron-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
           cp "$RUNNER_TEMP/SBOM.spdx.json" "dist/$archive_name.spdx.json"
           cp "$RUNNER_TEMP/MACHINE-CONTRACT.json" "dist/$archive_name.machine-contract.json"
           echo "archive=dist/$archive_name" >> "$GITHUB_OUTPUT"
@@ -972,7 +972,7 @@ jobs:
             -H "X-GitHub-Api-Version: $api_version" \
             "repos/$GITHUB_REPOSITORY/releases" \
             -f tag_name="$GITHUB_REF_NAME" \
-            -f name="Core Code ${{ needs.validate.outputs.version }}" \
+            -f name="Iteron ${{ needs.validate.outputs.version }}" \
             -F draft=true \
             -F generate_release_notes=true > "$release_json"
           created_release_id=$(jq -r '.id // empty' "$release_json")
@@ -1051,7 +1051,7 @@ jobs:
           [[ "$release_verified" == true ]]
 
           shopt -s nullglob
-          for archive in dist/core-code-v*.tar.gz dist/core-code-v*.zip; do
+          for archive in dist/iteron-v*.tar.gz dist/iteron-v*.zip; do
             gh attestation verify "$archive" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
@@ -1112,7 +1112,7 @@ jobs:
           set -euo pipefail
           canary="$RUNNER_TEMP/core-content-canary"
           mkdir -p "$canary/download" "$canary/extract"
-          archive="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
+          archive="iteron-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
           report="$archive.machine-contract.json"
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
@@ -1128,7 +1128,7 @@ jobs:
             --capability-report "$canary/download/$report" \
             --target "${{ matrix.target }}" \
             --extract-dir "$canary/extract")
-          test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$binary" --version)" = "iteron ${{ needs.validate.outputs.version }}"
           "$binary" --machine-contract > "$canary/live-machine-contract.json"
           "${{ matrix.python }}" release-tools/verify_release.py contract \
             --manifest "$canary/download/release-manifest.json" \
@@ -1138,12 +1138,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archiveName = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
+          $archiveName = "iteron-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
           $exactArchive = Join-Path $env:RUNNER_TEMP "core-content-canary/download/$archiveName"
           if (-not (Test-Path -LiteralPath $exactArchive)) {
             throw "content-verified Windows archive missing at $exactArchive"
           }
-          $archive = Join-Path $env:RUNNER_TEMP 'core-code-latest.zip'
+          $archive = Join-Path $env:RUNNER_TEMP 'iteron-latest.zip'
           curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
             --retry-delay 2 `
             "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/$archiveName" `
@@ -1180,19 +1180,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bin_dir=$RUNNER_TEMP/core-code-bin
+          bin_dir=$RUNNER_TEMP/iteron-bin
           curl --proto '=https' --tlsv1.2 -LsSf \
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" \
             | sh -s -- --version "$GITHUB_REF_NAME" --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "iteron ${{ needs.validate.outputs.version }}"
       - name: Verify the latest installer redirect
         shell: bash
         run: |
           set -euo pipefail
-          bin_dir=$RUNNER_TEMP/core-code-latest-bin
+          bin_dir=$RUNNER_TEMP/iteron-latest-bin
           curl --proto '=https' --tlsv1.2 -LsSf \
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" \
             | sh -s -- --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "iteron ${{ needs.validate.outputs.version }}"

@@ -1,10 +1,10 @@
-//! core-protocol — the core vocabulary.
+//! iteron-protocol — the iteron vocabulary.
 //!
 //! The design decisions this file encodes as *types* (not conventions):
 //!   - Trust tier (ADR-007 R11): every context segment and tool result carries one.
 //!   - Purity (ADR-004 R4 / ADR-007 R16): licenses early dispatch, memoization, speculation.
 //!   - Capability class (ADR-007 R12): tier by what a tool can do, not by textual reversibility.
-//!   - The SQ/EQ shape (ADR-010): one id-correlated submission/event protocol; the core has
+//!   - The SQ/EQ shape (ADR-010): one id-correlated submission/event protocol; the iteron has
 //!     exactly one input channel and one output channel, both correlated by `id`.
 //!
 //! Keep this crate small. Codex's 220 KB kitchen-sink protocol is a named defect
@@ -179,7 +179,7 @@ pub enum ContentSegment {
 #[serde(transparent)]
 pub struct ContentSegments(Vec<ContentSegment>);
 
-/// A submission on the SQ. The core consumes these; every frontend (CLI first) produces
+/// A submission on the SQ. The iteron consumes these; every frontend (CLI first) produces
 /// them. Approvals, interrupts, and steering are all submissions on the same queue, which
 /// preserves caller order for free — exactly what the ADR-006 determinism boundary needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,7 +239,7 @@ pub enum Op {
 }
 
 /// Effort level (session setting). Maps to (a) the model's reasoning/thinking budget and
-/// (b) the orchestration strategy — `Ultracode` enables core's internal workflow/subagent
+/// (b) the orchestration strategy — `Ultracode` enables iteron's internal workflow/subagent
 /// orchestration for substantive tasks (designed in R5). Mirrors the leading agent's effort UX.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

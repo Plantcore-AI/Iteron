@@ -3,7 +3,7 @@
 //! Configuration registers bounded proxy schemas only. The first `tool_search`, resource, or
 //! prompt request starts the configured server under the immutable families 149--152 policy.
 //! Exact tool identities returned by discovery are retained in this session and generation-fenced
-//! by `core_mcp::McpSupervisor`; an unknown external effect is never replayed after reconnect.
+//! by `iteron_mcp::McpSupervisor`; an unknown external effect is never replayed after reconnect.
 
 use super::{
     ConfiguredMcpClient, connect_configured_server_with_policies, host_ceiling, mcp_tool_execution,
@@ -12,11 +12,11 @@ use crate::{
     config::{McpServerConfig, McpTransportConfig},
     runtime_tunables::effective_mcp::EffectiveMcpSettings,
 };
-use core_mcp::supervisor::{
+use iteron_mcp::supervisor::{
     ManagedCatalog, McpCancellation, McpLaunchConfig, McpSupervisor, McpTimeouts, McpToolIdentity,
 };
-use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
-use core_tools::{McpEffectAttribution, Registry};
+use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use iteron_tools::{McpEffectAttribution, Registry};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -111,8 +111,8 @@ impl McpRuntimeControl {
 
     pub(crate) async fn cleanup_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
-    ) -> Result<(), core_mcp::McpError> {
+        boundary: iteron_mcp::McpSpillCleanup,
+    ) -> Result<(), iteron_mcp::McpError> {
         let mut first_failure = None;
         for server in self.servers.values() {
             if let Err(error) = server.cleanup_spills(boundary).await {
@@ -184,8 +184,8 @@ impl ManagedServer {
 
     async fn cleanup_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
-    ) -> Result<(), core_mcp::McpError> {
+        boundary: iteron_mcp::McpSpillCleanup,
+    ) -> Result<(), iteron_mcp::McpError> {
         match self {
             Self::Stdio(server) => server.cleanup_spills(boundary).await,
             Self::Http(server) => server.cleanup_spills(boundary).await,
@@ -199,7 +199,7 @@ impl ManagedServer {
         }
     }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<String, core_mcp::McpError> {
+    async fn search(&self, query: &str, limit: usize) -> Result<String, iteron_mcp::McpError> {
         match self {
             Self::Stdio(server) => server.search(query, limit).await,
             Self::Http(server) => server.search(query, limit).await,
@@ -211,7 +211,7 @@ impl ManagedServer {
         name: &str,
         arguments: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -226,7 +226,7 @@ impl ManagedServer {
         method: &'static str,
         params: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -308,12 +308,12 @@ impl ManagedStdioServer {
             .cancel();
     }
 
-    fn make_supervisor(&self) -> Result<McpSupervisor, core_mcp::McpError> {
+    fn make_supervisor(&self) -> Result<McpSupervisor, iteron_mcp::McpError> {
         let runtime = self
             .policy
             .get()
             .copied()
-            .ok_or(core_mcp::McpError::LifecycleFailed)?;
+            .ok_or(iteron_mcp::McpError::LifecycleFailed)?;
         let launch = McpLaunchConfig::new(
             self.resolved_command.to_string_lossy().into_owned(),
             self.config.args.clone(),
@@ -338,11 +338,11 @@ impl ManagedStdioServer {
         )
     }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<String, core_mcp::McpError> {
+    async fn search(&self, query: &str, limit: usize) -> Result<String, iteron_mcp::McpError> {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
         if state.stopped {
-            return Err(core_mcp::McpError::LifecycleStopped);
+            return Err(iteron_mcp::McpError::LifecycleStopped);
         }
         if state.supervisor.is_none() {
             state.supervisor = Some(self.make_supervisor()?);
@@ -369,7 +369,7 @@ impl ManagedStdioServer {
             "truncated": result.truncated,
             "note": "Call only an exact returned name through this server's tool_call proxy.",
         }))
-        .map_err(core_mcp::McpError::from)
+        .map_err(iteron_mcp::McpError::from)
     }
 
     async fn call<F>(
@@ -377,14 +377,14 @@ impl ManagedStdioServer {
         name: &str,
         arguments: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
         if state.stopped {
-            return definite_mcp_error(core_mcp::McpError::LifecycleStopped);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
         let namespaced = if name.starts_with(&format!("{}__", self.config.name)) {
             name.to_owned()
@@ -392,10 +392,10 @@ impl ManagedStdioServer {
             format!("{}__{name}", self.config.name)
         };
         let Some(identity) = state.identities.get(&namespaced).cloned() else {
-            return definite_mcp_error(core_mcp::McpError::StaleToolIdentity);
+            return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         let Some(supervisor) = state.supervisor.as_mut() else {
-            return definite_mcp_error(core_mcp::McpError::StaleToolIdentity);
+            return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         supervisor
             .call_tool_observed(&identity, arguments, &cancellation, on_dispatch)
@@ -407,14 +407,14 @@ impl ManagedStdioServer {
         method: &'static str,
         params: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
         if state.stopped {
-            return definite_mcp_error(core_mcp::McpError::LifecycleStopped);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
         if state.supervisor.is_none() {
             match self.make_supervisor() {
@@ -461,8 +461,8 @@ impl ManagedStdioServer {
 
     async fn cleanup_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
-    ) -> Result<(), core_mcp::McpError> {
+        boundary: iteron_mcp::McpSpillCleanup,
+    ) -> Result<(), iteron_mcp::McpError> {
         let state = self.state.lock().await;
         state
             .supervisor
@@ -526,7 +526,7 @@ struct ManagedHttpServer {
 }
 
 struct ManagedHttpState {
-    lifecycle: Option<core_mcp::reconnect::LifecycleCore>,
+    lifecycle: Option<iteron_mcp::reconnect::LifecycleCore>,
     client: Option<Arc<ConfiguredMcpClient>>,
     catalog: ManagedCatalog,
     identities: BTreeMap<String, McpToolIdentity>,
@@ -576,19 +576,19 @@ impl ManagedHttpServer {
             .cancel();
     }
 
-    fn runtime(&self) -> Result<EffectiveMcpSettings, core_mcp::McpError> {
+    fn runtime(&self) -> Result<EffectiveMcpSettings, iteron_mcp::McpError> {
         self.policy
             .get()
             .copied()
-            .ok_or(core_mcp::McpError::LifecycleFailed)
+            .ok_or(iteron_mcp::McpError::LifecycleFailed)
     }
 
     fn lifecycle<'a>(
         &self,
         state: &'a mut ManagedHttpState,
-    ) -> Result<&'a mut core_mcp::reconnect::LifecycleCore, core_mcp::McpError> {
+    ) -> Result<&'a mut iteron_mcp::reconnect::LifecycleCore, iteron_mcp::McpError> {
         if state.lifecycle.is_none() {
-            state.lifecycle = Some(core_mcp::reconnect::LifecycleCore::deferred(
+            state.lifecycle = Some(iteron_mcp::reconnect::LifecycleCore::deferred(
                 self.runtime()?.reconnect,
             ));
         }
@@ -600,11 +600,11 @@ impl ManagedHttpServer {
         state: &mut ManagedHttpState,
         cancellation: &McpCancellation,
         deadline: Instant,
-    ) -> Result<core_mcp::reconnect::ServerGeneration, core_mcp::McpError> {
-        use core_mcp::reconnect::LifecyclePhase;
+    ) -> Result<iteron_mcp::reconnect::ServerGeneration, iteron_mcp::McpError> {
+        use iteron_mcp::reconnect::LifecyclePhase;
         loop {
             if cancellation.is_cancelled() {
-                return Err(core_mcp::McpError::Cancelled {
+                return Err(iteron_mcp::McpError::Cancelled {
                     operation: "HTTP MCP startup",
                 });
             }
@@ -615,7 +615,7 @@ impl ManagedHttpServer {
             match status.phase {
                 LifecyclePhase::Ready => {
                     return status.generation.ok_or(
-                        core_mcp::McpError::InvalidLifecycleTransition {
+                        iteron_mcp::McpError::InvalidLifecycleTransition {
                             state: "ready",
                             event: "missing_generation",
                         },
@@ -626,7 +626,7 @@ impl ManagedHttpServer {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => {
-                            return Err(core_mcp::McpError::Cancelled { operation: "HTTP MCP reconnect backoff" });
+                            return Err(iteron_mcp::McpError::Cancelled { operation: "HTTP MCP reconnect backoff" });
                         }
                         _ = tokio::time::sleep_until(deadline) => return Err(managed_deadline()),
                         _ = tokio::time::sleep_until(due) => {}
@@ -635,14 +635,14 @@ impl ManagedHttpServer {
                 }
                 LifecyclePhase::Deferred | LifecyclePhase::Cancelled => {}
                 LifecyclePhase::Exhausted => {
-                    return Err(core_mcp::McpError::RetryExhausted {
+                    return Err(iteron_mcp::McpError::RetryExhausted {
                         attempts: status.reconnect_attempts,
                     });
                 }
-                LifecyclePhase::Failed => return Err(core_mcp::McpError::LifecycleFailed),
-                LifecyclePhase::Stopped => return Err(core_mcp::McpError::LifecycleStopped),
+                LifecyclePhase::Failed => return Err(iteron_mcp::McpError::LifecycleFailed),
+                LifecyclePhase::Stopped => return Err(iteron_mcp::McpError::LifecycleStopped),
                 phase => {
-                    return Err(core_mcp::McpError::InvalidLifecycleTransition {
+                    return Err(iteron_mcp::McpError::InvalidLifecycleTransition {
                         state: phase.label(),
                         event: "http_ensure_ready",
                     });
@@ -659,7 +659,7 @@ impl ManagedHttpServer {
             );
             let connected = tokio::select! {
                 biased;
-                _ = cancellation.cancelled() => Err(core_mcp::McpError::Cancelled { operation: "HTTP MCP connect" }),
+                _ = cancellation.cancelled() => Err(iteron_mcp::McpError::Cancelled { operation: "HTTP MCP connect" }),
                 _ = tokio::time::sleep_until(deadline) => Err(managed_deadline()),
                 result = connection => result,
             };
@@ -667,12 +667,12 @@ impl ManagedHttpServer {
                 Ok(client @ ConfiguredMcpClient::Http(_)) => Arc::new(client),
                 Ok(ConfiguredMcpClient::Stdio(_)) => {
                     self.lifecycle(state)?.stop();
-                    return Err(core_mcp::McpError::InvalidLifecycleTransition {
+                    return Err(iteron_mcp::McpError::InvalidLifecycleTransition {
                         state: "connecting",
                         event: "wrong_transport",
                     });
                 }
-                Err(error @ core_mcp::McpError::Cancelled { .. }) => {
+                Err(error @ iteron_mcp::McpError::Cancelled { .. }) => {
                     let _ = self.lifecycle(state)?.cancel(generation);
                     return Err(error);
                 }
@@ -689,13 +689,13 @@ impl ManagedHttpServer {
                 client.list_tools_governed(&self.config.tools, &self.config.policy, host_ceiling());
             let specs = tokio::select! {
                 biased;
-                _ = cancellation.cancelled() => Err(core_mcp::McpError::Cancelled { operation: "HTTP MCP discovery" }),
+                _ = cancellation.cancelled() => Err(iteron_mcp::McpError::Cancelled { operation: "HTTP MCP discovery" }),
                 _ = tokio::time::sleep_until(deadline) => Err(managed_deadline()),
                 result = discovery => result,
             };
             let specs = match specs {
                 Ok(specs) => specs,
-                Err(error @ core_mcp::McpError::Cancelled { .. }) => {
+                Err(error @ iteron_mcp::McpError::Cancelled { .. }) => {
                     let _ = self.lifecycle(state)?.cancel(generation);
                     return Err(error);
                 }
@@ -718,7 +718,7 @@ impl ManagedHttpServer {
                     self.record_failure(
                         state,
                         generation,
-                        core_mcp::reconnect::LifecycleFailure::Catalog,
+                        iteron_mcp::reconnect::LifecycleFailure::Catalog,
                     )?;
                     return Err(error);
                 }
@@ -737,9 +737,9 @@ impl ManagedHttpServer {
     fn record_failure(
         &self,
         state: &mut ManagedHttpState,
-        generation: core_mcp::reconnect::ServerGeneration,
-        failure: core_mcp::reconnect::LifecycleFailure,
-    ) -> Result<(), core_mcp::McpError> {
+        generation: iteron_mcp::reconnect::ServerGeneration,
+        failure: iteron_mcp::reconnect::LifecycleFailure,
+    ) -> Result<(), iteron_mcp::McpError> {
         state.client = None;
         let delay = self.lifecycle(state)?.failed(generation, failure)?;
         state.retry_not_before = delay.map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -748,13 +748,13 @@ impl ManagedHttpServer {
         Ok(())
     }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<String, core_mcp::McpError> {
+    async fn search(&self, query: &str, limit: usize) -> Result<String, iteron_mcp::McpError> {
         let cancellation = self.operation_cancellation();
         let runtime = self.runtime()?;
         let deadline = Instant::now() + runtime.deadlines.http().startup();
         let mut state = self.state.lock().await;
         if state.stopped {
-            return Err(core_mcp::McpError::LifecycleStopped);
+            return Err(iteron_mcp::McpError::LifecycleStopped);
         }
         let generation = self
             .ensure_ready(&mut state, &cancellation, deadline)
@@ -776,7 +776,7 @@ impl ManagedHttpServer {
             "truncated": result.truncated,
             "note": "Call only an exact returned name through this server's tool_call proxy.",
         }))
-        .map_err(core_mcp::McpError::from)
+        .map_err(iteron_mcp::McpError::from)
     }
 
     async fn call<F>(
@@ -784,7 +784,7 @@ impl ManagedHttpServer {
         name: &str,
         arguments: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -798,7 +798,7 @@ impl ManagedHttpServer {
         let startup_deadline = deadline.min(started + runtime.deadlines.http().startup());
         let mut state = self.state.lock().await;
         if state.stopped {
-            return definite_mcp_error(core_mcp::McpError::LifecycleStopped);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
         let generation = match self
             .ensure_ready(&mut state, &cancellation, startup_deadline)
@@ -813,15 +813,15 @@ impl ManagedHttpServer {
             format!("{}__{name}", self.config.name)
         };
         let Some(identity) = state.identities.get(&namespaced).cloned() else {
-            return definite_mcp_error(core_mcp::McpError::StaleToolIdentity);
+            return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         let Some(spec) = state.catalog.spec(&identity) else {
-            return definite_mcp_error(core_mcp::McpError::StaleToolIdentity);
+            return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         let bare = identity.bare_name().to_owned();
         debug_assert_eq!(spec.name, namespaced);
         let Some(client) = state.client.clone() else {
-            return definite_mcp_error(core_mcp::McpError::LifecycleFailed);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleFailed);
         };
         let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = dispatched.clone();
@@ -836,7 +836,7 @@ impl ManagedHttpServer {
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
-        if matches!(outcome, core_mcp::McpToolOutcome::Completed { .. }) {
+        if matches!(outcome, iteron_mcp::McpToolOutcome::Completed { .. }) {
             self.note_http_healthy(&mut state, generation);
         }
         outcome
@@ -847,7 +847,7 @@ impl ManagedHttpServer {
         method: &'static str,
         params: Value,
         on_dispatch: F,
-    ) -> core_mcp::McpToolOutcome
+    ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
@@ -861,7 +861,7 @@ impl ManagedHttpServer {
         let startup_deadline = deadline.min(started + runtime.deadlines.http().startup());
         let mut state = self.state.lock().await;
         if state.stopped {
-            return definite_mcp_error(core_mcp::McpError::LifecycleStopped);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
         let generation = match self
             .ensure_ready(&mut state, &cancellation, startup_deadline)
@@ -871,7 +871,7 @@ impl ManagedHttpServer {
             Err(error) => return definite_mcp_error(error),
         };
         let Some(client) = state.client.clone() else {
-            return definite_mcp_error(core_mcp::McpError::LifecycleFailed);
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleFailed);
         };
         let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = dispatched.clone();
@@ -886,7 +886,7 @@ impl ManagedHttpServer {
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
-        if matches!(outcome, core_mcp::McpToolOutcome::Completed { .. }) {
+        if matches!(outcome, iteron_mcp::McpToolOutcome::Completed { .. }) {
             self.note_http_healthy(&mut state, generation);
         }
         outcome
@@ -895,11 +895,11 @@ impl ManagedHttpServer {
     fn settle_http_outcome(
         &self,
         state: &mut ManagedHttpState,
-        generation: core_mcp::reconnect::ServerGeneration,
-        outcome: &core_mcp::McpToolOutcome,
+        generation: iteron_mcp::reconnect::ServerGeneration,
+        outcome: &iteron_mcp::McpToolOutcome,
     ) {
-        if let core_mcp::McpToolOutcome::Unknown { error, .. } = outcome {
-            let result = if matches!(error, core_mcp::McpError::Cancelled { .. }) {
+        if let iteron_mcp::McpToolOutcome::Unknown { error, .. } = outcome {
+            let result = if matches!(error, iteron_mcp::McpError::Cancelled { .. }) {
                 state.client = None;
                 state.retry_not_before = None;
                 match self.lifecycle(state) {
@@ -922,15 +922,15 @@ impl ManagedHttpServer {
     fn note_http_healthy(
         &self,
         state: &mut ManagedHttpState,
-        generation: core_mcp::reconnect::ServerGeneration,
+        generation: iteron_mcp::reconnect::ServerGeneration,
     ) {
         state.healthy_calls = state.healthy_calls.saturating_add(1);
         let stable = state.ready_since.is_some_and(|ready_since| {
             ready_since.elapsed()
-                >= Duration::from_millis(core_mcp::supervisor::HEALTHY_RETRY_RESET_AFTER_MS)
+                >= Duration::from_millis(iteron_mcp::supervisor::HEALTHY_RETRY_RESET_AFTER_MS)
         });
         if stable
-            && state.healthy_calls >= core_mcp::supervisor::HEALTHY_RETRY_RESET_AFTER_CALLS
+            && state.healthy_calls >= iteron_mcp::supervisor::HEALTHY_RETRY_RESET_AFTER_CALLS
             && let Some(lifecycle) = state.lifecycle.as_mut()
         {
             let _ = lifecycle.reset_retry_budget(generation);
@@ -957,7 +957,7 @@ impl ManagedHttpServer {
         state.lifecycle = self
             .policy
             .get()
-            .map(|policy| core_mcp::reconnect::LifecycleCore::deferred(policy.reconnect));
+            .map(|policy| iteron_mcp::reconnect::LifecycleCore::deferred(policy.reconnect));
         state.client = None;
         state.catalog = ManagedCatalog::default();
         state.identities.clear();
@@ -974,8 +974,8 @@ impl ManagedHttpServer {
 
     async fn cleanup_spills(
         &self,
-        boundary: core_mcp::McpSpillCleanup,
-    ) -> Result<(), core_mcp::McpError> {
+        boundary: iteron_mcp::McpSpillCleanup,
+    ) -> Result<(), iteron_mcp::McpError> {
         let state = self.state.lock().await;
         state
             .client
@@ -1053,23 +1053,23 @@ fn http_idle_health(
     }
 }
 
-fn classify_http_failure(error: &core_mcp::McpError) -> core_mcp::reconnect::LifecycleFailure {
-    use core_mcp::reconnect::LifecycleFailure;
+fn classify_http_failure(error: &iteron_mcp::McpError) -> iteron_mcp::reconnect::LifecycleFailure {
+    use iteron_mcp::reconnect::LifecycleFailure;
     match error {
-        core_mcp::McpError::Deadline { .. } => LifecycleFailure::Deadline,
-        core_mcp::McpError::Spawn(_)
-        | core_mcp::McpError::Io(_)
-        | core_mcp::McpError::TransportClosed
-        | core_mcp::McpError::HttpStatus {
+        iteron_mcp::McpError::Deadline { .. } => LifecycleFailure::Deadline,
+        iteron_mcp::McpError::Spawn(_)
+        | iteron_mcp::McpError::Io(_)
+        | iteron_mcp::McpError::TransportClosed
+        | iteron_mcp::McpError::HttpStatus {
             status: 408 | 425 | 429 | 500..=599,
         } => LifecycleFailure::Transport,
-        core_mcp::McpError::Cancelled { .. } => LifecycleFailure::Cancelled,
+        iteron_mcp::McpError::Cancelled { .. } => LifecycleFailure::Cancelled,
         _ => LifecycleFailure::Protocol,
     }
 }
 
-fn managed_deadline() -> core_mcp::McpError {
-    core_mcp::McpError::Deadline {
+fn managed_deadline() -> iteron_mcp::McpError {
+    iteron_mcp::McpError::Deadline {
         operation: "managed HTTP MCP operation".into(),
     }
 }
@@ -1078,24 +1078,24 @@ fn cancellation_outcome(
     server: &str,
     operation: &str,
     dispatched: bool,
-) -> core_mcp::McpToolOutcome {
+) -> iteron_mcp::McpToolOutcome {
     if dispatched {
-        core_mcp::McpToolOutcome::Unknown {
-            error: core_mcp::McpError::Cancelled {
+        iteron_mcp::McpToolOutcome::Unknown {
+            error: iteron_mcp::McpError::Cancelled {
                 operation: "dispatched HTTP MCP request",
             },
             evidence: synthetic_evidence(server, operation),
         }
     } else {
-        definite_mcp_error(core_mcp::McpError::Cancelled {
+        definite_mcp_error(iteron_mcp::McpError::Cancelled {
             operation: "HTTP MCP request",
         })
     }
 }
 
-fn timeout_outcome(server: &str, operation: &str, dispatched: bool) -> core_mcp::McpToolOutcome {
+fn timeout_outcome(server: &str, operation: &str, dispatched: bool) -> iteron_mcp::McpToolOutcome {
     if dispatched {
-        core_mcp::McpToolOutcome::Unknown {
+        iteron_mcp::McpToolOutcome::Unknown {
             error: managed_deadline(),
             evidence: synthetic_evidence(server, operation),
         }
@@ -1104,8 +1104,8 @@ fn timeout_outcome(server: &str, operation: &str, dispatched: bool) -> core_mcp:
     }
 }
 
-fn synthetic_evidence(server: &str, operation: &str) -> core_mcp::McpToolCallEvidence {
-    core_mcp::McpToolCallEvidence::new(
+fn synthetic_evidence(server: &str, operation: &str) -> iteron_mcp::McpToolCallEvidence {
+    iteron_mcp::McpToolCallEvidence::new(
         server,
         operation,
         std::num::NonZeroU64::new(1).expect("one is non-zero"),
@@ -1149,21 +1149,21 @@ fn idle_health(name: &str, phase: &str, policy: Option<&EffectiveMcpSettings>) -
     }
 }
 
-fn lifecycle_failure_label(failure: core_mcp::reconnect::LifecycleFailure) -> &'static str {
+fn lifecycle_failure_label(failure: iteron_mcp::reconnect::LifecycleFailure) -> &'static str {
     match failure {
-        core_mcp::reconnect::LifecycleFailure::Spawn => "spawn",
-        core_mcp::reconnect::LifecycleFailure::Deadline => "deadline",
-        core_mcp::reconnect::LifecycleFailure::Transport => "transport",
-        core_mcp::reconnect::LifecycleFailure::Protocol => "protocol",
-        core_mcp::reconnect::LifecycleFailure::Catalog => "catalog",
-        core_mcp::reconnect::LifecycleFailure::Cancelled => "cancelled",
+        iteron_mcp::reconnect::LifecycleFailure::Spawn => "spawn",
+        iteron_mcp::reconnect::LifecycleFailure::Deadline => "deadline",
+        iteron_mcp::reconnect::LifecycleFailure::Transport => "transport",
+        iteron_mcp::reconnect::LifecycleFailure::Protocol => "protocol",
+        iteron_mcp::reconnect::LifecycleFailure::Catalog => "catalog",
+        iteron_mcp::reconnect::LifecycleFailure::Cancelled => "cancelled",
     }
 }
 
 fn register_server_tools(
     registry: &mut Registry,
     server: Arc<ManagedServer>,
-) -> Result<(), core_tools::ToolError> {
+) -> Result<(), iteron_tools::ToolError> {
     let name = server.name().to_owned();
     let search_name = format!("{name}__tool_search");
     let search_server = server.clone();
@@ -1186,7 +1186,7 @@ fn register_server_tools(
         },
         move |call, _root| {
             let server = search_server.clone();
-            core_tools::effectfut::box_it(async move {
+            iteron_tools::effectfut::box_it(async move {
                 let query = call
                     .input
                     .get("query")
@@ -1231,7 +1231,7 @@ fn register_server_tools(
         McpEffectAttribution::new(&name, "tool_call"),
         move |call, _root, dispatch_clock| {
             let server = call_server.clone();
-            core_tools::effectfut::box_it(async move {
+            iteron_tools::effectfut::box_it(async move {
                 let tool = call.input.get("name").and_then(Value::as_str).unwrap_or("");
                 let arguments = call
                     .input
@@ -1259,7 +1259,7 @@ fn register_server_tools(
             McpEffectAttribution::new(&name, suffix),
             move |call, _root, dispatch_clock| {
                 let server = extension_server.clone();
-                core_tools::effectfut::box_it(async move {
+                iteron_tools::effectfut::box_it(async move {
                     let params = match normalize_extension_params(method, call.input.clone()) {
                         Ok(params) => params,
                         Err(reason) => return definite_result(call.id, reason.into(), true),
@@ -1290,7 +1290,7 @@ fn register_server_tools(
         },
         move |call, _root| {
             let server = lifecycle_server.clone();
-            core_tools::effectfut::box_it(async move {
+            iteron_tools::effectfut::box_it(async move {
                 let action = call.input.get("action").and_then(Value::as_str).unwrap_or("");
                 let result = match action {
                     "status" => Ok(()),
@@ -1381,8 +1381,8 @@ fn normalize_extension_params(method: &str, mut params: Value) -> Result<Value, 
     Ok(params)
 }
 
-fn definite_result(id: String, content: String, is_error: bool) -> core_tools::ToolExecution {
-    core_tools::ToolExecution::Definite(ToolResult {
+fn definite_result(id: String, content: String, is_error: bool) -> iteron_tools::ToolExecution {
+    iteron_tools::ToolExecution::Definite(ToolResult {
         tool_use_id: id,
         content,
         is_error,
@@ -1391,8 +1391,8 @@ fn definite_result(id: String, content: String, is_error: bool) -> core_tools::T
     })
 }
 
-fn definite_mcp_error(error: core_mcp::McpError) -> core_mcp::McpToolOutcome {
-    core_mcp::McpToolOutcome::FailedDefinite {
+fn definite_mcp_error(error: iteron_mcp::McpError) -> iteron_mcp::McpToolOutcome {
+    iteron_mcp::McpToolOutcome::FailedDefinite {
         error,
         evidence: None,
     }

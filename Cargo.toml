@@ -1,5 +1,5 @@
-# Core Code — a coding agent, and the controller architecture underneath it.
-# One crate per module (ADR-010). The core speaks an id-correlated submission/event
+# Iteron — a coding agent, and the controller architecture underneath it.
+# One crate per module (ADR-010). The iteron speaks an id-correlated submission/event
 # protocol in-process; the CLI is the first thin frontend adapter.
 [workspace]
 resolver = "3"
@@ -34,9 +34,9 @@ version = "0.0.2"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-authors = ["Jamal Cao and Core Code contributors"]
-repository = "https://github.com/Plantcore-AI/core"
-homepage = "https://plantcore-ai.github.io/core/"
+authors = ["Jamal Cao and Iteron contributors"]
+repository = "https://github.com/Plantcore-AI/Iteron"
+homepage = "https://plantcore-ai.github.io/Iteron/"
 rust-version = "1.90"
 
 # Dependencies are admitted only at the standard-protocol layer (JSON, HTTP to the

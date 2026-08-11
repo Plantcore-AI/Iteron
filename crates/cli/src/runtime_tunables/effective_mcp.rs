@@ -5,11 +5,11 @@
 //! deadline, and result-spill behavior from falling back to process-local defaults on resume.
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
-use core_mcp::{
+use iteron_mcp::{
     McpDeadlinePolicy, McpResultPolicy, McpSpillCleanup, McpTransportDeadlines,
     reconnect::ReconnectPolicy,
 };
-use core_tunables::ResolutionValue;
+use iteron_tunables::ResolutionValue;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +154,7 @@ fn usizev(value: i64, family: &'static str) -> Result<usize, EffectiveMcpError> 
     usize::try_from(value).map_err(|_| EffectiveMcpError::Range { family })
 }
 
-fn invalid(family: &'static str, error: core_mcp::McpError) -> EffectiveMcpError {
+fn invalid(family: &'static str, error: iteron_mcp::McpError) -> EffectiveMcpError {
     EffectiveMcpError::InvalidOwner {
         family,
         reason: error.public_summary(),

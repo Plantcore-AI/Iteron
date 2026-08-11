@@ -10,7 +10,7 @@
 //!
 //! Zero-dependency: a small hand-rolled scanner, no regex crate.
 
-use core_protocol::{
+use iteron_protocol::{
     Block, DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, WorkflowEvent,
 };
 
@@ -562,7 +562,7 @@ fn scrub_json(v: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn redact_message(m: &core_protocol::Message) -> core_protocol::Message {
+fn redact_message(m: &iteron_protocol::Message) -> iteron_protocol::Message {
     let content = m
         .content
         .iter()
@@ -591,7 +591,7 @@ fn redact_message(m: &core_protocol::Message) -> core_protocol::Message {
               // redaction decision here rather than silently persisting to the record unscrubbed.
         })
         .collect();
-    core_protocol::Message {
+    iteron_protocol::Message {
         role: m.role,
         content,
     }
@@ -946,13 +946,13 @@ mod tests {
     /// produced an intent that no completion could ever match.
     #[test]
     fn both_sides_of_a_correlation_agree_on_the_recorded_id() {
-        use core_protocol::{Capability, ToolResult, Trust};
+        use iteron_protocol::{Capability, ToolResult, Trust};
         let id = "call_00_RFTSn3Qcw4Wu9i4Z276c9895";
         let intent = redact_event(&Event {
-            seq: core_protocol::Seq(1),
-            turn: core_protocol::TurnId(1),
+            seq: iteron_protocol::Seq(1),
+            turn: iteron_protocol::TurnId(1),
             kind: EventKind::EffectIntent {
-                id: core_protocol::EffectId("fx1-abc".into()),
+                id: iteron_protocol::EffectId("fx1-abc".into()),
                 tool_use_id: id.into(),
                 tool: "edit".into(),
                 capability: Capability::ReversibleLocal,
@@ -961,8 +961,8 @@ mod tests {
             },
         });
         let done = redact_event(&Event {
-            seq: core_protocol::Seq(2),
-            turn: core_protocol::TurnId(1),
+            seq: iteron_protocol::Seq(2),
+            turn: iteron_protocol::TurnId(1),
             kind: EventKind::ToolDone {
                 result: ToolResult {
                     tool_use_id: id.into(),
@@ -971,7 +971,7 @@ mod tests {
                     trust: Trust::Workspace,
                     latency_ms: 0,
                 },
-                effect_id: Some(core_protocol::EffectId("fx1-abc".into())),
+                effect_id: Some(iteron_protocol::EffectId("fx1-abc".into())),
                 tool: Some("edit".into()),
             },
         });
@@ -1105,7 +1105,7 @@ C3d4E5f6A1b2C3d4E5f6A1b2";
 
     #[test]
     fn scrubs_context_injection_and_tool_use_arguments() {
-        use core_protocol::{Block, Event, EventKind, Message, Role, Seq, ToolUse, TurnId};
+        use iteron_protocol::{Block, Event, EventKind, Message, Role, Seq, ToolUse, TurnId};
         // A remembered fact carrying a secret, injected + recorded, must be scrubbed.
         let inj = Event {
             seq: Seq(1),
@@ -1114,13 +1114,13 @@ C3d4E5f6A1b2C3d4E5f6A1b2";
                 text: "remember: the key is sk-\
 ant-api03-AbCdEfGhIjKlMnOpQrStUvWx"
                     .into(),
-                trust: core_protocol::Trust::Workspace,
-                instructions: Some(core_protocol::DurableInstructionContext {
+                trust: iteron_protocol::Trust::Workspace,
+                instructions: Some(iteron_protocol::DurableInstructionContext {
                     text: "instruction key sk-ant-api03-ZyXwVuTsRqPoNmLkJiHgFeDc".into(),
-                    trust: core_protocol::Trust::Untrusted,
-                    environment: Some(core_protocol::DurableEnvironmentContext {
+                    trust: iteron_protocol::Trust::Untrusted,
+                    environment: Some(iteron_protocol::DurableEnvironmentContext {
                         text: "environment key sk-ant-api03-QrStUvWxYzAbCdEfGhIjKlMn".into(),
-                        trust: core_protocol::Trust::Workspace,
+                        trust: iteron_protocol::Trust::Workspace,
                     }),
                 }),
             },
@@ -1141,7 +1141,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx"
                     environment.text.contains("[REDACTED")
                         && !environment.text.contains("QrStUvWx")
                 );
-                assert_eq!(environment.trust, core_protocol::Trust::Workspace);
+                assert_eq!(environment.trust, iteron_protocol::Trust::Workspace);
             }
             _ => panic!("kind changed"),
         }
@@ -1176,10 +1176,10 @@ AbCdEf12\
             seq: Seq(3),
             turn: TurnId(0),
             kind: EventKind::EffectIntent {
-                id: core_protocol::EffectId("stable-correlation-id".into()),
+                id: iteron_protocol::EffectId("stable-correlation-id".into()),
                 tool_use_id: "model-call-id".into(),
                 tool: "edit".into(),
-                capability: core_protocol::Capability::ReversibleLocal,
+                capability: iteron_protocol::Capability::ReversibleLocal,
                 arguments: serde_json::json!({
                     "path": "cfg.rs",
                     "new": "ghp_\
@@ -1232,8 +1232,8 @@ aaaaaaaa\
 aaaaaaaa\
 aaaaaaaaaaaaaaaaaaaaaaaa";
         let event = Event {
-            seq: core_protocol::Seq::ZERO,
-            turn: core_protocol::TurnId(0),
+            seq: iteron_protocol::Seq::ZERO,
+            turn: iteron_protocol::TurnId(0),
             kind: EventKind::ModelSelected {
                 provider_id: "sk-\
 ant-api03-SuperSecretProviderToken12345"
@@ -1270,8 +1270,8 @@ bbbbbbbbbbbbbbbbbbbbbbbb";
         assert_eq!(scrub_route_identifier(content_address), content_address);
 
         let genesis = Event {
-            seq: core_protocol::Seq::ZERO,
-            turn: core_protocol::TurnId(0),
+            seq: iteron_protocol::Seq::ZERO,
+            turn: iteron_protocol::TurnId(0),
             kind: EventKind::RunStart {
                 cwd: "/repo/ghp_\
 AbCdEf12\
@@ -1280,13 +1280,13 @@ AbCdEf12\
                 model: "sk-\
 ant-api03-SuperSecretGenesisModel12345"
                     .into(),
-                effort: core_protocol::Effort::Medium,
+                effort: iteron_protocol::Effort::Medium,
                 created_at: 7,
-                environment: Some(core_protocol::DurableEnvironmentContext {
+                environment: Some(iteron_protocol::DurableEnvironmentContext {
                     text:
                         r"workspace_cwd: C:\\workspace\\sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx\\repo"
                             .into(),
-                    trust: core_protocol::Trust::Workspace,
+                    trust: iteron_protocol::Trust::Workspace,
                 }),
                 parent_run: Some(
                     "run-ghp_\
@@ -1320,7 +1320,7 @@ AbCdEf12\
                 assert!(model.contains("[REDACTED"));
                 assert!(environment.text.contains("[REDACTED"));
                 assert!(!environment.text.contains("QrStUvWx"));
-                assert_eq!(environment.trust, core_protocol::Trust::Workspace);
+                assert_eq!(environment.trust, iteron_protocol::Trust::Workspace);
                 assert_eq!(
                     parent_run.as_deref(),
                     Some(
@@ -1336,13 +1336,13 @@ AbCdEf12\
         }
 
         let pricing = Event {
-            seq: core_protocol::Seq::ZERO,
-            turn: core_protocol::TurnId(0),
+            seq: iteron_protocol::Seq::ZERO,
+            turn: iteron_protocol::TurnId(0),
             kind: EventKind::RateCardBound {
-                rate_card: core_protocol::SignedRateCard {
-                    rate_card: core_protocol::RateCard {
-                        version: core_protocol::PricingVersion::V1,
-                        route: core_protocol::PricingRoute {
+                rate_card: iteron_protocol::SignedRateCard {
+                    rate_card: iteron_protocol::RateCard {
+                        version: iteron_protocol::PricingVersion::V1,
+                        route: iteron_protocol::PricingRoute {
                             provider_id: "provider-a".into(),
                             model_id: "model-a".into(),
                             catalog_digest: String::new(),
@@ -1351,7 +1351,7 @@ AbCdEf12\
                         provenance: "ghp_AbCdEf1234567890AbCdEf1234567890".into(),
                         issued_at_unix_secs: 1,
                         expires_at_unix_secs: 2,
-                        rates: core_protocol::TokenRateCard {
+                        rates: iteron_protocol::TokenRateCard {
                             input_microusd_per_million: 1,
                             output_microusd_per_million: 2,
                             cache_creation_microusd_per_million: 3,
@@ -1383,16 +1383,16 @@ AbCdEf12\
         let secret = "sk-\
 ant-api03-WorkflowSecretToken123456";
         let event = Event {
-            seq: core_protocol::Seq::ZERO,
-            turn: core_protocol::TurnId(2),
+            seq: iteron_protocol::Seq::ZERO,
+            turn: iteron_protocol::TurnId(2),
             kind: EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 workflow_id: "workflow-2".into(),
-                event: core_protocol::WorkflowEvent::ChildFinished {
+                event: iteron_protocol::WorkflowEvent::ChildFinished {
                     task_id: 0,
                     sub_run: Some("fan-0".into()),
-                    outcome: core_protocol::WorkflowChildOutcome::Drained,
-                    metrics: core_protocol::WorkflowMetrics::default(),
+                    outcome: iteron_protocol::WorkflowChildOutcome::Drained,
+                    metrics: iteron_protocol::WorkflowMetrics::default(),
                     error_code: Some("provider_error".into()),
                     error_detail: Some(format!("provider echoed {secret}")),
                     summary_digest: None,
@@ -1407,13 +1407,13 @@ ant-api03-WorkflowSecretToken123456";
         assert!(encoded.contains("\"outcome\":\"drained\""));
 
         let direct = Event {
-            seq: core_protocol::Seq(1),
-            turn: core_protocol::TurnId(2),
+            seq: iteron_protocol::Seq(1),
+            turn: iteron_protocol::TurnId(2),
             kind: EventKind::SubagentFinishedV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 sub_run: "direct-0".into(),
-                outcome: core_protocol::WorkflowChildOutcome::Drained,
-                metrics: core_protocol::WorkflowMetrics::default(),
+                outcome: iteron_protocol::WorkflowChildOutcome::Drained,
+                metrics: iteron_protocol::WorkflowMetrics::default(),
                 error_code: Some("operator_drain".into()),
                 error_detail: Some(format!("provider echoed {secret}")),
                 summary_digest: None,

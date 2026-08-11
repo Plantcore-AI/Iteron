@@ -8,7 +8,7 @@ use super::storage::{
     remove_if_present,
 };
 use super::{ContentReferenceSurface, ContentStoreError};
-use core_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
+use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use std::collections::BTreeSet;
 use std::path::Path;
 

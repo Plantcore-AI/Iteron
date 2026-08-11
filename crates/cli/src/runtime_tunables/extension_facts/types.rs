@@ -1,5 +1,5 @@
-use core_protocol::Effort;
-use core_tunables::{ExternalCeiling, RuntimeResolutionError};
+use iteron_protocol::Effort;
+use iteron_tunables::{ExternalCeiling, RuntimeResolutionError};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

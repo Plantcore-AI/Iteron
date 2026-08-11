@@ -246,7 +246,7 @@ mod tests {
     use crate::block::{Block, ToolCard, ToolStatus};
     use crate::theme::Theme;
     use crate::tui::hyperlink::Capability;
-    use core_protocol::FileDiff;
+    use iteron_protocol::FileDiff;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 

@@ -27,10 +27,10 @@ pub(crate) use types::*;
 
 use crate::config::McpServerConfig;
 use crate::providers::ModelCapabilities;
-use core_protocol::Budget;
-use core_tools::Registry;
-use core_tunables::{RouteCapabilities, RuntimeResolutionBuilder};
-use core_workflow::RunLimits;
+use iteron_protocol::Budget;
+use iteron_tools::Registry;
+use iteron_tunables::{RouteCapabilities, RuntimeResolutionBuilder};
+use iteron_workflow::RunLimits;
 use owner::OwnerSnapshot;
 
 pub(crate) const FIRST_EXTENSION_ORDINAL: u16 = 133;
@@ -48,18 +48,18 @@ pub(crate) struct ExtensionFactsInput<'a> {
     pub session_spawn_ledger: &'a crate::runtime::SessionSpawnLedger,
     pub child_overlay: Option<&'a ChildOverlayObservation>,
     pub configured_mcp: &'a [McpServerConfig],
-    pub mcp_reconnect: core_mcp::reconnect::ReconnectPolicy,
-    pub mcp_deadlines: core_mcp::McpDeadlinePolicy,
-    pub mcp_result_policy: core_mcp::McpResultPolicy,
-    pub early_stop_quorum: core_workflow::EarlyStopQuorumPolicy,
-    pub speculative_siblings: core_workflow::SpeculativeSiblingPolicy,
-    pub task_retry: core_workflow::TaskRetryPolicy,
-    pub writer_merge: core_workflow::WriterMergePolicy,
+    pub mcp_reconnect: iteron_mcp::reconnect::ReconnectPolicy,
+    pub mcp_deadlines: iteron_mcp::McpDeadlinePolicy,
+    pub mcp_result_policy: iteron_mcp::McpResultPolicy,
+    pub early_stop_quorum: iteron_workflow::EarlyStopQuorumPolicy,
+    pub speculative_siblings: iteron_workflow::SpeculativeSiblingPolicy,
+    pub task_retry: iteron_workflow::TaskRetryPolicy,
+    pub writer_merge: iteron_workflow::WriterMergePolicy,
     pub session_profile: SessionIsolationProfile,
     pub replay_owner: ReplayOwnerObservation,
     pub provider_governor: &'a crate::config::ResolvedProviderGovernorConfig,
     pub provider_governor_configured: bool,
-    pub provider_control_capabilities: &'a core_provider::ProviderControlCapabilities,
+    pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
     pub authorities: ExtensionAuthorityFacts<'a>,
 }
 

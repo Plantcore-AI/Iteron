@@ -8,7 +8,7 @@ use crate::verifier_crypto::hmac_serialized;
 use crate::{DeploymentStage, validate_digest};
 use serde::{Deserialize, Serialize};
 
-const AUTHORIZATION_DOMAIN: &str = "core-evolve/promotion-authorization/v1";
+const AUTHORIZATION_DOMAIN: &str = "iteron-evolve/promotion-authorization/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

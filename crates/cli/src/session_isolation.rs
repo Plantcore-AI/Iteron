@@ -5,7 +5,7 @@
 //! `--resume` was present; durable and interactive profiles keep their explicit continuation
 //! surfaces.
 
-use core_tunables::RuntimeProfile;
+use iteron_tunables::RuntimeProfile;
 
 pub(crate) fn admit_continuation(
     profile: RuntimeProfile,

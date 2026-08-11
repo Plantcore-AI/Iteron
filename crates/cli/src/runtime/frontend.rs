@@ -3,13 +3,13 @@ use super::*;
 /// Collapse, redact, and bound a workflow label before it crosses the frontend seam.
 pub(super) fn ui_workflow_label(content: &str) -> String {
     let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let scrubbed = core_record::redact::scrub(&one_line);
+    let scrubbed = iteron_record::redact::scrub(&one_line);
     strict_utf8_head(&scrubbed, 240)
 }
 
 impl Agent {
-    pub(crate) fn current_turn_id(&self) -> core_protocol::TurnId {
-        core_protocol::TurnId(self.seq_turn)
+    pub(crate) fn current_turn_id(&self) -> iteron_protocol::TurnId {
+        iteron_protocol::TurnId(self.seq_turn)
     }
 
     pub(crate) fn interrupt_handle(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {

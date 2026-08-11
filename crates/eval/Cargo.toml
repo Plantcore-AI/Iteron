@@ -1,22 +1,22 @@
 [package]
-name = "core-eval"
+name = "iteron-eval"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "core-eval"
+name = "iteron-eval"
 path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
-core-evolve = { path = "../evolve" }
-core-protocol = { path = "../protocol" }
-core-record = { path = "../record" }
-core-sandbox = { path = "../sandbox" }
-core-tunables = { path = "../tunables" }
-core-verify = { path = "../verify" }
+iteron-evolve = { path = "../evolve" }
+iteron-protocol = { path = "../protocol" }
+iteron-record = { path = "../record" }
+iteron-sandbox = { path = "../sandbox" }
+iteron-tunables = { path = "../tunables" }
+iteron-verify = { path = "../verify" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }

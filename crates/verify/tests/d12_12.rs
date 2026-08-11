@@ -8,8 +8,8 @@
 //! strength-dominant (lexicographic) ranking and the first-appearance tie-break the gap flagged
 //! as untested.
 
-use core_verify::OracleStrength::{self, Medium, Strong, Weak};
-use core_verify::select::{Candidate, select};
+use iteron_verify::OracleStrength::{self, Medium, Strong, Weak};
+use iteron_verify::select::{Candidate, select};
 
 fn cand(content: &str, verdicts: Vec<(OracleStrength, bool)>) -> Candidate {
     Candidate {

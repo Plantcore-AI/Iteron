@@ -36,8 +36,8 @@ use crate::schema::{self, SchemaValidator};
 use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 use crate::task_dag::runtime::{AttemptTerminal, ExecutionLedger, digest_bytes};
 use crate::task_dag::{AttemptDisposition, AttemptId, TaskId};
-use core_sched::Governor;
-use core_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
+use iteron_sched::Governor;
+use iteron_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
 
 #[path = "bindings/quorum.rs"]
 mod quorum;
@@ -1017,7 +1017,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         label: Some(label.clone()),
         phase: raw.phase.clone(),
         model: raw.model.clone(),
-        effort: raw.effort.as_deref().and_then(core_protocol::Effort::parse),
+        effort: raw.effort.as_deref().and_then(iteron_protocol::Effort::parse),
         agent_type: raw.agent_type.clone(),
         schema: raw.schema.clone(),
         cancel: env

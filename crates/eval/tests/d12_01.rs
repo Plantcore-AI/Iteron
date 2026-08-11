@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D12-01 oracle: `core-eval` performs REAL-repository evaluation.
+//! D12-01 oracle: `iteron-eval` performs REAL-repository evaluation.
 //!
 //! The gap under closure is "eval runs only synthetic micro-repos; no real-repository
 //! evaluation". This test drives the public [`run_evaluation`] pipeline end to end against a
@@ -17,8 +17,8 @@
 //! so the egress-off oracle is never entered), so it runs deterministically on the Linux merge
 //! gate rather than only on a developer's macOS box.
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
     CellResult, CorpusManifest, CorpusTask, EvalOptions, EvaluationManifest, EvaluationPurpose,
     Partition, RunStatus, run_evaluation,
 };
@@ -36,7 +36,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d12-01-{label}-{}-{nonce:x}",
+            "iteron-eval-d12-01-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D12-01 root");
@@ -84,9 +84,9 @@ fn create_real_repository(root: &TempRoot) -> (String, String) {
         &repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -108,12 +108,12 @@ fn create_real_repository(root: &TempRoot) -> (String, String) {
 fn create_fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-        .expect("write executable fake core");
+        .expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -233,8 +233,8 @@ async fn evaluates_a_real_pinned_repository_not_a_synthetic_micro_repo() {
             .as_deref()
             .expect("a failed cell records its phase");
         assert!(
-            phase.starts_with("core"),
-            "a real pinned commit must materialize and reach the core phase, got `{phase}`"
+            phase.starts_with("iteron"),
+            "a real pinned commit must materialize and reach the iteron phase, got `{phase}`"
         );
         assert_ne!(
             phase, "checkout",
@@ -251,7 +251,7 @@ async fn evaluates_a_real_pinned_repository_not_a_synthetic_micro_repo() {
         assert_eq!(cell.failure_phase.as_deref(), Some("checkout"));
         assert_eq!(
             cell.exit_code, None,
-            "no core process runs when checkout of the pinned commit fails"
+            "no iteron process runs when checkout of the pinned commit fails"
         );
         assert!(
             cell.error

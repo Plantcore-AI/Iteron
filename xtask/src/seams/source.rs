@@ -264,7 +264,7 @@ pub(super) fn find_trait_impl(file: &syn::File, names: &BTreeSet<String>) -> Opt
 /// name anywhere in `src/` is not enough: an unreferenced file, cfg-disabled impl, example, macro
 /// template, or same-named local trait does not put the frozen seam on a runtime path. Each frozen
 /// seam therefore has one explicit implementation site. Its default-path module must be wired
-/// directly from `core-evolve`'s managed library root, and the site must import the crate-root seam
+/// directly from `iteron-evolve`'s managed library root, and the site must import the crate-root seam
 /// without aliasing before implementing that exact binding in an active top-level item.
 pub(super) fn has_canonical_production_impl(
     sources: &[(String, String, BTreeSet<String>)],
@@ -590,25 +590,25 @@ pub(super) fn is_test_path(relative: &str) -> bool {
     matches!(parts.as_slice(), ["crates", _, kind, ..] if *kind == "tests" || *kind == "benches")
 }
 
-/// Refuse any internal crate other than `core_evolve` inside the satisfiability proof.
+/// Refuse any internal crate other than `iteron_evolve` inside the satisfiability proof.
 ///
 /// Uses [`mentioned_identifiers`], so a dependency hidden inside a macro token stream is seen. A
-/// review smuggled `core_protocol` past the previous `visit_ident` walk by wrapping it in a
+/// review smuggled `iteron_protocol` past the previous `visit_ident` walk by wrapping it in a
 /// pass-through `macro_rules!` — and this file is the ONLY mechanical evidence that the frozen seams
-/// are implementable by a crate holding `core-evolve` alone, so a check it can be walked past is a
+/// are implementable by a crate holding `iteron-evolve` alone, so a check it can be walked past is a
 /// proof that proves nothing.
 pub(super) fn validate_single_dependency(relative: &str, file: &syn::File) -> Result<()> {
     for word in mentioned_identifiers(file) {
-        if word.starts_with(INTERNAL_CRATE_PREFIX) && word != "core_evolve" {
+        if word.starts_with(INTERNAL_CRATE_PREFIX) && word != "iteron_evolve" {
             bail!(
                 "`{relative}` names the internal crate `{word}`.\n\
-                 This test proves that a crate holding `core-evolve` ALONE can implement the seams, \
-                 so every type must be reachable through `core_evolve::`.\n\
+                 This test proves that a crate holding `iteron-evolve` ALONE can implement the seams, \
+                 so every type must be reachable through `iteron_evolve::`.\n\
                  An integration test inherits its crate's dependencies, so `{word}` compiles here \
                  while an outside implementor may not have it — which is exactly the gap this \
                  check closes.\n\
-                 If a type in a seam signature is not reachable through `core_evolve::`, re-export \
-                 it from `core-evolve` rather than importing `{word}` here: the seam is wrong, not \
+                 If a type in a seam signature is not reachable through `iteron_evolve::`, re-export \
+                 it from `iteron-evolve` rather than importing `{word}` here: the seam is wrong, not \
                  the test."
             );
         }

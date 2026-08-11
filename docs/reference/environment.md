@@ -1,6 +1,6 @@
 # Environment variables
 
-Core Code reads environment variables from the process that starts `core`. Keep
+Iteron reads environment variables from the process that starts `iteron`. Keep
 credential values in a shell session or secret manager; never put them in the
 repository or documentation.
 
@@ -8,17 +8,17 @@ repository or documentation.
 
 | Variable | Meaning |
 | --- | --- |
-| `CORE_PROVIDER` | Trusted provider instance selection |
-| `CORE_MODEL` | Model selection |
-| `CORE_BASE_URL` | Trusted one-run compatible API root (requires `CORE_KEY_ENV` or `--key-env`) |
-| `CORE_KEY_ENV` | Name of the variable holding the credential for `CORE_BASE_URL` |
-| `CORE_CONFIG_HOME` | Config root, replacing `HOME` (for containers and CI runners with no `HOME`) |
-| `CORE_EFFORT` | Effort level |
-| `CORE_MAX_TURNS` | Turn ceiling |
-| `CORE_MAX_USD` | Monetary ceiling when cost evidence is available |
-| `CORE_RETRY_BASE_MS` | Trusted retry exponential base (staged; see configuration reference) |
-| `CORE_RETRY_CAP_MS` | Trusted retry-delay cap (staged; see configuration reference) |
-| `CORE_RETRY_MAX_ATTEMPTS` | Trusted total-attempt bound (staged; see configuration reference) |
+| `ITERON_PROVIDER` | Trusted provider instance selection |
+| `ITERON_MODEL` | Model selection |
+| `ITERON_BASE_URL` | Trusted one-run compatible API root (requires `ITERON_KEY_ENV` or `--key-env`) |
+| `ITERON_KEY_ENV` | Name of the variable holding the credential for `ITERON_BASE_URL` |
+| `ITERON_CONFIG_HOME` | Config root, replacing `HOME` (for containers and CI runners with no `HOME`) |
+| `ITERON_EFFORT` | Effort level |
+| `ITERON_MAX_TURNS` | Turn ceiling |
+| `ITERON_MAX_USD` | Monetary ceiling when cost evidence is available |
+| `ITERON_RETRY_BASE_MS` | Trusted retry exponential base (staged; see configuration reference) |
+| `ITERON_RETRY_CAP_MS` | Trusted retry-delay cap (staged; see configuration reference) |
+| `ITERON_RETRY_MAX_ATTEMPTS` | Trusted total-attempt bound (staged; see configuration reference) |
 
 CLI flags take precedence where a corresponding flag exists. Trusted user config follows these
 values; retry policy currently has no CLI flag.
@@ -47,7 +47,7 @@ within a minute of expiring — so a hosted subscription token can rotate withou
 restarting Core. The file must be a regular file at mode 0600 holding either one
 token line or `{"token": "...", "expires_at_unix": N}`.
 
-`core setup` writes that file for you; `core auth status` reports which source
+`iteron setup` writes that file for you; `iteron auth status` reports which source
 is in use and when it expires.
 
 A signed `rate_cards` entry also names its HMAC variable through `key_env`. Its
@@ -59,10 +59,10 @@ removes the named variable from sandboxed shell and verification environments.
 
 | Variable | Meaning |
 | --- | --- |
-| `CORE_THEME` | Explicit TUI theme selection where supported |
+| `ITERON_THEME` | Explicit TUI theme selection where supported |
 | `NO_COLOR` | Select monochrome rendering |
 | `COLORFGBG` | Terminal light/dark hint when no explicit theme is set |
-| `HOME` | Preferred operator home for `~/.core` config, skills, agents, and memory |
+| `HOME` | Preferred operator home for `~/.iteron` config, skills, agents, and memory |
 | `USERPROFILE` | Native Windows operator-home fallback when `HOME` is absent or not absolute |
 | `HOMEDRIVE` + `HOMEPATH` | Final native Windows fallback when their combined path is absolute |
 
@@ -73,7 +73,7 @@ settings when no operator home is available.
 
 ## Environment facts in the model context
 
-For a fresh run, Core Code records and injects a facts-only snapshot capped at
+For a fresh run, Iteron records and injects a facts-only snapshot capped at
 4 KiB with the canonical workspace cwd, UTC capture time, target OS/architecture,
 and a Git branch plus short status counts. It does not enumerate process environment
 variables, credential names or values, Git filenames, commit text, remotes, or

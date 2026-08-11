@@ -4,7 +4,7 @@
 //! typed artifacts and the pricing port rather than reimplementing the signature format.
 
 use super::PricingError;
-use core_protocol::{CostAttribution, CostProjection, PricingRoute, RateCard, SignedRateCard};
+use iteron_protocol::{CostAttribution, CostProjection, PricingRoute, RateCard, SignedRateCard};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 

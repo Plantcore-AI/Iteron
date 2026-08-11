@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::ToolUse;
+use iteron_protocol::ToolUse;
 
 fn fixture(marker: &Path) -> McpServerConfig {
     let script = concat!(
@@ -26,23 +26,23 @@ fn fixture(marker: &Path) -> McpServerConfig {
         url: None,
         header_env: BTreeMap::new(),
         oauth: None,
-        tools: core_mcp::McpToolFilter::default(),
-        policy: core_mcp::McpServerPolicy::default(),
+        tools: iteron_mcp::McpToolFilter::default(),
+        policy: iteron_mcp::McpServerPolicy::default(),
     }
 }
 
-fn settings(cleanup: core_mcp::McpSpillCleanup) -> EffectiveMcpSettings {
+fn settings(cleanup: iteron_mcp::McpSpillCleanup) -> EffectiveMcpSettings {
     EffectiveMcpSettings {
-        reconnect: core_mcp::reconnect::ReconnectPolicy::new(1, 1, 1).unwrap(),
-        deadlines: core_mcp::McpDeadlinePolicy::default(),
-        result: core_mcp::McpResultPolicy::new(128, 4096, cleanup).unwrap(),
+        reconnect: iteron_mcp::reconnect::ReconnectPolicy::new(1, 1, 1).unwrap(),
+        deadlines: iteron_mcp::McpDeadlinePolicy::default(),
+        result: iteron_mcp::McpResultPolicy::new(128, 4096, cleanup).unwrap(),
     }
 }
 
 fn marker() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     std::env::temp_dir().join(format!(
-        "core-cli-mcp-lazy-{}-{}",
+        "iteron-cli-mcp-lazy-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
@@ -61,7 +61,7 @@ async fn registration_configuration_and_stale_call_do_not_spawn_then_search_does
     );
     assert_eq!(runtime.health()[0].phase, "deferred");
     runtime
-        .configure(settings(core_mcp::McpSpillCleanup::SessionEnd))
+        .configure(settings(iteron_mcp::McpSpillCleanup::SessionEnd))
         .unwrap();
     assert!(
         !marker.exists(),
@@ -122,10 +122,10 @@ async fn registration_configuration_and_stale_call_do_not_spawn_then_search_does
 #[test]
 fn all_declared_cleanup_scopes_are_accepted_by_the_runtime_owner() {
     for cleanup in [
-        core_mcp::McpSpillCleanup::ToolEnd,
-        core_mcp::McpSpillCleanup::TurnEnd,
-        core_mcp::McpSpillCleanup::RunEnd,
-        core_mcp::McpSpillCleanup::SessionEnd,
+        iteron_mcp::McpSpillCleanup::ToolEnd,
+        iteron_mcp::McpSpillCleanup::TurnEnd,
+        iteron_mcp::McpSpillCleanup::RunEnd,
+        iteron_mcp::McpSpillCleanup::SessionEnd,
     ] {
         assert_eq!(settings(cleanup).result.cleanup(), cleanup);
     }

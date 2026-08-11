@@ -1,4 +1,4 @@
-//! core-obs — the phase oracle and the attribution ledger.
+//! iteron-obs — the phase oracle and the attribution ledger.
 //!
 //! The harness is the only layer that knows what phase it is in, which makes it the only
 //! layer that can be observed, attributed, and priced (the phase-oracle thesis, ADR-002).
@@ -14,7 +14,7 @@
 //! neither may measure, price, or change a run. `tau_steps` and `RR(k)` research curves remain
 //! outside this runtime contract.
 
-use core_protocol::{
+use iteron_protocol::{
     CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS, SignedRateCard, Usage,
     WorkflowCostEvidence, WorkflowMetrics,
 };
@@ -972,9 +972,9 @@ mod tests {
     }
 
     fn fixture_projection(tag: &str, key: [u8; 32], usage: Usage) -> CostProjection {
-        let card = core_protocol::RateCard {
-            version: core_protocol::PricingVersion::V1,
-            route: core_protocol::PricingRoute {
+        let card = iteron_protocol::RateCard {
+            version: iteron_protocol::PricingVersion::V1,
+            route: iteron_protocol::PricingRoute {
                 provider_id: format!("provider-{tag}"),
                 model_id: format!("model-{tag}"),
                 catalog_digest: format!("sha256:{}", tag.repeat(64)),
@@ -983,7 +983,7 @@ mod tests {
             provenance: format!("manifest@{tag}"),
             issued_at_unix_secs: 1,
             expires_at_unix_secs: 100,
-            rates: core_protocol::TokenRateCard {
+            rates: iteron_protocol::TokenRateCard {
                 input_microusd_per_million: 1_000_000,
                 output_microusd_per_million: 1_000_000,
                 cache_creation_microusd_per_million: 1_000_000,

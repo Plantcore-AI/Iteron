@@ -38,7 +38,7 @@ fn valid_receipt_value() -> Value {
         "schema_version": 1,
         "type": "client_runtime_receipt",
         "repository": {
-            "name": "Plantcore-AI/core",
+            "name": "Plantcore-AI/Iteron",
             "id": 1
         },
         "tested_commit": commit,
@@ -54,7 +54,7 @@ fn valid_receipt_value() -> Value {
             "head_branch": "main",
             "head_sha": "a".repeat(40),
             "workflow_path": ".github/workflows/release.yml",
-            "url": "https://github.com/Plantcore-AI/core/actions/runs/42"
+            "url": "https://github.com/Plantcore-AI/Iteron/actions/runs/42"
         },
         "platforms": [
             platform(

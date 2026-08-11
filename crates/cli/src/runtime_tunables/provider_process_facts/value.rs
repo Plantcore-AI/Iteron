@@ -1,5 +1,5 @@
 use super::ProviderProcessFactError;
-use core_tunables::{
+use iteron_tunables::{
     ConstraintValue, DecimalValue, ExternalCeiling, ResolutionValue, RuntimeResolutionBuilder,
 };
 use serde::Serialize;
