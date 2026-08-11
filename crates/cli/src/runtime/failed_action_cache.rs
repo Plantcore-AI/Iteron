@@ -46,6 +46,7 @@ impl FailedActionCache {
         self.order.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

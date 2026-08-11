@@ -23,8 +23,6 @@ use iteron_tunables::{
     ProductionOwnerSymbolId, ResolutionValue, RouteCapabilities, RuntimeResolutionBuilder,
     RuntimeResolutionError, SourceKind,
 };
-use serde::Serialize;
-use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 use super::fixed_artifacts::FixedAuthoritySample;
@@ -69,6 +67,10 @@ pub(crate) enum CompactionOwner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the closed prompt-cache owner vocabulary preserves literal-owner drift refusal"
+)]
 pub(crate) enum PromptCacheOwner {
     Builtin,
     RustBuilder,
@@ -113,6 +115,10 @@ pub(crate) struct CoreFactsInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "typed owner-gap categories remain explicit for fail-closed composition audits"
+)]
 pub(crate) enum CoreFactGap {
     ParentTokenCeilingAbsent,
     ParentTokenCeilingBelowThinkingMap,
@@ -124,7 +130,6 @@ pub(crate) enum CoreFactGap {
 #[derive(Debug, Default)]
 pub(crate) struct CoreFactsReport {
     pub gaps: Vec<CoreFactGap>,
-    pub unavailable_families: Vec<&'static str>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -137,8 +142,6 @@ pub(crate) enum CoreFactError {
     IntegerOverflow(&'static str),
     #[error("permission rule key is outside the bounded namespaced-id schema")]
     InvalidPermissionRuleKey,
-    #[error("iteron owner evidence could not be encoded")]
-    EvidenceEncoding,
     #[error(transparent)]
     Resolution(#[from] RuntimeResolutionError),
 }

@@ -94,6 +94,7 @@ impl Agent {
     /// Atomically authorize and commit a newly constructed provider/model pair. The record append
     /// is the commit barrier: on failure the old public provider/model and private route binding
     /// remain unchanged; on success all four advance together.
+    #[cfg(test)]
     pub fn record_provider_model_selection(
         &mut self,
         provider: std::sync::Arc<dyn Provider>,

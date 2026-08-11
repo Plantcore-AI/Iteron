@@ -105,6 +105,7 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn resolve(
         mode: PromptHistoryMode,
         config_home: Option<PathBuf>,
@@ -664,7 +665,7 @@ mod tests {
         let repo = scratch("crash-revoke-repo");
         let runs = iteron_protocol::home::path(&home, "runs");
         let run = source_run("crash-revoke");
-        let raw = "crash​ boundary";
+        let raw = "crash\u{200b} boundary";
         let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
         rollout
             .append(&Event {

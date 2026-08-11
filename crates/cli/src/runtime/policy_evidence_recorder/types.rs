@@ -80,12 +80,6 @@ pub(crate) struct PolicyOpportunity {
     pub(super) opportunity_id: PolicyOpportunityId,
 }
 
-impl PolicyOpportunity {
-    pub(crate) fn id(&self) -> &PolicyOpportunityId {
-        &self.opportunity_id
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PolicyDecisionInput {
     pub eligible_actions: Vec<PolicyActionId>,

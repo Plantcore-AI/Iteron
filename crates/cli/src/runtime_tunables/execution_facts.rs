@@ -22,9 +22,6 @@ use iteron_tunables::{ProductionOwnerSymbolId, RuntimeResolutionBuilder, Runtime
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-pub(crate) const FIRST_EXECUTION_ORDINAL: u16 = 35;
-pub(crate) const LAST_EXECUTION_ORDINAL: u16 = 85;
-
 /// Registry/schema blockers already identified by the H01 audit. Keep this typed list even at
 /// zero so a future unrepresentable owner must be made explicit rather than disappearing into a
 /// comment or status label.
@@ -40,7 +37,6 @@ pub(crate) struct ExecutionFactsInput<'a> {
     pub budget: &'a Budget,
     pub run_limits: iteron_workflow::RunLimits,
     pub effort: Effort,
-    pub verify_command: Option<&'a str>,
     pub hooks_catalog: Option<crate::runtime::hooks::HookCatalogIdentity>,
     pub model_capabilities: &'a ModelCapabilities,
     pub directory: &'a ProviderDirectory,
@@ -48,16 +44,16 @@ pub(crate) struct ExecutionFactsInput<'a> {
     /// The task authority after every operator/project narrowing has been applied. This is kept
     /// separate from tool registration: presence of a tool never proves authority to invoke it.
     pub authority_ceiling: CapabilitySet,
-    /// The admitted first prompt for this run. `None` means no OperatorInput source was configured.
-    pub operator_prompt: Option<&'a str>,
     /// Durable frontend observation, if already resolved. Its opaque text cannot be parsed back
     /// into the family-84 map without inventing keys; it is retained for content-free inventory.
     pub environment: Option<&'a DurableEnvironmentContext>,
-    /// Whether this invocation actually routes through the resident app-server actor.
-    pub app_server_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(
+    dead_code,
+    reason = "the typed stage vocabulary keeps future activation gaps distinct from defaults"
+)]
 pub(crate) enum FactStage {
     Activation,
     Default,
@@ -66,6 +62,10 @@ pub(crate) enum FactStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(
+    dead_code,
+    reason = "closed fail-closed owner-gap reasons are retained for audit classification"
+)]
 pub(crate) enum GapReason {
     OwnerQueryUnavailable,
     OwnerProjectionNotVisible,
@@ -118,6 +118,10 @@ pub(crate) struct ExecutionInventory {
 pub(crate) struct ExecutionFactsReport {
     pub applied: Vec<AppliedFact>,
     pub gaps: Vec<ExecutionFactGap>,
+    #[allow(
+        dead_code,
+        reason = "content-free sampled-owner inventory is retained with the atomic fact report"
+    )]
     pub inventory: ExecutionInventory,
 }
 
@@ -166,8 +170,6 @@ pub(crate) enum ExecutionFactError {
     IntegerOverflow(&'static str),
     #[error("execution-owner evidence could not be encoded")]
     EvidenceEncoding,
-    #[error("runtime owner value for registry literal `{0}` does not match the compiled registry")]
-    LiteralOwnerMismatch(&'static str),
     #[error("the child-allocation owner exposed no admissible minimum")]
     ChildAllocationUnavailable,
     #[error(transparent)]

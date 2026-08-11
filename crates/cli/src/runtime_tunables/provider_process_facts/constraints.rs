@@ -879,7 +879,7 @@ fn add_verification_constraints(
         "flaky_test_detection_quarantine",
         "repeat_count",
         ExternalCeiling::RunBudget,
-        int(i64::from(input.budget.max_turns.min(64).max(1))),
+        int(i64::from(input.budget.max_turns.clamp(1, 64))),
     )?;
     report.constrained(
         "flaky_test_detection_quarantine",
@@ -930,7 +930,7 @@ fn add_verification_constraints(
         "verification_quorum_consensus",
         "verifiers",
         ExternalCeiling::RunBudget,
-        int(i64::from(input.budget.max_turns.min(64).max(1))),
+        int(i64::from(input.budget.max_turns.clamp(1, 64))),
     )?;
     report.constrained(
         "verification_quorum_consensus",

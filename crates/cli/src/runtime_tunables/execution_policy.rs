@@ -306,14 +306,6 @@ impl RoleSpecificModelMapIdentity {
         })
     }
 
-    pub(crate) fn owner(
-        catalog: &iteron_agents::AgentCatalog,
-        provider_id: &str,
-        model_id: &str,
-    ) -> Result<Self, &'static str> {
-        Self::from_routes(&admitted_role_model_routes(catalog, provider_id, model_id)?)
-    }
-
     pub(crate) fn validate_owner(
         self,
         catalog: &iteron_agents::AgentCatalog,

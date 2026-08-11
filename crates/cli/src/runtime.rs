@@ -127,6 +127,7 @@ use tool_interrupt::{
     await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
 };
 use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
+#[cfg(test)]
 pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 

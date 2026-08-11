@@ -1138,7 +1138,7 @@ mod tests {
         .unwrap();
         let loaded = Hooks::load_user(&home);
         assert_eq!(loaded.command_count(), MAX_HOOKS_PER_EVENT);
-        assert!(loaded.by_event.get("UnknownEvent").is_none());
+        assert!(!loaded.by_event.contains_key("UnknownEvent"));
         let _ = std::fs::remove_dir_all(home);
     }
 

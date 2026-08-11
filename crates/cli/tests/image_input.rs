@@ -3,8 +3,9 @@ mod image_input;
 
 use base64::Engine as _;
 use image_input::{
-    ImageAttachments, ImageInputErrorKind, ImageLoadLimits, parse_explicit_image_path,
-    parse_image_mentions,
+    BinaryMediaInspectionPolicy, ImageAttachments, ImageInputErrorKind, ImageLoadLimits,
+    MAX_IMAGE_FILE_BYTES, MultimodalDecodeEnvelope, UnknownMimePolicy, multimodal_decode_envelope,
+    parse_explicit_image_path, parse_image_mentions,
 };
 use iteron_protocol::input::ImageMediaType;
 use std::fs;
@@ -147,6 +148,48 @@ fn limits(
     aggregate_encoded: usize,
 ) -> ImageLoadLimits {
     ImageLoadLimits::new(count, per_file, aggregate, per_encoded, aggregate_encoded).unwrap()
+}
+
+#[test]
+fn checkpointed_binary_and_decode_owners_drive_the_physical_inspector() {
+    let envelope = multimodal_decode_envelope();
+    assert_eq!(
+        MultimodalDecodeEnvelope::try_new(
+            envelope.max_images,
+            envelope.per_image_raw_bytes,
+            envelope.aggregate_raw_bytes,
+            envelope.max_dimension,
+            envelope.max_frames,
+        )
+        .unwrap(),
+        envelope
+    );
+
+    let policy = BinaryMediaInspectionPolicy::owner();
+    assert_eq!(policy.mime_routes().len(), 4);
+    assert_eq!(policy.inspector_ids().len(), 4);
+    assert_eq!(policy.unknown_mime(), UnknownMimePolicy::Reject);
+    assert_eq!(policy.max_input_bytes(), MAX_IMAGE_FILE_BYTES);
+    assert!(
+        BinaryMediaInspectionPolicy::new(
+            policy.mime_routes(),
+            UnknownMimePolicy::MetadataOnly,
+            policy.max_input_bytes(),
+        )
+        .is_err()
+    );
+
+    let temp = TempTree::new("checkpointed-policy");
+    let bytes = png();
+    let path = temp.write("image.png", &bytes);
+    let mut attachments = ImageAttachments::default();
+    let attachment = attachments.attach_path(&path).unwrap();
+    assert_eq!(
+        policy
+            .inspect_content_with_envelope(attachment.content(), envelope)
+            .unwrap(),
+        bytes.len()
+    );
 }
 
 #[test]

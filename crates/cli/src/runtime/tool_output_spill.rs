@@ -208,6 +208,7 @@ pub(crate) enum ToolOutputSpillError {
     InvalidPolicy,
     #[error("private ordinary tool-output spill storage is unavailable")]
     StorageUnavailable,
+    #[cfg(test)]
     #[error("ordinary tool-output spill handle is unavailable in this session")]
     UnknownHandle,
 }

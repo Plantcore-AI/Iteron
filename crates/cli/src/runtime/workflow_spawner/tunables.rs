@@ -11,6 +11,7 @@ impl KernelSpawnerContext {
     }
 
     /// Bind a fresh standalone workflow to one atomic resolver result before any child can spawn.
+    #[cfg(test)]
     pub(crate) fn pin_resolved_tunables(
         &mut self,
         resolved: &iteron_tunables::ResolvedTunableSet,

@@ -297,10 +297,6 @@ impl Agent {
         Ok(())
     }
 
-    pub(crate) fn session_spawn_ledger(&self) -> &SessionSpawnLedger {
-        self.session_spawn_ledger.as_ref()
-    }
-
     /// Effective effort projected in memory. Runtime callers should use [`Self::transition_effort`]
     /// rather than writing the compatibility field directly.
     pub fn effort(&self) -> Effort {
@@ -362,6 +358,7 @@ impl Agent {
     }
 
     /// Pin a fresh composition root's one atomic tunables result as a V2 checkpoint.
+    #[cfg(test)]
     pub fn pin_resolved_tunables(
         &mut self,
         resolved: std::sync::Arc<iteron_tunables::ResolvedTunableSet>,
@@ -370,28 +367,6 @@ impl Agent {
             return Err(KernelError::TunablesAlreadyResolved);
         }
         let pin = tunables_pin::TunablesPin::from_resolved(&resolved)?;
-        let applied = apply_pinned_tooling(&pin, &self.registry, &self.rollout)?;
-        self.tool_output_spill = Some(applied.tool_output_spill);
-        self.context_estimator.pin_policy(applied.token_estimator);
-        self.execution_policy = applied.execution;
-        self.verification_policy.feedback = applied.verification_feedback;
-        self.effective_content = Some(applied.content);
-        self.app_server_queue_policy = applied.app_server_queue;
-        self.binary_media_policy = applied.binary_media;
-        self.multimodal_decode_envelope = applied.multimodal_decode;
-        self.tunables_pin = Some(pin);
-        Ok(())
-    }
-
-    /// Pin the exact historical checkpoint recovered from this rollout. V1 remains V1.
-    pub fn pin_tunables_checkpoint(
-        &mut self,
-        checkpoint: iteron_record::TunablesCheckpoint,
-    ) -> Result<(), KernelError> {
-        if self.tunables_pin.is_some() {
-            return Err(KernelError::TunablesAlreadyResolved);
-        }
-        let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
         let applied = apply_pinned_tooling(&pin, &self.registry, &self.rollout)?;
         self.tool_output_spill = Some(applied.tool_output_spill);
         self.context_estimator.pin_policy(applied.token_estimator);

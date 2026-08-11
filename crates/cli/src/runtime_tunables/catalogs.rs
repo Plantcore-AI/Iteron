@@ -33,6 +33,10 @@ const MAX_OWNER_ID_BYTES: usize = 128;
 /// Why an owner cannot currently produce a catalog observation. Kept typed so an error cannot
 /// accidentally render arbitrary provider output or secret-bearing configuration text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "closed fail-closed catalog absence reasons are retained for owner adapters"
+)]
 pub(crate) enum CatalogUnavailableReason {
     CapabilityUnknown,
     NotDiscovered,
@@ -44,6 +48,10 @@ pub(crate) enum CatalogUnavailableReason {
 /// One owner-authored catalog fact. `ObservedEmpty` is deliberately separate from `Observed`:
 /// callers cannot pass an empty collection and accidentally assert that unknown means none.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "missing and unavailable observations must remain distinct from observed empty"
+)]
 pub(crate) enum CatalogObservation {
     Observed {
         owner_id: String,
@@ -107,14 +115,18 @@ pub(crate) struct CatalogProvenance {
 /// `snapshots`; explain/status surfaces may retain `provenance` without reconstructing it.
 pub(crate) struct ScalarCatalogFacts {
     snapshots: Vec<CatalogSnapshot>,
+    #[allow(
+        dead_code,
+        reason = "content-free owner provenance is retained with the atomic catalog projection"
+    )]
     provenance: BTreeMap<String, CatalogProvenance>,
 }
 
 impl ScalarCatalogFacts {
-    pub(crate) fn snapshots(&self) -> &[CatalogSnapshot] {
-        &self.snapshots
-    }
-
+    #[allow(
+        dead_code,
+        reason = "status consumers may inspect validated provenance without rebuilding catalogs"
+    )]
     pub(crate) fn provenance(&self) -> &BTreeMap<String, CatalogProvenance> {
         &self.provenance
     }

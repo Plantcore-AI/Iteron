@@ -1,7 +1,7 @@
 use super::*;
 
 use iteron_protocol::{Capability, Effort};
-use iteron_tunables::{DecimalValue, FixedAuthorityId, ResolutionValue, SourceKind, TunableValue};
+use iteron_tunables::{DecimalValue, FixedAuthorityId, ResolutionValue, SourceKind};
 use std::collections::BTreeMap;
 
 use crate::runtime_tunables::fixed_artifacts::FixedAuthoritySample;
@@ -1164,31 +1164,6 @@ fn attest_literal_owner(
     Ok(())
 }
 
-fn owned_literal(value: TunableValue) -> ResolutionValue {
-    match value {
-        TunableValue::Boolean { value } => ResolutionValue::Boolean { value },
-        TunableValue::Integer { value } => ResolutionValue::Integer { value },
-        TunableValue::Decimal { value } => ResolutionValue::Decimal { value },
-        TunableValue::Text { value } => text(value),
-        TunableValue::Enum { value } => en(value),
-        TunableValue::List { items } => ResolutionValue::List {
-            items: items.iter().copied().map(owned_literal).collect(),
-        },
-        TunableValue::Map { entries } => ResolutionValue::Map {
-            entries: entries
-                .iter()
-                .map(|entry| (entry.name.to_owned(), owned_literal(entry.value)))
-                .collect(),
-        },
-        TunableValue::Object { fields } => ResolutionValue::Object {
-            fields: fields
-                .iter()
-                .map(|field| (field.name.to_owned(), owned_literal(field.value)))
-                .collect(),
-        },
-    }
-}
-
 pub(super) fn hook_catalog_value(
     identity: &crate::runtime::hooks::HookCatalogIdentity,
 ) -> Result<ResolutionValue, ExecutionFactError> {
@@ -1257,25 +1232,6 @@ pub(super) fn capability_values(capabilities: CapabilitySet) -> Vec<ResolutionVa
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn multimodal_registry_literal_is_the_exact_rejecting_owner() {
-        let owner =
-            multimodal_decode_envelope_value(crate::image_input::multimodal_decode_envelope())
-                .unwrap();
-        let literal = iteron_tunables::families()
-            .iter()
-            .find(|family| family.id == "multimodal_input_admission_decode_envelope")
-            .and_then(|family| family.default.value)
-            .expect("family 68 must retain a fixed literal");
-        let literal = owned_literal(literal);
-        assert_eq!(owner, literal);
-    }
-}
-
 impl ExecutionFactsInput<'_> {
     fn inventory_web_search(&self) -> bool {
         self.registry
@@ -1293,5 +1249,50 @@ impl ExecutionFactsInput<'_> {
         } else {
             vec![en(self.effort.label())]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iteron_tunables::TunableValue;
+
+    fn owned_literal(value: TunableValue) -> ResolutionValue {
+        match value {
+            TunableValue::Boolean { value } => ResolutionValue::Boolean { value },
+            TunableValue::Integer { value } => ResolutionValue::Integer { value },
+            TunableValue::Decimal { value } => ResolutionValue::Decimal { value },
+            TunableValue::Text { value } => text(value),
+            TunableValue::Enum { value } => en(value),
+            TunableValue::List { items } => ResolutionValue::List {
+                items: items.iter().copied().map(owned_literal).collect(),
+            },
+            TunableValue::Map { entries } => ResolutionValue::Map {
+                entries: entries
+                    .iter()
+                    .map(|entry| (entry.name.to_owned(), owned_literal(entry.value)))
+                    .collect(),
+            },
+            TunableValue::Object { fields } => ResolutionValue::Object {
+                fields: fields
+                    .iter()
+                    .map(|field| (field.name.to_owned(), owned_literal(field.value)))
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn multimodal_registry_literal_is_the_exact_rejecting_owner() {
+        let owner =
+            multimodal_decode_envelope_value(crate::image_input::multimodal_decode_envelope())
+                .unwrap();
+        let literal = iteron_tunables::families()
+            .iter()
+            .find(|family| family.id == "multimodal_input_admission_decode_envelope")
+            .and_then(|family| family.default.value)
+            .expect("family 68 must retain a fixed literal");
+        let literal = owned_literal(literal);
+        assert_eq!(owner, literal);
     }
 }

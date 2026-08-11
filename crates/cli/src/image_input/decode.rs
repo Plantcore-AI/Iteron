@@ -166,6 +166,7 @@ fn validate_webp(
     }
 }
 
+#[cfg(test)]
 fn validate_static_bounds(width: u32, height: u32) -> Result<(), ImageInputErrorKind> {
     validate_static_bounds_with_limit(width, height, MAX_IMAGE_DIMENSION)
 }

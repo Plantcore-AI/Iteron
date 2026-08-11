@@ -498,8 +498,10 @@ mod tests {
 
     #[test]
     fn verifier_timeout_is_bounded_and_part_of_the_typed_policy() {
-        let mut policy = VerificationRuntimePolicy::default();
-        policy.verifier_timeout_secs = 0;
+        let mut policy = VerificationRuntimePolicy {
+            verifier_timeout_secs: 0,
+            ..VerificationRuntimePolicy::default()
+        };
         assert_eq!(
             policy.validate(),
             Err(VerificationPolicyError::InvalidTimeoutPolicy)

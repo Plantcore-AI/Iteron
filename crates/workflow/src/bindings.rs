@@ -34,7 +34,9 @@ use crate::events::{
 use crate::journal::{Journal, Outcome, Record};
 use crate::schema::{self, SchemaValidator};
 use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
-use crate::task_dag::runtime::{AttemptTerminal, ExecutionLedger, TaskAdmission, digest_bytes};
+use crate::task_dag::runtime::{
+    AttemptRetryLink, AttemptTerminal, ExecutionLedger, TaskAdmission, digest_bytes,
+};
 use crate::task_dag::{
     AttemptAssignment, AttemptDisposition, AttemptId, AttemptRetryCause, TaskId,
 };
@@ -405,8 +407,7 @@ async fn prepare_attempt(
             retry_ordinal,
             sibling_ordinal,
             lineage.assignment,
-            lineage.retry_of,
-            lineage.retry_cause,
+            AttemptRetryLink::new(lineage.retry_of, lineage.retry_cause),
             &input_digest,
         )
         .await

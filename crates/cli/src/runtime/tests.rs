@@ -7676,14 +7676,16 @@ ant-api03-SuperSecretModelToken12345"
         let runs = ws.join(".iteron/runs");
         let run = iteron_protocol::RunId("h07-verification-quarantine".into());
         let path = runs.join(format!("{run}.jsonl"));
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.required_commands = vec!["project-check".into()];
-        policy.max_commands = 1;
-        policy.flaky = iteron_verify::FlakyQuarantinePolicy {
-            repeat_count: 2,
-            minimum_disagreements: 1,
-            quarantine_seconds: 3_600,
-            report_disagreement: true,
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            required_commands: vec!["project-check".into()],
+            max_commands: 1,
+            flaky: iteron_verify::FlakyQuarantinePolicy {
+                repeat_count: 2,
+                minimum_disagreements: 1,
+                quarantine_seconds: 3_600,
+                report_disagreement: true,
+            },
+            ..Default::default()
         };
         let plan = iteron_verify::VerifierPlan {
             strength: iteron_verify::OracleStrength::Strong,
@@ -7828,8 +7830,10 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("project-check".into());
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.required_commands = vec!["project-check".into()];
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            required_commands: vec!["project-check".into()],
+            ..Default::default()
+        };
         agent.set_verification_policy(policy).unwrap();
         agent
             .record_genesis(ws.display().to_string(), 1, String::new(), None)
@@ -7987,13 +7991,18 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("project-check".into());
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.required_commands = vec!["project-check".into()];
-        policy.flaky.quarantine_seconds = 3_600;
-        policy.quorum = iteron_verify::VerificationQuorumPolicy {
-            verifiers: 2,
-            required_agreement: 2,
-            strong_veto: true,
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            required_commands: vec!["project-check".into()],
+            flaky: iteron_verify::FlakyQuarantinePolicy {
+                quarantine_seconds: 3_600,
+                ..Default::default()
+            },
+            quorum: iteron_verify::VerificationQuorumPolicy {
+                verifiers: 2,
+                required_agreement: 2,
+                strong_veto: true,
+            },
+            ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
         agent
@@ -8076,11 +8085,13 @@ ant-api03-SuperSecretModelToken12345"
             Budget::default(),
         );
         agent.workspace = ws.clone();
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.restore = iteron_verify::VerificationRestorePolicy {
-            mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
-            paths: vec!["selected.txt".into()],
-            require_operator_confirmation: true,
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            restore: iteron_verify::VerificationRestorePolicy {
+                mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
+                paths: vec!["selected.txt".into()],
+                require_operator_confirmation: true,
+            },
+            ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
         agent
@@ -8233,11 +8244,13 @@ ant-api03-SuperSecretModelToken12345"
             Budget::default(),
         );
         agent.workspace = ws.clone();
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.restore = iteron_verify::VerificationRestorePolicy {
-            mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
-            paths: vec!["selected.txt".into()],
-            require_operator_confirmation: true,
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            restore: iteron_verify::VerificationRestorePolicy {
+                mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
+                paths: vec!["selected.txt".into()],
+                require_operator_confirmation: true,
+            },
+            ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
         agent
@@ -8303,11 +8316,13 @@ ant-api03-SuperSecretModelToken12345"
             Budget::default(),
         );
         agent.workspace = ws.clone();
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.restore = iteron_verify::VerificationRestorePolicy {
-            mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
-            paths: vec!["selected.txt".into()],
-            require_operator_confirmation: true,
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            restore: iteron_verify::VerificationRestorePolicy {
+                mode: iteron_verify::VerificationRollbackMode::SelectedPaths,
+                paths: vec!["selected.txt".into()],
+                require_operator_confirmation: true,
+            },
+            ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
         agent
@@ -8446,9 +8461,14 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("exit 1".into());
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.required_commands = vec!["exit 1".into()];
-        policy.retry.max_attempts = 2;
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            required_commands: vec!["exit 1".into()],
+            retry: iteron_verify::VerificationRetryPolicy {
+                max_attempts: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         agent.set_verification_policy(policy).unwrap();
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,
@@ -8490,9 +8510,14 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("exit 1".into());
-        let mut policy = iteron_verify::VerificationRuntimePolicy::default();
-        policy.required_commands = vec!["exit 1".into()];
-        policy.retry.eligible_classes.clear();
+        let policy = iteron_verify::VerificationRuntimePolicy {
+            required_commands: vec!["exit 1".into()],
+            retry: iteron_verify::VerificationRetryPolicy {
+                eligible_classes: Vec::new(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         agent.set_verification_policy(policy).unwrap();
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,

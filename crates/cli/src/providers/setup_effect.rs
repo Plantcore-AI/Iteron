@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 const SCHEMA: u8 = 1;
@@ -27,7 +26,8 @@ const MAX_ATTEMPTS: u8 = 1;
 const TOTAL_DEADLINE_MILLISECONDS: u64 = 60_000;
 const OPERATION_PREFIX: &str = "provider-setup-v1:";
 const OPERATION_ORDINAL_WIDTH: usize = 20;
-static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+static NEXT_TEST_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

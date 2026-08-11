@@ -126,7 +126,7 @@ impl Agent {
             aggregate_raw_bytes = aggregate_raw_bytes
                 .checked_add(raw_bytes)
                 .filter(|total| *total <= self.multimodal_decode_envelope.aggregate_raw_bytes)
-                .ok_or_else(|| reject())?;
+                .ok_or_else(&reject)?;
         }
         let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
             total.saturating_add(
@@ -185,6 +185,7 @@ impl Agent {
     /// Plan rewrites the stable prefix and breaks the prompt cache for that one turn. That is a
     /// rare operator action; carrying an unusable schema block on every turn of a read-only session
     /// is not.
+    #[cfg(test)]
     pub(super) fn advertised_tool_specs(&self) -> Vec<iteron_protocol::ToolSpec> {
         self.advertised_tool_specs_for_task("")
     }

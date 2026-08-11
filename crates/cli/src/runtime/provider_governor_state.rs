@@ -473,6 +473,17 @@ fn objective_evidence_digest(
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
 
+pub(super) const fn admission_reason(reason: AdmissionReason) -> &'static str {
+    match reason {
+        AdmissionReason::UnknownRoute => "provider_route_not_admitted",
+        AdmissionReason::Ceiling => "provider_concurrency_ceiling",
+        AdmissionReason::QuotaUnknown => "provider_quota_unknown",
+        AdmissionReason::QuotaExhausted => "provider_quota_exhausted",
+        AdmissionReason::CircuitOpen => "provider_circuit_open",
+        AdmissionReason::CircuitHalfOpen => "provider_circuit_half_open",
+    }
+}
+
 #[cfg(test)]
 mod objective_rank_tests {
     use super::*;
@@ -623,16 +634,5 @@ mod objective_rank_tests {
             None,
             "ranking must not invent an output-token ceiling"
         );
-    }
-}
-
-pub(super) const fn admission_reason(reason: AdmissionReason) -> &'static str {
-    match reason {
-        AdmissionReason::UnknownRoute => "provider_route_not_admitted",
-        AdmissionReason::Ceiling => "provider_concurrency_ceiling",
-        AdmissionReason::QuotaUnknown => "provider_quota_unknown",
-        AdmissionReason::QuotaExhausted => "provider_quota_exhausted",
-        AdmissionReason::CircuitOpen => "provider_circuit_open",
-        AdmissionReason::CircuitHalfOpen => "provider_circuit_half_open",
     }
 }

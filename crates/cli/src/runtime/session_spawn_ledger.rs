@@ -35,6 +35,7 @@ impl SessionSpawnLedger {
         self.admitted.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     pub(crate) fn remaining(&self) -> usize {
         self.limit.saturating_sub(self.admitted())
     }

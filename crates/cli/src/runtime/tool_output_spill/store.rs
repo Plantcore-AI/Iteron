@@ -26,6 +26,7 @@ impl ToolOutputSpillHandle {
         Self(Sha256::digest(content).into())
     }
 
+    #[cfg(test)]
     fn parse(value: &str) -> Option<Self> {
         let hex = value.strip_prefix("sha256:")?;
         if hex.len() != SHA256_BYTES * 2 {
@@ -49,6 +50,7 @@ impl fmt::Display for ToolOutputSpillHandle {
     }
 }
 
+#[cfg(test)]
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -271,6 +273,7 @@ impl ToolOutputSpillStore {
 
     /// Resolve an opaque handle only against this exact session owner. The caller receives bounded
     /// bytes, never the backing path, and a handle minted by another store is simply absent.
+    #[cfg(test)]
     pub(crate) fn read_private(&self, handle: &str) -> Result<Vec<u8>, ToolOutputSpillError> {
         let handle =
             ToolOutputSpillHandle::parse(handle).ok_or(ToolOutputSpillError::UnknownHandle)?;

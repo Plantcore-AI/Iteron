@@ -1038,6 +1038,7 @@ impl Agent {
     /// listing has metadata without replaying the whole rollout and a fork inherits it. `created_at`
     /// crosses the record boundary ONCE here (read from the record on replay, ADR-006 rule 1). The
     /// frontend calls this on a FRESH run, before `run`, so it is the first event on the chain.
+    #[cfg(test)]
     pub fn record_genesis(
         &mut self,
         cwd: String,

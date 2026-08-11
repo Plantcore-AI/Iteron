@@ -363,10 +363,6 @@ impl PolicyEvidenceRecorder {
             outcome_ordinal: evidence.outcome_ordinal,
         }
     }
-
-    pub(crate) fn run_aggregate(&self) -> PolicyRunAggregate {
-        self.run_aggregate
-    }
 }
 
 fn checked_optional_sum(

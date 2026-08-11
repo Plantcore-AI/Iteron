@@ -7,7 +7,9 @@
 use super::effective_content::{EffectiveContentError, EffectiveContentIdentities};
 use super::effective_core::{EffectiveCoreError, EffectiveCoreSettings};
 use super::effective_tooling::{EffectiveToolingError, EffectiveToolingSettings};
-use super::effective_view::{EffectiveTunablesView, EffectiveViewError, RuntimeBindingReceipt};
+#[cfg(test)]
+use super::effective_view::RuntimeBindingReceipt;
+use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
 use super::fixed_artifacts::{FixedArtifactError, FixedArtifactReceipts, FixedAuthorityReceipts};
 use iteron_record::TunablesCheckpoint;
 use iteron_tunables::{RuntimeGetterId, RuntimeOwnerReceipt};
@@ -16,6 +18,7 @@ pub(crate) struct EffectiveRuntimeProjection {
     pub core: EffectiveCoreSettings,
     pub tooling: EffectiveToolingSettings,
     pub content: EffectiveContentIdentities,
+    #[cfg(test)]
     pub binding: RuntimeBindingReceipt,
 }
 
@@ -49,10 +52,13 @@ fn decode_view(
     let (core, tooling, content) = consume_registered_getters(view)?;
     let binding =
         view.seal_runtime_binding_receipt(owner_receipt, fixed_artifacts, fixed_authorities)?;
+    #[cfg(not(test))]
+    let _ = binding;
     Ok(EffectiveRuntimeProjection {
         core,
         tooling,
         content,
+        #[cfg(test)]
         binding,
     })
 }

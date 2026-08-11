@@ -111,9 +111,9 @@ impl Store {
         source: SourceBinding,
     ) -> anyhow::Result<PersistedEntry> {
         let seq = Seq(u64::try_from(index)?);
-        let handle = self
-            .private
-            .put_derived(seq, text.as_bytes(), &[source.source.clone()])?;
+        let handle =
+            self.private
+                .put_derived(seq, text.as_bytes(), std::slice::from_ref(&source.source))?;
         Ok(PersistedEntry { handle, source })
     }
 
@@ -198,12 +198,7 @@ impl Store {
                 Ok(_) => anyhow::bail!(
                     "prompt history manifest lineage does not match the durable graph"
                 ),
-                Err(error)
-                    if matches!(
-                        error,
-                        ContentStoreError::Revoked { .. } | ContentStoreError::Unresolved { .. }
-                    ) =>
-                {
+                Err(ContentStoreError::Revoked { .. } | ContentStoreError::Unresolved { .. }) => {
                     continue;
                 }
                 Err(error) => return Err(error.into()),

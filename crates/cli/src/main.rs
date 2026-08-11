@@ -1593,13 +1593,16 @@ async fn run_cli() -> anyhow::Result<u8> {
     // operator-owned source turns it off. A cloned repository is still not an authorization
     // principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables
     // it, while a project `true` stays inert.
-    let trusted_allow_code = if cli.allow_code {
-        (true, config::ConfigOrigin::Cli)
-    } else if let Some(value) = user_file.allow_code {
-        (value, config::ConfigOrigin::UserConfig)
-    } else {
-        (true, config::ConfigOrigin::Builtin)
-    };
+    let trusted_allow_code = (
+        trusted_allow_code(cli.allow_code, user_file.allow_code),
+        if cli.allow_code {
+            config::ConfigOrigin::Cli
+        } else if user_file.allow_code.is_some() {
+            config::ConfigOrigin::UserConfig
+        } else {
+            config::ConfigOrigin::Builtin
+        },
+    );
     let (allow_code, allow_code_origin) =
         config::tighten_grant_with_origin(file.allow_code, trusted_allow_code);
 

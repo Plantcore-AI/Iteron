@@ -306,9 +306,3 @@ pub(super) fn domain_max(
     )?;
     Ok(())
 }
-
-fn owner_digest(label: &'static str, value: &impl Serialize) -> Result<String, CoreFactError> {
-    let encoded =
-        serde_json::to_vec(&(label, value)).map_err(|_| CoreFactError::EvidenceEncoding)?;
-    Ok(hex::encode(Sha256::digest(encoded)))
-}

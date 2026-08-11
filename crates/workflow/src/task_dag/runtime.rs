@@ -56,6 +56,24 @@ pub(crate) enum TaskAdmission {
     SkippedDependency { task: TaskId, dependency: TaskId },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AttemptRetryLink {
+    retry_of: Option<AttemptId>,
+    retry_cause: Option<AttemptRetryCause>,
+}
+
+impl AttemptRetryLink {
+    pub(crate) const fn new(
+        retry_of: Option<AttemptId>,
+        retry_cause: Option<AttemptRetryCause>,
+    ) -> Self {
+        Self {
+            retry_of,
+            retry_cause,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum AttemptTerminal {
     Succeeded {
@@ -321,15 +339,14 @@ impl ExecutionLedger {
         retry_ordinal: usize,
         sibling_ordinal: usize,
         assignment: AttemptAssignment,
-        retry_of: Option<AttemptId>,
-        retry_cause: Option<AttemptRetryCause>,
+        retry: AttemptRetryLink,
         input_digest: &str,
     ) -> Result<AttemptId, String> {
         // The controller, not the caller, derives evidence from the predecessor's durable
         // terminal. Validation recomputes the same canonical digest while reducing the command,
         // so neither transient prompt text nor unverifiable schema diagnostics can stand in for
         // the evidence that actually survived a restart.
-        let prior_evidence_digest = if let Some(prior_id) = retry_of {
+        let prior_evidence_digest = if let Some(prior_id) = retry.retry_of {
             let snapshot = self.snapshot().await?;
             let prior = snapshot
                 .attempts
@@ -356,9 +373,9 @@ impl ExecutionLedger {
                 sibling_ordinal: u32::try_from(sibling_ordinal)
                     .map_err(|_| "sibling ordinal exceeded u32".to_string())?,
                 lineage_version: 1,
-                retry_of,
+                retry_of: retry.retry_of,
                 assignment,
-                retry_cause,
+                retry_cause: retry.retry_cause,
                 prior_evidence_digest,
                 input_digest: input_digest.to_owned(),
             },
@@ -719,8 +736,7 @@ mod tests {
                 0,
                 0,
                 AttemptAssignment::Initial,
-                None,
-                None,
+                AttemptRetryLink::new(None, None),
                 &input_digest,
             )
             .await

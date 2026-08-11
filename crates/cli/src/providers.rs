@@ -99,31 +99,6 @@ impl ProviderDiscoveryPolicy {
         }
     }
 
-    pub(crate) fn new(
-        eager_budget_milliseconds: u64,
-        positive_ttl_seconds: u64,
-        failure_backoff_base_seconds: u64,
-        failure_backoff_cap_seconds: u64,
-    ) -> Result<Self, &'static str> {
-        if eager_budget_milliseconds == 0
-            || eager_budget_milliseconds > 60_000
-            || positive_ttl_seconds > 86_400
-            || failure_backoff_base_seconds == 0
-            || failure_backoff_base_seconds > 86_400
-            || failure_backoff_cap_seconds == 0
-            || failure_backoff_cap_seconds > 604_800
-            || failure_backoff_base_seconds > failure_backoff_cap_seconds
-        {
-            return Err("provider discovery/probe policy is outside the supported domain");
-        }
-        Ok(Self {
-            eager_budget_milliseconds,
-            positive_ttl_seconds,
-            failure_backoff_base_seconds,
-            failure_backoff_cap_seconds,
-        })
-    }
-
     pub(crate) const fn eager_budget_milliseconds(self) -> u64 {
         self.eager_budget_milliseconds
     }

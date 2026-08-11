@@ -480,6 +480,7 @@ impl KernelSpawner {
     ///   * the same non-durable inherited context (workspace, model window, sensitive env,
     ///     cost attribution, bounded delegation depth),
     ///     minus the parent's durable `SubagentSpawned` + UI emission (no parent transcript exists).
+    #[cfg(test)]
     fn build_child(&self, call: &AgentCall, ordinal: u64) -> Result<Agent, String> {
         self.build_child_in(call, ordinal, None)
     }
@@ -1162,8 +1163,10 @@ pub(super) mod tests {
         let root = scratch("shared-provider-governor");
         let catalog = discovered_catalog(&root);
         let mut cx = unbound_context(&root, catalog);
-        let mut policy = iteron_provider::GovernorPolicy::default();
-        policy.max_in_flight_per_route = 1;
+        let policy = iteron_provider::GovernorPolicy {
+            max_in_flight_per_route: 1,
+            ..iteron_provider::GovernorPolicy::default()
+        };
         cx.initialize_provider_governor(policy).unwrap();
         let first_governor = child_provider_governor(&cx).unwrap();
         let second_governor = child_provider_governor(&cx).unwrap();

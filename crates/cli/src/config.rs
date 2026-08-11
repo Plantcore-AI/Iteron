@@ -1451,6 +1451,7 @@ pub fn env_string(key: &str) -> Option<String> {
 }
 
 /// Resolve one value across the precedence chain: flag > env > file > default.
+#[cfg(test)]
 pub fn pick<T>(flag: Option<T>, env: Option<T>, file: Option<T>, default: T) -> T {
     flag.or(env).or(file).unwrap_or(default)
 }
@@ -1492,6 +1493,7 @@ pub(crate) fn pick_optional_with_origin<T>(
 
 /// Apply an untrusted repository ceiling to a value already resolved from trusted operator
 /// sources. A project may request *less* authority/spend/time, never more.
+#[cfg(test)]
 pub fn tighten<T: PartialOrd>(project: Option<T>, trusted: T) -> T {
     match project {
         Some(project) if project < trusted => project,
@@ -1512,6 +1514,7 @@ pub(crate) fn tighten_with_origin<T: PartialOrd>(
 
 /// Optional ceiling variant: absence means the operator made no monetary guarantee. A project may
 /// introduce or lower a ceiling, but can never remove or raise a trusted one.
+#[cfg(test)]
 pub fn tighten_optional<T: PartialOrd>(project: Option<T>, trusted: Option<T>) -> Option<T> {
     match (project, trusted) {
         (Some(project), Some(trusted)) => {
@@ -1544,6 +1547,7 @@ pub(crate) fn tighten_optional_with_origin<T: PartialOrd>(
 
 /// Apply an untrusted repository restriction to an operator-owned boolean grant. `true` can never
 /// mint authority; an explicit project `false` may only remove an existing grant.
+#[cfg(test)]
 pub fn tighten_grant(project: Option<bool>, trusted: bool) -> bool {
     trusted && project.unwrap_or(true)
 }
@@ -1582,6 +1586,7 @@ pub(crate) fn resolve_completion_notifications(
 /// Resolve a repository-safe scalar across every implemented configuration layer. Project config
 /// intentionally outranks the user's default for this repository, while environment and CLI remain
 /// explicit runtime overrides.
+#[cfg(test)]
 pub fn pick_run_setting<T>(
     flag: Option<T>,
     env: Option<T>,

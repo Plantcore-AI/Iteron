@@ -30,9 +30,10 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Budget, DurableEnvironmentContext, Effort, PermissionMode, PermissionRules};
 use iteron_sched::BackoffPolicy;
 use iteron_tools::Registry;
+#[cfg(test)]
+use iteron_tunables::RuntimeOwnerReceipt;
 use iteron_tunables::{
-    ProductionOwnerId, ResolvedTunableSet, RuntimeOwnerReceipt, RuntimeProfile,
-    RuntimeResolutionBuilder,
+    ProductionOwnerId, ResolvedTunableSet, RuntimeProfile, RuntimeResolutionBuilder,
 };
 use iteron_verify::{VerifierSlotObservation, VerifierStrategy};
 use sha2::{Digest as _, Sha256};
@@ -54,8 +55,16 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub benchmark_scope: Option<&'a str>,
     pub workspace: &'a Path,
     pub environment: Option<&'a str>,
+    #[allow(
+        dead_code,
+        reason = "the composition input preserves the private prompt observation without self-attesting it"
+    )]
     pub operator_prompt: Option<&'a str>,
     pub hooks_catalog: Option<crate::runtime::hooks::HookCatalogIdentity>,
+    #[allow(
+        dead_code,
+        reason = "the caller records whether the resident app-server actor owns this composition"
+    )]
     pub app_server_active: bool,
     pub provider_origin: ConfigOrigin,
     pub model_origin: ConfigOrigin,
@@ -91,10 +100,11 @@ pub(crate) struct FreshCompositionInput<'a> {
 pub(crate) struct FreshComposition {
     pub resolved: Arc<ResolvedTunableSet>,
     pub settings: EffectiveCoreSettings,
-    pub route_capabilities: iteron_tunables::RouteCapabilities,
     pub session_spawn_ledger: Arc<crate::runtime::SessionSpawnLedger>,
     pub fact_summary: FreshFactSummary,
+    #[cfg(test)]
     pub owner_receipt: RuntimeOwnerReceipt,
+    #[cfg(test)]
     pub binding_receipt: super::effective_view::RuntimeBindingReceipt,
 }
 
@@ -254,15 +264,12 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
                 budget: input.budget,
                 run_limits: input.run_limits,
                 effort: input.effort.value,
-                verify_command: input.verify_command,
                 hooks_catalog: input.hooks_catalog.clone(),
                 model_capabilities: input.model_capabilities,
                 directory: input.directory,
                 configured_mcp: input.configured_mcp,
                 authority_ceiling: input.authority_ceiling,
-                operator_prompt: input.operator_prompt,
                 environment: durable_environment.as_ref(),
-                app_server_active: input.app_server_active,
             },
         )
     })?;
@@ -427,7 +434,6 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
     Ok(FreshComposition {
         resolved,
         settings,
-        route_capabilities,
         session_spawn_ledger,
         fact_summary: FreshFactSummary {
             active_full_gaps: 0,
@@ -436,7 +442,9 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
             provider_process_gaps: provider_process.gaps.len(),
             extension_gaps: extension.gaps.len(),
         },
+        #[cfg(test)]
         owner_receipt,
+        #[cfg(test)]
         binding_receipt: effective.binding,
     })
 }

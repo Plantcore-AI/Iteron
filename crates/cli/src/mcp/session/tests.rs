@@ -330,7 +330,8 @@ fn resumed_transport_drift_is_refused_before_http_dispatch() {
     let old = fixture(&marker());
     let live = http_fixture(None);
     let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
-    let runtime = McpRuntimeControl::register(&mut registry, &[live.clone()], &[]).unwrap();
+    let runtime =
+        McpRuntimeControl::register(&mut registry, std::slice::from_ref(&live), &[]).unwrap();
     let checkpoint = settings(iteron_mcp::McpSpillCleanup::SessionEnd)
         .with_live_bindings_for_test(&[old])
         .unwrap();
@@ -353,7 +354,8 @@ fn resumed_oauth_lifecycle_drift_is_refused_before_http_dispatch() {
     let old = http_fixture(Some(bearer_oauth()));
     let live = http_fixture(Some(refresh_oauth()));
     let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
-    let runtime = McpRuntimeControl::register(&mut registry, &[live.clone()], &[]).unwrap();
+    let runtime =
+        McpRuntimeControl::register(&mut registry, std::slice::from_ref(&live), &[]).unwrap();
     let checkpoint = settings(iteron_mcp::McpSpillCleanup::SessionEnd)
         .with_live_bindings_for_test(&[old])
         .unwrap();

@@ -11,10 +11,11 @@ use iteron_tunables::{
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+use super::fixed_artifacts::provider_discovery_owner_value;
 use super::fixed_artifacts::{
     FixedArtifactReceipts, FixedAuthorityReceipts, checkpoint_fixed_consumer,
-    configured_absence_reason, provider_discovery_owner_value, requires_live_authority_resample,
-    requires_live_receipt,
+    configured_absence_reason, requires_live_authority_resample, requires_live_receipt,
 };
 
 #[derive(Debug, Clone)]
@@ -444,10 +445,6 @@ impl EffectiveTunablesView {
         self.fixed_consumed.borrow_mut().remove(family);
     }
 
-    pub(crate) fn effective_digest_sha256(&self) -> &str {
-        &self.effective_digest_sha256
-    }
-
     pub(crate) fn runtime_profile(
         &self,
     ) -> Result<iteron_tunables::RuntimeProfile, EffectiveViewError> {
@@ -495,16 +492,6 @@ impl EffectiveTunablesView {
         match self.value(family)? {
             ResolutionValue::Integer { value } => Ok(*value),
             _ => Err(wrong_type(family, "integer")),
-        }
-    }
-
-    pub(crate) fn decimal(
-        &self,
-        family: &str,
-    ) -> Result<iteron_tunables::DecimalValue, EffectiveViewError> {
-        match self.value(family)? {
-            ResolutionValue::Decimal { value } => Ok(*value),
-            _ => Err(wrong_type(family, "decimal")),
         }
     }
 
