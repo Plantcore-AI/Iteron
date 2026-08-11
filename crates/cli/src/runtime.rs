@@ -144,6 +144,10 @@ pub(crate) type SessionSpawnLedger = session_spawn_ledger::SessionSpawnLedger;
 pub(crate) const FAILED_ACTION_CACHE_MAX_IDENTITIES: usize = failed_action_cache::MAX_IDENTITIES;
 pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP;
 
+pub(crate) fn ui_workflow_label(content: &str) -> String {
+    frontend::ui_workflow_label(content)
+}
+
 pub(crate) const fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy
 {
     deferred_tools::effecting_tool_admission_policy()

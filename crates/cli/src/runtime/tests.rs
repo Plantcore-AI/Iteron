@@ -12300,7 +12300,7 @@ ant-api03-SuperSecretModelToken12345"
         }
 
         let ws = temp_ws("route-attempt-fallback-truth");
-        let run = RunId("route-attempt-fallback-truth".into());
+        let run = iteron_protocol::RunId("route-attempt-fallback-truth".into());
         let runs = ws.join(".iteron/runs");
         let primary_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let fallback_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -12464,7 +12464,7 @@ ant-api03-SuperSecretModelToken12345"
         }
 
         let ws = temp_ws("route-attempt-usd-fail-closed");
-        let run = RunId("route-attempt-usd-fail-closed".into());
+        let run = iteron_protocol::RunId("route-attempt-usd-fail-closed".into());
         let runs = ws.join(".iteron/runs");
         let primary_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let fallback_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -12922,7 +12922,7 @@ ant-api03-SuperSecretModelToken12345"
         }
 
         let ws = temp_ws("priced-hedge-suppressed");
-        let run = RunId("priced-hedge-suppressed".into());
+        let run = iteron_protocol::RunId("priced-hedge-suppressed".into());
         let runs = ws.join(".iteron/runs");
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();

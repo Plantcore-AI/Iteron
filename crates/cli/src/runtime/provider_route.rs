@@ -672,5 +672,6 @@ pub(super) fn retryable_pre_stream_provider_error(
         error,
         iteron_provider::ProviderError::Api { .. } | iteron_provider::ProviderError::ApiResponse(_)
     );
-    (proven_terminal && error.retry_disposition() == RetryDisposition::Transient).then_some(error)
+    (proven_terminal && error.retry_disposition() == iteron_provider::RetryDisposition::Transient)
+        .then_some(error)
 }

@@ -1079,7 +1079,7 @@ impl Agent {
     /// while physical sequence one binds the exact parent run and inherited V1/V2 checkpoint.
     pub fn record_child_genesis_with_tunables(
         &mut self,
-        parent_run: &RunId,
+        parent_run: &iteron_protocol::RunId,
         cwd: String,
         created_at: u64,
         config_digest: String,
@@ -1249,7 +1249,7 @@ impl Agent {
 
     fn record_policy_bundle_genesis(
         &mut self,
-        parent_run: Option<&RunId>,
+        parent_run: Option<&iteron_protocol::RunId>,
     ) -> Result<(), KernelError> {
         let snapshot = self.compiled_policy_bundle.genesis_snapshot().clone();
         let inherited_from =
