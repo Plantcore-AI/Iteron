@@ -874,6 +874,7 @@ mod tests {
                 "git_log",
                 "read_memory",
                 "use_skill",
+                "tool_search",
             ]
         );
         assert_eq!(
