@@ -161,6 +161,8 @@ def create_release(arguments: argparse.Namespace) -> None:
         validate_target(target)
     if not arguments.dist.is_dir():
         raise ReleaseToolError(f"distribution directory does not exist: {arguments.dist}")
+    if arguments.receipt.resolve() == arguments.output.resolve():
+        raise ReleaseToolError("manifest and receipt outputs must be distinct")
 
     installer = digest_entry(arguments.dist / "install.sh")
     legal = {

@@ -1413,6 +1413,60 @@ exit 1
             finally:
                 sys.argv = original
 
+    # Every other test in this file builds an argparse.Namespace by hand, which is why
+    # `build-info` could reference an argument its subparser never defines and still look
+    # tested. These two drive the real parser, so an attribute the CLI does not supply
+    # cannot be assumed again.
+    def test_build_info_runs_through_the_real_parser(self) -> None:
+        output = self.root / "BUILD-INFO.json"
+        arguments = manifest.parser().parse_args(
+            [
+                "build-info",
+                "--version",
+                "0.0.1",
+                "--target",
+                "aarch64-apple-darwin",
+                "--commit",
+                "0" * 40,
+                "--rustc",
+                "rustc 1.90.0",
+                "--cargo",
+                "cargo 1.90.0",
+                "--output",
+                str(output),
+            ]
+        )
+        manifest.create_build_info(arguments)
+        document = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(document["product"], "Core Code")
+        self.assertEqual(document["version"], "0.0.1")
+        self.assertEqual(document["target"], "aarch64-apple-darwin")
+        self.assertEqual(document["commit"], "0" * 40)
+        self.assertNotIn("receipt", document)
+
+    def test_release_rejects_a_manifest_and_receipt_at_the_same_path(self) -> None:
+        distribution = self.root / "dist"
+        distribution.mkdir()
+        same = self.root / "release-manifest.json"
+        arguments = manifest.parser().parse_args(
+            [
+                "release",
+                "--version",
+                "0.0.1",
+                "--commit",
+                "0" * 40,
+                "--dist",
+                str(distribution),
+                "--output",
+                str(same),
+                "--receipt",
+                str(same),
+            ]
+        )
+        with self.assertRaisesRegex(ReleaseToolError, "must be distinct"):
+            manifest.create_release(arguments)
+
 
 if __name__ == "__main__":
     unittest.main()
