@@ -85,6 +85,10 @@ impl Agent {
                         DurableAppendFault::UsdCeiling,
                         EventKind::UsdCeilingChanged { .. }
                     )
+                    | (
+                        DurableAppendFault::TurnCeiling,
+                        EventKind::TurnCeilingChanged { .. }
+                    )
             )
         }) {
             self.fail_next_durable_append = None;

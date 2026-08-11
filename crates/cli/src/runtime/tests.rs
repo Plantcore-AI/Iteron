@@ -5139,9 +5139,18 @@ ant-api03-SuperSecretModelToken12345"
 
         // The widening is in the record, so a later reader can tell why more turns were admitted
         // than the run started with.
-        let raw = std::fs::read_to_string(agent.rollout.path()).unwrap();
-        assert!(
-            raw.contains("operator set the session turn ceiling: 1 -> 3"),
+        // The raise is a typed replay input now, not a prose notice: resume and fork must restore
+        // the last operator amendment before admission, which a sentence cannot be parsed for.
+        let raised_event = core_record::replay(agent.rollout.path())
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event.kind {
+                EventKind::TurnCeilingChanged { max_turns, .. } => Some(max_turns),
+                _ => None,
+            });
+        assert_eq!(
+            raised_event,
+            Some(3),
             "the raise must be journaled, not applied silently"
         );
         let _ = std::fs::remove_dir_all(ws);
@@ -5159,7 +5168,7 @@ ant-api03-SuperSecretModelToken12345"
         assert_eq!(agent.turn_budget(), before, "a refusal changes nothing");
 
         // Write-ahead: the ceiling in memory may never be one a crash would fail to explain.
-        agent.fail_next_durable_append = Some(DurableAppendFault::Notice);
+        agent.fail_next_durable_append = Some(DurableAppendFault::TurnCeiling);
         assert!(matches!(
             agent.set_turn_ceiling(before.max_turns + 10),
             Err(KernelError::Record(_))

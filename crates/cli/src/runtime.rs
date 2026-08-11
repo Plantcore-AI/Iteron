@@ -1590,6 +1590,7 @@ enum DurableAppendFault {
     ToolPolicyDecision,
     SubagentFinished,
     UsdCeiling,
+    TurnCeiling,
 }
 
 /// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
