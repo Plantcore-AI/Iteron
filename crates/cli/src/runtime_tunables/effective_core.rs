@@ -205,7 +205,9 @@ impl EffectiveCoreSettings {
 
     /// Prove that today's adapter can execute the immutable route ceilings without allowing its
     /// newly discovered metadata to replace them. Capability growth is harmless but still runs at
-    /// the checkpoint value; capability loss below a recorded ceiling is a pre-effect refusal.
+    /// the checkpoint value; a known capability below a recorded ceiling is a pre-effect refusal.
+    /// An unknown response cap preserves family 19's pinned conservative fallback rather than
+    /// fabricating provider evidence, while an unknown context window cannot attest family 96.
     pub(crate) fn verify_model_capability_ceiling(
         &self,
         live_context_window: Option<u64>,
@@ -243,9 +245,10 @@ fn verify_model_capability_ceiling(
             value: "live provider no longer attests the checkpoint context window".into(),
         });
     }
-    if required_output_cap
-        .is_some_and(|required| live_output_cap.is_none_or(|live| live < required))
-    {
+    if matches!(
+        (required_output_cap, live_output_cap),
+        (Some(required), Some(live)) if live < required
+    ) {
         return Err(EffectiveCoreError::UnknownValue {
             family: "request_output_cap",
             value: "live provider no longer attests the checkpoint response cap".into(),
@@ -1331,8 +1334,13 @@ mod memory_schema_agreement_tests {
                 ..
             })
         ));
+        assert!(
+            verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,)
+                .is_ok(),
+            "unknown output metadata preserves the checkpoint's conservative execution cap"
+        );
         assert!(matches!(
-            verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,),
+            verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), Some(4_096),),
             Err(EffectiveCoreError::UnknownValue {
                 family: "request_output_cap",
                 ..

@@ -388,10 +388,12 @@ impl Agent {
                 } else {
                     true
                 };
+                let compaction_result_turn =
+                    TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0));
                 if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
                     self.lifecycle_event(
                         "context.compaction.failed",
-                        Some(compaction_turn),
+                        Some(compaction_result_turn),
                         LifecyclePayload {
                             reason_code: Some(if covered {
                                 "hysteresis_exit_not_reached".into()
@@ -404,7 +406,7 @@ impl Agent {
                     return;
                 }
                 self.record_compaction(
-                    compaction_turn,
+                    compaction_result_turn,
                     &messages,
                     &plan,
                     &summary,
@@ -420,7 +422,9 @@ impl Agent {
             }
             Err(_) => self.lifecycle_event(
                 "context.compaction.failed",
-                Some(compaction_turn),
+                Some(TurnId(
+                    self.seq_turn.saturating_sub(1).max(compaction_turn.0),
+                )),
                 LifecyclePayload::default(),
             ),
         }
@@ -473,7 +477,9 @@ impl Agent {
             Err(error) => {
                 self.lifecycle_event(
                     "context.compaction.failed",
-                    Some(compaction_turn),
+                    Some(TurnId(
+                        self.seq_turn.saturating_sub(1).max(compaction_turn.0),
+                    )),
                     LifecyclePayload {
                         reason_code: Some("operator_forced".into()),
                         ..LifecyclePayload::default()
@@ -489,7 +495,9 @@ impl Agent {
         {
             self.lifecycle_event(
                 "context.compaction.failed",
-                Some(compaction_turn),
+                Some(TurnId(
+                    self.seq_turn.saturating_sub(1).max(compaction_turn.0),
+                )),
                 LifecyclePayload {
                     reason_code: Some("summary_coverage_missing".into()),
                     ..LifecyclePayload::default()
@@ -501,7 +509,7 @@ impl Agent {
         }
         let after = 2 + plan.keep_verbatim.len();
         self.record_compaction(
-            compaction_turn,
+            TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
             &messages,
             &plan,
             &summary,

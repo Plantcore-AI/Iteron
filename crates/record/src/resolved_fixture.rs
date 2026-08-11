@@ -188,6 +188,14 @@ fn all_family_input() -> ResolutionInput {
                 "provider_service_tier" => ResolutionValue::Enum {
                     value: "provider_default".to_owned(),
                 },
+                // The shared executable fixture models the baseline adapter contract. A generic
+                // enum sample selects zstd even though providers must explicitly attest request
+                // compression before it can reach the wire. Keep the fixture on the universally
+                // supported no-compression control; capability-specific tests install their own
+                // exact route evidence.
+                "request_compression_policy" => ResolutionValue::Enum {
+                    value: "none".to_owned(),
+                },
                 // The total request deadline is a derived transport owner rather than a
                 // Literal family, so the generic scalar sampler would choose 1 ms. That is
                 // schema-valid but physically inconsistent with the fixed 30 s connect and
@@ -221,6 +229,11 @@ fn all_family_input() -> ResolutionInput {
                 // be installed by the production queue owner. Mirror the canonical owner-sized
                 // fixture instead of weakening that runtime invariant.
                 "app_server_sq_eq_backpressure" => app_server_queue_policy(),
+                // The ordinary tool-result store keeps a useful inline result and spills only
+                // genuinely large output. The generic five-byte boundary sample is schema-valid
+                // but turns every normal `read_file` result into an error before a behavioral
+                // fixture can reach its provider/tool oracle.
+                "tool_output_spill_to_disk_policy" => tool_output_spill_policy(),
                 // The executable owner requires an exact, total route for every raster MIME.
                 // A generic map sample cannot establish that bijection and must not be allowed
                 // to weaken the pre-provider inspection gate.
@@ -891,6 +904,15 @@ fn disabled_hedge_policy() -> ResolutionValue {
         .into_iter()
         .collect(),
     }
+}
+
+fn tool_output_spill_policy() -> ResolutionValue {
+    object([
+        ("memory_threshold_bytes", integer(64 * 1_024)),
+        ("spill_max_bytes", integer(16 * 1_024 * 1_024)),
+        ("cleanup", enumv("run_end")),
+        ("private_storage", boolean(true)),
+    ])
 }
 
 fn oauth_bearer_policy() -> ResolutionValue {

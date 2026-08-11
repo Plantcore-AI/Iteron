@@ -42,6 +42,10 @@ pub(crate) struct RouteFactInput<'a> {
     pub catalog_digest: &'a str,
     pub capability_digest: &'a str,
     pub registry: &'a Registry,
+    /// True only when the composition caller will install a physical child spawner. Standalone
+    /// workflows own that topology without exposing `dispatch_agent` as a registry tool, so the
+    /// registry alone cannot attest this capability.
+    pub agent_spawn_available: bool,
     /// Trusted-user/plugin MCP declarations after composition. A declaration is considered live
     /// only when its namespaced tool or extension is present in `registry`.
     pub configured_mcp: &'a [McpServerConfig],
@@ -89,6 +93,9 @@ pub(crate) fn collect_route_capabilities(
         .collect::<HashSet<_>>();
     let mut capabilities = provider_capabilities(entry, input.model_capabilities);
     add_registry_capabilities(&mut capabilities, input.registry, &specs, &names);
+    if input.agent_spawn_available {
+        capabilities.insert(CapabilityRequirement::AgentSpawn);
+    }
     let active_mcp = add_mcp_capabilities(&mut capabilities, input.configured_mcp, &names);
 
     let registry_projection = specs

@@ -2009,7 +2009,11 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             .await
             .expect("provider failure settles as null");
         assert_eq!(report.value, serde_json::Value::Null);
-        assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.turns.load(Ordering::SeqCst),
+            2,
+            "the workflow's bounded retry policy gives the failed logical agent one retry"
+        );
         assert_safe_refusal_surfaces(&workflows_dir, "fallback-error", &sink, 1, secret);
         let _ = std::fs::remove_dir_all(workflows_dir);
     }
@@ -3114,8 +3118,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         assert!(!summary.contains("KILLED"), "{summary}");
         assert_eq!(
             spawner.calls.load(Ordering::SeqCst),
-            3,
-            "every declared agent is still dispatched after one of them fails"
+            4,
+            "all three declared agents run and the failed agent receives its one bounded retry"
         );
         for survivor in ["alpha-result", "gamma-result"] {
             assert!(

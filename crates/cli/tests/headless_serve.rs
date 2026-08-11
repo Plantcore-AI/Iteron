@@ -54,7 +54,14 @@ impl Scratch {
                 "catalog": false,
                 "models": [MODEL_ID],
                 "model_capabilities": {
-                    (MODEL_ID): {"image_input": true}
+                    // The loopback fixture owns this synthetic model, so its bounded context
+                    // window is operator evidence rather than an invented vendor capability.
+                    // Declaring it keeps the production composition path intact: the request
+                    // output reserve remains Core's conservative unknown-model default.
+                    (MODEL_ID): {
+                        "context_window_tokens": 1000000,
+                        "image_input": true
+                    }
                 }
             }]
         });
@@ -657,7 +664,10 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
                     {"type":"text","text":CLIENT_PARITY_TASK.trim()},
                     {
                         "type":"image",
-                        "image":{"media_type":"image/png","data":"iVBORw0KGgo="}
+                        "image":{
+                            "media_type":"image/png",
+                            "data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                        }
                     }
                 ]
             }

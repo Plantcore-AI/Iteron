@@ -90,6 +90,27 @@ impl Agent {
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         let context_estimator =
             iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
+        #[cfg(test)]
+        let context_budget_policy = {
+            // Bare-Agent tests deliberately exercise the unbound constructor, but the coding
+            // registry is a real physical input: its schemas currently need about 14.6k tokens.
+            // Reallocate a fixed 20k slice from transcript to schemas without widening the 120k
+            // default window or changing production composition, which always installs the
+            // checkpoint-derived policy before its first effect.
+            let mut policy = iteron_ctx::ContextBudgetPolicy::default();
+            let moved = 20_000usize
+                .checked_sub(policy.tool_schema_tokens)
+                .expect("default tool-schema slice stays below the test ceiling");
+            policy.tool_schema_tokens = 20_000;
+            policy.transcript_tokens = policy
+                .transcript_tokens
+                .checked_sub(moved)
+                .expect("default transcript slice covers the test schema reallocation");
+            debug_assert!(policy.validate_for_window(120_000).is_ok());
+            policy
+        };
+        #[cfg(not(test))]
+        let context_budget_policy = iteron_ctx::ContextBudgetPolicy::default();
         Agent {
             provider,
             registry,
@@ -123,7 +144,7 @@ impl Agent {
             last_compaction_turn: None,
             context_estimator,
             deferred_tool_eager_limit: None,
-            context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
+            context_budget_policy,
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,

@@ -17,6 +17,36 @@ fn test_dir() -> PathBuf {
 }
 
 #[test]
+fn authoritative_record_waits_for_a_transient_derivative_store_writer() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("run-record-lock-contention".into());
+    let layout = Layout::new(&dir, &tenant);
+    ensure_layout(&layout).unwrap();
+    let lock = lock_store(&layout).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(lock);
+    });
+    let event = iteron_protocol::Event {
+        seq: Seq::ZERO,
+        turn: iteron_protocol::TurnId(0),
+        kind: iteron_protocol::EventKind::Notice {
+            text: "private record payload".into(),
+        },
+    };
+    let mut payload = serde_json::to_value(event).unwrap();
+
+    externalize_event_payload(&dir, &tenant, &run, Seq::ZERO, &mut payload).unwrap();
+    release.join().unwrap();
+    assert_eq!(
+        payload.get(ENVELOPE_FIELD),
+        Some(&serde_json::Value::from(STORE_VERSION))
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn reusable_tool_output_store_encrypts_reads_and_releases_by_run() {
     let dir = test_dir();
     let tenant = TenantId::default();

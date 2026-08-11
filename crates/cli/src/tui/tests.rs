@@ -434,7 +434,10 @@ mod tests {
         let (submissions, _submitted) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(submissions);
 
-        open_tunables_picker(&mut app, &session, "route_selection");
+        open_tunables_picker(&mut app, &session, "registry");
+        for ch in "route_selection".chars() {
+            app.picker_key(KeyCode::Char(ch));
+        }
         let picker = app.picker.as_ref().expect("tunables picker opens");
         assert_eq!(picker.items.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
         assert_eq!(picker.query, "route_selection");
@@ -1752,6 +1755,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         let screen = render_text(&mut app, 120, 20);
+        let normalized = screen.split_whitespace().collect::<Vec<_>>().join(" ");
         for expected in [
             "1 session-owned MCP servers",
             "docs",
@@ -1761,11 +1765,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "generation 7",
             "protocol 2025-03-26",
             "reconnect 1/4",
-            "last failure transport",
+            "last failure retained (details withheld)",
             "12 retained",
         ] {
-            assert!(screen.contains(expected), "missing {expected:?}: {screen}");
+            assert!(
+                normalized.contains(expected),
+                "missing {expected:?}: {screen}"
+            );
         }
+        assert!(!normalized.contains("last failure transport"));
     }
 
     const PRODUCT_SIZES: [(u16, u16); 4] = [(40, 12), (80, 24), (120, 32), (200, 40)];

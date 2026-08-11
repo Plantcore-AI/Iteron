@@ -2112,6 +2112,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 catalog_digest: &catalog_digest,
                 capability_digest: &capability_digest,
                 registry: &registry,
+                agent_spawn_available: true,
                 configured_mcp: &configured_mcp,
                 agent_catalog: &agent_catalog,
                 profile: runtime_profile,
@@ -3451,7 +3452,11 @@ async fn run_workflow_command(
     {
         anyhow::bail!("--harness-profile benchmark requires --benchmark-attempt-scope");
     }
-    let default_budget = iteron_agents::subagent_budget_ceiling();
+    // The standalone workflow owns a top-level run checkpoint, so its built-in budget must be the
+    // same canonical owner as every other root run. Each physical workflow child is still
+    // intersected with `subagent_budget_ceiling()` by `KernelSpawner`; using that child ceiling as
+    // the root's Builtin value would create a second default and fail the literal-owner seal.
+    let default_budget = Budget::default();
     let (workflow_max_turns, workflow_max_turns_origin) = config::pick_with_origin(
         cli.max_turns,
         config::env_u32("ITERON_MAX_TURNS"),
@@ -3603,6 +3608,7 @@ async fn run_workflow_command(
                     catalog_digest: &catalog_digest,
                     capability_digest: &capability_digest,
                     registry: &workflow_registry,
+                    agent_spawn_available: true,
                     configured_mcp: &[],
                     agent_catalog: &workflow_agent_catalog,
                     profile: runtime_profile,

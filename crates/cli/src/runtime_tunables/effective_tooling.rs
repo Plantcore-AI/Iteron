@@ -112,14 +112,21 @@ impl EffectiveToolingSettings {
 
         let routes = view.optional_value("lsp_server_language_selection");
         let recovery = view.optional_value("lsp_timeout_restart_policy");
-        let lsp = match (routes, recovery) {
-            (None, None) => None,
-            (Some(routes), Some(ResolutionValue::Object { fields })) => Some(
-                LspRuntimePolicy::new(decode_routes(routes)?, decode_recovery(fields)?)
-                    .map_err(|error| EffectiveToolingError::InvalidOwner(error.to_string()))?,
-            ),
-            _ => return Err(EffectiveToolingError::IncompleteLspPolicy),
-        };
+        let lsp =
+            match (routes, recovery) {
+                (Some(routes), Some(ResolutionValue::Object { fields })) => {
+                    let routes = decode_routes(routes)?;
+                    let recovery = decode_recovery(fields)?;
+                    if routes.is_empty() {
+                        None
+                    } else {
+                        Some(LspRuntimePolicy::new(routes, recovery).map_err(|error| {
+                            EffectiveToolingError::InvalidOwner(error.to_string())
+                        })?)
+                    }
+                }
+                _ => return Err(EffectiveToolingError::IncompleteLspPolicy),
+            };
         let tool_output_spill = decode_tool_output_spill_policy(view)?;
         let tool_result_cache_ttl_seconds = u64v(
             view.integer("tool_result_cache_ttl")?,

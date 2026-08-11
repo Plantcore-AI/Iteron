@@ -1191,6 +1191,7 @@ pub(super) mod tests {
     fn production_compatible_resolved_fixture(
         root: &Path,
         catalog: &AgentCatalog,
+        hooks: &Hooks,
         provider_id: &str,
         model_id: &str,
     ) -> iteron_tunables::ResolvedTunableSet {
@@ -1198,15 +1199,190 @@ pub(super) mod tests {
 
         let mut input = iteron_record::resolved_fixture::input();
 
+        // The record fixture intentionally samples tiny schema-boundary values. A workflow child
+        // installs the real coding registry, whose schemas alone exceed that sample. Give this
+        // production-shaped integration fixture one exact 120k provider window and a bounded 20k
+        // tool-schema partition; resolution still enforces the cross-family sum before the child
+        // can open a provider request.
+        let context_window = ResolutionValue::Integer { value: 120_000 };
+        let mut context_budget = iteron_ctx::ContextBudgetPolicy::default();
+        let schema_growth = 20_000usize.saturating_sub(context_budget.tool_schema_tokens);
+        context_budget.tool_schema_tokens = 20_000;
+        context_budget.transcript_tokens = context_budget
+            .transcript_tokens
+            .checked_sub(schema_growth)
+            .expect("default transcript partition covers coding schema growth");
+        let window = input
+            .declared_values
+            .iter_mut()
+            .find(|value| value.family == "context_window_override_reserve")
+            .expect("resolved fixture omitted context-window policy");
+        let ResolutionValue::Object { fields } = &mut window.value else {
+            panic!("context-window fixture stopped being an object")
+        };
+        let context_fields = [
+            ("model_window_tokens", context_window.clone()),
+            (
+                "output_reserve_tokens",
+                ResolutionValue::Integer {
+                    value: i64::from(context_budget.output_reserve_tokens),
+                },
+            ),
+            (
+                "verification_reserve_tokens",
+                ResolutionValue::Integer {
+                    value: i64::from(context_budget.verification_reserve_tokens),
+                },
+            ),
+            (
+                "instruction_budget_tokens",
+                ResolutionValue::Integer {
+                    value: i64::try_from(context_budget.instruction_tokens).unwrap(),
+                },
+            ),
+            (
+                "task_context_budget_tokens",
+                ResolutionValue::Integer {
+                    value: i64::try_from(context_budget.task_context_tokens).unwrap(),
+                },
+            ),
+            (
+                "memory_budget_tokens",
+                ResolutionValue::Integer {
+                    value: i64::try_from(context_budget.memory_tokens).unwrap(),
+                },
+            ),
+            (
+                "attachment_budget_tokens",
+                ResolutionValue::Integer {
+                    value: i64::try_from(context_budget.attachment_tokens).unwrap(),
+                },
+            ),
+            (
+                "tool_schema_budget_tokens",
+                ResolutionValue::Integer {
+                    value: i64::try_from(context_budget.tool_schema_tokens).unwrap(),
+                },
+            ),
+        ];
+        for (field, value) in &context_fields {
+            fields.insert((*field).into(), value.clone());
+        }
+        for evidence in input
+            .constraint_evidence
+            .iter_mut()
+            .filter(|evidence| evidence.family == "context_window_override_reserve")
+        {
+            let value = context_fields
+                .iter()
+                .find_map(|(field, value)| (*field == evidence.field).then_some(value.clone()))
+                .unwrap_or_else(|| {
+                    panic!("unexpected context-window ceiling `{}`", evidence.field)
+                });
+            match &mut evidence.value {
+                ConstraintValue::UpperBound { value: ceiling }
+                | ConstraintValue::Exact { value: ceiling } => *ceiling = value,
+                ConstraintValue::Domain {
+                    allowed_values,
+                    preferred,
+                    ..
+                } => {
+                    *allowed_values = Some([value.clone()].into_iter().collect());
+                    if preferred.is_some() {
+                        *preferred = Some(value);
+                    }
+                }
+            }
+        }
+        for (family, value) in [
+            ("system_prefix_budget", context_budget.stable_prefix_tokens),
+            (
+                "conversation_history_budget",
+                context_budget.transcript_tokens,
+            ),
+            (
+                "tool_result_history_budget",
+                context_budget.tool_result_tokens,
+            ),
+            (
+                "lsp_result_context_budget",
+                context_budget.lsp_result_tokens,
+            ),
+        ] {
+            let value = ResolutionValue::Integer {
+                value: i64::try_from(value).unwrap(),
+            };
+            input
+                .declared_values
+                .iter_mut()
+                .find(|candidate| candidate.family == family)
+                .unwrap_or_else(|| panic!("resolved fixture omitted {family}"))
+                .value = value.clone();
+            for evidence in input
+                .constraint_evidence
+                .iter_mut()
+                .filter(|evidence| evidence.family == family)
+            {
+                match &mut evidence.value {
+                    ConstraintValue::UpperBound { value: ceiling }
+                    | ConstraintValue::Exact { value: ceiling } => *ceiling = value.clone(),
+                    ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } => {
+                        *allowed_values = Some([value.clone()].into_iter().collect());
+                        if preferred.is_some() {
+                            *preferred = Some(value.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         // No operator hook catalog is installed in this build-child fixture. A configured-only
         // family must therefore remain inactive; inventing an identity would correctly make the
         // production `install_hooks` gate reject the child.
-        input
-            .declared_values
-            .retain(|candidate| candidate.family != "hooks_map");
-        input
-            .constraint_evidence
-            .retain(|evidence| evidence.family != "hooks_map");
+        if hooks.is_empty() {
+            input
+                .declared_values
+                .retain(|candidate| candidate.family != "hooks_map");
+            input
+                .constraint_evidence
+                .retain(|evidence| evidence.family != "hooks_map");
+        } else {
+            let identity = hooks.catalog_identity();
+            let value = ResolutionValue::CatalogRef {
+                catalog_id: "iteron://tunables/catalogs/hooks_map-v1".into(),
+                digest_sha256: identity.digest_sha256,
+                entry_count: u64::try_from(identity.entry_count).unwrap(),
+                canonical_bytes: u64::try_from(identity.canonical_bytes).unwrap(),
+            };
+            input
+                .declared_values
+                .iter_mut()
+                .find(|candidate| candidate.family == "hooks_map")
+                .expect("resolved fixture omitted hooks_map")
+                .value = value.clone();
+            for evidence in input
+                .constraint_evidence
+                .iter_mut()
+                .filter(|evidence| evidence.family == "hooks_map")
+            {
+                let ConstraintValue::Domain {
+                    allowed_values,
+                    preferred,
+                    ..
+                } = &mut evidence.value
+                else {
+                    panic!("hooks-map ceiling stopped being an attested domain")
+                };
+                *allowed_values = Some([value.clone()].into_iter().collect());
+                if preferred.is_some() {
+                    *preferred = Some(value.clone());
+                }
+            }
+        }
 
         // These identities belong to higher-layer binary owners that iteron-record intentionally
         // cannot depend on. Replace the structural resolver samples with the exact production
@@ -1279,6 +1455,7 @@ pub(super) mod tests {
                 model_id,
             )
             .unwrap();
+        let selected_route = format!("{provider_id}:{model_id}");
         let role_specific_models = ResolutionValue::Map {
             entries: admitted_role_routes
                 .iter()
@@ -1306,6 +1483,7 @@ pub(super) mod tests {
                 admitted_role_routes
                     .values()
                     .cloned()
+                    .chain(std::iter::once(selected_route.clone()))
                     .collect::<std::collections::BTreeSet<_>>(),
             ),
         ] {
@@ -1483,6 +1661,12 @@ pub(super) mod tests {
             ("per_agent_memory_scope", child_memory.clone()),
             ("agent_catalog", agent_catalog.clone()),
             ("role_specific_model_map", role_specific_models.clone()),
+            (
+                "per_agent_model",
+                ResolutionValue::Enum {
+                    value: selected_route.clone(),
+                },
+            ),
             ("process_cwd_continuity", process_cwd.clone()),
             ("child_process_environment_reuse", child_environment.clone()),
             ("app_server_sq_eq_backpressure", app_server_queue.clone()),
@@ -1559,15 +1743,41 @@ pub(super) mod tests {
                 "per_agent_memory_scope" => &child_memory,
                 "agent_catalog" => &agent_catalog,
                 "role_specific_model_map" => &role_specific_models,
+                "per_agent_model" => {
+                    let ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } = &mut evidence.value
+                    else {
+                        panic!("per-agent model ceiling stopped being an attested domain")
+                    };
+                    let selected = ResolutionValue::Enum {
+                        value: selected_route.clone(),
+                    };
+                    *allowed_values = Some([selected.clone()].into_iter().collect());
+                    if evidence.ceiling == iteron_tunables::ExternalCeiling::ProviderCapability {
+                        *preferred = Some(selected);
+                    }
+                    continue;
+                }
                 _ => continue,
             };
-            let ConstraintValue::Domain { allowed_values, .. } = &mut evidence.value else {
+            let ConstraintValue::Domain {
+                allowed_values,
+                preferred,
+                ..
+            } = &mut evidence.value
+            else {
                 panic!(
                     "{family} ceiling stopped being an attested domain",
                     family = evidence.family
                 )
             };
             *allowed_values = Some([replacement.clone()].into_iter().collect());
+            if preferred.is_some() {
+                *preferred = Some(replacement.clone());
+            }
         }
 
         let resolved = iteron_tunables::resolve(input)
@@ -1580,6 +1790,7 @@ pub(super) mod tests {
         let resolved = production_compatible_resolved_fixture(
             root,
             context.agent_catalog.as_ref(),
+            &context.hooks,
             &context.provider_id,
             &context.model,
         );
@@ -1725,10 +1936,11 @@ pub(super) mod tests {
     fn a_child_inherits_operator_hooks_and_the_same_durable_journal() {
         let root = scratch("hooks");
         let catalog = discovered_catalog(&root);
-        let mut cx = context(&root, catalog);
+        let mut cx = unbound_context(&root, catalog);
         cx.hooks
             .append_verified_plugin("session.created", ":".into())
             .unwrap();
+        pin_context(&root, &mut cx);
         let journal_path = root.join("hooks.jsonl");
         cx.hook_effect_journal = Some(HookEffectJournal::open(&journal_path).unwrap());
         let spawner = KernelSpawner::new(cx);
@@ -1779,8 +1991,9 @@ pub(super) mod tests {
         );
         assert!(child.hooks.is_empty());
         assert!(
-            !child.bypass_permissions,
-            "a child of a gated session is gated"
+            child.bypass_permissions,
+            "the child inherits the checkpoint's default bypass posture while its read-only \
+             authority ceiling still prevents widening"
         );
 
         let events = iteron_record::replay(child.rollout.path()).unwrap();
@@ -1833,7 +2046,19 @@ pub(super) mod tests {
             assert!(!reason.contains(&oversized_name), "{reason}");
             assert!(!reason.contains(&oversized_model), "{reason}");
         }
-        assert!(!root.join("runs/subagents").exists());
+        let journal_count = std::fs::read_dir(root.join("runs/subagents"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            journal_count, 2,
+            "malformed metadata must fail before a journal, while two syntactically valid but \
+             policy-refused model selections retain their bounded decision evidence"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1874,7 +2099,18 @@ return results;
             report.value,
             serde_json::Value::Array(vec![serde_json::Value::Null; request_count])
         );
-        assert!(!root.join("runs/subagents").exists());
+        let journal_count = std::fs::read_dir(root.join("runs/subagents"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            journal_count, 2,
+            "only syntactically valid model-router refusals own durable decision journals"
+        );
 
         let events = sink.events.lock().unwrap();
         let rendered_events = format!("{events:?}");

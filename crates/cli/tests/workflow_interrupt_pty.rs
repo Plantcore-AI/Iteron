@@ -23,10 +23,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const FIXTURE_PROVIDER_ID: &str = "workflow-interrupt-fixture";
-const FIXTURE_MODEL_ID: &str = "workflow-interrupt-model";
-const FIXTURE_KEY_ENV: &str = "ITERON_WORKFLOW_INTERRUPT_TEST_KEY";
-const FIXTURE_KEY: &str = "integration-test-placeholder";
+const FIXTURE_PROVIDER_ID: &str = "glm";
+const FIXTURE_MODEL_ID: &str = "glm-5.2";
+const FIXTURE_KEY_ENV: &str = "GLM_API_KEY";
+const FIXTURE_KEY: &str = "bounded-offline-placeholder";
 /// The default-folded card's affordance — proof that a real live frame is on screen and therefore
 /// that raw mode is already on and SIGINT already suppressed. Narrator logs intentionally remain
 /// hidden until the operator expands the run.
@@ -94,26 +94,16 @@ impl Scratch {
         self.root.join("runs")
     }
 
-    /// A provider entry that RESOLVES but is never contacted: the fixture script calls no agents,
-    /// and the api_root is a port nothing listens on.
+    /// A real bundled provider route that is never contacted: the fixture script calls no agents.
+    /// Its checked-in metadata supplies the exact model owner facts while the inert credential
+    /// keeps this process hermetic.
     fn configure_offline_provider(&self) {
         let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let config = json!({
             "provider": FIXTURE_PROVIDER_ID,
             "model": FIXTURE_MODEL_ID,
-            "effort": "low",
-            "providers": [{
-                "id": FIXTURE_PROVIDER_ID,
-                "display_name": "workflow interrupt fixture provider",
-                "adapter": "openai_chat",
-                "error_profile": "custom",
-                "api_root": "http://127.0.0.1:9",
-                "key_env": FIXTURE_KEY_ENV,
-                "enabled": true,
-                "catalog": false,
-                "models": [FIXTURE_MODEL_ID]
-            }]
+            "effort": "low"
         });
         std::fs::write(
             config_dir.join("config.json"),

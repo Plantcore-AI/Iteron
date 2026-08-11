@@ -48,6 +48,7 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub catalog_digest: &'a str,
     pub capability_digest: &'a str,
     pub registry: &'a Registry,
+    pub agent_spawn_available: bool,
     pub configured_mcp: &'a [McpServerConfig],
     pub agent_catalog: &'a AgentCatalog,
     pub profile: RuntimeProfile,
@@ -128,6 +129,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         catalog_digest: input.catalog_digest,
         capability_digest: input.capability_digest,
         registry: input.registry,
+        agent_spawn_available: input.agent_spawn_available,
         configured_mcp: input.configured_mcp,
     })?;
 
@@ -573,7 +575,7 @@ mod tests {
                 "fixture-model".into(),
                 ProviderModelCapabilities {
                     context_window_tokens: Some(128_000),
-                    image_input: Some(false),
+                    image_input: Some(true),
                     routing_objectives: None,
                 },
             )]),
@@ -616,6 +618,11 @@ mod tests {
             .resolve_model("composition-fixture:fixture-model", None)
             .unwrap();
         let model_capabilities = directory.selection_capabilities(&selection);
+        assert_eq!(
+            model_capabilities.image_input,
+            Some(true),
+            "the production composition oracle exercises the image-capable custom route"
+        );
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
         let entry = directory.entry(&selection.provider_id).unwrap();
         let api_root = entry.instance.api_root().as_str().to_owned();
@@ -642,6 +649,7 @@ mod tests {
             catalog_digest: &catalog_digest,
             capability_digest: &capability_digest,
             registry: &registry,
+            agent_spawn_available: true,
             configured_mcp: &[],
             agent_catalog: &agent_catalog,
             profile: RuntimeProfile::Interactive,

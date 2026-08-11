@@ -24,10 +24,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
-const PROVIDER_ID: &str = "golden";
-const MODEL_ID: &str = "golden-model";
-const TEST_KEY_ENV: &str = "ITERON_GOLDEN_TEST_KEY";
-const TEST_KEY: &str = "integration-test-placeholder";
+const PROVIDER_ID: &str = "glm";
+const MODEL_ID: &str = "glm-5.2";
+const TEST_KEY_ENV: &str = "GLM_API_KEY";
+const TEST_KEY: &str = "bounded-offline-placeholder";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -48,25 +48,14 @@ impl Scratch {
         fs::create_dir_all(scratch.home().join(".iteron")).expect("create isolated Core home");
         fs::create_dir_all(scratch.runs()).expect("create isolated rollout directory");
 
-        // The loopback discard port is never contacted: `--max-usd 0` exhausts the budget before
-        // any provider request is admitted. The config still resolves a provider + model so the
-        // run reaches turn admission (where the budget check fires) deterministically.
+        // Use the real bundled GLM route so both context-window and response-cap owner facts come
+        // from its checked-in provider metadata. `--max-usd 0` exhausts the budget before any
+        // provider request is admitted, so the inert credential below is never used on the wire.
         let config = json!({
             "provider": PROVIDER_ID,
             "model": MODEL_ID,
             "effort": "low",
-            "max_wall_secs": 10,
-            "providers": [{
-                "id": PROVIDER_ID,
-                "display_name": "Golden fixture provider",
-                "adapter": "openai_chat",
-                "error_profile": "custom",
-                "api_root": "http://127.0.0.1:9/v1",
-                "key_env": TEST_KEY_ENV,
-                "enabled": true,
-                "catalog": false,
-                "models": [MODEL_ID]
-            }]
+            "max_wall_secs": 10
         });
         fs::write(
             scratch.home().join(".iteron/config.json"),
@@ -245,7 +234,8 @@ fn d13_15_json_budget_terminal_is_a_process_level_golden() {
     assert_eq!(
         output.status.code(),
         Some(3),
-        "the provider-free budget path is a stable exit 3"
+        "the provider-free budget path is a stable exit 3; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     let lines = json_lines(&output.stdout);
     assert_eq!(
@@ -272,7 +262,12 @@ fn d13_15_stream_json_shares_one_authoritative_terminal_with_json() {
     let scratch = Scratch::new("stream-budget");
     let output = run_budget(&scratch, "stream-json");
 
-    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "the provider-free budget path is a stable exit 3; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let lines = json_lines(&output.stdout);
     assert!(!lines.is_empty(), "stream-json emits at least the terminal");
 
@@ -316,6 +311,12 @@ fn d13_15_process_exit_matches_the_machine_result_exit_code() {
     for format in ["json", "stream-json"] {
         let scratch = Scratch::new(&format!("exit-{format}"));
         let output = run_budget(&scratch, format);
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "the provider-free budget path is a stable exit 3 ({format}); stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let process_exit = output
             .status
             .code()

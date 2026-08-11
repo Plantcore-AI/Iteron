@@ -221,6 +221,13 @@ impl Agent {
                 let mut last_detail = String::new();
                 for _ in 0..repeat_count {
                     let verdict = self.run_verify(command).await?;
+                    // Operator cancellation is control flow, not verifier evidence. Folding it
+                    // into quorum would turn the typed cancellation into `Indeterminate`, then
+                    // into `InfrastructureFailure`, and admit the remaining physical verifier
+                    // runs after the operator already stopped the gate.
+                    if verdict.outcome == iteron_verify::VerificationOutcome::Cancelled {
+                        return Ok(verdict);
+                    }
                     last_detail = truncate_tail(
                         &verdict.detail,
                         self.verification_policy.feedback.command_output_bytes,

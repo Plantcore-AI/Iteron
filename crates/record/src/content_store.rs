@@ -37,6 +37,9 @@ use storage::{
     write_tombstone,
 };
 
+const RECORD_LOCK_RETRY_ATTEMPTS: usize = 401;
+const RECORD_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ContentStoreError {
     #[error("private content storage is busy")]
@@ -610,7 +613,11 @@ pub(crate) fn externalize_event_payload(
         .unwrap_or_default();
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _lock = lock_store(&layout)?;
+    // Prompt history and rebuildable session projections share this tenant store with the
+    // authoritative rollout. Their short critical sections may overlap an event append, but a
+    // transient lock collision is not a broken audit trail. Wait only at lock acquisition, before
+    // this append can mutate content or reference state, and keep the wait strictly bounded.
+    let _lock = lock_store_for_record(&layout)?;
     for source in &checkpoint_sources {
         references::verify_source_owner_locked(&layout, source)?;
         ensure_available_locked(&layout, &source.digest)?;
@@ -685,6 +692,18 @@ pub(crate) fn externalize_event_payload(
         return Err(ContentStoreError::Corrupt);
     }
     Ok(())
+}
+
+fn lock_store_for_record(layout: &Layout) -> Result<StoreLock, ContentStoreError> {
+    for attempt in 0..RECORD_LOCK_RETRY_ATTEMPTS {
+        match lock_store(layout) {
+            Err(ContentStoreError::Busy) if attempt + 1 < RECORD_LOCK_RETRY_ATTEMPTS => {
+                std::thread::sleep(RECORD_LOCK_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the bounded record lock retry loop always returns")
 }
 
 fn semantic_namespace(

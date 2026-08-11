@@ -76,7 +76,7 @@ fn effect_for(turn: TurnId, class: EffectClass, ordinal: usize) -> BrokeredEffec
     }
 }
 
-fn crash_unknown_accounting(
+fn provider_success_without_usage_accounting(
     identity: ProviderRouteAttemptIdentity,
 ) -> ProviderRouteAttemptAccounting {
     ProviderRouteAttemptAccounting {
@@ -85,10 +85,27 @@ fn crash_unknown_accounting(
         physical_attempt: identity.physical_attempt,
         max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
         usage: ProviderRouteUsageTruth::Unknown {
-            reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable,
+            reason: ProviderRouteUsageUnknownReason::ProviderOmitted,
         },
         cost: ProviderRouteCostTruth::Unknown {
-            reason: ProviderRouteCostUnknownReason::OutcomeUnobservable,
+            reason: ProviderRouteCostUnknownReason::UsageIncomplete,
+        },
+    }
+}
+
+fn provider_failure_without_usage_accounting(
+    identity: ProviderRouteAttemptIdentity,
+) -> ProviderRouteAttemptAccounting {
+    ProviderRouteAttemptAccounting {
+        version: identity.version,
+        route_id: identity.route_id,
+        physical_attempt: identity.physical_attempt,
+        max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+        usage: ProviderRouteUsageTruth::Unknown {
+            reason: ProviderRouteUsageUnknownReason::ProvenFailureWithoutUsage,
+        },
+        cost: ProviderRouteCostTruth::Unknown {
+            reason: ProviderRouteCostUnknownReason::ProvenFailureWithoutBillingEvidence,
         },
     }
 }
@@ -104,7 +121,7 @@ async fn every_effect_class_crosses_intent_then_executor_then_exactly_one_termin
         let provider_route_attempt = effect
             .provider_route_attempt
             .clone()
-            .map(crash_unknown_accounting);
+            .map(provider_success_without_usage_accounting);
         // Records the log length the executor observed, which is the only way to prove ordering
         // rather than merely asserting on the events afterwards.
         let seen_before_execute = Arc::new(AtomicUsize::new(usize::MAX));
@@ -594,6 +611,7 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
         let effect = effect_for(turn, class, index);
         let id = effect.effect_id.clone();
         let kind = effect.kind.clone();
+        let provider_route_attempt = effect.provider_route_attempt.clone();
         let ticket = open_effect(&mut log, &mut admissions, effect).expect("intent");
         match index % 3 {
             // Proven success.
@@ -604,7 +622,9 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
                     id,
                     tool: kind,
                     duration_ms: None,
-                    provider_route_attempt: None,
+                    provider_route_attempt: provider_route_attempt
+                        .clone()
+                        .map(provider_success_without_usage_accounting),
                 }),
             )
             .expect("settle done"),
@@ -617,7 +637,9 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
                     tool: kind,
                     reason: "probe failure".into(),
                     duration_ms: None,
-                    provider_route_attempt: None,
+                    provider_route_attempt: provider_route_attempt
+                        .clone()
+                        .map(provider_failure_without_usage_accounting),
                 }),
             )
             .expect("settle failed"),
@@ -704,14 +726,22 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
                    and the correlation id restored from the admitted call, never from the result",
     },
     EffectPrimitive {
-        needle: "self.bounded_provider_turn(",
-        allowed_in: &[
-            "brokered_provider_turn",
-            "drive_admitted",
-            "drive_admitted_loop",
-        ],
+        needle: "iteron_provider::turn_cancellable_any(",
+        allowed_in: &["execute_admitted_provider_turn"],
         guidance: "a provider request is a paid, externally visible effect; dispatch it through \
-                   Agent::brokered_provider_turn, or open/settle around it as drive_admitted does",
+                   execute_admitted_provider_turn only after its caller has durably opened the \
+                   exact provider route attempt",
+    },
+    EffectPrimitive {
+        needle: "execute_admitted_provider_turn(",
+        allowed_in: &[
+            "execute_admitted_provider_turn",
+            "brokered_provider_turn",
+            "drive_admitted_loop",
+            "run_attempt",
+        ],
+        guidance: "the admitted provider helper may only be declared once or called by the three \
+                   owners that durably open and settle an exact provider route attempt",
     },
     EffectPrimitive {
         needle: "checkpoint_excluding_runtime_state(",
@@ -964,8 +994,12 @@ fn every_effect_class_records_a_duration_on_its_proven_terminal() {
         let mut log = ProbeLog::default();
         let mut admissions = EffectAdmissions::default();
         let turn = TurnId(1);
-        let ticket =
-            open_effect(&mut log, &mut admissions, effect_for(turn, class, ordinal)).expect("open");
+        let effect = effect_for(turn, class, ordinal);
+        let provider_route_attempt = effect
+            .provider_route_attempt
+            .clone()
+            .map(provider_success_without_usage_accounting);
+        let ticket = open_effect(&mut log, &mut admissions, effect).expect("open");
         let id = ticket.effect_id().clone();
         settle_effect(
             &mut log,
@@ -976,7 +1010,7 @@ fn every_effect_class_records_a_duration_on_its_proven_terminal() {
                 // The caller does NOT measure. The boundary must fill this in, which is exactly
                 // what stops seven dispatch sites from each inventing their own scope.
                 duration_ms: None,
-                provider_route_attempt: None,
+                provider_route_attempt,
             }),
         )
         .expect("settle");

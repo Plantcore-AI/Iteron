@@ -2603,7 +2603,7 @@ impl Agent {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
             self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
-            let turn_id = TurnId(self.seq_turn);
+            let mut turn_id = TurnId(self.seq_turn);
             self.observe_session_memory_activation(turn_id, relevance_task);
             let context_observation_started = Instant::now();
             self.lifecycle_event(
@@ -2689,6 +2689,16 @@ impl Agent {
                 );
                 match self.summarize_compaction(&plan.to_summarize, None).await {
                     Ok(summary) => {
+                        // The summary is a complete physical provider attempt and therefore a
+                        // control safe point. In particular, Drain received while it was in
+                        // flight must win before the optional coverage verifier admits a second
+                        // provider attempt.
+                        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                        if let Some(outcome) =
+                            self.finish_requested_control(TurnId(self.seq_turn))?
+                        {
+                            return Ok(outcome);
+                        }
                         let covered = if self.compaction.coverage_check {
                             self.verify_compaction_summary(&plan.to_summarize, &summary)
                                 .await
@@ -2696,10 +2706,11 @@ impl Agent {
                         } else {
                             true
                         };
+                        let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
                         if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
                             self.lifecycle_event(
                                 "context.compaction.failed",
-                                Some(turn_id),
+                                Some(compaction_result_turn),
                                 LifecyclePayload {
                                     reason_code: Some(if covered {
                                         "hysteresis_exit_not_reached".into()
@@ -2718,7 +2729,7 @@ impl Agent {
                             }));
                         }
                         self.record_compaction(
-                            turn_id,
+                            compaction_result_turn,
                             &before_messages,
                             &plan,
                             &summary,
@@ -2752,6 +2763,15 @@ impl Agent {
             let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
             if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
                 return Ok(outcome);
+            }
+            let post_compaction_turn = TurnId(self.seq_turn);
+            if post_compaction_turn != turn_id {
+                // Internal summary/coverage attempts consume their own bounded turns. The main
+                // model admission that follows must therefore mint effects against the current
+                // turn rather than revisiting the pre-compaction identity.
+                turn_id = post_compaction_turn;
+                agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
+                self.observe_session_memory_activation(turn_id, relevance_task);
             }
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
@@ -5459,8 +5479,15 @@ impl Agent {
         match self.requested_control() {
             InboundControl::Drain => self.finish_drained(turn).map(Some),
             InboundControl::Interrupt => {
+                let outcome = self.finish(turn, Outcome::Interrupted)?;
+                // The shared signal remains asserted until the Interrupted terminal is durable.
+                // Clearing it earlier can both lose a failed cancellation and immediately cancel
+                // the ordered follow-up that the frontend dispatches after RunEnded.
                 self.interrupt_requested = false;
-                self.finish(turn, Outcome::Interrupted).map(Some)
+                if let Some(interrupt) = &self.interrupt {
+                    interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(Some(outcome))
             }
             InboundControl::None => Ok(None),
         }

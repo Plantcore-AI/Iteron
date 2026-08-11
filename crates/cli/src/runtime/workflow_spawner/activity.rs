@@ -607,7 +607,7 @@ mod tests {
         std::fs::write(
             home.join(".iteron/agents/reviewer.md"),
             "---\nname: reviewer\ndescription: Activity reviewer\ntools: [read_file]\n\
-             maxTurns: 4\nmaxTokens: 100\nmaxWallSecs: 10\nmaxConsecutiveToolErrors: 1\n---\n\
+             maxTurns: 4\nmaxTokens: 100\nmaxWallSecs: 30\nmaxConsecutiveToolErrors: 1\n---\n\
              Read evidence and report it.\n",
         )
         .unwrap();
@@ -650,6 +650,40 @@ mod tests {
         events
     }
 
+    type ActivitySample<'a> = (u64, u64, Option<&'a str>);
+    type ActivityByAgent<'a> = std::collections::BTreeMap<usize, Vec<ActivitySample<'a>>>;
+
+    fn activity_by_agent(events: &[ProgressEvent]) -> ActivityByAgent<'_> {
+        let mut by_agent = std::collections::BTreeMap::new();
+        for event in events {
+            if let ProgressEvent::AgentActivity {
+                index,
+                tokens,
+                tool_calls,
+                last_tool_summary,
+            } = event
+            {
+                by_agent.entry(*index).or_insert_with(Vec::new).push((
+                    *tokens,
+                    *tool_calls,
+                    last_tool_summary.as_deref(),
+                ));
+            }
+        }
+        by_agent
+    }
+
+    fn assert_monotone_activity(by_agent: &ActivityByAgent<'_>) {
+        for (index, activity) in by_agent {
+            assert!(
+                activity
+                    .windows(2)
+                    .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1),
+                "agent {index} activity regressed: {activity:?}"
+            );
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn workflow_agent_activity_repeats_at_one_hertz_with_monotone_metrics() {
         let events = run_reporting_spawner(
@@ -661,26 +695,19 @@ mod tests {
             },
         )
         .await;
-        let activity: Vec<(u64, u64, Option<&str>)> = events
-            .iter()
-            .filter_map(|event| match event {
-                ProgressEvent::AgentActivity {
-                    tokens,
-                    tool_calls,
-                    last_tool_summary,
-                    ..
-                } => Some((*tokens, *tool_calls, last_tool_summary.as_deref())),
-                _ => None,
-            })
-            .collect();
+        let activity = activity_by_agent(&events);
 
-        assert!(activity.len() > 1, "{events:?}");
+        assert!(
+            activity.values().map(Vec::len).sum::<usize>() > 1,
+            "{events:?}"
+        );
+        assert_monotone_activity(&activity);
         assert!(
             activity
-                .windows(2)
-                .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1)
+                .values()
+                .flatten()
+                .all(|(_, _, summary)| summary.is_some())
         );
-        assert!(activity.iter().all(|(_, _, summary)| summary.is_some()));
         assert!(matches!(
             events.last(),
             Some(ProgressEvent::AgentFinished {
@@ -711,34 +738,24 @@ mod tests {
         .unwrap();
         assert_eq!(
             report.value,
-            serde_json::Value::String("production report".into())
+            serde_json::Value::String("production report".into()),
+            "{:?}",
+            sink.events.lock().unwrap()
         );
         let events = sink.events.lock().unwrap();
-        let activity: Vec<(u64, u64, Option<&str>)> = events
-            .iter()
-            .filter_map(|event| match event {
-                ProgressEvent::AgentActivity {
-                    tokens,
-                    tool_calls,
-                    last_tool_summary,
-                    ..
-                } => Some((*tokens, *tool_calls, last_tool_summary.as_deref())),
-                _ => None,
-            })
-            .collect();
-        assert!(activity.len() > 1, "{events:?}");
+        let activity = activity_by_agent(&events);
         assert!(
-            activity
-                .windows(2)
-                .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1)
+            activity.values().map(Vec::len).sum::<usize>() > 1,
+            "{events:?}"
         );
-        assert!(activity.iter().any(|(_, _, summary)| {
+        assert_monotone_activity(&activity);
+        assert!(activity.values().flatten().any(|(_, _, summary)| {
             summary.is_some_and(|summary| summary.contains("reasoning over evidence"))
         }));
-        assert!(activity.iter().any(|(_, _, summary)| {
+        assert!(activity.values().flatten().any(|(_, _, summary)| {
             summary.is_some_and(|summary| summary.contains("drafting report"))
         }));
-        assert!(activity.iter().any(|(_, _, summary)| {
+        assert!(activity.values().flatten().any(|(_, _, summary)| {
             summary.is_some_and(|summary| summary.contains("read_file"))
         }));
         assert!(matches!(

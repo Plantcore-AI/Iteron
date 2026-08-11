@@ -127,7 +127,7 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
             .unwrap();
         rollout
             .append(&Event {
-                seq: Seq::ZERO,
+                seq: Seq(1),
                 turn: TurnId(1),
                 kind: EventKind::Message {
                     message: Message::user_text("repairable session title"),
@@ -150,13 +150,16 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
     assert!(stdout.contains("reindexed 1 session"), "{stdout}");
 
     let index = std::fs::read_to_string(scratch.runs().join("sessions.index")).unwrap();
-    let index_entry: serde_json::Value = serde_json::from_str(index.trim()).unwrap();
-    assert_eq!(index_entry["run_id"], "repair-me");
-    let meta: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(scratch.runs().join("repair-me.meta.json")).unwrap())
-            .unwrap();
-    assert_eq!(meta["run_id"], "repair-me");
-    assert_eq!(meta["title"], "repairable session title");
+    let sidecar = std::fs::read_to_string(scratch.runs().join("repair-me.meta.json")).unwrap();
+    assert!(
+        !index.contains("repairable session title")
+            && !sidecar.contains("repairable session title"),
+        "public cache manifests must not contain the private projected title"
+    );
+    let indexed = iteron_record::session::list(&scratch.runs(), &TenantId::default());
+    assert_eq!(indexed.len(), 1);
+    assert_eq!(indexed[0].run_id.0, "repair-me");
+    assert_eq!(indexed[0].title, "repairable session title");
 
     let (status, sessions, stderr) = run_core(
         &scratch.home(),
@@ -491,7 +494,13 @@ fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
         ],
     );
     assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
-    assert!(stdout.contains("removed 2 sessions"), "{stdout}");
+    let receipt: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("prune emits one typed receipt");
+    assert_eq!(receipt["state"], "verified", "{receipt:#}");
+    assert_eq!(receipt["request"]["target"]["kind"], "retention_prune");
+    assert_eq!(receipt["request"]["target"]["keep_last"], 1);
+    assert_eq!(receipt["verification"]["kind"], "retention_applied");
+    assert_eq!(receipt["verification"]["retained_sessions"], 1);
     assert_eq!(
         count_rollouts(&scratch.runs()),
         1,

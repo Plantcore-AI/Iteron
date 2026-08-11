@@ -32,9 +32,10 @@ fn promoted(policy_id: &str) -> PolicyBundle {
 fn a_promoted_bundle_shifts_tool_selection_across_two_boots() {
     let baseline_boot = BootBundle::resolve(&ActiveBundleResolver::from_active(None))
         .expect("an unconfigured authority boots ungoverned");
-    let governed_boot = BootBundle::resolve(&ActiveBundleResolver::from_active(Some(promoted(
-        "prefer-structural-search",
-    ))))
+    let governed_bundle = promoted("prefer-structural-search");
+    let governed_boot = BootBundle::resolve(&ActiveBundleResolver::from_active(Some(
+        governed_bundle.clone(),
+    )))
     .expect("a promoted bundle projects and resolves");
 
     let filter = iteron_agents::ToolFilter::All;
@@ -53,7 +54,7 @@ fn a_promoted_bundle_shifts_tool_selection_across_two_boots() {
     println!(
         "governed by: bundle {} policy {}",
         &digest('a')[..12],
-        &digest('b')[..12]
+        &governed_bundle.policies[0].digest[..12]
     );
 
     assert_ne!(selection_a, selection_b, "promotion must be observable");
@@ -65,26 +66,22 @@ fn a_promoted_bundle_shifts_tool_selection_across_two_boots() {
     // The governed boot can name what governed it, and the ungoverned one cannot claim it was.
     assert_eq!(
         governed_boot.governance_receipt(),
-        Some((
-            digest('a'),
-            promoted("prefer-structural-search").policies[0]
-                .digest
-                .clone()
-        ))
+        Some((digest('a'), governed_bundle.policies[0].digest.clone()))
     );
     assert!(baseline_boot.governance_receipt().is_none());
 }
 
 #[test]
 fn the_projection_carries_identity_and_never_a_policy_body() {
-    let projected = project(&promoted("prefer-structural-search")).expect("projects");
+    let bundle = promoted("prefer-structural-search");
+    let projected = project(&bundle).expect("projects");
     assert_eq!(projected.bundle_id, "promoted-1");
     assert_eq!(projected.digest, digest('a'));
     let policy = projected
         .policy_for(&tool_policy_slot())
         .expect("the tool-policy slot is governed");
     assert_eq!(policy.policy_id, "prefer-structural-search");
-    assert_eq!(policy.digest, digest('b'));
+    assert_eq!(policy.digest, bundle.policies[0].digest);
     // `ResolvedPolicy` has four fields and none of them is a body: the runtime never sees the
     // artifact, which is why the digest is carried opaquely instead.
     assert_eq!(

@@ -31,6 +31,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(12);
 /// finishes negotiation immediately instead of waiting for a real terminal to reply.
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_REPLY: &[u8] = b"\x1b[?1;2c";
+const FIXTURE_GLM_KEY: &str = "bounded-offline-placeholder";
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
 /// An isolated HOME + repo + rollout tree for one hermetic `iteron` launch.
@@ -93,8 +94,10 @@ impl Pty {
             .expect("open a deterministic PTY");
 
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
-        // Direct binary launch: `env_clear` guarantees no real provider credential can be inherited,
-        // and a fixed terminal identity (ITERON_THEME=terminal) skips the background-color probe.
+        // Direct binary launch: `env_clear` guarantees no real provider credential can be
+        // inherited. The inert fixed GLM key admits the real static route through startup; this
+        // handshake/shell-gate test never sends a provider request. A fixed terminal identity
+        // (ITERON_THEME=terminal) skips the background-color probe.
         command.env_clear();
         command.env("HOME", scratch.home().as_os_str());
         command.env("PATH", "/usr/bin:/bin");
@@ -102,6 +105,7 @@ impl Pty {
         command.env("COLORTERM", "truecolor");
         command.env("ITERON_THEME", "terminal");
         command.env("LANG", "C.UTF-8");
+        command.env("GLM_API_KEY", FIXTURE_GLM_KEY);
         command.env("ITERON_PROVIDER", "glm");
         command.env("ITERON_MODEL", "glm-5.2");
         command.cwd(scratch.repo());

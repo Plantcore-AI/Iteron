@@ -18,7 +18,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
@@ -31,6 +31,7 @@ const PROVIDER_ID: &str = "golden";
 const MODEL_ID: &str = "golden-model";
 const TEST_KEY_ENV: &str = "ITERON_GOLDEN_TEST_KEY";
 const TEST_KEY: &str = "integration-test-placeholder";
+const FIXTURE_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
 const DEFAULT_TASK: &str = "return the deterministic fixture response";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 
@@ -42,6 +43,10 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str, api_root: &str) -> Self {
+        Self::new_with_image_input(label, api_root, false)
+    }
+
+    fn new_with_image_input(label: &str, api_root: &str, image_input: bool) -> Self {
         let id = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "iteron-cli-one-shot-{label}-{}-{id}",
@@ -68,7 +73,10 @@ impl Scratch {
                 "catalog": false,
                 "models": [MODEL_ID],
                 "model_capabilities": {
-                    (MODEL_ID): {"image_input": true}
+                    (MODEL_ID): {
+                        "context_window_tokens": FIXTURE_CONTEXT_WINDOW_TOKENS,
+                        "image_input": image_input
+                    }
                 }
             }]
         });
@@ -151,30 +159,11 @@ impl Scratch {
         self.root.join("runs")
     }
 
-    fn seed_redacted_resume(&self, run_id: &str) {
+    fn append_redacted_tool_result(&self, run_id: &str) {
         let run = iteron_protocol::RunId(run_id.into());
         let mut rollout =
             iteron_record::Rollout::open(&self.runs(), &run, iteron_protocol::TenantId::default())
                 .expect("open diagnostic resume fixture");
-        rollout
-            .append(&iteron_protocol::Event {
-                seq: iteron_protocol::Seq::ZERO,
-                turn: iteron_protocol::TurnId(0),
-                kind: iteron_protocol::EventKind::RunStart {
-                    cwd: self.repo().display().to_string(),
-                    model: MODEL_ID.into(),
-                    effort: iteron_protocol::Effort::Low,
-                    created_at: 1,
-                    environment: None,
-                    parent_run: None,
-                    forked_at: None,
-                    parent_hash_at_seq: None,
-                    config_digest: String::new(),
-                    agent_definition_tag: None,
-                    max_usd: None,
-                },
-            })
-            .expect("append diagnostic fixture genesis");
         rollout
             .append(&iteron_protocol::Event {
                 seq: iteron_protocol::Seq::ZERO,
@@ -217,7 +206,40 @@ impl Scratch {
         let raw = fs::read_to_string(self.runs().join(format!("{run_id}.jsonl")))
             .expect("read redacted diagnostic fixture");
         assert!(!raw.contains(secret));
-        assert!(raw.contains("[REDACTED"));
+        assert_tree_excludes(&self.runs(), "SuperSecretResumeTokenValue");
+        let replayed = iteron_record::replay(&self.runs().join(format!("{run_id}.jsonl")))
+            .expect("hydrate the redacted diagnostic fixture");
+        let redacted = replayed.iter().find_map(|event| {
+            let iteron_protocol::EventKind::Message { message } = &event.kind else {
+                return None;
+            };
+            message.content.iter().find_map(|block| match block {
+                iteron_protocol::Block::ToolResult(result) => Some(result.content.as_str()),
+                _ => None,
+            })
+        });
+        assert!(
+            redacted.is_some_and(|content| content.contains("[REDACTED")),
+            "replay must hydrate the externally stored, masked tool result"
+        );
+    }
+}
+
+/// Prove secrecy over the complete private-content graph, not only the public JSONL envelope.
+fn assert_tree_excludes(root: &std::path::Path, needle: &str) {
+    for entry in fs::read_dir(root).expect("read private-content fixture tree") {
+        let path = entry.expect("read private-content fixture entry").path();
+        if path.is_dir() {
+            assert_tree_excludes(&path, needle);
+        } else if let Ok(bytes) = fs::read(&path) {
+            assert!(
+                !bytes
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_bytes()),
+                "private fixture plaintext leaked into {}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -390,17 +412,46 @@ impl MockProvider {
         Self::spawn_script_with_capture(replies, None)
     }
 
+    fn spawn_script_with_timeout(replies: Vec<Reply>, accept_timeout: Duration) -> Self {
+        Self::spawn_script_with_capture_and_timeout(replies, None, accept_timeout)
+    }
+
+    /// One mock shared by fresh and resumed CLI processes must outlive either process's startup.
+    fn spawn_multi_process_script(replies: Vec<Reply>) -> Self {
+        Self::spawn_script_with_timeout(replies, PROCESS_TIMEOUT)
+    }
+
     fn spawn_capturing_script(replies: Vec<Reply>) -> (Self, Receiver<Value>) {
+        Self::spawn_capturing_script_with_timeout(replies, SERVER_TIMEOUT)
+    }
+
+    fn spawn_capturing_script_with_timeout(
+        replies: Vec<Reply>,
+        accept_timeout: Duration,
+    ) -> (Self, Receiver<Value>) {
         let (sender, receiver) = sync_channel(replies.len().max(1));
         (
-            Self::spawn_script_with_capture(replies, Some(sender)),
+            Self::spawn_script_with_capture_and_timeout(replies, Some(sender), accept_timeout),
             receiver,
         )
+    }
+
+    /// Capturing counterpart for a mock shared by independent CLI processes.
+    fn spawn_capturing_multi_process_script(replies: Vec<Reply>) -> (Self, Receiver<Value>) {
+        Self::spawn_capturing_script_with_timeout(replies, PROCESS_TIMEOUT)
     }
 
     fn spawn_script_with_capture(
         replies: Vec<Reply>,
         request_capture: Option<SyncSender<Value>>,
+    ) -> Self {
+        Self::spawn_script_with_capture_and_timeout(replies, request_capture, SERVER_TIMEOUT)
+    }
+
+    fn spawn_script_with_capture_and_timeout(
+        replies: Vec<Reply>,
+        request_capture: Option<SyncSender<Value>>,
+        accept_timeout: Duration,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback provider stub");
         listener
@@ -409,7 +460,7 @@ impl MockProvider {
         let address = listener.local_addr().expect("read provider stub address");
         let handle = thread::spawn(move || {
             for reply in replies {
-                let mut stream = accept_connection(&listener);
+                let mut stream = accept_connection_with_timeout(&listener, accept_timeout);
                 let request = assert_request(&mut stream);
                 if let Some(sender) = &request_capture {
                     sender
@@ -465,7 +516,11 @@ impl MockProvider {
 }
 
 fn accept_connection(listener: &TcpListener) -> TcpStream {
-    let deadline = Instant::now() + SERVER_TIMEOUT;
+    accept_connection_with_timeout(listener, SERVER_TIMEOUT)
+}
+
+fn accept_connection_with_timeout(listener: &TcpListener, timeout: Duration) -> TcpStream {
+    let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -1040,10 +1095,15 @@ fn assert_machine_failure(
 
 #[test]
 fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
-    let server = MockProvider::spawn_script(vec![Reply::Success, Reply::Success]);
+    // A real credential-free `--sessions` process runs between the two provider turns. Under the
+    // all-target pre-push load it can consume the ordinary 10s mock accept bound before the
+    // continuation starts, so this multi-process oracle shares the bounded process watchdog.
+    let server = MockProvider::spawn_multi_process_script(vec![Reply::Success, Reply::Success]);
     let scratch = Scratch::new("d9-01-session-fast-path", &server.api_root);
 
-    let first = run_core(&scratch, "json", &[]);
+    // Pin the two-turn session ceiling at genesis; resume may consume the remaining turn but must
+    // never reinterpret a later CLI flag as authority to raise an immutable checkpoint.
+    let first = collect_core(spawn_core(&scratch, "json", 2, &[]));
     assert_eq!(first.status.code(), Some(0));
     let mut rollout_paths: Vec<PathBuf> = fs::read_dir(scratch.runs())
         .unwrap()
@@ -1075,8 +1135,13 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
     assert!(sessions_stdout.contains(DEFAULT_TASK));
 
     let continued = collect_core(spawn_core(&scratch, "json", 2, &["--continue"]));
+    assert_eq!(
+        continued.status.code(),
+        Some(0),
+        "continuation failed before its provider turn; stderr:\n{}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
     server.finish();
-    assert_eq!(continued.status.code(), Some(0));
     assert!(
         String::from_utf8_lossy(&continued.stderr).contains(&format!(
             "continuing most recent session in this repo: {run_id}"
@@ -1085,11 +1150,9 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
     let meta =
         iteron_record::meta(&scratch.runs(), &iteron_protocol::RunId(run_id.clone())).unwrap();
     assert_eq!(meta.turns, 2);
-    let index = fs::read_to_string(scratch.runs().join("sessions.index")).unwrap();
-    let indexed: Vec<iteron_record::SessionMeta> = index
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    // The index payload is private-content externalized; consume it through the same verified
+    // public cache API as the CLI rather than parsing its storage envelope.
+    let indexed = iteron_record::list(&scratch.runs(), &iteron_protocol::TenantId::default());
     assert_eq!(indexed.len(), 1);
     assert_eq!(indexed[0].run_id.0, run_id);
 }
@@ -1099,9 +1162,14 @@ fn text_one_shot_process_contract_is_byte_exact() {
     let server = MockProvider::spawn(Reply::Success);
     let scratch = Scratch::new("text-success", &server.api_root);
     let output = run_core(&scratch, "text", &[]);
-    server.finish();
 
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "one-shot startup/turn failed before the golden response; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    server.finish();
     assert_eq!(
         output.stdout,
         include_bytes!("golden/one_shot_text_success.txt"),
@@ -1239,19 +1307,26 @@ fn stream_json_one_shot_process_contract_matches_golden() {
     assert_terminal_result(actual.last().expect("terminal record"), 0, "done");
     assert_diagnostics_on_stderr(&output, "Done");
     normalize_runtime_fields(&mut actual);
+    let mut expected = golden_lines(
+        "one_shot_stream_json_success_v5.jsonl",
+        include_str!("golden/one_shot_stream_json_success_v5.jsonl"),
+    );
+    let turn_context = expected
+        .iter_mut()
+        .find(|record| record["type"] == "turn_end")
+        .and_then(|record| record.get_mut("context"))
+        .expect("the stream golden contains one turn context");
+    turn_context["model_context_window"] = json!(FIXTURE_CONTEXT_WINDOW_TOKENS);
     assert_eq!(
-        actual,
-        golden_lines(
-            "one_shot_stream_json_success_v5.jsonl",
-            include_str!("golden/one_shot_stream_json_success_v5.jsonl")
-        )
+        actual, expected,
+        "the truthful operator-declared window is part of the process contract"
     );
 }
 
 #[test]
 fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider() {
     let (server, requests) = MockProvider::spawn_capturing_script(vec![Reply::Success]);
-    let scratch = Scratch::new("image-stream-json", &server.api_root);
+    let scratch = Scratch::new_with_image_input("image-stream-json", &server.api_root, true);
     let image_path = scratch.repo().join("fixture.gif");
     let image_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
     fs::write(&image_path, image_bytes).expect("write valid bounded GIF fixture");
@@ -1350,9 +1425,16 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
         );
         let (notice_index, notice) = notices[0];
         assert_eq!(
-            notice_index + 1,
+            notice_index + 2,
             turn_starts[0],
-            "the metadata Notice is durably adjacent to and before TurnStart"
+            "the metadata Notice precedes the provider EffectIntent and TurnStart"
+        );
+        assert!(
+            matches!(
+                events[notice_index + 1].kind,
+                iteron_protocol::EventKind::EffectIntent { .. }
+            ),
+            "the paid provider intent is durable between its run notice and TurnStart"
         );
         assert!(notice.starts_with("provider run notice [key=sha256:"));
         assert!(notice.contains(
@@ -1422,7 +1504,7 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
 #[test]
 fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     let (server, requests) =
-        MockProvider::spawn_capturing_script(vec![Reply::Success, Reply::Success]);
+        MockProvider::spawn_capturing_multi_process_script(vec![Reply::Success, Reply::Success]);
     let scratch = Scratch::new("durable-instructions", &server.api_root);
     let original = "D6-11 original instruction bytes";
     let changed = "D6-11 changed live instruction bytes";
@@ -1505,8 +1587,12 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
 #[cfg(unix)]
 #[test]
 fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_it() {
+    // This fixture performs several real Git operations before each process reaches its provider.
+    // Under the all-target pre-push load those operations can consume the ordinary 10s mock accept
+    // bound before the child even starts. Keep the provider wait bounded by the process watchdog
+    // for this contention oracle; provider and runtime semantics are otherwise unchanged.
     let (server, requests) =
-        MockProvider::spawn_capturing_script(vec![Reply::Success, Reply::Success]);
+        MockProvider::spawn_capturing_multi_process_script(vec![Reply::Success, Reply::Success]);
     let scratch = Scratch::new("environment-facts", &server.api_root);
     git_fixture(&scratch.repo(), &["init", "--quiet"]);
     fs::write(scratch.repo().join("tracked-private-name"), "base\n").unwrap();
@@ -1629,15 +1715,32 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
 #[test]
 fn d13_16_resume_diagnostic_preserves_json_and_stream_json_stdout_contracts() {
     for format in ["json", "stream-json"] {
-        let server = MockProvider::spawn(Reply::Success);
+        let server = MockProvider::spawn_multi_process_script(vec![Reply::Success, Reply::Success]);
         let scratch = Scratch::new(&format!("diagnostic-{format}"), &server.api_root);
-        let run_id = format!("run-diagnostic-{format}");
-        scratch.seed_redacted_resume(&run_id);
+        let fresh = collect_core(spawn_core(&scratch, "json", 2, &[]));
+        assert_eq!(
+            fresh.status.code(),
+            Some(0),
+            "the production-shaped genesis run failed; stderr:\n{}",
+            String::from_utf8_lossy(&fresh.stderr)
+        );
+        let rollout_path = only_rollout_path(&scratch);
+        let run_id = rollout_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("fresh diagnostic rollout has a UTF-8 run id")
+            .to_owned();
+        scratch.append_redacted_tool_result(&run_id);
 
-        let output = run_core(&scratch, format, &["--resume", &run_id]);
+        let output = collect_core(spawn_core(&scratch, format, 2, &["--resume", &run_id]));
+
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "the diagnostic resume failed before its provider turn; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         server.finish();
-
-        assert_eq!(output.status.code(), Some(0));
         let stdout_records = json_lines(&output.stdout);
         assert_terminal_result(stdout_records.last().expect("terminal result"), 0, "done");
         assert_diagnostics_on_stderr(&output, "Done");
@@ -1712,11 +1815,23 @@ fn consecutive_real_tool_failures_exit_stuck_with_terminal_result() {
         &scratch,
         "json",
         4,
-        &["--max-consecutive-tool-errors", "3"],
+        &[
+            "--max-consecutive-tool-errors",
+            "3",
+            // Three provider intents, tool executions, and fsync-backed settlements remain
+            // bounded but need room under all-target parallel I/O load.
+            "--max-wall-secs",
+            "30",
+        ],
     ));
     server.finish();
 
-    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "the semantic stuck floor must win before the outer wall bound; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let lines = json_lines(&output.stdout);
     assert_eq!(
         lines.len(),

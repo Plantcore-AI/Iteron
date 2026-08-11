@@ -26,6 +26,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
+const FIXTURE_PROVIDER_ID: &str = "glm";
+const FIXTURE_MODEL_ID: &str = "glm-5.2";
+const FIXTURE_KEY_ENV: &str = "GLM_API_KEY";
+const FIXTURE_KEY: &str = "bounded-offline-placeholder";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
@@ -81,9 +85,10 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
         })
         .expect("open deterministic PTY");
 
-    // A direct, credential-free binary launch (env_clear); the built-in `glm` provider resolves
-    // without a key because startup never reaches a turn. A real PTY makes the frontend enter the
-    // TUI (rather than refuse for lack of a terminal), so `tui::run` — and its handshake — runs.
+    // A direct binary launch with a cleared environment and one inert, test-only GLM credential.
+    // No developer credential can enter the process, and no provider request is made because this
+    // oracle stops at the handshake. The real static GLM route exercises the OpenAI-compatible
+    // adapter's physical no-cache capability instead of bypassing it with a test-only provider.
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
     command.env_clear();
     if let Some(version) = server_version {
@@ -93,8 +98,7 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
     command.env("PATH", "/usr/bin:/bin");
     command.env("TERM", "xterm");
     command.env("LANG", "C.UTF-8");
-    command.env("ITERON_PROVIDER", "glm");
-    command.env("ITERON_MODEL", "glm-5.2");
+    command.env(FIXTURE_KEY_ENV, FIXTURE_KEY);
     command.cwd(scratch.repo());
     command.arg("--tui");
     command.arg("--repo");
@@ -102,9 +106,9 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
     command.arg("--runs-dir");
     command.arg(scratch.runs());
     command.arg("--provider");
-    command.arg("glm");
+    command.arg(FIXTURE_PROVIDER_ID);
     command.arg("--model");
-    command.arg("glm-5.2");
+    command.arg(FIXTURE_MODEL_ID);
     command.arg("--effort");
     command.arg("low");
 

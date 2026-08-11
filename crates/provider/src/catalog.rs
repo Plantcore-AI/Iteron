@@ -733,7 +733,12 @@ impl ProviderInstance {
             catalog_strategy,
             credential,
             static_metadata: crate::StaticProviderMetadata::embedded(),
-            prompt_cache: true,
+            // `cache_control` is an Anthropic Messages wire feature. OpenAI Chat/Responses
+            // adapters intentionally do not attest cache breakpoints, so advertising a default
+            // Rolling breakpoint for those routes makes composition request a control the
+            // physical provider must reject before startup. Explicit route overrides remain
+            // available, while the default now matches the adapter that will serialize it.
+            prompt_cache: matches!(adapter, AdapterKind::AnthropicMessages),
         })
     }
 
@@ -780,7 +785,8 @@ impl ProviderInstance {
         self
     }
 
-    /// Whether this route may mark prompt-cache breakpoints. Default on.
+    /// Whether this route may mark prompt-cache breakpoints. Defaults on only for the Anthropic
+    /// Messages adapter whose wire format can serialize `cache_control`.
     pub fn prompt_cache(&self) -> bool {
         self.prompt_cache
     }
@@ -3347,10 +3353,19 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_is_on_by_default_and_opt_out_survives_construction() {
-        let instance = instance(AdapterKind::AnthropicMessages);
-        assert!(instance.prompt_cache(), "caching is the default");
-        let opted_out = instance.clone().with_prompt_cache(false);
+    fn prompt_cache_default_matches_the_physical_adapter_and_opt_out_survives_construction() {
+        let anthropic = instance(AdapterKind::AnthropicMessages);
+        assert!(anthropic.prompt_cache(), "Anthropic caching is the default");
+        for adapter in [
+            AdapterKind::OpenAiCompatibleChat,
+            AdapterKind::OpenAiResponses,
+        ] {
+            assert!(
+                !instance(adapter).prompt_cache(),
+                "an adapter with no cache-control capability must default off"
+            );
+        }
+        let opted_out = anthropic.clone().with_prompt_cache(false);
         assert!(!opted_out.prompt_cache());
         // The opt-out is a route fact, so it must survive the clone the directory keeps and
         // still build a turn provider.

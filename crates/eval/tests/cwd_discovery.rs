@@ -249,7 +249,10 @@ async fn real_iteron_eval_from_non_workspace_cwd_discovers_core_or_errors_action
         clear_env: false,
         inherit_env: Vec::new(),
         env: Vec::new(),
-        timeout: Duration::from_secs(10),
+        // The semantic child bounds above remain one second. This outer watchdog also covers the
+        // evaluator's mandatory build-and-verify attestation passes over the real Cargo-built Core
+        // binary, whose debug artifact is large and CPU scheduling is shared by all-target runs.
+        timeout: Duration::from_secs(30),
         max_output_bytes: 128 * 1024,
     })
     .await

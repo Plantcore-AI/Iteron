@@ -388,12 +388,45 @@ fn add_tooling_defaults(
         )?;
         report.observed_defaults.push("lsp_timeout_restart_policy");
     } else {
-        for family in [
+        // The policy families remain effective even when this registry intentionally exposes no
+        // LSP surface. An empty route catalog is the exact disabled selection; the recovery value
+        // is still decoded and sealed so a later process cannot invent different bounds.
+        builder.observe_default(
             "lsp_server_language_selection",
+            list(std::iter::empty::<iteron_tunables::ResolutionValue>()),
+        )?;
+        report
+            .observed_defaults
+            .push("lsp_server_language_selection");
+        let recovery = iteron_tools::LspRecoveryPolicy::default();
+        builder.observe_default(
             "lsp_timeout_restart_policy",
-        ] {
-            builder.observe_default_absent(family, "language_server_surface_absent")?;
-        }
+            object([
+                (
+                    "request_timeout_milliseconds",
+                    int(super::value::i64u(
+                        recovery.request_timeout_milliseconds,
+                        "lsp_timeout_restart_policy",
+                    )?),
+                ),
+                ("max_restarts", int(i64::from(recovery.max_restarts))),
+                (
+                    "backoff_base_milliseconds",
+                    int(super::value::i64u(
+                        recovery.backoff_base_milliseconds,
+                        "lsp_timeout_restart_policy",
+                    )?),
+                ),
+                (
+                    "backoff_cap_milliseconds",
+                    int(super::value::i64u(
+                        recovery.backoff_cap_milliseconds,
+                        "lsp_timeout_restart_policy",
+                    )?),
+                ),
+            ]),
+        )?;
+        report.observed_defaults.push("lsp_timeout_restart_policy");
     }
     Ok(())
 }

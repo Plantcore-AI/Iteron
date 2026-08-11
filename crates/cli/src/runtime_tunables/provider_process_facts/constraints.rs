@@ -321,7 +321,9 @@ fn add_context_constraints(
     }
     if input.model_capabilities.image_input == Some(true) {
         if let Some(value) = &window_value {
-            upper(
+            // Provider image support attests the numeric multimodal domain; it is not another
+            // budget authority. The separate ContextWindow evidence above owns the clamp.
+            super::value::domain_max(
                 builder,
                 "multimodal_token_budget",
                 "$",
@@ -622,51 +624,54 @@ fn add_process_constraints(
         );
     }
 
-    if let Some(control) = input.registry.lsp_control() {
-        let policy = control.policy();
-        let routes = list(policy.routes.iter().map(|route| {
-            super::value::object([
-                ("language_id", text(&route.language_id)),
-                ("server_id", text(&route.server_id)),
-                ("executable", text(&route.executable)),
-                (
-                    "arguments",
-                    list(route.arguments.iter().map(|argument| text(argument))),
-                ),
-                (
-                    "workspace_markers",
-                    list(route.workspace_markers.iter().map(|marker| text(marker))),
-                ),
-            ])
-        }));
-        super::value::domain(
-            builder,
-            "lsp_server_language_selection",
-            "executable",
-            ExternalCeiling::OperatorAuthority,
-            [routes],
-        )?;
-        report.constrained(
-            "lsp_server_language_selection",
-            "executable",
-            ExternalCeiling::OperatorAuthority,
-        );
-        upper(
-            builder,
+    let routes = input.registry.lsp_control().map_or_else(
+        || list(std::iter::empty::<iteron_tunables::ResolutionValue>()),
+        |control| {
+            let policy = control.policy();
+            list(policy.routes.iter().map(|route| {
+                super::value::object([
+                    ("language_id", text(&route.language_id)),
+                    ("server_id", text(&route.server_id)),
+                    ("executable", text(&route.executable)),
+                    (
+                        "arguments",
+                        list(route.arguments.iter().map(|argument| text(argument))),
+                    ),
+                    (
+                        "workspace_markers",
+                        list(route.workspace_markers.iter().map(|marker| text(marker))),
+                    ),
+                ])
+            }))
+        },
+    );
+    super::value::domain(
+        builder,
+        "lsp_server_language_selection",
+        "executable",
+        ExternalCeiling::OperatorAuthority,
+        [routes],
+    )?;
+    report.constrained(
+        "lsp_server_language_selection",
+        "executable",
+        ExternalCeiling::OperatorAuthority,
+    );
+    upper(
+        builder,
+        "lsp_timeout_restart_policy",
+        "request_timeout_milliseconds",
+        ExternalCeiling::ParentWall,
+        int(super::value::i64u(
+            input.budget.max_wall_secs.saturating_mul(1_000),
             "lsp_timeout_restart_policy",
-            "request_timeout_milliseconds",
-            ExternalCeiling::ParentWall,
-            int(super::value::i64u(
-                input.budget.max_wall_secs.saturating_mul(1_000),
-                "lsp_timeout_restart_policy",
-            )?),
-        )?;
-        report.constrained(
-            "lsp_timeout_restart_policy",
-            "request_timeout_milliseconds",
-            ExternalCeiling::ParentWall,
-        );
-    }
+        )?),
+    )?;
+    report.constrained(
+        "lsp_timeout_restart_policy",
+        "request_timeout_milliseconds",
+        ExternalCeiling::ParentWall,
+    );
 
     super::value::exact(
         builder,
