@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core_code_agent import CoreCodeAgent, _split_model_route
+from iteron_agent import IteronAgent, _split_model_route
 from harbor.agents.factory import AgentFactory
 from harbor.environments.base import BaseEnvironment
 from harbor.models.trial.config import AgentConfig
@@ -47,7 +47,7 @@ class FakeEnvironment:
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
-class CoreCodeAgentTests(unittest.TestCase):
+class IteronAgentTests(unittest.TestCase):
     def _agent(
         self,
         root: Path,
@@ -56,10 +56,10 @@ class CoreCodeAgentTests(unittest.TestCase):
         binary_arch: str = "x86_64",
         model_name: str = "openai/test-model",
         **kwargs: object,
-    ) -> CoreCodeAgent:
+    ) -> IteronAgent:
         binary = root / "core-linux"
         digest = _linux_elf(binary)
-        return CoreCodeAgent(
+        return IteronAgent(
             root / "logs",
             binary_path=binary,
             binary_sha256=digest,
@@ -119,7 +119,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             binary = root / "core-linux"
             digest = _linux_elf(binary)
             config = AgentConfig(
-                import_path="core_code_agent:CoreCodeAgent",
+                import_path="iteron_agent:IteronAgent",
                 model_name="openai/test-model",
                 env={credential_env: "credential-fixture-value"},
                 kwargs={
@@ -133,7 +133,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             agent = AgentFactory.create_agent_from_config(
                 config, logs_dir=root / "logs"
             )
-            self.assertIsInstance(agent, CoreCodeAgent)
+            self.assertIsInstance(agent, IteronAgent)
             environment = FakeEnvironment()
             environment._persistent_env = {"TASK_MARKER": "task"}
             with BaseEnvironment.scoped_exec_env(environment, agent.extra_env):
@@ -168,7 +168,7 @@ class CoreCodeAgentTests(unittest.TestCase):
             linked = root / "linked"
             linked.symlink_to(real, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, "snapshot"):
-                CoreCodeAgent(
+                IteronAgent(
                     root / "logs",
                     binary_path=linked / source.name,
                     binary_sha256=digest,
@@ -177,7 +177,7 @@ class CoreCodeAgentTests(unittest.TestCase):
                     extra_env={"OPENAI_API_KEY": "credential-fixture-value"},
                 )
 
-            agent = CoreCodeAgent(
+            agent = IteronAgent(
                 root / "logs",
                 binary_path=source,
                 binary_sha256=digest,

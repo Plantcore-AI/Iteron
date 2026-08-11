@@ -3,8 +3,8 @@
   "cost_state": {
     "status": "known",
     "amount_microusd": 11,
-    "rate_card_digest": "sha256:96b466602bc93c1df13ef814a547a068bbf25049693f7ed3e8352bb7d71da1a5"
+    "rate_card_digest": "sha256:3b8f75c8bd716d5d1c2ed7cbaaf7cf48879f21b2a590fd669ed2c4bac09b2f1d"
   },
   "projection_amount_microusd": 11,
-  "rate_card_digest": "sha256:96b466602bc93c1df13ef814a547a068bbf25049693f7ed3e8352bb7d71da1a5"
+  "rate_card_digest": "sha256:3b8f75c8bd716d5d1c2ed7cbaaf7cf48879f21b2a590fd669ed2c4bac09b2f1d"
 }

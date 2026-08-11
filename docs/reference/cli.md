@@ -39,7 +39,6 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--ask-permissions` | Restore the capability gate: edits, code execution, trust changes and external actions ask for approval according to the permission mode. This is the opt-out from the default bypass. In one-shot (`-p`) there is no approval channel, so an "ask" there is a refusal — pair it with `--mode acceptEdits` or an explicit `/permissions` allow rule. |
 | `--mode <MODE>` | Permission mode: default \| acceptEdits \| plan \| yolo (ADR-007 §3). Reads always auto; the mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only. |
 | `--runs-dir <RUNS_DIR>` | Directory for the append-only rollout (the audit record). Default `.iteron/runs`. |
-| `--benchmark-attempt-scope <ATTEMPT>` | Internal eval-harness attempt identity. Activates strict parent-memory isolation and content-free contamination evidence; hidden because ordinary sessions must inherit memory. |
 | `--resume <RESUME>` | Resume a prior run by id: reconstruct its transcript from the rollout and continue (invariant #2, recoverable). When set, the task argument may be a follow-up instruction. |
 | `-c`, `--continue` | Continue the most recent session in this repo (like `claude --continue`). |
 | `--sessions` | List sessions in this repo (id, turns, model, cost, title) and exit. |

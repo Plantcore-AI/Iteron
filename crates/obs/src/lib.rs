@@ -740,7 +740,7 @@ fn combined_rate_card_digest(digests: &BTreeSet<String>) -> String {
         return only.clone();
     }
     let mut hasher = Sha256::new();
-    hasher.update(b"core/rate-card-set/v1");
+    hasher.update(b"iteron/rate-card-set/v1");
     for digest in digests {
         hasher.update((digest.len() as u64).to_be_bytes());
         hasher.update(digest.as_bytes());

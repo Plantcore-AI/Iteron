@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "417da5b751d599a66b449bafd3aff54d2d1d9bf61e68e92f52514aeeced302be"
+    "value": "8a1621cf1e51d9936ccbdceefe3f35ab6fdd9c580a2d4bcce3b1dfa3769fc48c"
   },
   "payload": {
     "schema_version": 3,
     "registry_id": "iteron-tunables",
-    "registry_revision": 7,
+    "registry_revision": 4,
     "canonicalization": "iteron-tunables-json-v3",
     "family_count": 160,
     "scalar_catalogs": [
@@ -96,7 +96,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "765afca5b494e8ec59aaa45d53aba1dc95f64dfcda9490efed70add4a7c09f25"
+          "value": "7b22ce3a4bc59cabb7ea6ae1d9c2d0a06a8f26a8de79fe0ca6797c6c74ce3f26"
         },
         "schema_version": 2,
         "ordinal": 1,
@@ -138,26 +138,22 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             },
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_PROVIDER",
-              "merge": "override"
+              "locator": "ITERON_PROVIDER"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             }
           ]
         },
@@ -207,7 +203,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c8cb5e2e7e726c4c930075af5d9d067126c5c2cbd80d5de597d3e8e98c199cdf"
+          "value": "36c566d9768b3021d6be201e5d04f327ce440d31a1329b68a65f80ed56549ab1"
         },
         "schema_version": 2,
         "ordinal": 2,
@@ -250,32 +246,27 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             },
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_MODEL",
-              "merge": "override"
+              "locator": "ITERON_MODEL"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "route_suggestion"
+              "locator": ".iteron/config.json"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/static_metadata.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/static_metadata.rs"
             }
           ]
         },
@@ -325,7 +316,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c0b455aa252e08d97403c2be83fad5cb6d3ca3b80bcbc1e8b39ef6d6d9ea6c4b"
+          "value": "f19fecc129812cef69a9216ab152c3d244ae9f56878152146212ffba45a2420e"
         },
         "schema_version": 2,
         "ordinal": 3,
@@ -363,20 +354,17 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             },
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_BASE_URL",
-              "merge": "override"
+              "locator": "ITERON_BASE_URL"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -426,7 +414,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "06a0c1c895857204c33f80d6d37f42d1c4716e63e7c8296051f2ad4fb4f0ab17"
+          "value": "c166e987ee451b174ed1071c91b8f367862792b7a6b1e8c17a8d18ec2bcb7896"
         },
         "schema_version": 2,
         "ordinal": 4,
@@ -469,26 +457,22 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             },
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_EFFORT",
-              "merge": "override"
+              "locator": "ITERON_EFFORT"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/protocol/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/protocol/src/lib.rs"
             }
           ]
         },
@@ -545,7 +529,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9eb4d66d71dd348fb732b8856036f118daaf317bad0bb38a115fa49873e38815"
+          "value": "0edba71cdf023ba5be1c7fc8c215577c48702bdcd9b0d0c7265b9dc56242b903"
         },
         "schema_version": 2,
         "ordinal": 5,
@@ -577,7 +561,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 600
+            "value": 40
           }
         },
         "source": {
@@ -585,32 +569,22 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "environment",
-              "trust": "operator",
-              "locator": "ITERON_MAX_TURNS",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "tighten_maximum"
+              "locator": ".iteron/config.json"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/protocol/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/protocol/src/lib.rs"
             }
           ]
         },
@@ -660,7 +634,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e1ff52116d76a8a723c04b26db4a95166fa1d64b2d8a79c3fb55c0dba6e1d1bc"
+          "value": "6ebd7c1d7056e3f0dc5ed30f26d6e7af165487c6d310634e05d7353ad8c6c3eb"
         },
         "schema_version": 2,
         "ordinal": 6,
@@ -673,10 +647,7 @@
           "predicate": {
             "type": "configured",
             "sources": [
-              "cli",
-              "environment",
-              "user_config",
-              "project_config"
+              "user_config"
             ]
           },
           "inactive_reason": "configuration_absent"
@@ -702,28 +673,9 @@
         "source": {
           "bindings": [
             {
-              "kind": "cli",
-              "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "environment",
-              "trust": "operator",
-              "locator": "ITERON_MAX_USD",
-              "merge": "override"
-            },
-            {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "project_config",
-              "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "tighten_maximum"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -780,7 +732,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "70b4bcb49be82eae0db8cab93ba4569f5811a24442571ee8dd980813ca158c8a"
+          "value": "8f4915d81bce5256e53970593ba96bc32a92b7fbba88d25c6e5d68fd4d5b369e"
         },
         "schema_version": 2,
         "ordinal": 7,
@@ -821,8 +773,7 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             }
           ]
         },
@@ -872,7 +823,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0e8a3f39726c99a3716d6eba6c54d7f68e21936c79bd8e8070e107cd15beb349"
+          "value": "420ffefd22ecdd04bdd8d9ed1fb57c8001990eeefd304fedad7a71797298deae"
         },
         "schema_version": 2,
         "ordinal": 8,
@@ -906,34 +857,15 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 14400
+            "value": 1800
           }
         },
         "source": {
           "bindings": [
             {
-              "kind": "cli",
-              "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "project_config",
-              "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "tighten_maximum"
-            },
-            {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/protocol/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -983,7 +915,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "721ca54ccd454ef0f7fde1c3ec2470d941a04948420acb0d97ab81f6b1027d79"
+          "value": "92136f94388bc038174e4a08a8ddf6700ff190536a2aa2cb311ad4c40e9c9734"
         },
         "schema_version": 2,
         "ordinal": 9,
@@ -1015,34 +947,15 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": true
+            "value": false
           }
         },
         "source": {
           "bindings": [
             {
-              "kind": "cli",
-              "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "project_config",
-              "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "tighten_boolean_grant"
-            },
-            {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -1089,7 +1002,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9409abee33dd5e5f3091cf5346c4b0252a542e4dd1a561c42290bec95266c97f"
+          "value": "6ab339281872f3679c8776c9800107348995f8f22643510d5082cc8f8388608c"
         },
         "schema_version": 2,
         "ordinal": 10,
@@ -1127,16 +1040,9 @@
         "source": {
           "bindings": [
             {
-              "kind": "cli",
+              "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -1190,7 +1096,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5513403e13d738171bfbdd5056b52be0112b42bd9ea363cff6bdc628ea3a8e91"
+          "value": "7e372ccd3af8539119aacbe7b7a333a7136c15efe49f45c2808046bb79a9c7ca"
         },
         "schema_version": 2,
         "ordinal": 11,
@@ -1228,8 +1134,7 @@
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -1293,7 +1198,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "de005669137da6e8e35cf7ac0034ce02992bcb73ded100d6308bea2c7e3452a9"
+          "value": "deac6bd18c6f50710903de15494bde8e2a95288a343afac2a1bc50f6f38d40e7"
         },
         "schema_version": 2,
         "ordinal": 12,
@@ -1325,7 +1230,7 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": true
+            "value": false
           }
         },
         "source": {
@@ -1333,14 +1238,7 @@
             {
               "kind": "cli",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             }
           ]
         },
@@ -1387,7 +1285,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fde49111caf9c5961751c21d621084e5dee45652be69cf37d21c5c254ffa697e"
+          "value": "480d1392c512e224c4ee14d64fcf196aefc3422b29d5ae3baf803c9313afa945"
         },
         "schema_version": 2,
         "ordinal": 13,
@@ -1419,50 +1317,14 @@
             "resolver_id": "iteron://tunables/resolvers/compaction_trigger-v1"
           },
           "requirement": "optional",
-          "value": {
-            "type": "object",
-            "fields": [
-              {
-                "name": "mode",
-                "value": {
-                  "type": "enum",
-                  "value": "adaptive"
-                }
-              },
-              {
-                "name": "usable_window_ratio",
-                "value": {
-                  "type": "decimal",
-                  "value": {
-                    "coefficient": 8,
-                    "scale": 1
-                  }
-                }
-              },
-              {
-                "name": "fallback_trigger_tokens",
-                "value": {
-                  "type": "integer",
-                  "value": 120000
-                }
-              },
-              {
-                "name": "output_reserve_tokens",
-                "value": {
-                  "type": "integer",
-                  "value": 8192
-                }
-              }
-            ]
-          }
+          "value": null
         },
         "source": {
           "bindings": [
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -1472,21 +1334,6 @@
           "domain": {
             "type": "object",
             "fields": [
-              {
-                "name": "mode",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "enum",
-                    "values": [
-                      "adaptive",
-                      "fixed"
-                    ],
-                    "catalog_id": null
-                  }
-                }
-              },
               {
                 "name": "usable_window_ratio",
                 "required": true,
@@ -1581,7 +1428,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "111bdf191b455f5eb8c53ab4b774cf558c3f43613d26dc7618b7e0ee559d57de"
+          "value": "84a482a8a54f12a8fc7bd16d11da89c86c55da01772432942ec56688193dfc2d"
         },
         "schema_version": 2,
         "ordinal": 14,
@@ -1596,7 +1443,7 @@
           "predicate": {
             "type": "configured",
             "sources": [
-              "cli"
+              "user_config"
             ]
           },
           "inactive_reason": "configuration_absent"
@@ -1622,10 +1469,9 @@
         "source": {
           "bindings": [
             {
-              "kind": "cli",
+              "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -1685,7 +1531,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7d604d80e0fd5d9e648c066168919efbac6e3fe64ac70ada7bbb87433d2f0e27"
+          "value": "106d09a3ec24a1199663812231cc998f3c50a6b6e367dbf29d46eae6535c5d6e"
         },
         "schema_version": 2,
         "ordinal": 15,
@@ -1727,20 +1573,17 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_RETRY_BASE_MS",
-              "merge": "override"
+              "locator": "ITERON_RETRY_BASE_MS"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "retry.base_ms",
-              "merge": "override"
+              "locator": "retry.base_ms"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "iteron_sched::BackoffPolicy::default",
-              "merge": "override"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -1790,7 +1633,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e8a6053fc4925edbed8d8fa2f8397d6adc48f2a5b06ed0d67adfd7a5d4790fbc"
+          "value": "5948f0afffe0cbe6817b746a73d80089e613fe71d24b195444d10d2543b68f8a"
         },
         "schema_version": 2,
         "ordinal": 16,
@@ -1832,20 +1675,17 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_RETRY_CAP_MS",
-              "merge": "override"
+              "locator": "ITERON_RETRY_CAP_MS"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "retry.cap_ms",
-              "merge": "override"
+              "locator": "retry.cap_ms"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "iteron_sched::BackoffPolicy::default",
-              "merge": "override"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -1895,7 +1735,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "476d80f610dc3faf9c7ca1d6cdd1bbf8372eaae531ff0be352a5f1ce2257cf1b"
+          "value": "ed91ad9de1301a154fda0526b76317b99c317da12617d73a2177e97e5ba72ab9"
         },
         "schema_version": 2,
         "ordinal": 17,
@@ -1937,20 +1777,17 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "ITERON_RETRY_MAX_ATTEMPTS",
-              "merge": "override"
+              "locator": "ITERON_RETRY_MAX_ATTEMPTS"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "retry.max_attempts",
-              "merge": "override"
+              "locator": "retry.max_attempts"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "iteron_sched::BackoffPolicy::default",
-              "merge": "override"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -2000,7 +1837,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "97bae732419338b03d83b1ce0e93428d27bb41f7e70748f6d35bdf5e0f50e444"
+          "value": "b3be37cede8195ac57d72901bd48cf55d69a141963fc1c419fbc35f0d43bff24"
         },
         "schema_version": 2,
         "ordinal": 18,
@@ -2040,8 +1877,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "intersect_allow_set"
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -2094,7 +1930,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "14cc8dba249fe344418f6953f7a3c28bb83e90d1b89e2a12882dcbb26a66748f"
+          "value": "8f5aa63b38a5f93abd801bca35ab2dd86c2b9b708f7e7d59ff1dc36c5b71c554"
         },
         "schema_version": 2,
         "ordinal": 19,
@@ -2136,26 +1972,22 @@
             {
               "kind": "external_provider",
               "trust": "provider_attested",
-              "locator": "fresh model metadata",
-              "merge": "override"
+              "locator": "fresh model metadata"
             },
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/provider/src/static_metadata.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/static_metadata.rs"
             },
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "validated provider cache",
-              "merge": "override"
+              "locator": "validated provider cache"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "operator-declared model metadata",
-              "merge": "override"
+              "locator": "operator-declared model metadata"
             }
           ]
         },
@@ -2216,7 +2048,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4405ec27b96b607a95163d7ea505550d011d9e31ff11e4dcd7911c7f3382fff4"
+          "value": "ab1739c3db1e9ca31f609358ca6f051ba3227e58bcef268daf2502a3be20828f"
         },
         "schema_version": 2,
         "ordinal": 20,
@@ -2255,8 +2087,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/providers.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/providers.rs"
             }
           ]
         },
@@ -2323,7 +2154,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "097d2c54932b372b650cc20d3e44c54a3c059919003619828bb804d4952df19f"
+          "value": "8a0fc354692847248a86804e57cfdddf9e32e47ef2eb4aaa6caebabed81f84d4"
         },
         "schema_version": 2,
         "ordinal": 21,
@@ -2362,8 +2193,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/providers.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/providers.rs"
             }
           ]
         },
@@ -2441,7 +2271,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dd7f69aa3b3d489fe81c1804f3297314cee221a2058410ca504acf4ce022886b"
+          "value": "1de4118a81ff30a046d5fef8c54f39c520214262a54fcef28556653c36a00e15"
         },
         "schema_version": 2,
         "ordinal": 22,
@@ -2480,8 +2310,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -2550,7 +2379,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0093e62c704710ccde56cddbf70f69fe6a3c0742953c70dd07f7600b78ac337d"
+          "value": "a57389f181c386f75889c7a68660e6aed61b0f89d3da11dcb9683183d0197110"
         },
         "schema_version": 2,
         "ordinal": 23,
@@ -2591,14 +2420,12 @@
             {
               "kind": "rust_builder",
               "trust": "operator",
-              "locator": "iteron_provider::ProviderInstance::with_prompt_cache",
-              "merge": "override"
+              "locator": "iteron_provider::ProviderInstance::with_prompt_cache"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "iteron_provider::ProviderInstance::new",
-              "merge": "override"
+              "locator": "iteron_provider::ProviderInstance::new"
             }
           ]
         },
@@ -2646,7 +2473,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c2f53fb739e7bc32df580dadb6bf8ca98eeff769a165101e169d9c4a74f188cd"
+          "value": "99d27d3e430dbf545d67019b706749534ff54667fe808acb18ffcf6b6e1e0bd0"
         },
         "schema_version": 2,
         "ordinal": 24,
@@ -2677,43 +2504,14 @@
             "resolver_id": "iteron://tunables/resolvers/compaction_adaptive-v1"
           },
           "requirement": "optional",
-          "value": {
-            "type": "object",
-            "fields": [
-              {
-                "name": "usable_window_ratio",
-                "value": {
-                  "type": "decimal",
-                  "value": {
-                    "coefficient": 8,
-                    "scale": 1
-                  }
-                }
-              },
-              {
-                "name": "keep_recent_messages",
-                "value": {
-                  "type": "integer",
-                  "value": 6
-                }
-              },
-              {
-                "name": "output_reserve_tokens",
-                "value": {
-                  "type": "integer",
-                  "value": 8192
-                }
-              }
-            ]
-          }
+          "value": null
         },
         "source": {
           "bindings": [
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -2806,7 +2604,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d3bffa7f3a7595768b09a4ab5042a9ae500335206b368d9ffe72007367d88684"
+          "value": "f6dc776205fb44043f8535cd40b315533aa6557e7823228e9c7d6c7cf8e1f3f6"
         },
         "schema_version": 2,
         "ordinal": 25,
@@ -2837,18 +2635,14 @@
             "resolver_id": "iteron://tunables/resolvers/compaction_keep_recent-v1"
           },
           "requirement": "optional",
-          "value": {
-            "type": "integer",
-            "value": 6
-          }
+          "value": null
         },
         "source": {
           "bindings": [
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -2898,7 +2692,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b0c2c08e9dd91693a398c3da051f8285bb3963f964d2ce887c3e250078704803"
+          "value": "6a5ae3b58421d600626dfe071bf5ce50a4005d1e0aeac2137c8d259c922dfaa7"
         },
         "schema_version": 2,
         "ordinal": 26,
@@ -2937,8 +2731,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/lib.rs"
             }
           ]
         },
@@ -3006,7 +2799,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bfc6179234dcfa356fb8292f58631cb4ba9046a9078c232796ee66986cacb967"
+          "value": "0e16ce996eb97e477df30f81613d4bf749e1e596e6bc69902c4d24c60d2528b6"
         },
         "schema_version": 2,
         "ordinal": 27,
@@ -3047,8 +2840,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -3148,7 +2940,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "798c9aa386d16b5a5f677e0b23de0c66ab7b066de255b2497a53774ea82dbd13"
+          "value": "bb74e0d1515773db2e6224820dc019d898fa1da18dab24b7467009d9207c06d6"
         },
         "schema_version": 2,
         "ordinal": 28,
@@ -3186,8 +2978,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -3240,7 +3031,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "66c8966ec88474aad76245cdc56bd4edac5b763bd7a5758521583f0a15e4ec96"
+          "value": "3c9b83e6f27fae2ce7b5fc14ff889ad11ea168ce0fd0fb3cd95fcce4d630439b"
         },
         "schema_version": 2,
         "ordinal": 29,
@@ -3279,8 +3070,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/instructions.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/instructions.rs"
             }
           ]
         },
@@ -3384,7 +3174,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "432649232c6b52438d2c1eebe60cabafae2543abb657e305eb721ac49aa7d2d7"
+          "value": "6c4b127dc94109b226bdc021cd8d7558da6f51a121019ecfda607ad4569aaeef"
         },
         "schema_version": 2,
         "ordinal": 30,
@@ -3417,16 +3207,15 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": true
+            "value": false
           }
         },
         "source": {
           "bindings": [
             {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs"
             }
           ]
         },
@@ -3473,7 +3262,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a7b61214cdc50f740c019fd52e083e64073fcc3260121cd729510ca034744878"
+          "value": "643e8ee6ca72da411819848911be66f6d610dbd1f8234c330a6867addc45916d"
         },
         "schema_version": 2,
         "ordinal": 31,
@@ -3513,8 +3302,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/memory.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/memory.rs"
             }
           ]
         },
@@ -3622,7 +3410,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7e2b59475ab1de85fb01bc10b6e3691609c3cc089cbc84053efc40fafe70b999"
+          "value": "fb7299bbb9483f4b9ea474daedab67c53a2d6b9f27826fd2bc0dc1c04009174c"
         },
         "schema_version": 2,
         "ordinal": 32,
@@ -3660,8 +3448,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/memory.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/memory.rs"
             }
           ]
         },
@@ -3721,7 +3508,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ed1e648f5fe4320f3e994cf4aa8aabadbc78c9253feb22bfd2d9386591231cbe"
+          "value": "1d1fe98247bf8113828345f4921fe21acf81fa11ed1731cf3aa2a1661b439cf9"
         },
         "schema_version": 2,
         "ordinal": 33,
@@ -3760,8 +3547,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/skills.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/skills.rs"
             }
           ]
         },
@@ -3811,7 +3597,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "07f43c2b3e7fef3f4e9df80d8b7e9b22194095d0b1ad38ddc465bef98b198ecc"
+          "value": "ca83d61dd3b6ae898fff9e45a508fbe6f0e8aa2a65b7d373c3fe55db5961ba7d"
         },
         "schema_version": 2,
         "ordinal": 34,
@@ -3843,24 +3629,14 @@
             "resolver_id": "iteron://tunables/resolvers/max_consecutive_tool_errors-v1"
           },
           "requirement": "optional",
-          "value": {
-            "type": "integer",
-            "value": 25
-          }
+          "value": null
         },
         "source": {
           "bindings": [
             {
-              "kind": "cli",
-              "trust": "operator",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
-            },
-            {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/protocol/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/protocol/src/lib.rs"
             }
           ]
         },
@@ -3910,7 +3686,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1ee82dbc9cc744f4dca64a9e84f9e2424b17764e9d82436f7e706c08da3bc9cd"
+          "value": "163a915ad8465babb22e1a4197b429c15a1a794923fe9fc6de1b7aaef750b73e"
         },
         "schema_version": 2,
         "ordinal": 35,
@@ -3949,8 +3725,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/lib.rs"
             }
           ]
         },
@@ -3997,7 +3772,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f45c24bb0d0b8ca73cc537876cf2bc2fbd4a4db58618322d686c8ef55136eab2"
+          "value": "f8f12907c0352297dd6d025b9854301fa8b5f4611e06d4aa5ef60857bd89e083"
         },
         "schema_version": 2,
         "ordinal": 36,
@@ -4036,8 +3811,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/lib.rs"
             }
           ]
         },
@@ -4087,7 +3861,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9c9954df6e2486d5a2465042a22d9211fe80a4b18c71fcfa301b7aa675810657"
+          "value": "1b1fc50a41d3dfcef3ee8effda7f62d6255ae170ffab087850a11034f84f15b0"
         },
         "schema_version": 2,
         "ordinal": 37,
@@ -4125,8 +3899,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -4211,7 +3984,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0f33beeae8de2153632ef823e5026f0ccefa4974752ba848cb39864319189f7a"
+          "value": "b506ca6cfcb0c813509d702ed50ebd4bf7b94de3b936819746b22617a4a223c7"
         },
         "schema_version": 2,
         "ordinal": 38,
@@ -4249,8 +4022,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/lib.rs"
             }
           ]
         },
@@ -4333,7 +4105,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5f5df97dd3659ecfa3551c1de37595c3d34f5ad2fed6a99e2f4e224412753c07"
+          "value": "76fc7de8eef1e257286beb771b5ee1051dc9eff5a3c394f063c10a11c19311fe"
         },
         "schema_version": 2,
         "ordinal": 39,
@@ -4398,8 +4170,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/shell.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/shell.rs"
             }
           ]
         },
@@ -4505,7 +4276,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b494bfe1b55a5646cfa440e0e71494c3db4718778b79a4f35041452e75f2de38"
+          "value": "9f97bd659e9de3fd1aaaeecb7283627b126be2223199a708bcb8055a44b1e931"
         },
         "schema_version": 2,
         "ordinal": 40,
@@ -4545,8 +4316,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/fs_tools.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/fs_tools.rs"
             }
           ]
         },
@@ -4637,7 +4407,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "db02c8557f05bfd472e9fcc0be1e3f5637e8d05929d4ef987e694fd760c726f2"
+          "value": "99c2851ce41f402799d611620301d276c12f9f3a794c734dde230068f002538e"
         },
         "schema_version": 2,
         "ordinal": 41,
@@ -4677,8 +4447,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/fs_tools.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/fs_tools.rs"
             }
           ]
         },
@@ -4764,7 +4533,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4132b2f5f1c747ed93adeabe1b8ace5d0f87c1025fe8d9b0d314847d75cea10c"
+          "value": "fe0d7ef186f214b5e31c5aa92010c388a01d8991a15adb0380519970f127b0ee"
         },
         "schema_version": 2,
         "ordinal": 42,
@@ -4804,8 +4573,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/fs_tools.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/fs_tools.rs"
             }
           ]
         },
@@ -4891,7 +4659,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9d133e1ecd67e70dcb70c574aaf379a81ef746697210c759f599c5fbbf3e0761"
+          "value": "356db90d1b4916a9939e87382ffa83df9b4d06c5e721f9795f70c7f4dfe10b7e"
         },
         "schema_version": 2,
         "ordinal": 43,
@@ -4931,8 +4699,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/grep_tool.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/grep_tool.rs"
             }
           ]
         },
@@ -5023,7 +4790,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "87e09ca23fc3b14e37018ddb9e1bde1331802b124e58c2da2cb2ffca5a6998e1"
+          "value": "a589ae35da53ea05a38fe37eaf0abd9d10f44f6cc554c6bf5f5f986997ba790d"
         },
         "schema_version": 2,
         "ordinal": 44,
@@ -5063,8 +4830,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/fs_tools.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/fs_tools.rs"
             }
           ]
         },
@@ -5150,7 +4916,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "718982883ad439e6808b44f8f93f70054516bad066f08787885832d297482ce6"
+          "value": "704ea2c6eceb8cccd02d9178b834fa920f1423d323edae06a0d1bb71dbdf54f7"
         },
         "schema_version": 2,
         "ordinal": 45,
@@ -5190,8 +4956,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/git.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/git.rs"
             }
           ]
         },
@@ -5300,7 +5065,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "32fc8d515ffa574a7bf17ffa5c6113003b12f1f0676a3a4d356de7304ae64c51"
+          "value": "bbb67c4946e3245ab393a7a08cc77c8664eb57fc47fb91085dd9cef098dcc4e9"
         },
         "schema_version": 2,
         "ordinal": 46,
@@ -5340,8 +5105,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/web.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/web.rs"
             }
           ]
         },
@@ -5450,7 +5214,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ad765f3a3292285e1cab3b38cdd82d5b204276c503980f48697029fde44efe1f"
+          "value": "4923d0dd8a4fae8a0b3feabe787cd96a761e32b5959026393673a507d46190a2"
         },
         "schema_version": 2,
         "ordinal": 47,
@@ -5489,8 +5253,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/web.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/web.rs"
             }
           ]
         },
@@ -5540,7 +5303,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f1eeef59c3b05c7f0e0cb9068c3e66b5739034c201587ca1a7e575e96c493c56"
+          "value": "7627448903c90b9b93311fb025f9d553487358be0377de6efeda6bd939fd18de"
         },
         "schema_version": 2,
         "ordinal": 48,
@@ -5579,8 +5342,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/lib.rs"
             }
           ]
         },
@@ -5630,7 +5392,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "76c60dcf4113f8c92d6f734e0937b1f764faf1073369154e081a2c99ae0dfb1c"
+          "value": "362ef861042e06ec829a5373c78829d6229c5c0bb0e55efa737a1eea66178eb9"
         },
         "schema_version": 2,
         "ordinal": 49,
@@ -5670,8 +5432,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/lib.rs"
             }
           ]
         },
@@ -5765,7 +5526,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b5afd809fb7b62d2dc653b38a5b16efb46083a29ae3a28cf6e52f507b3b3970b"
+          "value": "d5e30e70f65876fcd8edf96200f2935ddafc20a8d54520e808dc48ac4f35915c"
         },
         "schema_version": 2,
         "ordinal": 50,
@@ -5804,8 +5565,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/lib.rs"
             }
           ]
         },
@@ -5855,7 +5615,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "effcbace7e8ebad9f8c9bcc39d537f93db5a59e8a696b73be6d3da277b18304e"
+          "value": "e79762f765d3abb73dc81be4dd7d95aa37b50b2fcd93e0cd87417fbda343f0f5"
         },
         "schema_version": 2,
         "ordinal": 51,
@@ -5894,8 +5654,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -5947,7 +5706,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "824b05de297fd8d2007ebbb21bc1cc9a236a924368abb3b59497e94e4469bd08"
+          "value": "48453b86817bca1ce25965f49e318ea6f8cbb1cdaf95c1f92e03037cbbcdd914"
         },
         "schema_version": 2,
         "ordinal": 52,
@@ -5987,8 +5746,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -6091,7 +5849,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "345350be3c7e169344dd0bfdc7ddc3ecc05612dd879deefca33685754508bf3c"
+          "value": "34c633eb593a52a3202a051f891f2653d1e664dc9d68b85715314fb216322ff4"
         },
         "schema_version": 2,
         "ordinal": 53,
@@ -6130,8 +5888,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/lib.rs"
             }
           ]
         },
@@ -6181,7 +5938,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0fbd62c8802b7490a62b4600d3b967081e35f822dc6700e9ab0681d6056663b3"
+          "value": "5d7dfd3764999c781fbc5bc5c5f652d661386d3e59dfc39b25d1e65cc5726079"
         },
         "schema_version": 2,
         "ordinal": 54,
@@ -6220,8 +5977,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/kernel/src/admission.rs",
-              "merge": "override"
+              "locator": "crates/kernel/src/admission.rs"
             }
           ]
         },
@@ -6314,7 +6070,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3d8d2ffd11b59ca18d3ba547a9d21e3055d03901a491c20154fdd6a7e206d4b6"
+          "value": "961e1690282ba40f2318386786b4b7bc6e1823339e504612643ed83377b2e4ac"
         },
         "schema_version": 2,
         "ordinal": 55,
@@ -6353,8 +6109,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -6411,7 +6166,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "78ddd09b5738cddeb4cbef850dc86ec0dcab5613b3a3a05bab84762a5ce67a85"
+          "value": "7262e60f105dc0e3edcbc85e8e5f65ff4dd8a7c642889b94382f65ef5e04aa13"
         },
         "schema_version": 2,
         "ordinal": 56,
@@ -6450,8 +6205,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -6501,7 +6255,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1f39b960ef1aa5b821a87c90b89dc98466918e0e215d8864833a40c7973bee1b"
+          "value": "bf00e18fbf1aff715988b1ba462c285764d24883c1e1d47e474c7d87e13425f4"
         },
         "schema_version": 2,
         "ordinal": 57,
@@ -6540,8 +6294,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -6598,7 +6351,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d858f11384f76caf60d315c04b7bcf67c48530e5393ad996a9bf82234a25d92f"
+          "value": "62a2613084664015d78693f32ef842feefbd33f73a3ebcb986273dd691318cd2"
         },
         "schema_version": 2,
         "ordinal": 58,
@@ -6637,8 +6390,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -6695,7 +6447,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "70e3e2e318c014026d4a4d1abeab283fd0429caee8dca4f55471a6c50e712efa"
+          "value": "25846fadcd57cff5bad199333621df0168554cda2b71249c62bca253afb4d070"
         },
         "schema_version": 2,
         "ordinal": 59,
@@ -6734,8 +6486,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/lib.rs"
             }
           ]
         },
@@ -6785,7 +6536,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "66f2a6acc4a95114a45efa6a388846f91b8b2cf82b33aecd69408d8ba093c788"
+          "value": "c44980486a3542d4c03ee3c5f5460f8c95547877ee44328e7247c37585661f7e"
         },
         "schema_version": 2,
         "ordinal": 60,
@@ -6824,8 +6575,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/kernel/src/admission.rs",
-              "merge": "override"
+              "locator": "crates/kernel/src/admission.rs"
             }
           ]
         },
@@ -6947,7 +6697,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bd5a6372ac9179d4ff37039404304c6557bd2c1e941e1c34ea6eded69438beee"
+          "value": "c8b4ababb2f68dbc266dbc1274239978c82ae86cdf9d954295822c09a6efb48e"
         },
         "schema_version": 2,
         "ordinal": 61,
@@ -6987,8 +6737,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -7094,7 +6843,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c7a705ffa8198b9db6ec0f99a65c0ee737750aef6d655d0714429b86086a9823"
+          "value": "77a9af91bd03d10878032cc409f3f0385fa241c4d69f52dc8395c9e1c6218f91"
         },
         "schema_version": 2,
         "ordinal": 62,
@@ -7135,8 +6884,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/lib.rs"
             }
           ]
         },
@@ -7193,7 +6941,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1641fff222e67f32e11b9c157d66f30a95432576003e4696f720eabb314ad125"
+          "value": "c7bd846c21c2a52a10d643b205dae3866fc712e22daba4cfceda0b54eed7c18c"
         },
         "schema_version": 2,
         "ordinal": 63,
@@ -7232,8 +6980,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/lib.rs"
             }
           ]
         },
@@ -7283,7 +7030,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e231398f6ce2f05a2589f4e79ba172ba56daec0b64898c683dd713e883b810e6"
+          "value": "fe17c8d7fcdc7f670e7c2d2246b3ca8a7504d5798527b5f4ab261d1c989f24ee"
         },
         "schema_version": 2,
         "ordinal": 64,
@@ -7321,8 +7068,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/workflow/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/workflow/src/lib.rs"
             }
           ]
         },
@@ -7409,7 +7155,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c8b5b6951c1f08d30bd043e6ee42cd379662f917b830ed054c93c39e0453cbb3"
+          "value": "f9b3a1b6a02c19d6e06bf39513cc699fada8f8924fd7381cb93f8d06776ab5e7"
         },
         "schema_version": 2,
         "ordinal": 65,
@@ -7449,8 +7195,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/workflow/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/workflow/src/lib.rs"
             }
           ]
         },
@@ -7569,7 +7314,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "94bc5fe5053a9a559375ac839b5fd37382946cc689b784a969fc9f8ba6825ff3"
+          "value": "54b1eabadd1d89778b2318d0c35e4aad58eb0cf64ed49fe328acce7878d7c395"
         },
         "schema_version": 2,
         "ordinal": 66,
@@ -7609,8 +7354,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -7701,7 +7445,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "aadaa840bfd8c2bde796706a8aa549d1f8a21d4b008dafb36702d4e1276af65b"
+          "value": "353fbeb22cdf91d9f7d7421adc4ec700ac11b2c58c7c6e4d2481fc58ce8263a6"
         },
         "schema_version": 2,
         "ordinal": 67,
@@ -7744,8 +7488,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/catalog.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/catalog.rs"
             }
           ]
         },
@@ -7795,7 +7538,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "08ff3c15611566b002edd9c2065d8624e5716dd56a2aae55f1a1f1de8bd7dd6a"
+          "value": "1b00d2ed802670c88ab111a98c20240ca50c1f979a47947c79c434afc70fa977"
         },
         "schema_version": 2,
         "ordinal": 68,
@@ -7873,8 +7616,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/image_input.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/image_input.rs"
             }
           ]
         },
@@ -8002,7 +7744,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b5c4cabfdfeaafac088fe103a36422a9b681bfc26c3ad0d1f8a460aad1e591d1"
+          "value": "4246220f951ff48e44a24b3fedfb4599a433112f17f24133c9a69561ead98b3f"
         },
         "schema_version": 2,
         "ordinal": 69,
@@ -8080,8 +7822,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/app_server.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/app_server.rs"
             }
           ]
         },
@@ -8207,7 +7948,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b2de2b1837125a979fe9507d946872e7d2b758e2ca85f38aac3d6268d3c4dc2d"
+          "value": "abdbfc06d05cbb3348a17eda5127ff7f449ef0d9331391b759fddb5c83163ff8"
         },
         "schema_version": 2,
         "ordinal": 70,
@@ -8277,8 +8018,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/providers.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/providers.rs"
             }
           ]
         },
@@ -8382,7 +8122,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dcaf80533ea279e16089fbc0c26355c5effcd8d7dfe1d28c3afe13abc08a7c35"
+          "value": "db207acc1da87c32da1b88e4984d8ce550721b85283138aed7014455500ac4ad"
         },
         "schema_version": 2,
         "ordinal": 71,
@@ -8424,8 +8164,7 @@
             {
               "kind": "operator_input",
               "trust": "operator",
-              "locator": "iteron_protocol::Op",
-              "merge": "override"
+              "locator": "iteron_protocol::Op"
             }
           ]
         },
@@ -8485,7 +8224,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2624aa84b5774acb7ea7ec5b6b048eebadd9b425c578c6ce2c860a5890805339"
+          "value": "b6954d27cba63137b80e6eddda0da5ed62dd3b3f7383f63118cd461402201cfb"
         },
         "schema_version": 2,
         "ordinal": 72,
@@ -8524,8 +8263,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/cli/src/main.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/main.rs"
             }
           ]
         },
@@ -8626,7 +8364,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "520ecb2e5ebb3916a7379f9fdb0820bea2330882296cf936cfb43c02c78076fb"
+          "value": "d7d03736130800f4e6ca148ec51fc60e91272ee890b7a0a6123e833b10e4e9b2"
         },
         "schema_version": 2,
         "ordinal": 73,
@@ -8664,8 +8402,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": "crates/ctx/src/instructions.rs",
-              "merge": "repository_scoped"
+              "locator": "crates/ctx/src/instructions.rs"
             }
           ]
         },
@@ -8768,7 +8505,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dbba34f24a69e3f7c5fd3caaaf081c045bf1196658cb869978d56528016b3634"
+          "value": "4d4d7d76c8f549d009c533423ece422c1b825bd820a9881c9e0b6a31d31d3bb5"
         },
         "schema_version": 2,
         "ordinal": 74,
@@ -8806,8 +8543,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/ctx/src/memory.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/memory.rs"
             }
           ]
         },
@@ -8921,7 +8657,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5f707d989f525bf1d99c7cc88daf5b7f188685e3a11f97915f58fceb8d679a0c"
+          "value": "14892dd52ab8e35d453eb28a9329376e0bfbf0b46c20b9955ce1dc696fbe36bc"
         },
         "schema_version": 2,
         "ordinal": 75,
@@ -8960,8 +8696,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/ctx/src/skills.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/skills.rs"
             }
           ]
         },
@@ -9065,7 +8800,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e801e94847f8d7abb07d1199dba9b153df81d5a23dc3ffa5fee779313201965a"
+          "value": "6786452775f0d5265226a2cf1544d783f443dae01aa3e8f6c2a92a1dcb84124a"
         },
         "schema_version": 2,
         "ordinal": 76,
@@ -9108,8 +8843,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/agents/src/catalog.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/catalog.rs"
             }
           ]
         },
@@ -9213,7 +8947,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d66fac9e1b142f067443f077281932fabb42005aa278ae50a10021edcaa40b65"
+          "value": "99cfd5a904753a3cf13c79dd0e50d7d49ae2e704cdc47a7794fcea3d84a34c3d"
         },
         "schema_version": 2,
         "ordinal": 77,
@@ -9251,26 +8985,22 @@
             {
               "kind": "external_provider",
               "trust": "provider_attested",
-              "locator": "fresh provider discovery",
-              "merge": "override"
+              "locator": "fresh provider discovery"
             },
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/provider/src/static_metadata.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/static_metadata.rs"
             },
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "validated provider cache",
-              "merge": "override"
+              "locator": "validated provider cache"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "operator-declared provider metadata",
-              "merge": "override"
+              "locator": "operator-declared provider metadata"
             }
           ]
         },
@@ -9389,7 +9119,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5aa040d0931fce5b690499571086b541bb7b59f1d3c4154c15891f376214f5c2"
+          "value": "4b89246b66eed25b0dce05a9fff47c2e7f6ed838ec922b824f08c72b6997e224"
         },
         "schema_version": 2,
         "ordinal": 78,
@@ -9430,8 +9160,7 @@
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/mcp.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/mcp.rs"
             }
           ]
         },
@@ -9534,7 +9263,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c702509282449342e81bd6f860d67378257c9ad738890baa5999faf03ece56c4"
+          "value": "3679e5056831f6a68d70a7e37b21bd5f26473052ec7249eb0da78edc460e9b2e"
         },
         "schema_version": 2,
         "ordinal": 79,
@@ -9575,8 +9304,7 @@
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/runtime/hooks.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/hooks.rs"
             }
           ]
         },
@@ -9678,7 +9406,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "eca1770d3ad4b2c80df9c3cceb2b600d3b047613d306e18c6aa5d65b0f436ad0"
+          "value": "c48222719f419b2719892d07049c576fd0c5e4925bedb2484cd92b690a4b339a"
         },
         "schema_version": 2,
         "ordinal": 80,
@@ -9717,8 +9445,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/workflow/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/workflow/src/lib.rs"
             }
           ]
         },
@@ -9818,7 +9545,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3879ad42840cc867e5cd422ca9512063b2af56f5234ccfbb016312efb7b8acc9"
+          "value": "c011711ea86f77940a6e84a0b750cf89c08186a1407bb84f4811d7ccf7eba020"
         },
         "schema_version": 2,
         "ordinal": 81,
@@ -9856,8 +9583,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/tools/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/lib.rs"
             }
           ]
         },
@@ -9962,7 +9688,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cd6a41dbe9f6399f3d699f053c79f64f12b810cc3ac64b7b041ac605a9979d8c"
+          "value": "a0957a4d2e7caa53d5c93da0642cde5c2f5def622599c62186f101ea92a23a40"
         },
         "schema_version": 2,
         "ordinal": 82,
@@ -10001,14 +9727,12 @@
             {
               "kind": "governed_bundle",
               "trust": "governed_bundle",
-              "locator": "signed rate-card bundle",
-              "merge": "override"
+              "locator": "signed rate-card bundle"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/obs/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/obs/src/lib.rs"
             }
           ]
         },
@@ -10109,7 +9833,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0ea5b3352f240e407647fc3896d9b7361228ef205426235098f00e8390411d73"
+          "value": "e7ec7d92912a4a0d9198b9f90400f546541b0b419c4b2304cc8a410edac87cb5"
         },
         "schema_version": 2,
         "ordinal": 83,
@@ -10148,8 +9872,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/decompose.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/decompose.rs"
             }
           ]
         },
@@ -10257,7 +9980,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c8dc5170346c84d873187215ae6b083241c748d3df1f9b17ca3d7cf1092463a8"
+          "value": "0b4f35cc71315e9a032f7eb5ec39b60feda66951d898f06216fdfec315468109"
         },
         "schema_version": 2,
         "ordinal": 84,
@@ -10295,8 +10018,7 @@
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "crates/protocol/src/context.rs",
-              "merge": "override"
+              "locator": "crates/protocol/src/context.rs"
             }
           ]
         },
@@ -10357,7 +10079,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "27338bb256592e3e162f29562cadcb25e3a590ff8ddb32137eb67eb5c067f1e5"
+          "value": "69316b8b0f5b423c4ac0de5842681f05b66839a8931c15be8a06d49a6a6ba0f8"
         },
         "schema_version": 2,
         "ordinal": 85,
@@ -10399,8 +10121,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/tools/src/web.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/web.rs"
             }
           ]
         },
@@ -10511,7 +10232,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "99f3130b6a05f1611d91efdda9e3977a361bb91b07de9a8a5d592444c36c382c"
+          "value": "760245d5144bb4419e8df0d4009e0076ae0fa0fa00a9c174bb02f551f2f9e9b2"
         },
         "schema_version": 2,
         "ordinal": 86,
@@ -10551,8 +10272,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -10605,7 +10325,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "764cd37e646fd7dd1aea4a9d171e8be7a0df621891fe2c59e8e531bf7e9de95d"
+          "value": "1c320d5dc7f129174c81d605cb8df1e717a8498540cca0a163d7378ad3c45058"
         },
         "schema_version": 2,
         "ordinal": 87,
@@ -10680,8 +10400,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/lib.rs"
             }
           ]
         },
@@ -10782,7 +10501,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d804c878740272c8c1e9770009db2adc38a476dd190effedb95f4255324cfb91"
+          "value": "50bba2f280f33b32f0bccc9c97a8e2e2fcabfcc1d770cf52cfcb798f5ca183e0"
         },
         "schema_version": 2,
         "ordinal": 88,
@@ -10822,8 +10541,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -10883,7 +10601,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e27304b0afcea06de58532289279882293faef1d9c6ccae206bdfb3adf92afcc"
+          "value": "cb32c7895599a948b0d4e15e2e69ea0eec6dff746b137001589eb7296fb5d102"
         },
         "schema_version": 2,
         "ordinal": 89,
@@ -10923,8 +10641,7 @@
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "crates/provider/src/catalog.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/catalog.rs"
             }
           ]
         },
@@ -11033,7 +10750,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b2ef7db28247fb12b1ed933bff7f0744a67a8b115cebc814fdf9a4456304d135"
+          "value": "bfa1cdd2da707bbfc0f1d9f911a2f6fb8b4088f72f0642bdc247ac97ecf53983"
         },
         "schema_version": 2,
         "ordinal": 90,
@@ -11102,8 +10819,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -11215,7 +10931,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "732300784a013e3d9625af7aca2f2b223225f36ee95d8178a7359c3bb9199782"
+          "value": "16f1d170a3ebfc3852c3164c9931aee9ae81da7deaa4c3f8e7112ace30b7f488"
         },
         "schema_version": 2,
         "ordinal": 91,
@@ -11253,8 +10969,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -11314,7 +11029,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f553c8d63be43c5a1e6e4aaba42be68517836e35026485dd49c42a4b50f46a45"
+          "value": "243fed03ec33096b51673a39682ff6c10372960c605e0840aa08d23c821c0f95"
         },
         "schema_version": 2,
         "ordinal": 92,
@@ -11354,8 +11069,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -11419,7 +11133,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7e2e652e923672f2dbe7eca3efee4742072ca1c0446a5117f6d13c426871bc00"
+          "value": "dfbdcf50f683da84f557e2021514d6c8f7d55b25eb19598c0a2f0fef679eece3"
         },
         "schema_version": 2,
         "ordinal": 93,
@@ -11460,8 +11174,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -11531,7 +11244,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c628931c13df288c6b1bb23783584b15b716244db59e4f92c91b144c2d8122f2"
+          "value": "83c78d43b877e11b9b34c792472577712dc58aa8c3f5caeb01aa4b55fe587d31"
         },
         "schema_version": 2,
         "ordinal": 94,
@@ -11574,8 +11287,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/responses.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/responses.rs"
             }
           ]
         },
@@ -11625,7 +11337,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "57341a5cf2a7e137dd7ebc1e4a815bee466581964cd4fe7b313a12011ddd75aa"
+          "value": "851533394a517853311251557374a45bca411c7f20eafdc012404f90e646fed3"
         },
         "schema_version": 2,
         "ordinal": 95,
@@ -11667,8 +11379,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/responses.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/responses.rs"
             }
           ]
         },
@@ -11718,7 +11429,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "225a4cfe8de9bd5accd20f9a12e4df93cf274d2e9739be7fc06aafb01db81b45"
+          "value": "7b0d7da1d9dfed34eb797dea04eec407222b1c9cc04fb0eea792c78f54fb6292"
         },
         "schema_version": 2,
         "ordinal": 96,
@@ -11758,26 +11469,22 @@
             {
               "kind": "external_provider",
               "trust": "provider_attested",
-              "locator": "fresh model metadata",
-              "merge": "override"
+              "locator": "fresh model metadata"
             },
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/provider/src/static_metadata.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/static_metadata.rs"
             },
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "validated provider cache",
-              "merge": "override"
+              "locator": "validated provider cache"
             },
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "operator-declared model metadata",
-              "merge": "override"
+              "locator": "operator-declared model metadata"
             }
           ]
         },
@@ -11885,7 +11592,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3767b1a5334dacd01192f577386b588181af6f5a53fd8a06681bc8ed28af02e4"
+          "value": "12560cb570732da4e1085f1b9c5dd12802876cf6fcf79b6cf43ed790678b34a7"
         },
         "schema_version": 2,
         "ordinal": 97,
@@ -11924,8 +11631,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/instructions.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/instructions.rs"
             }
           ]
         },
@@ -11975,7 +11681,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c185d41d6185b34cf1aac538ef9cbd0b3d276186762475c05cf952ff71abc75f"
+          "value": "1f94ac00bbb7bdc4a9095855f30e646488020c287e30c78b9248ffe64d943548"
         },
         "schema_version": 2,
         "ordinal": 98,
@@ -12014,8 +11720,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -12065,7 +11770,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "08d7e7c599ffeb10efea4d3a982bfcc8295fe1912611fa662557cf50aba90f45"
+          "value": "8b74b7a139b694747e095666cf4298f231ae5f8619c4e28aa87224e253f211e6"
         },
         "schema_version": 2,
         "ordinal": 99,
@@ -12104,8 +11809,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -12155,7 +11859,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c520f17e933265e22e65ac302cd9ad2111f11f995a270a82e75ccb8fa503dd7e"
+          "value": "06dfca20d788be3433cb417cf3e98e729aa504cd9a837c4879be6289d93fa5a0"
         },
         "schema_version": 2,
         "ordinal": 100,
@@ -12195,8 +11899,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/image_input.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/image_input.rs"
             }
           ]
         },
@@ -12257,7 +11960,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "eec892fc3a4c8b5cd7540efbd5d4f0a3692fa91ac9e07380e43fb38661c80c6a"
+          "value": "4ace6134cd8b741925392ac9264756d5da3fd577373325dcb3ead794a0b94648"
         },
         "schema_version": 2,
         "ordinal": 101,
@@ -12297,8 +12000,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -12345,7 +12047,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8c6d9d643ca4466c25ad909c6218c7661b75d73bc909c5c09c3fc3e952d0db1a"
+          "value": "94ddf439c874beb098bb6272e93e0368ae599733be053d2302a942975169c495"
         },
         "schema_version": 2,
         "ordinal": 102,
@@ -12384,8 +12086,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -12490,7 +12191,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "63113a7581c27b8457d6f3b1850eecbc8bce2914e4585297248c2eab5e3f0fd7"
+          "value": "8a13f69e164d859d3455eff3c4d4872059c4aed8c0b71d55a2c3d6bef498a5af"
         },
         "schema_version": 2,
         "ordinal": 103,
@@ -12531,8 +12232,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/compact.rs"
             }
           ]
         },
@@ -12585,7 +12285,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5c53fd70ff31169d9f61275568236084f9e0bd21d3a9eee84d55828d159750ea"
+          "value": "16e44274d558e6b282dbce2e8e862c45352e5cc7d4e5f7bdc42dbdfd87a2b941"
         },
         "schema_version": 2,
         "ordinal": 104,
@@ -12596,9 +12296,9 @@
         "summary": "Check summary consistency and evidence coverage.",
         "activation": {
           "predicate": {
-            "type": "always"
+            "type": "unavailable"
           },
-          "inactive_reason": null
+          "inactive_reason": "not_implemented"
         },
         "requirements": {
           "provider": "none",
@@ -12619,16 +12319,15 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": true
+            "value": false
           }
         },
         "source": {
           "bindings": [
             {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/cli/src/runtime/compaction_coverage.rs",
-              "merge": "override"
+              "kind": "registry",
+              "trust": "registry_declaration",
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -12663,7 +12362,7 @@
           },
           "rationale": "Check summary consistency and evidence coverage."
         },
-        "implementation_status": "full",
+        "implementation_status": "missing",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -12675,7 +12374,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7175329878489e931b15222b76b7242d0f80de843bb0c812f55e7d8a3cf85eee"
+          "value": "cc390287559b99ec89c63692aea7886019b3ed11bdd26e0aebee889fe6ca5317"
         },
         "schema_version": 2,
         "ordinal": 105,
@@ -12729,8 +12428,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/memory.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/memory.rs"
             }
           ]
         },
@@ -12791,7 +12489,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2aa3053806beab722ed7b8e785725a53e5a9e906c6463932c63f608b69f9d398"
+          "value": "c3b326d1248ad9809dac4426ae252340e9ffa8af45dc61d273f6c2ee0afa108d"
         },
         "schema_version": 2,
         "ordinal": 106,
@@ -12834,8 +12532,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -12892,7 +12589,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "712510781aef805040634b03c7b42522bf29393d28a46086f67abacd62467e7d"
+          "value": "e43723559ee03dea1bcb38b04ad8b8956a15e8fa9916c34fb04d6560dde590d7"
         },
         "schema_version": 2,
         "ordinal": 107,
@@ -12933,8 +12630,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/ctx/src/memory.rs",
-              "merge": "override"
+              "locator": "crates/ctx/src/memory.rs"
             }
           ]
         },
@@ -12991,7 +12687,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0c61530132c022a978cdeb9bebf612ce4be6ac0cc21bb89a5608a94748bc7bce"
+          "value": "4e6204f0ac2817fd2d73dabe429b23bce69306640cc7bee61fd216cc313214d4"
         },
         "schema_version": 2,
         "ordinal": 108,
@@ -13031,8 +12727,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -13095,7 +12790,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "aec8c899e57d3a47b9da77af0cae600dd53ed9710c471702c57be956e08f6192"
+          "value": "335e1a1451bf4bcc8370ca7c35e751e6bae4af21fac04577480c275d28b8225e"
         },
         "schema_version": 2,
         "ordinal": 109,
@@ -13136,8 +12831,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -13187,7 +12881,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "013e1fa1da12d2cc8582a296314c75d178b36f074a1b7e2314a412227f373489"
+          "value": "3bdeca718f4a030277167a01dbf687caad0b87ee1bd8503785ff06c72db2a19e"
         },
         "schema_version": 2,
         "ordinal": 110,
@@ -13225,8 +12919,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -13276,7 +12969,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6c960178e087bb7aaabf1e9111309121db13aca084b9bb431ee907a9de829be8"
+          "value": "9192112fec22666c82be96700d13e7d6a17c0201bd2e213b31b5b829a33aede7"
         },
         "schema_version": 2,
         "ordinal": 111,
@@ -13314,8 +13007,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -13403,7 +13095,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7faeafaf269f4c8dac70ab0819a2abe053467e643d09421ba5fe687a22543803"
+          "value": "bc370d8841dda5aae1a137419c86f741e20eeb4b299f2a40fbdb537acfff6788"
         },
         "schema_version": 2,
         "ordinal": 112,
@@ -13443,8 +13135,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/sandbox/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/sandbox/src/lib.rs"
             }
           ]
         },
@@ -13495,7 +13186,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "719f3643d9fcafd8cad40436953413d6c6532a05cc278d98277fbe4a3c2a1bb4"
+          "value": "5cfcb7a0883ac3680aaa7740fa4e4721af9d9427e16e3a2b32e2e0b61fa4040f"
         },
         "schema_version": 2,
         "ordinal": 113,
@@ -13558,8 +13249,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/shell.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/shell.rs"
             }
           ]
         },
@@ -13645,7 +13335,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "96e6c4f898f0c12e484e72dfd67bf43cc234f2cb086cd604ec64dbfb1fb1a2f2"
+          "value": "58297852d308790bfc4c97372b799ebd7946c6ac4c7244cb9d988c71d625d2f2"
         },
         "schema_version": 2,
         "ordinal": 114,
@@ -13715,8 +13405,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/sandbox/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/sandbox/src/lib.rs"
             }
           ]
         },
@@ -13825,7 +13514,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0ce459a6c686171f13e944ca4943808ceda0ef566191df9d32e9c27dd19e2f43"
+          "value": "6f08344ef8ddaa51e15de7edf0697a4d0f8ac758b002e09ed6045c05d48c5f86"
         },
         "schema_version": 2,
         "ordinal": 115,
@@ -13868,8 +13557,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -13929,7 +13617,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c6f879fc7ddeba11af0ce2e7e07a047557eefe8078b7208270fc56209a10f316"
+          "value": "fbef8fd2cf171b64c684265d27c496f90fd7f8a24145b34e741eb0addf5a6509"
         },
         "schema_version": 2,
         "ordinal": 116,
@@ -13991,8 +13679,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -14079,7 +13766,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "21f4dc1929ae278184b76f6b2a0aed229930441d4165dbec9610145cadbce0ed"
+          "value": "8f935e3b5158896cda89b308c1d544b069c46c64b0b01bc12c90436521600619"
         },
         "schema_version": 2,
         "ordinal": 117,
@@ -14118,8 +13805,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -14223,7 +13909,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "db123ef72aaf3fc65f3ab915f4df9af3a802492b3c237f0d5812b17ea3eedf37"
+          "value": "bc53010a04db619353611aebe671b915ed96e898a8006f52efa41a8ba12b106b"
         },
         "schema_version": 2,
         "ordinal": 118,
@@ -14264,14 +13950,12 @@
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "selected route image capability",
-              "merge": "override"
+              "locator": "selected route image capability"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/image_input.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/image_input.rs"
             }
           ]
         },
@@ -14376,7 +14060,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0b16f68d4e9a242940b7be1e2df6e00d00ce95d75e716927ce00abe44993c171"
+          "value": "006ae3826fb6b7effec670ef689702e8763cb399d5bbd341cdf1b2cec98f2eba"
         },
         "schema_version": 2,
         "ordinal": 119,
@@ -14414,8 +14098,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -14519,7 +14202,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "098067649f04b4edf00512bcb442690bba33208a85d4bfe73702d1cb6b8275b5"
+          "value": "054cdc8803181aecd57f24f24381effac9b23731dea9df814138c4ee0bccb684"
         },
         "schema_version": 2,
         "ordinal": 120,
@@ -14557,8 +14240,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -14662,7 +14344,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "388e864cd49af0718bbb8944c2138e698b5dea581d88767d1d99869488d04239"
+          "value": "a9d4f44f45f610e987f9e43de1b3e06e907f10e7a0fd5145792760358a2d2c7f"
         },
         "schema_version": 2,
         "ordinal": 121,
@@ -14673,10 +14355,9 @@
         "summary": "Bound LSP evidence admitted to context.",
         "activation": {
           "predicate": {
-            "type": "runtime_derived",
-            "seam": "crates/ctx/src/compact.rs"
+            "type": "unavailable"
           },
-          "inactive_reason": "grouped_or_incomplete_seam"
+          "inactive_reason": "not_implemented"
         },
         "requirements": {
           "provider": "none",
@@ -14701,10 +14382,9 @@
         "source": {
           "bindings": [
             {
-              "kind": "derived_policy",
-              "trust": "builtin",
-              "locator": "crates/ctx/src/compact.rs",
-              "merge": "override"
+              "kind": "registry",
+              "trust": "registry_declaration",
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -14742,7 +14422,7 @@
           },
           "rationale": "Bound LSP evidence admitted to context."
         },
-        "implementation_status": "partial",
+        "implementation_status": "missing",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -14754,7 +14434,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "34ee29f1b10d8202e48773132b5549fd2e0552766d9309e5f8ba8d6dfeab3eb8"
+          "value": "9a0f541a86a1188eab1bba5425d53f5bc86595a0ff56eae3f1565223ec76fd4e"
         },
         "schema_version": 2,
         "ordinal": 122,
@@ -14793,8 +14473,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/tools/src/lib.rs"
             }
           ]
         },
@@ -14844,7 +14523,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "36b8a40e85453b7ded66d522fbd2bad3d303a2dcf674e4e81e80f67681e449a4"
+          "value": "3c62f34f0f0f566de99b4027cdc60e1f5135d1a42a1a64fe9d65316d87bb449e"
         },
         "schema_version": 2,
         "ordinal": 123,
@@ -14882,8 +14561,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/oracle.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/oracle.rs"
             }
           ]
         },
@@ -14986,7 +14664,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "48da2a015d6923ad01295a3bab35bd0164e4e9ea9df044446001746beb60ae82"
+          "value": "fffac7b8e2bd52426e7f250846d89ed4cdaa5565a68c4a23f66199eddc6c4ab6"
         },
         "schema_version": 2,
         "ordinal": 124,
@@ -15025,8 +14703,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/verify/src/strategy.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/strategy.rs"
             }
           ]
         },
@@ -15079,7 +14756,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c889d7fbae4982392a4d363c92eb0c8bd5e5b4c6458f836b1b17244b743550fd"
+          "value": "b3c7b644f81124d077eb17d185b2ffbeb4e0cb62142170fcb77c634fa5a9ffbe"
         },
         "schema_version": 2,
         "ordinal": 125,
@@ -15149,8 +14826,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/strategy.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/strategy.rs"
             }
           ]
         },
@@ -15251,7 +14927,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "15258e6d85f26625667c885d534dc286c4a11d64c7a4e1a3dfa8c94ad1773d55"
+          "value": "b5729f188321dda587eecf0607f1d94dd1e81aa5355253ed7709233958508480"
         },
         "schema_version": 2,
         "ordinal": 126,
@@ -15289,8 +14965,7 @@
             {
               "kind": "catalog",
               "trust": "repository",
-              "locator": "crates/verify/src/oracle.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/oracle.rs"
             }
           ]
         },
@@ -15393,7 +15068,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "604987408ea227c30669312a37851919ebeb8344b9de6e72ccc8770693af1539"
+          "value": "7c1669c8f6dc48493aa0e0e935e1f1398f3d9888ccd21632d2692736dce37db6"
         },
         "schema_version": 2,
         "ordinal": 127,
@@ -15432,8 +15107,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -15534,7 +15208,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c4e262536cfe6ccc2dd2e810f305a00938996f29fa59a71d733636cd560fd4c7"
+          "value": "39992d4e31241d33bf70f5aa6246dc95958230b7fd5f7f757787905cb9b1a690"
         },
         "schema_version": 2,
         "ordinal": 128,
@@ -15574,8 +15248,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -15628,7 +15301,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "91d7e8b392c9a1c7dfadc0892fa52eabe91aee02aa1750dc05bc67ee4d72a771"
+          "value": "c501303d55e00dffae428bc0f231545365042242d8ebf90ede0a6db403172665"
         },
         "schema_version": 2,
         "ordinal": 129,
@@ -15700,8 +15373,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -15791,7 +15463,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fb789935f86c938533c5851cb0c3c2e38c4b615df602fb1188a0bf0cfaff7e59"
+          "value": "5c4216509816eed2471f729c49e3a9a7381ce0797f6342ea06e0913d81b3d1ba"
         },
         "schema_version": 2,
         "ordinal": 130,
@@ -15848,8 +15520,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/record/src/checkpoint.rs",
-              "merge": "override"
+              "locator": "crates/record/src/checkpoint.rs"
             }
           ]
         },
@@ -15937,7 +15608,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c5a45c2b79e44fb6d64717f21fbb972e705a2249970f09a26b8f9cc32efe656d"
+          "value": "53502ee4a63674db27debf444e7736ea93679c94b229c8c1cfc11612a7c7a716"
         },
         "schema_version": 2,
         "ordinal": 131,
@@ -16002,8 +15673,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/verify/src/strategy.rs",
-              "merge": "override"
+              "locator": "crates/verify/src/strategy.rs"
             }
           ]
         },
@@ -16091,7 +15761,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "44bb6974d13a2daf27f24da1d86761c92b85cab42518a9ee3769957787a32752"
+          "value": "5176ac508a9a526480eabe3366c8feb0b389ed84ac23bc0ca6312ac388c210f3"
         },
         "schema_version": 2,
         "ordinal": 132,
@@ -16132,8 +15802,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -16186,7 +15855,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "641dcecc5d5b8c4c24815dbb941b4411250cf9b1e40fdce27e68424454fc7c64"
+          "value": "a4152d8ca8208db51a55f904eb61ccfc6a29ca7590acfc55e6441b3c5133015e"
         },
         "schema_version": 2,
         "ordinal": 133,
@@ -16226,8 +15895,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -16287,7 +15955,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "390c44a06cb07437e885d83bbcf63691896a8adba140f3b7719ed64265ab1ffe"
+          "value": "479c501078051cca73c1df5761ee8c16e87ae66b6ff1a185ef0e815253cee6a6"
         },
         "schema_version": 2,
         "ordinal": 134,
@@ -16298,10 +15966,9 @@
         "summary": "Choose effort and thinking for one admitted agent.",
         "activation": {
           "predicate": {
-            "type": "runtime_derived",
-            "seam": "crates/cli/src/runtime/workflow_spawner.rs"
+            "type": "always"
           },
-          "inactive_reason": "grouped_or_incomplete_seam"
+          "inactive_reason": null
         },
         "requirements": {
           "provider": "selected_route",
@@ -16328,8 +15995,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -16384,7 +16050,7 @@
           },
           "rationale": "Choose effort and thinking for one admitted agent."
         },
-        "implementation_status": "partial",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -16396,7 +16062,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0d87db68be49d1edc55a6580b5434a1b7eb6169f32c5dedd118b952d859fca8d"
+          "value": "e1f65c0c26470799c72922c05e8ab06023d50d7f79e293d8325a0a34756cb735"
         },
         "schema_version": 2,
         "ordinal": 135,
@@ -16436,8 +16102,7 @@
             {
               "kind": "derived_policy",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -16501,7 +16166,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a99d6d3608443f0a303798f515c8223eef4a94487ca3580b1dd9eea8c4be3949"
+          "value": "1127d8c8a85e066c119c28ed9387410055ea9ffbab8b56216155ef99e4135891"
         },
         "schema_version": 2,
         "ordinal": 136,
@@ -16559,8 +16224,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -16646,7 +16310,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "04944134e6ddda2bd85de8569c0cf2aecd064a491eb6b3c67c5bf1780226ccbf"
+          "value": "76cdf4f6b9d0387e6ba9e89c000eb8490967185989de7fd9e50d6a86b9d5979c"
         },
         "schema_version": 2,
         "ordinal": 137,
@@ -16689,8 +16353,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/runtime/workflow_spawner.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime/workflow_spawner.rs"
             }
           ]
         },
@@ -16740,7 +16403,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cac63d2e0fe0331fd82ac77c0ba3c0d501e4ab493c32f18034785d7309bc5d23"
+          "value": "41f4597a0abe2f48a2a53dde4173af8bd45238cb5fbe1a51a340ff9160d9e599"
         },
         "schema_version": 2,
         "ordinal": 138,
@@ -16779,8 +16442,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/workflow/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/workflow/src/lib.rs"
             }
           ]
         },
@@ -16830,7 +16492,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "507aa398b2accf74b698cf780dbce2781341286281ca680c3d74bb038123c22a"
+          "value": "1b8b267c7d29348599716be93c768a1b5a21fe2d7af19930b9cfef80eb9f5675"
         },
         "schema_version": 2,
         "ordinal": 139,
@@ -16893,8 +16555,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/workflow/src/bindings.rs",
-              "merge": "override"
+              "locator": "crates/workflow/src/bindings.rs"
             }
           ]
         },
@@ -16979,7 +16640,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d7b8b04f664f3acfaa77448878dacb92f87ceee5a6bd8ee40ab0d330875b5e51"
+          "value": "c013f0389576779e542b62086afa84bad491acae3ab474820f807df539906860"
         },
         "schema_version": 2,
         "ordinal": 140,
@@ -17019,8 +16680,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17080,7 +16740,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4d97aa8b777e81485043102c92c7dba5e66dd3746792b07e19e0d19fd67173b4"
+          "value": "1297713ef5cd43ac59a86cf0ad07545dc67b31efee9fd2c18dc96134d4b824b8"
         },
         "schema_version": 2,
         "ordinal": 141,
@@ -17118,8 +16778,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17225,7 +16884,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3cd32f0b9755b0ce5055915030641c50d0599617eac55ec3dc994ac4ef6d348b"
+          "value": "3213ab5af63d0b39ec63b964029d45f563cfd53641c07dfdbf8b0f266b6ce983"
         },
         "schema_version": 2,
         "ordinal": 142,
@@ -17237,7 +16896,7 @@
         "activation": {
           "predicate": {
             "type": "runtime_derived",
-            "seam": "crates/workflow/src/quorum.rs"
+            "seam": "crates/agents/src/reduce.rs"
           },
           "inactive_reason": "grouped_or_incomplete_seam"
         },
@@ -17289,8 +16948,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/workflow/src/quorum.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/reduce.rs"
             }
           ]
         },
@@ -17373,7 +17031,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1bfcdb8b55d35332b5424ddbc7879e6ae6cf5022929f9a01faa04c18f824fe0b"
+          "value": "148b0d5aab54cdb173cbd0f800414eb84eab7ea6da2841e609ac7a08ad729326"
         },
         "schema_version": 2,
         "ordinal": 143,
@@ -17414,8 +17072,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17462,7 +17119,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "06904e8e874815ef9d218ef2b2b1350c48fd6a8a8628417e02998a0a11d37572"
+          "value": "3b806ab0eb3efe467041d74846aa6f2a9cc18133477453b7dc58b733fc296ec8"
         },
         "schema_version": 2,
         "ordinal": 144,
@@ -17501,8 +17158,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17600,7 +17256,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c4fcf4ebe755bc010138ac0aeb6a9fadbfc21df3e229eca9aae4517bf385e8d6"
+          "value": "df165daa39a4d6913f4297daec42f770f466c776b1d4c3d1440d5de9711066b8"
         },
         "schema_version": 2,
         "ordinal": 145,
@@ -17640,8 +17296,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/agents/src/reduce.rs",
-              "merge": "override"
+              "locator": "crates/agents/src/reduce.rs"
             }
           ]
         },
@@ -17704,7 +17359,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c2d46b053dab18ba5a54f877f8acc7ff7f0af8b031f9f6efcff5304100e59b09"
+          "value": "100cb43cb155e0d699fedb279f77eae6ca5342314d5c4d30b9e4eaf6185c7d8a"
         },
         "schema_version": 2,
         "ordinal": 146,
@@ -17743,8 +17398,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17840,7 +17494,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "83ec5774e66354856c0937bc9972b911a70e76164e003cc65a735c8f72e44bce"
+          "value": "47bff4f770590009b9c38e91c590b572e7350a73b005888812088c9ca34b9fc3"
         },
         "schema_version": 2,
         "ordinal": 147,
@@ -17874,13 +17528,8 @@
           },
           "requirement": "optional",
           "value": {
-            "type": "list",
-            "items": [
-              {
-                "type": "enum",
-                "value": "stdio"
-              }
-            ]
+            "type": "enum",
+            "value": "stdio"
           }
         },
         "source": {
@@ -17888,33 +17537,28 @@
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/http/reqwest_exchange.rs",
-              "merge": "override"
+              "locator": "crates/mcp/src/http/reqwest_exchange.rs"
             }
           ]
         },
         "value_schema": {
           "schema_id": "iteron://tunables/families/mcp_transport_selection/value-v1",
-          "kind": "list",
+          "kind": "enum",
           "domain": {
-            "type": "list",
-            "min_items": 1,
-            "max_items": 2,
-            "item": {
+            "type": "scalar",
+            "domain": {
               "type": "enum",
               "values": [
                 "stdio",
                 "http"
               ],
               "catalog_id": null
-            },
-            "unique_items": true
+            }
           },
           "rules": [
             {
@@ -17950,26 +17594,26 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3b62433483af881e6a75c8c22de0eb47d30f1c0ac1e99c572e226ad57c2b2389"
+          "value": "a28e20570fb8187954e6664f066f1b17d6324cd9c5244f78e0c82c7ce5115c21"
         },
         "schema_version": 2,
         "ordinal": 148,
         "id": "deferred_discovery_threshold",
-        "semantic_key": "iteron.control.extensibility.tool_schema_discovery_deferral",
+        "semantic_key": "iteron.control.extensibility.mcp_discovery_deferral",
         "aliases": [],
         "domain": "extensibility",
-        "summary": "Defer registered tool schemas after a bounded eager threshold.",
+        "summary": "Defer MCP discovery after a bounded threshold.",
         "activation": {
           "predicate": {
             "type": "runtime_derived",
-            "seam": "crates/tools/src/tool_search.rs"
+            "seam": "crates/cli/src/mcp.rs"
           },
           "inactive_reason": "grouped_or_incomplete_seam"
         },
         "requirements": {
           "provider": "none",
           "capabilities": [
-            "tool_execution",
+            "mcp_transport",
             "context_read"
           ]
         },
@@ -17985,7 +17629,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 12
+            "value": 0
           }
         },
         "source": {
@@ -17993,8 +17637,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/tools/src/tool_search.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/mcp.rs"
             }
           ]
         },
@@ -18007,10 +17650,21 @@
               "type": "integer",
               "min": 0,
               "max": 100000,
-              "unit": "tool_schemas"
+              "unit": "discovery_units"
             }
           },
-          "rules": []
+          "rules": [
+            {
+              "type": "external_ceiling",
+              "field": "$",
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
+            }
+          ]
         },
         "benchmark_relevance": {
           "swe_bench_pro": "medium",
@@ -18019,7 +17673,7 @@
             "swe_bench_pro": "indirect",
             "terminal_bench_2_1": "indirect"
           },
-          "rationale": "Defer registered tool schemas after a bounded eager threshold."
+          "rationale": "Defer MCP discovery after a bounded threshold."
         },
         "implementation_status": "partial",
         "optimization": {
@@ -18033,7 +17687,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "20897b8e802f39661483abfe8ad076ea7739bc223d61766eafc7745b78f3e6d4"
+          "value": "2ac194b503e1fd6723fbfc8bf92f9d2f49d5e7a3ea1320ad7e1da2c2cb2f3ad0"
         },
         "schema_version": 2,
         "ordinal": 149,
@@ -18071,8 +17725,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -18163,7 +17816,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c23b20996b2ebac6c7536dc5477732ce889cdea73ca903a469d5efbd54324034"
+          "value": "9be7cc31c3ea6ee161a8ad7b090ffb8ec6d114327975ec1baec0492b2821e813"
         },
         "schema_version": 2,
         "ordinal": 150,
@@ -18203,60 +17856,26 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/client.rs",
-              "merge": "override"
+              "locator": "crates/mcp/src/client.rs"
             }
           ]
         },
         "value_schema": {
           "schema_id": "iteron://tunables/families/per_server_startup_deadline/value-v1",
-          "kind": "policy",
+          "kind": "duration",
           "domain": {
-            "type": "object",
-            "fields": [
-              {
-                "name": "stdio_milliseconds",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 1,
-                    "max": 86400000,
-                    "unit": "milliseconds"
-                  }
-                }
-              },
-              {
-                "name": "http_milliseconds",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 1,
-                    "max": 86400000,
-                    "unit": "milliseconds"
-                  }
-                }
-              }
-            ],
-            "additional_fields": false
+            "type": "scalar",
+            "domain": {
+              "type": "integer",
+              "min": 1,
+              "max": 86400000,
+              "unit": "milliseconds"
+            }
           },
           "rules": [
             {
               "type": "external_ceiling",
-              "field": "stdio_milliseconds",
-              "ceiling": "parent_wall",
-              "projection": "whole_value",
-              "relation": "upper_bound",
-              "violation": {
-                "type": "clamp_numeric"
-              }
-            },
-            {
-              "type": "external_ceiling",
-              "field": "http_milliseconds",
+              "field": "$",
               "ceiling": "parent_wall",
               "projection": "whole_value",
               "relation": "upper_bound",
@@ -18287,7 +17906,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "80ed72a79c75beeabb729197f47d088208cef9ba600b46ff4e742338efb4c97a"
+          "value": "fbe7f1a6e49ca2bba12c0c2a2190182fb8396f07aecd46cb3519fa201f3c0387"
         },
         "schema_version": 2,
         "ordinal": 151,
@@ -18327,60 +17946,26 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/client.rs",
-              "merge": "override"
+              "locator": "crates/mcp/src/client.rs"
             }
           ]
         },
         "value_schema": {
           "schema_id": "iteron://tunables/families/per_tool_mcp_deadline/value-v1",
-          "kind": "policy",
+          "kind": "duration",
           "domain": {
-            "type": "object",
-            "fields": [
-              {
-                "name": "stdio_milliseconds",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 1,
-                    "max": 86400000,
-                    "unit": "milliseconds"
-                  }
-                }
-              },
-              {
-                "name": "http_milliseconds",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 1,
-                    "max": 86400000,
-                    "unit": "milliseconds"
-                  }
-                }
-              }
-            ],
-            "additional_fields": false
+            "type": "scalar",
+            "domain": {
+              "type": "integer",
+              "min": 1,
+              "max": 86400000,
+              "unit": "milliseconds"
+            }
           },
           "rules": [
             {
               "type": "external_ceiling",
-              "field": "stdio_milliseconds",
-              "ceiling": "parent_wall",
-              "projection": "whole_value",
-              "relation": "upper_bound",
-              "violation": {
-                "type": "clamp_numeric"
-              }
-            },
-            {
-              "type": "external_ceiling",
-              "field": "http_milliseconds",
+              "field": "$",
               "ceiling": "parent_wall",
               "projection": "whole_value",
               "relation": "upper_bound",
@@ -18411,7 +17996,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6cb74820fc4f96decac42391c425e62b26b00f0cda7eee4d52e305cdfdbf6cca"
+          "value": "0edf3759bd3ff50c7839b4cf916fe18649b522c2d6f01c04f4f974d7c7d59153"
         },
         "schema_version": 2,
         "ordinal": 152,
@@ -18458,14 +18043,14 @@
                 "name": "spill_max_bytes",
                 "value": {
                   "type": "integer",
-                  "value": 4194304
+                  "value": 1048576
                 }
               },
               {
                 "name": "cleanup",
                 "value": {
                   "type": "enum",
-                  "value": "session_end"
+                  "value": "tool_end"
                 }
               },
               {
@@ -18483,8 +18068,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/client/content.rs",
-              "merge": "override"
+              "locator": "crates/mcp/src/client/content.rs"
             }
           ]
         },
@@ -18530,8 +18114,7 @@
                     "values": [
                       "tool_end",
                       "turn_end",
-                      "run_end",
-                      "session_end"
+                      "run_end"
                     ],
                     "catalog_id": null
                   }
@@ -18555,6 +18138,16 @@
               "type": "less_or_equal",
               "left": "visible_max_bytes",
               "right": "spill_max_bytes"
+            },
+            {
+              "type": "external_ceiling",
+              "field": "visible_max_bytes",
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -18579,7 +18172,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da3ef60ac8140922acb3e81fd4a5f00aa30b646ab50c08d1fa117563c1b18be6"
+          "value": "95292dcc47e85ce65ee977cc8b46ea6302093a4126c864a21f7bf43996832f96"
         },
         "schema_version": 2,
         "ordinal": 153,
@@ -18620,14 +18213,12 @@
             {
               "kind": "user_config",
               "trust": "operator",
-              "locator": "crates/cli/src/config.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/config.rs"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/oauth.rs",
-              "merge": "override"
+              "locator": "crates/mcp/src/oauth.rs"
             }
           ]
         },
@@ -18638,7 +18229,7 @@
             "type": "object",
             "fields": [
               {
-                "name": "credential_mode",
+                "name": "flow",
                 "required": true,
                 "domain": {
                   "type": "scalar",
@@ -18646,75 +18237,15 @@
                     "type": "enum",
                     "values": [
                       "disabled",
-                      "bearer",
-                      "refresh_token",
-                      "mixed"
+                      "authorization_code",
+                      "device_code"
                     ],
                     "catalog_id": null
                   }
                 }
               },
               {
-                "name": "binding_count",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 1,
-                    "max": 1024,
-                    "unit": "bindings"
-                  }
-                }
-              },
-              {
-                "name": "refresh_binding_count",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 0,
-                    "max": 1024,
-                    "unit": "bindings"
-                  }
-                }
-              },
-              {
-                "name": "revocation_binding_count",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 0,
-                    "max": 1024,
-                    "unit": "bindings"
-                  }
-                }
-              },
-              {
-                "name": "refresh_before_expiry_when_capable",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "boolean"
-                  }
-                }
-              },
-              {
-                "name": "retry_once_after_unauthorized_when_capable",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "boolean"
-                  }
-                }
-              },
-              {
-                "name": "revoke_access_after_forbidden",
+                "name": "refresh",
                 "required": true,
                 "domain": {
                   "type": "scalar",
@@ -18737,7 +18268,7 @@
                 }
               },
               {
-                "name": "revocation_endpoint_configured",
+                "name": "revocation",
                 "required": true,
                 "domain": {
                   "type": "scalar",
@@ -18751,18 +18282,8 @@
           },
           "rules": [
             {
-              "type": "less_or_equal",
-              "left": "refresh_binding_count",
-              "right": "binding_count"
-            },
-            {
-              "type": "less_or_equal",
-              "left": "revocation_binding_count",
-              "right": "binding_count"
-            },
-            {
               "type": "external_ceiling",
-              "field": "credential_mode",
+              "field": "flow",
               "ceiling": "operator_authority",
               "projection": "whole_value",
               "relation": "attested_domain",
@@ -18793,7 +18314,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c817b2ea6f8ae4d859bbdf7fb861a311a41e7157635993b32c7a4c60f9dcb0ab"
+          "value": "40f76a8a60435eca3b708cf87da7b38016c2a7b90d35a2ad75ffd627662df7aa"
         },
         "schema_version": 2,
         "ordinal": 154,
@@ -18805,7 +18326,7 @@
         "activation": {
           "predicate": {
             "type": "runtime_derived",
-            "seam": "crates/cli/src/mcp.rs"
+            "seam": "crates/mcp/src/client/content.rs"
           },
           "inactive_reason": "grouped_or_incomplete_seam"
         },
@@ -18830,28 +18351,21 @@
             "type": "object",
             "fields": [
               {
-                "name": "resource_discovery",
-                "value": {
-                  "type": "enum",
-                  "value": "disabled"
-                }
-              },
-              {
-                "name": "prompt_discovery",
-                "value": {
-                  "type": "enum",
-                  "value": "disabled"
-                }
-              },
-              {
-                "name": "resource_tool_ids",
+                "name": "resource_schemes",
                 "value": {
                   "type": "list",
                   "items": []
                 }
               },
               {
-                "name": "prompt_tool_ids",
+                "name": "prompt_ids",
+                "value": {
+                  "type": "list",
+                  "items": []
+                }
+              },
+              {
+                "name": "plugin_ids",
                 "value": {
                   "type": "list",
                   "items": []
@@ -18870,10 +18384,9 @@
         "source": {
           "bindings": [
             {
-              "kind": "runtime_observation",
-              "trust": "runtime_observation",
-              "locator": "crates/cli/src/mcp.rs",
-              "merge": "override"
+              "kind": "builtin",
+              "trust": "builtin",
+              "locator": "crates/mcp/src/client/content.rs"
             }
           ]
         },
@@ -18884,64 +18397,50 @@
             "type": "object",
             "fields": [
               {
-                "name": "resource_discovery",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "enum",
-                    "values": [
-                      "disabled",
-                      "lazy"
-                    ],
-                    "catalog_id": null
-                  }
-                }
-              },
-              {
-                "name": "prompt_discovery",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "enum",
-                    "values": [
-                      "disabled",
-                      "lazy"
-                    ],
-                    "catalog_id": null
-                  }
-                }
-              },
-              {
-                "name": "resource_tool_ids",
+                "name": "resource_schemes",
                 "required": true,
                 "domain": {
                   "type": "list",
                   "min_items": 0,
-                  "max_items": 512,
+                  "max_items": 256,
                   "unique_items": true,
                   "item": {
                     "type": "text",
                     "min_bytes": 1,
-                    "max_bytes": 256,
+                    "max_bytes": 96,
                     "format": "identifier"
                   }
                 }
               },
               {
-                "name": "prompt_tool_ids",
+                "name": "prompt_ids",
                 "required": true,
                 "domain": {
                   "type": "list",
                   "min_items": 0,
-                  "max_items": 512,
+                  "max_items": 10000,
                   "unique_items": true,
                   "item": {
                     "type": "text",
                     "min_bytes": 1,
-                    "max_bytes": 256,
-                    "format": "identifier"
+                    "max_bytes": 96,
+                    "format": "namespaced_id"
+                  }
+                }
+              },
+              {
+                "name": "plugin_ids",
+                "required": true,
+                "domain": {
+                  "type": "list",
+                  "min_items": 0,
+                  "max_items": 10000,
+                  "unique_items": true,
+                  "item": {
+                    "type": "text",
+                    "min_bytes": 1,
+                    "max_bytes": 96,
+                    "format": "namespaced_id"
                   }
                 }
               },
@@ -18961,7 +18460,38 @@
             ],
             "additional_fields": false
           },
-          "rules": []
+          "rules": [
+            {
+              "type": "external_ceiling",
+              "field": "resource_schemes",
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
+            },
+            {
+              "type": "external_ceiling",
+              "field": "plugin_ids",
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
+            },
+            {
+              "type": "external_ceiling",
+              "field": "max_visible_bytes",
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
+            }
+          ]
         },
         "benchmark_relevance": {
           "swe_bench_pro": "medium",
@@ -18984,7 +18514,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "65969d383c7892bfe278d63946676db1de608875924bcddb139ae395f9bd159d"
+          "value": "8e0850196918a684942e0b7a9b221241a66196c2287c94d2801c05c665385158"
         },
         "schema_version": 2,
         "ordinal": 155,
@@ -19022,8 +18552,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -19077,7 +18606,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e06fb8ac2a4e84fc47621e3d9b2de7cb0c86bbe446e977c86ed9de018a3a05f3"
+          "value": "20a1351798e40c3dee547550f859e6e6258f6aaa582a9dadd295da35dc96b0eb"
         },
         "schema_version": 2,
         "ordinal": 156,
@@ -19139,8 +18668,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/catalog.rs",
-              "merge": "override"
+              "locator": "crates/provider/src/catalog.rs"
             }
           ]
         },
@@ -19223,7 +18751,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6a1f0e5e31d2c440da34c9d48507992e4f22ba5bceddb67c0ac761a0714b0a97"
+          "value": "4b6c67be1052390b3dd39d3d7c842dc1a9514222a126df31f935250b1549111f"
         },
         "schema_version": 2,
         "ordinal": 157,
@@ -19295,8 +18823,7 @@
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
-              "locator": "crates/cli/src/runtime.rs",
-              "merge": "override"
+              "locator": "crates/cli/src/runtime.rs"
             }
           ]
         },
@@ -19408,7 +18935,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2a25166a7f00846b606a18fdd7f7fe8d6d24089f490c95b0513d80343971feb0"
+          "value": "3a57ac29ffebdfaeb04ba5f68781a7ef4c9395e5345764af8a274549f86cbf02"
         },
         "schema_version": 2,
         "ordinal": 158,
@@ -19448,8 +18975,7 @@
             {
               "kind": "registry",
               "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs",
-              "merge": "override"
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -19562,7 +19088,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2958486f3abe3637e927a7dfe8a30f28f88f9f1ffa3f0db43ea53a698b87600e"
+          "value": "839d80137433ffa6e5eed81ba8609db70dd783bf277f43131042dd65069ce7b9"
         },
         "schema_version": 2,
         "ordinal": 159,
@@ -19604,8 +19130,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/record/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/record/src/lib.rs"
             }
           ]
         },
@@ -19668,7 +19193,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "726f3669f020a4457d89186ad0728bea9e459d6f0c2be64ade91da7d690ccf13"
+          "value": "ce7dc1c607ff8053f63c2a886f295537b30e3bea4cb71911f6081a1d7c036e85"
         },
         "schema_version": 2,
         "ordinal": 160,
@@ -19739,8 +19264,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/record/src/lib.rs",
-              "merge": "override"
+              "locator": "crates/record/src/lib.rs"
             }
           ]
         },

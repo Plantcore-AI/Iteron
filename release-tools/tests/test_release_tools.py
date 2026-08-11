@@ -119,7 +119,7 @@ class ReleaseToolsTest(unittest.TestCase):
                 [member.name for member in members],
                 [
                     root,
-                    f"{root}/core",
+                    f"{root}/iteron",
                     f"{root}/LICENSE",
                     f"{root}/README.md",
                     f"{root}/THIRD_PARTY_LICENSES.html",
@@ -695,7 +695,7 @@ exit 1
             receipt,
         )
         self.assertIn(
-            "name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}",
+            "name: iteron-client-runtime-receipt-attempt-${{ github.run_attempt }}",
             receipt,
         )
         self.assertIn("retention-days: 90", receipt)

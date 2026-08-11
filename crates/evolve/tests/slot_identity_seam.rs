@@ -53,7 +53,7 @@ fn every_valid_slot_id_is_a_valid_persisted_strategy_slot() {
 fn the_subset_direction_holds_for_the_shapes_that_used_to_break_it() {
     // Before the fix these passed SlotId::validate and were rejected by StrategySlot::new, which
     // is precisely the ungovernable-slot case. They must now fail on both sides.
-    for previously_accepted_here in ["Acme/Router", "core/toolPolicy", "CORE/CONTEXT"] {
+    for previously_accepted_here in ["Acme/Router", "iteron/toolPolicy", "CORE/CONTEXT"] {
         assert!(
             SlotId(previously_accepted_here.into()).validate().is_err(),
             "{previously_accepted_here} must no longer be a valid SlotId"

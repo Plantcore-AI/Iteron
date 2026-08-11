@@ -56,7 +56,7 @@ adapter kwarg.
 
 Core's operator home/config, memory, hooks, MCP declarations, sessions, and
 caches are rooted in unpredictable, fresh `/tmp/core-harbor-*` paths. Any
-task-provided `/app/.core` path is refused because project configuration or an
+task-provided `/app/.iteron` path is refused because project configuration or an
 agent catalog could perturb one experimental arm. The append-only Core runs,
 unmixed JSONL stdout, and machine contract are written under `/logs/agent`, so
 Harbor captures them with the trial record.
@@ -94,7 +94,7 @@ PYTHONPATH=/path/to/core/crates/eval/harbor \
   harbor jobs start --config /path/to/core-tb21.yaml --yes
 ```
 
-Run `python -m py_compile core_code_agent.py validate_upstream.py` and the
+Run `python -m py_compile iteron_agent.py validate_upstream.py` and the
 checked-in adapter tests against the pinned Harbor checkout before a campaign.
 A real qualification additionally requires one oracle smoke, one Core smoke,
 all 89 tasks times five trials, and inspection of Harbor `lock.json`, task

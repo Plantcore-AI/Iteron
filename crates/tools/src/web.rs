@@ -40,7 +40,7 @@ const TIMEOUT_SECS: u64 = 60;
 const MAX_REDIRECTS: usize = 5;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
-    "core/",
+    "iteron/",
     env!("CARGO_PKG_VERSION"),
     " (autonomous coding agent; web_fetch)"
 );

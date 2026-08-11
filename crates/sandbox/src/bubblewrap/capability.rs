@@ -244,10 +244,10 @@ pub(super) fn bwrap_probe_args(workspace_fd: libc::c_int) -> Vec<String> {
         .collect::<Vec<_>>();
     arguments.extend([
         "--dir".to_owned(),
-        "/tmp/core-bwrap-fd-probe".to_owned(),
+        "/tmp/iteron-bwrap-fd-probe".to_owned(),
         "--bind-fd".to_owned(),
         workspace_fd.to_string(),
-        "/tmp/core-bwrap-fd-probe".to_owned(),
+        "/tmp/iteron-bwrap-fd-probe".to_owned(),
         BWRAP_PROBE_ARGS[BWRAP_PROBE_ARGS.len() - 1].to_owned(),
     ]);
     arguments

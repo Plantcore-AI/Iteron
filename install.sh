@@ -9,7 +9,7 @@ ITERON_CODE_MAX_MANIFEST_BYTES=1048576
 ITERON_CODE_MAX_ARCHIVE_BYTES=268435456
 ITERON_CODE_MAX_UNPACKED_BYTES=134217728
 
-core_code_usage() {
+iteron_usage() {
     cat <<'EOF'
 Install Iteron from an immutable GitHub release.
 
@@ -27,12 +27,12 @@ The installer never invokes sudo and never edits shell startup files.
 EOF
 }
 
-core_code_die() {
+iteron_die() {
     printf 'iteron: error: %s\n' "$*" >&2
     exit 1
 }
 
-core_code_warn() {
+iteron_warn() {
     printf 'iteron: warning: %s\n' "$*" >&2
 }
 
@@ -42,19 +42,19 @@ core_code_warn() {
 # user namespaces unless the invoking binary has an AppArmor profile — the project's own CI has to
 # install one. Run the same probe the backend runs and print the exact remedy. A WARNING, never a
 # hard failure: `iteron` is perfectly usable for reading and editing without a sandbox.
-core_code_linux_preflight() {
+iteron_linux_preflight() {
     [ "$1" = Linux ] || return 0
 
-    core_code_bwrap=
-    for core_code_candidate in /usr/bin/bwrap /bin/bwrap /usr/local/bin/bwrap; do
-        if [ -f "$core_code_candidate" ] && [ ! -L "$core_code_candidate" ]; then
-            core_code_bwrap=$core_code_candidate
+    iteron_bwrap=
+    for iteron_candidate in /usr/bin/bwrap /bin/bwrap /usr/local/bin/bwrap; do
+        if [ -f "$iteron_candidate" ] && [ ! -L "$iteron_candidate" ]; then
+            iteron_bwrap=$iteron_candidate
             break
         fi
     done
 
-    if [ -z "$core_code_bwrap" ]; then
-        core_code_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
+    if [ -z "$iteron_bwrap" ]; then
+        iteron_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
         cat <<'EOF' >&2
 Install it, then re-run `iteron`:
   Debian/Ubuntu:  sudo apt-get install -y bubblewrap
@@ -65,31 +65,31 @@ EOF
         return 0
     fi
 
-    if "$core_code_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+    if "$iteron_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
         --die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts \
         --unshare-net /bin/true >/dev/null 2>&1; then
         return 0
     fi
 
-    core_code_warn "code execution (bash/build/test) will refuse to run: $core_code_bwrap cannot create the required namespaces"
+    iteron_warn "code execution (bash/build/test) will refuse to run: $iteron_bwrap cannot create the required namespaces"
     cat <<EOF >&2
 This is the Ubuntu 24.04 unprivileged-user-namespace restriction. Grant it to this
 one binary rather than disabling the system-wide control:
   sudo apt-get install -y apparmor apparmor-utils
-  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile core-bwrap $core_code_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/core-bwrap >/dev/null
-  sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
+  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile iteron-bwrap $iteron_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/iteron-bwrap >/dev/null
+  sudo apparmor_parser --replace /etc/apparmor.d/iteron-bwrap
 See https://plantcore-ai.github.io/Iteron/reference/platforms/ for the full contract.
 EOF
 }
 
-core_code_require() {
-    command -v "$1" >/dev/null 2>&1 || core_code_die "required command not found: $1"
+iteron_require() {
+    command -v "$1" >/dev/null 2>&1 || iteron_die "required command not found: $1"
 }
 
-core_code_download() {
-    core_code_url=$1
-    core_code_destination=$2
-    core_code_max_bytes=$3
+iteron_download() {
+    iteron_url=$1
+    iteron_destination=$2
+    iteron_max_bytes=$3
 
     curl \
         --proto '=https' \
@@ -104,288 +104,288 @@ core_code_download() {
         --retry-connrefused \
         --connect-timeout 10 \
         --max-time 300 \
-        --max-filesize "$core_code_max_bytes" \
-        --output "$core_code_destination" \
-        "$core_code_url"
+        --max-filesize "$iteron_max_bytes" \
+        --output "$iteron_destination" \
+        "$iteron_url"
 }
 
-core_code_file_size() {
+iteron_file_size() {
     wc -c < "$1" | tr -d '[:space:]'
 }
 
-core_code_sha256() {
+iteron_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" | awk '{print $1}'
     else
-        core_code_die 'neither sha256sum nor shasum is available'
+        iteron_die 'neither sha256sum nor shasum is available'
     fi
 }
 
-core_code_unpack_archive() {
-    core_code_compressed=$1
-    core_code_unpacked=$2
+iteron_unpack_archive() {
+    iteron_compressed=$1
+    iteron_unpacked=$2
     # POSIX ulimit -f uses 512-byte blocks. Bounding the decompressor's output
     # prevents a small, checksum-valid gzip bomb from exhausting the filesystem
     # before tar ever has a chance to inspect member paths and types.
-    core_code_file_blocks=$(( (ITERON_CODE_MAX_UNPACKED_BYTES + 511) / 512 ))
+    iteron_file_blocks=$(( (ITERON_CODE_MAX_UNPACKED_BYTES + 511) / 512 ))
     (
-        ulimit -f "$core_code_file_blocks" || exit 1
-        gzip -dc "$core_code_compressed" > "$core_code_unpacked"
-    ) || core_code_die 'release archive exceeds the safe unpacked size limit or is corrupt'
-    core_code_unpacked_size=$(core_code_file_size "$core_code_unpacked")
-    if [ "$core_code_unpacked_size" -le 0 ] \
-        || [ "$core_code_unpacked_size" -gt "$ITERON_CODE_MAX_UNPACKED_BYTES" ]; then
-        core_code_die 'release archive is empty or exceeds the safe unpacked size limit'
+        ulimit -f "$iteron_file_blocks" || exit 1
+        gzip -dc "$iteron_compressed" > "$iteron_unpacked"
+    ) || iteron_die 'release archive exceeds the safe unpacked size limit or is corrupt'
+    iteron_unpacked_size=$(iteron_file_size "$iteron_unpacked")
+    if [ "$iteron_unpacked_size" -le 0 ] \
+        || [ "$iteron_unpacked_size" -gt "$ITERON_CODE_MAX_UNPACKED_BYTES" ]; then
+        iteron_die 'release archive is empty or exceeds the safe unpacked size limit'
     fi
 }
 
-core_code_validate_archive() {
-    core_code_tar=$1
-    core_code_root=$2
-    core_code_members=$3
-    core_code_verbose=$4
-    core_code_expected=$5
-    core_code_sorted_members=$6
-    core_code_sorted_expected=$7
+iteron_validate_archive() {
+    iteron_tar=$1
+    iteron_root=$2
+    iteron_members=$3
+    iteron_verbose=$4
+    iteron_expected=$5
+    iteron_sorted_members=$6
+    iteron_sorted_expected=$7
 
-    tar -tf "$core_code_tar" > "$core_code_members" \
-        || core_code_die 'release archive cannot be listed'
-    tar -tvf "$core_code_tar" > "$core_code_verbose" \
-        || core_code_die 'release archive metadata cannot be inspected'
+    tar -tf "$iteron_tar" > "$iteron_members" \
+        || iteron_die 'release archive cannot be listed'
+    tar -tvf "$iteron_tar" > "$iteron_verbose" \
+        || iteron_die 'release archive metadata cannot be inspected'
 
     # A release archive is deliberately tiny and exact. Matching the complete
     # member set rejects absolute paths, dot-dot traversal, duplicates, hidden
     # payloads, and unexpected files before extraction.
     {
-        printf '%s/\n' "$core_code_root"
-        printf '%s/%s\n' "$core_code_root" iteron
-        printf '%s/%s\n' "$core_code_root" LICENSE
-        printf '%s/%s\n' "$core_code_root" README.md
-        printf '%s/%s\n' "$core_code_root" THIRD_PARTY_LICENSES.html
-        printf '%s/%s\n' "$core_code_root" THIRD_PARTY_NOTICES.txt
-        printf '%s/%s\n' "$core_code_root" SBOM.spdx.json
-        printf '%s/%s\n' "$core_code_root" BUILD-INFO.json
-    } > "$core_code_expected"
+        printf '%s/\n' "$iteron_root"
+        printf '%s/%s\n' "$iteron_root" iteron
+        printf '%s/%s\n' "$iteron_root" LICENSE
+        printf '%s/%s\n' "$iteron_root" README.md
+        printf '%s/%s\n' "$iteron_root" THIRD_PARTY_LICENSES.html
+        printf '%s/%s\n' "$iteron_root" THIRD_PARTY_NOTICES.txt
+        printf '%s/%s\n' "$iteron_root" SBOM.spdx.json
+        printf '%s/%s\n' "$iteron_root" BUILD-INFO.json
+    } > "$iteron_expected"
 
-    core_code_member_count=$(wc -l < "$core_code_members" | tr -d '[:space:]')
-    [ "$core_code_member_count" = 8 ] \
-        || core_code_die 'release archive has an unexpected member count'
+    iteron_member_count=$(wc -l < "$iteron_members" | tr -d '[:space:]')
+    [ "$iteron_member_count" = 8 ] \
+        || iteron_die 'release archive has an unexpected member count'
 
-    LC_ALL=C sort "$core_code_members" > "$core_code_sorted_members"
-    LC_ALL=C sort "$core_code_expected" > "$core_code_sorted_expected"
-    cmp -s "$core_code_sorted_members" "$core_code_sorted_expected" \
-        || core_code_die 'release archive contains an unexpected path'
+    LC_ALL=C sort "$iteron_members" > "$iteron_sorted_members"
+    LC_ALL=C sort "$iteron_expected" > "$iteron_sorted_expected"
+    cmp -s "$iteron_sorted_members" "$iteron_sorted_expected" \
+        || iteron_die 'release archive contains an unexpected path'
 
     # GNU tar and BSD tar both put the entry type at the first character of
     # their verbose mode column. Only directories and regular files are valid.
     awk '
         substr($1, 1, 1) != "d" && substr($1, 1, 1) != "-" { exit 1 }
-    ' "$core_code_verbose" \
-        || core_code_die 'release archive contains a link or special file'
+    ' "$iteron_verbose" \
+        || iteron_die 'release archive contains a link or special file'
 }
 
-core_code_main() {
+iteron_main() {
     set -eu
 
-    core_code_version=$ITERON_CODE_EMBEDDED_VERSION
-    core_code_bin_dir=${ITERON_CODE_INSTALL_DIR:-}
+    iteron_version=$ITERON_CODE_EMBEDDED_VERSION
+    iteron_bin_dir=${ITERON_CODE_INSTALL_DIR:-}
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --version)
-                [ "$#" -ge 2 ] || core_code_die '--version requires a value'
-                core_code_version=$2
+                [ "$#" -ge 2 ] || iteron_die '--version requires a value'
+                iteron_version=$2
                 shift 2
                 ;;
             --bin-dir)
-                [ "$#" -ge 2 ] || core_code_die '--bin-dir requires a value'
-                core_code_bin_dir=$2
+                [ "$#" -ge 2 ] || iteron_die '--bin-dir requires a value'
+                iteron_bin_dir=$2
                 shift 2
                 ;;
             -h|--help)
-                core_code_usage
+                iteron_usage
                 exit 0
                 ;;
             --)
                 shift
-                [ "$#" -eq 0 ] || core_code_die 'positional arguments are not supported'
+                [ "$#" -eq 0 ] || iteron_die 'positional arguments are not supported'
                 ;;
             *)
-                core_code_die "unknown option: $1"
+                iteron_die "unknown option: $1"
                 ;;
         esac
     done
 
-    printf '%s\n' "$core_code_version" \
+    printf '%s\n' "$iteron_version" \
         | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
-        || core_code_die 'version must be an exact stable tag such as v0.0.1'
+        || iteron_die 'version must be an exact stable tag such as v0.0.1'
 
-    if [ -z "$core_code_bin_dir" ]; then
+    if [ -z "$iteron_bin_dir" ]; then
         if [ -n "${XDG_BIN_HOME:-}" ]; then
-            core_code_bin_dir=$XDG_BIN_HOME
+            iteron_bin_dir=$XDG_BIN_HOME
         else
-            [ -n "${HOME:-}" ] || core_code_die 'HOME is not set; pass --bin-dir'
-            core_code_bin_dir=$HOME/.local/bin
+            [ -n "${HOME:-}" ] || iteron_die 'HOME is not set; pass --bin-dir'
+            iteron_bin_dir=$HOME/.local/bin
         fi
     fi
-    [ -n "$core_code_bin_dir" ] || core_code_die 'installation directory is empty'
+    [ -n "$iteron_bin_dir" ] || iteron_die 'installation directory is empty'
 
-    core_code_require curl
-    core_code_require tar
-    core_code_require awk
-    core_code_require cmp
-    core_code_require chmod
-    core_code_require grep
-    core_code_require gzip
-    core_code_require install
-    core_code_require mkdir
-    core_code_require mktemp
-    core_code_require mv
-    core_code_require rm
-    core_code_require sort
-    core_code_require tr
-    core_code_require uname
-    core_code_require wc
+    iteron_require curl
+    iteron_require tar
+    iteron_require awk
+    iteron_require cmp
+    iteron_require chmod
+    iteron_require grep
+    iteron_require gzip
+    iteron_require install
+    iteron_require mkdir
+    iteron_require mktemp
+    iteron_require mv
+    iteron_require rm
+    iteron_require sort
+    iteron_require tr
+    iteron_require uname
+    iteron_require wc
 
-    core_code_os=$(uname -s)
-    core_code_arch=$(uname -m)
-    case "$core_code_os:$core_code_arch" in
+    iteron_os=$(uname -s)
+    iteron_arch=$(uname -m)
+    case "$iteron_os:$iteron_arch" in
         Darwin:arm64|Darwin:aarch64)
-            core_code_target=aarch64-apple-darwin
+            iteron_target=aarch64-apple-darwin
             ;;
         Darwin:x86_64|Darwin:amd64)
-            core_code_target=x86_64-apple-darwin
+            iteron_target=x86_64-apple-darwin
             ;;
         Linux:aarch64|Linux:arm64)
-            core_code_target=aarch64-unknown-linux-musl
+            iteron_target=aarch64-unknown-linux-musl
             ;;
         Linux:x86_64|Linux:amd64)
-            core_code_target=x86_64-unknown-linux-musl
+            iteron_target=x86_64-unknown-linux-musl
             ;;
         *)
-            core_code_die "unsupported platform: $core_code_os $core_code_arch"
+            iteron_die "unsupported platform: $iteron_os $iteron_arch"
             ;;
     esac
 
-    core_code_version_number=${core_code_version#v}
-    core_code_archive_root="iteron-${core_code_version}-${core_code_target}"
-    core_code_archive_name="${core_code_archive_root}.tar.gz"
-    core_code_base_url="${ITERON_CODE_RELEASE_ROOT}/${core_code_version}"
+    iteron_version_number=${iteron_version#v}
+    iteron_archive_root="iteron-${iteron_version}-${iteron_target}"
+    iteron_archive_name="${iteron_archive_root}.tar.gz"
+    iteron_base_url="${ITERON_CODE_RELEASE_ROOT}/${iteron_version}"
 
-    core_code_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/iteron.XXXXXXXX") \
-        || core_code_die 'could not create a temporary directory'
-    core_code_install_tmp=
-    core_code_cleanup() {
-        if [ -n "${core_code_install_tmp:-}" ]; then
-            rm -f -- "$core_code_install_tmp"
+    iteron_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/iteron.XXXXXXXX") \
+        || iteron_die 'could not create a temporary directory'
+    iteron_install_tmp=
+    iteron_cleanup() {
+        if [ -n "${iteron_install_tmp:-}" ]; then
+            rm -f -- "$iteron_install_tmp"
         fi
-        rm -rf -- "$core_code_work_dir"
+        rm -rf -- "$iteron_work_dir"
     }
-    trap core_code_cleanup 0
+    trap iteron_cleanup 0
     trap 'exit 1' HUP INT TERM
     umask 077
 
-    core_code_checksums="$core_code_work_dir/SHA256SUMS"
-    core_code_archive="$core_code_work_dir/$core_code_archive_name"
-    core_code_download \
-        "$core_code_base_url/SHA256SUMS" \
-        "$core_code_checksums" \
+    iteron_checksums="$iteron_work_dir/SHA256SUMS"
+    iteron_archive="$iteron_work_dir/$iteron_archive_name"
+    iteron_download \
+        "$iteron_base_url/SHA256SUMS" \
+        "$iteron_checksums" \
         "$ITERON_CODE_MAX_MANIFEST_BYTES" \
-        || core_code_die 'could not download SHA256SUMS'
-    core_code_manifest_size=$(core_code_file_size "$core_code_checksums")
-    if [ "$core_code_manifest_size" -le 0 ] \
-        || [ "$core_code_manifest_size" -gt "$ITERON_CODE_MAX_MANIFEST_BYTES" ]; then
-        core_code_die 'SHA256SUMS is empty or unexpectedly large'
+        || iteron_die 'could not download SHA256SUMS'
+    iteron_manifest_size=$(iteron_file_size "$iteron_checksums")
+    if [ "$iteron_manifest_size" -le 0 ] \
+        || [ "$iteron_manifest_size" -gt "$ITERON_CODE_MAX_MANIFEST_BYTES" ]; then
+        iteron_die 'SHA256SUMS is empty or unexpectedly large'
     fi
 
-    core_code_download \
-        "$core_code_base_url/$core_code_archive_name" \
-        "$core_code_archive" \
+    iteron_download \
+        "$iteron_base_url/$iteron_archive_name" \
+        "$iteron_archive" \
         "$ITERON_CODE_MAX_ARCHIVE_BYTES" \
-        || core_code_die "could not download $core_code_archive_name"
-    core_code_archive_size=$(core_code_file_size "$core_code_archive")
-    if [ "$core_code_archive_size" -le 0 ] \
-        || [ "$core_code_archive_size" -gt "$ITERON_CODE_MAX_ARCHIVE_BYTES" ]; then
-        core_code_die 'release archive is empty or unexpectedly large'
+        || iteron_die "could not download $iteron_archive_name"
+    iteron_archive_size=$(iteron_file_size "$iteron_archive")
+    if [ "$iteron_archive_size" -le 0 ] \
+        || [ "$iteron_archive_size" -gt "$ITERON_CODE_MAX_ARCHIVE_BYTES" ]; then
+        iteron_die 'release archive is empty or unexpectedly large'
     fi
 
-    core_code_checksum_rows=$(awk -v name="$core_code_archive_name" '
+    iteron_checksum_rows=$(awk -v name="$iteron_archive_name" '
         $2 == name || $2 == "*" name { print $1 }
-    ' "$core_code_checksums")
-    core_code_checksum_count=$(printf '%s\n' "$core_code_checksum_rows" \
+    ' "$iteron_checksums")
+    iteron_checksum_count=$(printf '%s\n' "$iteron_checksum_rows" \
         | awk 'NF { count += 1 } END { print count + 0 }')
-    [ "$core_code_checksum_count" -eq 1 ] \
-        || core_code_die 'SHA256SUMS must contain exactly one archive digest'
-    core_code_expected_digest=$(printf '%s\n' "$core_code_checksum_rows" | awk 'NF { print; exit }')
-    printf '%s\n' "$core_code_expected_digest" | grep -Eq '^[0-9a-f]{64}$' \
-        || core_code_die 'archive digest is malformed'
-    core_code_actual_digest=$(core_code_sha256 "$core_code_archive")
-    [ "$core_code_actual_digest" = "$core_code_expected_digest" ] \
-        || core_code_die 'archive checksum verification failed'
+    [ "$iteron_checksum_count" -eq 1 ] \
+        || iteron_die 'SHA256SUMS must contain exactly one archive digest'
+    iteron_expected_digest=$(printf '%s\n' "$iteron_checksum_rows" | awk 'NF { print; exit }')
+    printf '%s\n' "$iteron_expected_digest" | grep -Eq '^[0-9a-f]{64}$' \
+        || iteron_die 'archive digest is malformed'
+    iteron_actual_digest=$(iteron_sha256 "$iteron_archive")
+    [ "$iteron_actual_digest" = "$iteron_expected_digest" ] \
+        || iteron_die 'archive checksum verification failed'
 
-    core_code_unpacked="$core_code_work_dir/archive.tar"
-    core_code_unpack_archive "$core_code_archive" "$core_code_unpacked"
-    core_code_validate_archive \
-        "$core_code_unpacked" \
-        "$core_code_archive_root" \
-        "$core_code_work_dir/members" \
-        "$core_code_work_dir/verbose" \
-        "$core_code_work_dir/expected" \
-        "$core_code_work_dir/members.sorted" \
-        "$core_code_work_dir/expected.sorted"
+    iteron_unpacked="$iteron_work_dir/archive.tar"
+    iteron_unpack_archive "$iteron_archive" "$iteron_unpacked"
+    iteron_validate_archive \
+        "$iteron_unpacked" \
+        "$iteron_archive_root" \
+        "$iteron_work_dir/members" \
+        "$iteron_work_dir/verbose" \
+        "$iteron_work_dir/expected" \
+        "$iteron_work_dir/members.sorted" \
+        "$iteron_work_dir/expected.sorted"
 
-    mkdir "$core_code_work_dir/extract"
-    tar -xf "$core_code_unpacked" -C "$core_code_work_dir/extract" \
-        || core_code_die 'release archive extraction failed'
-    core_code_binary="$core_code_work_dir/extract/$core_code_archive_root/core"
-    if [ ! -f "$core_code_binary" ] || [ -L "$core_code_binary" ]; then
-        core_code_die 'archive iteron entry is not a regular file'
+    mkdir "$iteron_work_dir/extract"
+    tar -xf "$iteron_unpacked" -C "$iteron_work_dir/extract" \
+        || iteron_die 'release archive extraction failed'
+    iteron_binary="$iteron_work_dir/extract/$iteron_archive_root/iteron"
+    if [ ! -f "$iteron_binary" ] || [ -L "$iteron_binary" ]; then
+        iteron_die 'archive iteron entry is not a regular file'
     fi
-    chmod 0755 "$core_code_binary"
+    chmod 0755 "$iteron_binary"
 
     # `-V` is the bare `iteron <semver>`; `--version` additionally carries the commit and build date,
     # so the exact-match smoke tests below deliberately use the short form.
-    core_code_reported_version=$("$core_code_binary" -V 2>&1) \
-        || core_code_die 'downloaded binary failed its version smoke test'
-    [ "$core_code_reported_version" = "iteron $core_code_version_number" ] \
-        || core_code_die "downloaded binary reported an unexpected version: $core_code_reported_version"
+    iteron_reported_version=$("$iteron_binary" -V 2>&1) \
+        || iteron_die 'downloaded binary failed its version smoke test'
+    [ "$iteron_reported_version" = "iteron $iteron_version_number" ] \
+        || iteron_die "downloaded binary reported an unexpected version: $iteron_reported_version"
 
-    mkdir -p -- "$core_code_bin_dir" \
-        || core_code_die "could not create installation directory: $core_code_bin_dir"
-    [ -d "$core_code_bin_dir" ] \
-        || core_code_die "installation path is not a directory: $core_code_bin_dir"
-    [ ! -d "$core_code_bin_dir/core" ] \
-        || core_code_die 'installation destination is a directory'
-    core_code_install_tmp=$(mktemp "$core_code_bin_dir/.core.new.XXXXXXXX") \
-        || core_code_die 'could not create an atomic installation staging file'
-    install -m 0755 "$core_code_binary" "$core_code_install_tmp" \
-        || core_code_die 'could not stage the installed binary'
-    if [ ! -f "$core_code_install_tmp" ] || [ -L "$core_code_install_tmp" ]; then
-        core_code_die 'staged installation is not a regular file'
+    mkdir -p -- "$iteron_bin_dir" \
+        || iteron_die "could not create installation directory: $iteron_bin_dir"
+    [ -d "$iteron_bin_dir" ] \
+        || iteron_die "installation path is not a directory: $iteron_bin_dir"
+    [ ! -d "$iteron_bin_dir/iteron" ] \
+        || iteron_die 'installation destination is a directory'
+    iteron_install_tmp=$(mktemp "$iteron_bin_dir/.core.new.XXXXXXXX") \
+        || iteron_die 'could not create an atomic installation staging file'
+    install -m 0755 "$iteron_binary" "$iteron_install_tmp" \
+        || iteron_die 'could not stage the installed binary'
+    if [ ! -f "$iteron_install_tmp" ] || [ -L "$iteron_install_tmp" ]; then
+        iteron_die 'staged installation is not a regular file'
     fi
-    core_code_staged_version=$("$core_code_install_tmp" -V 2>&1) \
-        || core_code_die 'staged binary failed its version smoke test'
-    [ "$core_code_staged_version" = "iteron $core_code_version_number" ] \
-        || core_code_die 'staged binary reported an unexpected version'
-    mv -f -- "$core_code_install_tmp" "$core_code_bin_dir/core" \
-        || core_code_die 'could not atomically install iteron'
-    if [ ! -f "$core_code_bin_dir/core" ] || [ -L "$core_code_bin_dir/core" ]; then
-        core_code_die 'atomic install did not produce a regular destination file'
+    iteron_staged_version=$("$iteron_install_tmp" -V 2>&1) \
+        || iteron_die 'staged binary failed its version smoke test'
+    [ "$iteron_staged_version" = "iteron $iteron_version_number" ] \
+        || iteron_die 'staged binary reported an unexpected version'
+    mv -f -- "$iteron_install_tmp" "$iteron_bin_dir/iteron" \
+        || iteron_die 'could not atomically install iteron'
+    if [ ! -f "$iteron_bin_dir/iteron" ] || [ -L "$iteron_bin_dir/iteron" ]; then
+        iteron_die 'atomic install did not produce a regular destination file'
     fi
-    core_code_installed_version=$("$core_code_bin_dir/core" -V 2>&1) \
-        || core_code_die 'installed binary failed its final version smoke test'
-    [ "$core_code_installed_version" = "iteron $core_code_version_number" ] \
-        || core_code_die 'installed binary reported an unexpected final version'
-    core_code_install_tmp=
+    iteron_installed_version=$("$iteron_bin_dir/iteron" -V 2>&1) \
+        || iteron_die 'installed binary failed its final version smoke test'
+    [ "$iteron_installed_version" = "iteron $iteron_version_number" ] \
+        || iteron_die 'installed binary reported an unexpected final version'
+    iteron_install_tmp=
 
-    printf 'Iteron %s installed at %s/core\n' "$core_code_version_number" "$core_code_bin_dir"
+    printf 'Iteron %s installed at %s/iteron\n' "$iteron_version_number" "$iteron_bin_dir"
     case ":${PATH:-}:" in
-        *:"$core_code_bin_dir":*) ;;
-        *) printf 'Add %s to PATH to run the iteron command.\n' "$core_code_bin_dir" ;;
+        *:"$iteron_bin_dir":*) ;;
+        *) printf 'Add %s to PATH to run the iteron command.\n' "$iteron_bin_dir" ;;
     esac
-    core_code_linux_preflight "$core_code_os"
+    iteron_linux_preflight "$iteron_os"
 }
 
-core_code_main "$@"
+iteron_main "$@"

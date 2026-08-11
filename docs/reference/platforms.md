@@ -82,15 +82,15 @@ rather than disabling a system-wide security control:
 
 ```console
 $ sudo apt-get install -y apparmor apparmor-utils
-$ sudo tee /etc/apparmor.d/core-bwrap >/dev/null <<'PROFILE'
+$ sudo tee /etc/apparmor.d/iteron-bwrap >/dev/null <<'PROFILE'
 abi <abi/4.0>,
 include <tunables/global>
 
-profile core-bwrap /usr/bin/bwrap flags=(unconfined) {
+profile iteron-bwrap /usr/bin/bwrap flags=(unconfined) {
   userns,
 }
 PROFILE
-$ sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
+$ sudo apparmor_parser --replace /etc/apparmor.d/iteron-bwrap
 ```
 
 `install.sh` runs this exact probe after installing and prints the remedy above as

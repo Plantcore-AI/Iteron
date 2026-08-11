@@ -36,7 +36,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 }
                 // The same stores REC-INJECT recalls from, so any fact whose slug appears in the
                 // injected index is readable (security review: a User-tier fact was unreadable
-                // because only the Project store was built here). User (~/.core/memory) is
+                // because only the Project store was built here). User (~/.iteron/memory) is
                 // Trusted; Project (this repo) is Workspace.
                 let mut stores = Vec::new();
                 if let Some(home) = iteron_protocol::home::operator()

@@ -458,7 +458,7 @@ jobs:
         run: |
           set -euo pipefail
           api_version=2026-03-10
-          evidence_dir=$RUNNER_TEMP/core-client-runtime-receipt
+          evidence_dir=$RUNNER_TEMP/iteron-client-runtime-receipt
           run_json=$evidence_dir/run.json
           jobs_json=$evidence_dir/jobs.json
           receipt=$evidence_dir/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.json
@@ -598,7 +598,7 @@ jobs:
       - name: Upload the offline runtime receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}
+          name: iteron-client-runtime-receipt-attempt-${{ github.run_attempt }}
           path: |
             ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.json
             ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.sigstore.json

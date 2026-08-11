@@ -49,13 +49,13 @@ with egress disabled:
 ```sh
 TASK=instance_ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86
 python3 crates/eval/corpora/import_swe_bench_pro.py \
-  --extract-gold "$TASK" --gold-output /tmp/core-eval-ansible-gold.patch
-cargo run --locked -p core-eval --example validate_pro_gold -- \
+  --extract-gold "$TASK" --gold-output /tmp/iteron-eval-ansible-gold.patch
+cargo run --locked -p iteron-eval --example validate_pro_gold -- \
   --corpus crates/eval/corpora/swe-bench-pro-os-ca10a60-slice-v2.json \
   --task "$TASK" \
-  --gold-patch /tmp/core-eval-ansible-gold.patch \
-  --oracle-workspace /tmp/core-eval-ansible-gold-oracle \
-  --output /tmp/core-eval-ansible-gold-receipt.json \
+  --gold-patch /tmp/iteron-eval-ansible-gold.patch \
+  --oracle-workspace /tmp/iteron-eval-ansible-gold-oracle \
+  --output /tmp/iteron-eval-ansible-gold-receipt.json \
   --source https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/ca10a60a5fcae51e6948ffe1485d4153d421e6c5/helper_code/sweap_eval_full_v2.jsonl \
   --source-revision ca10a60a5fcae51e6948ffe1485d4153d421e6c5 \
   --recorded-at 2026-07-30 --executor dgx-spark
@@ -98,7 +98,7 @@ claims about live model performance.
 
 ## Parallel runner controls
 
-The compatibility-guarded `core-eval` entry point keeps its frozen
+The compatibility-guarded `iteron-eval` entry point keeps its frozen
 schema-authority `main` and `run_cell` path. Its CLI now defaults to 250 turns;
 `--max-turns 0` is the explicit uncapped mode. `run_evaluation` executes cells
 through the bounded parallel engine with 50 workers and sorts the completed
@@ -116,10 +116,10 @@ the completed-cell denominator.
 
 ## Governed train/held-out split
 
-[`core-eval-governed-2026-07-v1.json`](./core-eval-governed-2026-07-v1.json)
+[`iteron-eval-governed-2026-07-v1.json`](./iteron-eval-governed-2026-07-v1.json)
 is the promotion-facing corpus snapshot. Its immutable identity is:
 
-- `corpus_version`: `core-eval-governed-2026-07-v1`
+- `corpus_version`: `iteron-eval-governed-2026-07-v1`
 - canonical `tasks` SHA-256:
   `4b08f1178b7c363186b0e4e324179b9c1823cbe06d531632611e566d3d4f3aed`
 
@@ -162,9 +162,9 @@ claim that Core or a model produced the gold patch.
 ### Governed split integrity check
 
 ```sh
-jq -j '.tasks[0].prompt' crates/eval/corpora/core-eval-governed-2026-07-v1.json | shasum -a 256
-jq -j '.tasks[0].benchmark.test_patch' crates/eval/corpora/core-eval-governed-2026-07-v1.json | shasum -a 256
-jq -cj '.tasks' crates/eval/corpora/core-eval-governed-2026-07-v1.json | shasum -a 256
+jq -j '.tasks[0].prompt' crates/eval/corpora/iteron-eval-governed-2026-07-v1.json | shasum -a 256
+jq -j '.tasks[0].benchmark.test_patch' crates/eval/corpora/iteron-eval-governed-2026-07-v1.json | shasum -a 256
+jq -cj '.tasks' crates/eval/corpora/iteron-eval-governed-2026-07-v1.json | shasum -a 256
 ```
 
 ## SWE-bench Lite: `astropy__astropy-12907`
@@ -211,7 +211,7 @@ and the
 
 `environment_image` is `null` because the pinned dataset row does not
 declare an exact image reference. The manifest records the row's
-`environment_setup_commit`, but `core-eval` does not provision the official
+`environment_setup_commit`, but `iteron-eval` does not provision the official
 Docker environment from that metadata. Callers must provide a compatible
 Astropy 4.3/SWE-bench environment before running these commands. Likewise,
 `provenance.license` is `null` because the pinned dataset card declares no

@@ -18,7 +18,7 @@ fn copied_text_is_secret_and_terminal_control_safe_and_bounded() {
 async fn direct_argv_adapter_reports_success_and_typed_failure() {
     let processes = ProcessRegistry::default();
     let output = std::env::temp_dir().join(format!(
-        "core-clipboard-{}-{:?}.txt",
+        "iteron-clipboard-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -47,7 +47,7 @@ async fn direct_argv_adapter_reports_success_and_typed_failure() {
 async fn dispatched_failure_never_falls_through_to_a_second_adapter() {
     let processes = ProcessRegistry::default();
     let output = std::env::temp_dir().join(format!(
-        "core-clipboard-fallback-{}-{:?}.txt",
+        "iteron-clipboard-fallback-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -120,7 +120,7 @@ fn adapter_admission_rejects_symlinks_and_non_root_writable_files() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     let root = std::env::temp_dir().join(format!(
-        "core-clipboard-trust-{}-{:?}",
+        "iteron-clipboard-trust-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));

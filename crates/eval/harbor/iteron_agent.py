@@ -3,7 +3,7 @@
 This module intentionally does not download an unversioned release.  The caller
 supplies one host-side Linux binary and its SHA-256; Harbor uploads those exact
 bytes into every fresh task environment.  Import it with Harbor's custom-agent
-surface, for example ``core_code_agent:CoreCodeAgent``.
+surface, for example ``iteron_agent:IteronAgent``.
 """
 
 from __future__ import annotations
@@ -172,14 +172,14 @@ def _split_model_route(model_name: str, provider: str | None) -> tuple[str, str]
     return inferred_provider, routed_model
 
 
-class CoreCodeAgent(BaseInstalledAgent):
+class IteronAgent(BaseInstalledAgent):
     """Run one exact Core binary inside a Harbor task environment.
 
     Harbor remains authoritative for the task image, CPU/memory/storage limits,
     task-specific agent timeout, verifier timeout, artifacts, and repetitions.
     Core receives the instruction and works in ``/app``.  Its user config,
     memory, hooks, MCP declarations, sessions, and caches start under fresh
-    private roots; a task-provided ``/app/.core`` path is refused rather than
+    private roots; a task-provided ``/app/.iteron`` path is refused rather than
     allowed to perturb an evaluation arm.
     """
 
@@ -375,11 +375,11 @@ class CoreCodeAgent(BaseInstalledAgent):
             f'test "$(stat -Lc %s /proc/self/fd/9)" -eq {self._binary_size}; '
             "actual=$(sha256sum /proc/self/fd/9 | awk '{print $1}'); "
             f'test "$actual" = {expected}; '
-            "if [ -e /app/.core ] || [ -L /app/.core ]; then "
+            "if [ -e /app/.iteron ] || [ -L /app/.iteron ]; then "
             "echo 'refusing task-provided Core project state' >&2; exit 78; fi; "
             f"{shlex.join(arguments)} </dev/null | tee /proc/self/fd/8"
         )
         await self.exec_as_agent(environment, command=command, env=env, cwd="/app")
 
 
-__all__ = ["CoreCodeAgent"]
+__all__ = ["IteronAgent"]

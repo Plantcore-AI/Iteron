@@ -110,7 +110,7 @@ def parse_args() -> argparse.Namespace:
 def download() -> bytes:
     request = urllib.request.Request(
         SOURCE_URL,
-        headers={"User-Agent": "Plantcore-core-eval-corpus-importer/1"},
+        headers={"User-Agent": "Plantcore-iteron-eval-corpus-importer/1"},
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         source = response.read(MAX_SOURCE_BYTES + 1)

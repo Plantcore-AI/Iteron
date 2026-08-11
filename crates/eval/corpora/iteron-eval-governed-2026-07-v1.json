@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "core-eval-governed-2026-07-v1",
+  "corpus_version": "iteron-eval-governed-2026-07-v1",
   "dataset_digest": "sha256:4b08f1178b7c363186b0e4e324179b9c1823cbe06d531632611e566d3d4f3aed",
   "tasks": [
     {

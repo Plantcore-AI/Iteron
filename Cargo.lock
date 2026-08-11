@@ -369,360 +369,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iteron-agents"
-version = "0.0.2"
-dependencies = [
- "iteron-ctx",
- "iteron-protocol",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "iteron-changeset"
-version = "0.0.2"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-cli"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "clap",
- "iteron-agents",
- "iteron-changeset",
- "iteron-ctx",
- "iteron-eval",
- "iteron-evolve",
- "iteron-kernel",
- "iteron-marketplace",
- "iteron-mcp",
- "iteron-obs",
- "iteron-protocol",
- "iteron-provider",
- "iteron-record",
- "iteron-sandbox",
- "iteron-sched",
- "iteron-statusline",
- "iteron-support",
- "iteron-tools",
- "iteron-tunables",
- "iteron-verify",
- "iteron-workflow",
- "crossterm 0.29.0",
- "futures-util",
- "getrandom 0.4.3",
- "gif",
- "hex",
- "image-webp",
- "libc",
- "png",
- "portable-pty",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "unicode-normalization",
- "unicode-segmentation",
- "unicode-width 0.2.0",
- "url",
- "vt100",
- "windows-sys 0.61.2",
- "zeroize",
- "zune-jpeg",
-]
-
-[[package]]
-name = "iteron-ctx"
-version = "0.0.2"
-dependencies = [
- "iteron-protocol",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "toml",
- "walkdir",
-]
-
-[[package]]
-name = "iteron-eval"
-version = "0.0.2"
-dependencies = [
- "clap",
- "iteron-evolve",
- "iteron-protocol",
- "iteron-record",
- "iteron-sandbox",
- "iteron-tunables",
- "iteron-verify",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "iteron-evolve"
-version = "0.0.2"
-dependencies = [
- "iteron-protocol",
- "iteron-record",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-kernel"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "iteron-obs",
- "iteron-protocol",
- "iteron-record",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "iteron-lsp"
-version = "0.0.2"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "iteron-marketplace"
-version = "0.0.2"
-dependencies = [
- "base64",
- "iteron-protocol",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-mcp"
-version = "0.0.2"
-dependencies = [
- "iteron-protocol",
- "iteron-sandbox",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "iteron-obs"
-version = "0.0.2"
-dependencies = [
- "iteron-protocol",
- "hmac",
- "serde",
- "serde_json",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "iteron-protocol"
-version = "0.0.2"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "iteron-provider"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "iteron-protocol",
- "futures-util",
- "hmac",
- "httpdate",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "iteron-record"
-version = "0.0.2"
-dependencies = [
- "iteron-obs",
- "iteron-protocol",
- "iteron-tunables",
- "getrandom 0.4.3",
- "hex",
- "libc",
- "ring",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "iteron-sandbox"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "libc",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "iteron-sched"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "iteron-protocol",
- "iteron-provider",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "iteron-statusline"
-version = "0.0.2"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-support"
-version = "0.0.2"
-dependencies = [
- "iteron-record",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-tools"
-version = "0.0.2"
-dependencies = [
- "iteron-ctx",
- "iteron-lsp",
- "iteron-protocol",
- "iteron-sandbox",
- "futures-util",
- "getrandom 0.4.3",
- "ignore",
- "libc",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "url",
- "walkdir",
-]
-
-[[package]]
-name = "iteron-tunables"
-version = "0.0.2"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iteron-verify"
-version = "0.0.2"
-dependencies = [
- "async-trait",
- "iteron-protocol",
- "iteron-sandbox",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
-name = "iteron-workflow"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "iteron-protocol",
- "iteron-sched",
- "hex",
- "jsonschema",
- "libc",
- "rquickjs",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "iteron-xtask"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "iteron-agents",
- "iteron-ctx",
- "iteron-protocol",
- "iteron-tools",
- "iteron-tunables",
- "quote",
- "serde",
- "serde_json",
- "sha2",
- "syn 2.0.118",
- "toml",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1589,6 +1235,351 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "iteron-agents"
+version = "0.0.4"
+dependencies = [
+ "iteron-ctx",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "iteron-changeset"
+version = "0.0.4"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-cli"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "clap",
+ "crossterm 0.29.0",
+ "futures-util",
+ "getrandom 0.4.3",
+ "gif",
+ "hex",
+ "image-webp",
+ "iteron-agents",
+ "iteron-changeset",
+ "iteron-ctx",
+ "iteron-eval",
+ "iteron-evolve",
+ "iteron-kernel",
+ "iteron-marketplace",
+ "iteron-mcp",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-provider",
+ "iteron-record",
+ "iteron-sandbox",
+ "iteron-sched",
+ "iteron-statusline",
+ "iteron-support",
+ "iteron-tools",
+ "iteron-tunables",
+ "iteron-verify",
+ "iteron-workflow",
+ "libc",
+ "png",
+ "portable-pty",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+ "url",
+ "vt100",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "iteron-ctx"
+version = "0.0.4"
+dependencies = [
+ "iteron-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
+name = "iteron-eval"
+version = "0.0.4"
+dependencies = [
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "iteron-evolve",
+ "iteron-sandbox",
+ "iteron-tunables",
+ "iteron-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "iteron-evolve"
+version = "0.0.4"
+dependencies = [
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-kernel"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-record",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-lsp"
+version = "0.0.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "iteron-marketplace"
+version = "0.0.4"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-mcp"
+version = "0.0.4"
+dependencies = [
+ "futures-util",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "iteron-obs"
+version = "0.0.4"
+dependencies = [
+ "hmac",
+ "iteron-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "iteron-protocol"
+version = "0.0.4"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "iteron-provider"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hmac",
+ "httpdate",
+ "iteron-protocol",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "iteron-record"
+version = "0.0.4"
+dependencies = [
+ "hex",
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-tunables",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-sandbox"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "libc",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-sched"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "iteron-protocol",
+ "iteron-provider",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-statusline"
+version = "0.0.4"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-support"
+version = "0.0.4"
+dependencies = [
+ "iteron-record",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-tools"
+version = "0.0.4"
+dependencies = [
+ "futures-util",
+ "getrandom 0.4.3",
+ "ignore",
+ "iteron-ctx",
+ "iteron-lsp",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "libc",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "walkdir",
+]
+
+[[package]]
+name = "iteron-tunables"
+version = "0.0.4"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iteron-verify"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "hex",
+ "iteron-protocol",
+ "iteron-sandbox",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-workflow"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iteron-protocol",
+ "iteron-sched",
+ "jsonschema",
+ "libc",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "iteron-xtask"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
+ "iteron-agents",
+ "iteron-ctx",
+ "iteron-protocol",
+ "iteron-tools",
+ "iteron-tunables",
+ "quote",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.118",
+ "toml",
+]
 
 [[package]]
 name = "itertools"
