@@ -138,6 +138,7 @@ async fn pinned_schema_retry_policy_changes_physical_attempts() {
 /// Counts every live spawn; returns text for `alpha`, a null outcome for `makenull`.
 struct CountingSpawner {
     spawns: Arc<AtomicUsize>,
+    prompts: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Default)]
@@ -164,6 +165,7 @@ async fn malformed_routing_metadata_is_negative_replay_evidence_without_a_spawn(
     let spawns = Arc::new(AtomicUsize::new(0));
     let spawner = Arc::new(CountingSpawner {
         spawns: spawns.clone(),
+        prompts: Arc::new(Mutex::new(Vec::new())),
     });
     let sink = Arc::new(RecordingSink::default());
     let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
@@ -309,6 +311,7 @@ return results;
 impl AgentSpawner for CountingSpawner {
     async fn spawn(&self, call: AgentCall) -> AgentOutcome {
         self.spawns.fetch_add(1, Ordering::SeqCst);
+        self.prompts.lock().unwrap().push(call.prompt.clone());
         if call.prompt.contains("makenull") {
             AgentOutcome::null("makenull")
         } else {
@@ -328,8 +331,10 @@ async fn resume_is_100_percent_cache_hit_including_null_replay() {
             .as_nanos()
     ));
     let spawns = Arc::new(AtomicUsize::new(0));
+    let prompts = Arc::new(Mutex::new(Vec::new()));
     let spawner = Arc::new(CountingSpawner {
         spawns: spawns.clone(),
+        prompts: prompts.clone(),
     });
 
     let script = r#"export const meta = { name: 'resume', description: '', phases: [] };
@@ -347,7 +352,23 @@ return { a: a, b: b };
         .expect("run 1");
     assert_eq!(report1.cache_hits, 0);
     assert_eq!(report1.cache_misses, 2);
-    assert_eq!(spawns.load(Ordering::SeqCst), 2, "both agents ran live");
+    // Three live spawns for two script calls: a null outcome is not usable evidence, so the
+    // engine escalates once and re-runs that assignment independently. It stays two cache
+    // entries, because the escalation belongs to the same assignment as its first attempt.
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        3,
+        "both agents ran live, and the null outcome escalated once"
+    );
+    let live = prompts.lock().unwrap().clone();
+    assert_eq!(live.len(), 3);
+    assert_eq!(live[0], "alpha");
+    assert_eq!(live[1], "makenull");
+    assert!(
+        live[2].starts_with("makenull\n\nA prior read-only assignee ended without usable evidence"),
+        "the third spawn must be the escalation of the null outcome, not a third assignment: {}",
+        live[2]
+    );
     let expected = serde_json::json!({ "a": "text:alpha", "b": null });
     assert_eq!(report1.value, expected);
 
@@ -366,8 +387,8 @@ return { a: a, b: b };
     assert_eq!(report2.cache_misses, 0);
     assert_eq!(
         spawns.load(Ordering::SeqCst),
-        2,
-        "resume replays from the journal; no new live spawns"
+        3,
+        "resume replays from the journal; no new live spawns beyond run 1's three"
     );
     // The null-outcome agent is replayed as null (B2), and the value is identical.
     assert_eq!(report2.value, expected);

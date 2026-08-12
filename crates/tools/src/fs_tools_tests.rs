@@ -190,9 +190,13 @@ async fn d3_06_g1_reads_exact_middle_range_with_absolute_line_numbers() {
         ))
         .await;
     assert!(!result.is_error, "{}", result.content);
+    // The caller's `limit` is a pagination boundary, not EOF: the marker names the resume offset
+    // so a partial read cannot be mistaken for the end of the file. It also has to name the right
+    // boundary — this read stopped on the requested window, not on the output byte cap.
     assert_eq!(
         result.content,
-        "  3999\tpayload-03999\n  4000\tpayload-04000\n  4001\tpayload-04001\n  4002\tpayload-04002"
+        "  3999\tpayload-03999\n  4000\tpayload-04000\n  4001\tpayload-04001\n  4002\tpayload-04002\n\
+         … (truncated before line 4003; the requested line window ended here; continue with offset=4003)"
     );
 }
 

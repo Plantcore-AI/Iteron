@@ -14,6 +14,14 @@ use walkdir::WalkDir;
 /// call with an offset — turning one read into three or four and burning the turn budget the run
 /// was actually bounded by. Still a ceiling, because an unbounded read is a context overflow.
 const TRUNCATION_MARKER_RESERVE_BYTES: usize = 256;
+
+/// Which pagination boundary ended a `read_file`. Both resume identically; they differ only in
+/// what the operator can do about it, which is exactly what the marker has to say.
+#[derive(Clone, Copy)]
+enum TruncationCause {
+    Window,
+    OutputBytes,
+}
 const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +218,7 @@ async fn read_numbered_file(
         // truncation marker is emitted.
         if emitted >= policy.max_lines as u64 || window.limit.is_some_and(|limit| emitted >= limit)
         {
-            truncated_before = Some(absolute_line);
+            truncated_before = Some((absolute_line, TruncationCause::Window));
             break;
         }
 
@@ -222,7 +230,7 @@ async fn read_numbered_file(
             .saturating_add(numbered.len())
             > policy.output_max_bytes - TRUNCATION_MARKER_RESERVE_BYTES
         {
-            truncated_before = Some(absolute_line);
+            truncated_before = Some((absolute_line, TruncationCause::OutputBytes));
             break;
         }
         if separator_bytes > 0 {
@@ -232,11 +240,20 @@ async fn read_numbered_file(
         emitted += 1;
     }
 
-    if let Some(next_line) = truncated_before {
+    if let Some((next_line, cause)) = truncated_before {
+        // Name the boundary that actually stopped the read. Both are pagination boundaries and
+        // both resume the same way, but reporting a caller's own `limit` as a byte cap tells the
+        // operator the file is larger than their window in a way they cannot act on, and hides
+        // the one case where raising `limit` would not help.
+        let reason = match cause {
+            TruncationCause::Window => "the requested line window ended here".to_owned(),
+            TruncationCause::OutputBytes => format!(
+                "read_file output is capped at {} bytes",
+                policy.output_max_bytes
+            ),
+        };
         let marker = format!(
-            "… (truncated before line {next_line}; read_file output is capped at {} bytes; \
-             continue with offset={next_line})",
-            policy.output_max_bytes
+            "… (truncated before line {next_line}; {reason}; continue with offset={next_line})"
         );
         if marker.len() >= TRUNCATION_MARKER_RESERVE_BYTES {
             return Err(std::io::Error::other(
