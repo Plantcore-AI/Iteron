@@ -6,6 +6,11 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// Bounds the post-kill drain of stdout/stderr. The child group is already dead, so the pipes
+/// should close immediately; this only fires when a process escaped the group and still holds an
+/// inherited descriptor, and must not become a second full-length timeout.
+const CAPTURE_COLLECT_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 pub struct ProcessSpec {
     pub program: PathBuf,
@@ -142,9 +147,8 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
 
     // Once the child group is dead both pipes should close. Keep cleanup bounded in case a hostile
     // process escaped the group and retained an inherited descriptor.
-    let collect_timeout = Duration::from_secs(2);
-    let stdout = collect_capture(stdout_task, collect_timeout, &label, "stdout").await?;
-    let stderr = collect_capture(stderr_task, collect_timeout, &label, "stderr").await?;
+    let stdout = collect_capture(stdout_task, CAPTURE_COLLECT_TIMEOUT, &label, "stdout").await?;
+    let stderr = collect_capture(stderr_task, CAPTURE_COLLECT_TIMEOUT, &label, "stderr").await?;
     Ok(ProcessOutput {
         exit_code,
         stdout: stdout.bytes,

@@ -56,9 +56,9 @@ pub use params::{
     ParamType, param, param_count, param_registry_digest_sha256, params,
 };
 pub use profile_io::{
-    MAX_PROFILE_BYTES, PROFILE_DOCUMENT_SCHEMA_VERSION, ParamAssignment, ProfileDocument,
-    ProfileLoadError, document_digest, emit_profile, load_profile, render_profile,
-    validate_profile,
+    ArtifactOverride, MAX_ARTIFACT_TEXT_BYTES, MAX_PROFILE_BYTES, PROFILE_DOCUMENT_SCHEMA_VERSION,
+    ParamAssignment, ProfileDocument, ProfileLoadError, artifact_override, document_digest,
+    emit_profile, load_profile, render_profile, validate_profile,
 };
 pub use resolution::{resolve, resolve_json};
 pub use resolution_explain::{ExplainError, explain_entry_json, explain_text};
@@ -118,4 +118,4 @@ pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 pub const DIGEST_ALGORITHM: &str = "sha256";
 /// Golden digest for revision 17; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "37e34c87bc64684d64d7d8c913e70d32e6c2d8e4e57db1c553cebe9c00fa44fc";
+    "fee22a629e6bb95f190c75ec25e63e198a2eb44a7dfb1bf839828e5c397d93db";

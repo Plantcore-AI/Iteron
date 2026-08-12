@@ -24,6 +24,9 @@ use std::time::Duration;
 
 const PROVISION_OUTPUT_LIMIT: usize = 128 * 1024;
 const IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Bounds `docker image inspect`, a local metadata read with no registry egress: it either answers
+/// at once or the daemon is wedged, and a wedged daemon must not stall provisioning.
+const IMAGE_INSPECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -252,7 +255,7 @@ impl Provisioner {
             clear_env: false,
             inherit_env: Vec::new(),
             env: Vec::new(),
-            timeout: Duration::from_secs(15),
+            timeout: IMAGE_INSPECT_TIMEOUT,
             max_output_bytes: 4 * 1024,
         })
         .await

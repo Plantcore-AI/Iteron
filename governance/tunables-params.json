@@ -1440,6 +1440,15 @@
       "decl": "crates/cli/src/image_input/decode.rs"
     },
     {
+      "id": "cli.image_input.decode.still_image_frame_count",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1",
+      "krate": "cli",
+      "decl": "crates/cli/src/image_input/decode.rs"
+    },
+    {
       "id": "cli.image_input.file_attribute_reparse_point",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -1474,6 +1483,15 @@
       "default": "Duration::from_secs(3)",
       "krate": "cli",
       "decl": "crates/cli/src/image_input.rs"
+    },
+    {
+      "id": "cli.image_input.heic.conversion_poll_interval",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "duration",
+      "default": "Duration::from_millis(10)",
+      "krate": "cli",
+      "decl": "crates/cli/src/image_input/heic.rs"
     },
     {
       "id": "cli.image_input.heic.conversion_timeout",
@@ -1783,6 +1801,15 @@
       "class": "structural",
       "type": "text",
       "default": "AtomicU64::new(1)",
+      "krate": "cli",
+      "decl": "crates/cli/src/mcp/session.rs"
+    },
+    {
+      "id": "cli.mcp.session.resource_search_default_limit",
+      "module": "session_fork",
+      "class": "searchable",
+      "type": "integer",
+      "default": "8",
       "krate": "cli",
       "decl": "crates/cli/src/mcp/session.rs"
     },
@@ -2668,11 +2695,29 @@
       "decl": "crates/cli/src/runtime/decision_observability.rs"
     },
     {
+      "id": "cli.runtime.decision_observability.context_high_watermark_divisor",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "default": "10",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/decision_observability.rs"
+    },
+    {
       "id": "cli.runtime.decision_observability.domain",
       "module": "scheduler_parallelism",
       "class": "structural",
       "type": "array",
       "default": "b\"iteron-context-image-attachments-v1\\0\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/decision_observability.rs"
+    },
+    {
+      "id": "cli.runtime.decision_observability.memory_notification_prose_reserve_bytes",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1024",
       "krate": "cli",
       "decl": "crates/cli/src/runtime/decision_observability.rs"
     },
@@ -2776,6 +2821,15 @@
       "default": "failed_action_cache::MAX_IDENTITIES",
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs"
+    },
+    {
+      "id": "cli.runtime.frontend.workflow_label_max_bytes",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "default": "240",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/frontend.rs"
     },
     {
       "id": "cli.runtime.hooks.default_hook_timeout_secs",
@@ -2924,7 +2978,7 @@
       "decl": "crates/cli/src/runtime/hooks.rs"
     },
     {
-      "id": "cli.runtime.interval",
+      "id": "cli.runtime.internal_stream_progress_interval",
       "module": "scheduler_parallelism",
       "class": "searchable",
       "type": "duration",
@@ -2996,6 +3050,15 @@
       "class": "structural",
       "type": "text",
       "default": "\"core/context\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/policy_evidence.rs"
+    },
+    {
+      "id": "cli.runtime.policy_evidence.deterministic_propensity_ppm",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1_000_000",
       "krate": "cli",
       "decl": "crates/cli/src/runtime/policy_evidence.rs"
     },
@@ -3130,6 +3193,15 @@
       "decl": "crates/cli/src/runtime/provider_accounting.rs"
     },
     {
+      "id": "cli.runtime.provider_accounting.provider_notice_max_bytes",
+      "module": "provider_routing",
+      "class": "searchable",
+      "type": "integer",
+      "default": "512",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/provider_accounting.rs"
+    },
+    {
       "id": "cli.runtime.provider_hedge.max_buffered_hedge_items",
       "module": "provider_routing",
       "class": "bounded",
@@ -3183,6 +3255,19 @@
       "decl": "crates/cli/src/runtime/session_spawn_ledger.rs"
     },
     {
+      "id": "cli.runtime.session_spawn_ledger.max_session_spawn_cap",
+      "module": "session_fork",
+      "class": "bounded",
+      "type": "integer",
+      "default": "100_000",
+      "domain": {
+        "min": 0,
+        "max": 100000
+      },
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/session_spawn_ledger.rs"
+    },
+    {
       "id": "cli.runtime.side_conversation.clock_before_epoch_secs",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -3199,6 +3284,19 @@
       "default": "\"You are answering a question on the side of a coding session. You have \\",
       "krate": "cli",
       "decl": "crates/cli/src/runtime/side_conversation.rs"
+    },
+    {
+      "id": "cli.runtime.strategy_ports.max_memory_benchmark_scope_bytes",
+      "module": "scheduler_parallelism",
+      "class": "bounded",
+      "type": "integer",
+      "default": "1_024",
+      "domain": {
+        "min": 0,
+        "max": 1024
+      },
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/strategy_ports.rs"
     },
     {
       "id": "cli.runtime.subagent_control.child_control_poll",
@@ -4109,6 +4207,42 @@
       "decl": "crates/cli/src/tui.rs"
     },
     {
+      "id": "cli.tui.command_dispatch.irrecoverable_preview_rows",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "20",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/command_dispatch.rs"
+    },
+    {
+      "id": "cli.tui.command_dispatch.ledger_segment_rows",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "24",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/command_dispatch.rs"
+    },
+    {
+      "id": "cli.tui.command_dispatch.rewind_target_rows",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "30",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/command_dispatch.rs"
+    },
+    {
+      "id": "cli.tui.command_dispatch.workspace_review_summary_rows",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "120",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/command_dispatch.rs"
+    },
+    {
       "id": "cli.tui.command_surfaces.picker_fallback_focus",
       "module": "session_stop",
       "class": "searchable",
@@ -4303,6 +4437,15 @@
         "min": 0,
         "max": 32
       },
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/experiment_lab.rs"
+    },
+    {
+      "id": "cli.tui.experiment_lab.one_line_value_max_chars",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "120",
       "krate": "cli",
       "decl": "crates/cli/src/tui/experiment_lab.rs"
     },
@@ -4683,6 +4826,15 @@
       "decl": "crates/cli/src/tui/hyperlink.rs"
     },
     {
+      "id": "cli.tui.hyperlink.osc8_delimiter_bytes",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "12",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/hyperlink.rs"
+    },
+    {
       "id": "cli.tui.inline_shell.head_bytes",
       "module": "session_stop",
       "class": "searchable",
@@ -4726,6 +4878,15 @@
       "default": "Duration::from_secs(120)",
       "krate": "cli",
       "decl": "crates/cli/src/tui/inline_shell.rs"
+    },
+    {
+      "id": "cli.tui.jobs.job_frame_preview_lines",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "80",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/jobs.rs"
     },
     {
       "id": "cli.tui.jobs.missing_counter",
@@ -5095,6 +5256,15 @@
       "decl": "crates/cli/src/tui/session_management.rs"
     },
     {
+      "id": "cli.tui.session_picker.picker_title_max_chars",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "80",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/session_picker.rs"
+    },
+    {
       "id": "cli.tui.session_picker.run_id_fallback_nanos",
       "module": "session_stop",
       "class": "searchable",
@@ -5111,6 +5281,15 @@
       "default": "std::time::Duration::from_secs(1)",
       "krate": "cli",
       "decl": "crates/cli/src/tui.rs"
+    },
+    {
+      "id": "cli.tui.status_command.status_digest_prefix_chars",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "12",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/status_command.rs"
     },
     {
       "id": "cli.tui.status_line.separator",
@@ -5529,6 +5708,42 @@
       "decl": "crates/cli/src/tui/transcript_viewer/projection.rs"
     },
     {
+      "id": "cli.tui.transcript_viewer.projection.projection_reserve_bytes",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "64 * 1024",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_viewer/projection.rs"
+    },
+    {
+      "id": "cli.tui.transcript_viewer.semantic_text.markdown.markdown_reserve_bytes",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "64 * 1024",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_viewer/semantic_text/markdown.rs"
+    },
+    {
+      "id": "cli.tui.transcript_viewer.semantic_text.text_reserve_bytes",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "64 * 1024",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_viewer/semantic_text.rs"
+    },
+    {
+      "id": "cli.tui.tunables_view.digest_prefix_chars",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "12",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/tunables_view.rs"
+    },
+    {
       "id": "cli.tui.tunables_view.format.ellipsis",
       "module": "session_stop",
       "class": "searchable",
@@ -5757,6 +5972,15 @@
       "class": "searchable",
       "type": "boolean",
       "default": "false",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/tunables_view.rs"
+    },
+    {
+      "id": "cli.tui.tunables_view.request_read_reserve_bytes",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "64 * 1024",
       "krate": "cli",
       "decl": "crates/cli/src/tui/tunables_view.rs"
     },
@@ -7137,6 +7361,24 @@
       "default": "1",
       "krate": "eval",
       "decl": "crates/eval/src/measurement.rs"
+    },
+    {
+      "id": "eval.process.capture_collect_timeout",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "duration",
+      "default": "Duration::from_secs(2)",
+      "krate": "eval",
+      "decl": "crates/eval/src/process.rs"
+    },
+    {
+      "id": "eval.provisioner.image_inspect_timeout",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "duration",
+      "default": "Duration::from_secs(15)",
+      "krate": "eval",
+      "decl": "crates/eval/src/provisioner.rs"
     },
     {
       "id": "eval.provisioner.image_pull_timeout",
@@ -9832,6 +10074,19 @@
       "decl": "crates/mcp/src/http/endpoint.rs"
     },
     {
+      "id": "mcp.http.port.max_mcp_header_value_bytes",
+      "module": "tool_exposure",
+      "class": "bounded",
+      "type": "integer",
+      "default": "8192",
+      "domain": {
+        "min": 0,
+        "max": 8192
+      },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/http/port.rs"
+    },
+    {
       "id": "mcp.http.port.max_mcp_session_id_bytes",
       "module": "tool_exposure",
       "class": "bounded",
@@ -9872,6 +10127,15 @@
       "decl": "crates/mcp/src/http/port.rs"
     },
     {
+      "id": "mcp.http.reqwest_exchange.pool_max_idle_per_host",
+      "module": "tool_exposure",
+      "class": "searchable",
+      "type": "integer",
+      "default": "2",
+      "krate": "mcp",
+      "decl": "crates/mcp/src/http/reqwest_exchange.rs"
+    },
+    {
       "id": "mcp.http.sse.read_buffer_bytes",
       "module": "tool_exposure",
       "class": "searchable",
@@ -9879,6 +10143,54 @@
       "default": "8 * 1024",
       "krate": "mcp",
       "decl": "crates/mcp/src/http/sse.rs"
+    },
+    {
+      "id": "mcp.http.status.max_media_type_bytes",
+      "module": "tool_exposure",
+      "class": "bounded",
+      "type": "integer",
+      "default": "128",
+      "domain": {
+        "min": 0,
+        "max": 128
+      },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/http/status.rs"
+    },
+    {
+      "id": "mcp.http.status.max_retry_after_digits",
+      "module": "tool_exposure",
+      "class": "bounded",
+      "type": "integer",
+      "default": "6",
+      "domain": {
+        "min": 0,
+        "max": 6
+      },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/http/status.rs"
+    },
+    {
+      "id": "mcp.http.status.max_retry_after_secs",
+      "module": "tool_exposure",
+      "class": "bounded",
+      "type": "integer",
+      "default": "3_600",
+      "domain": {
+        "min": 0,
+        "max": 3600
+      },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/http/status.rs"
+    },
+    {
+      "id": "mcp.lib.frame_encode_reserve_bytes",
+      "module": "tool_exposure",
+      "class": "searchable",
+      "type": "integer",
+      "default": "4096",
+      "krate": "mcp",
+      "decl": "crates/mcp/src/lib.rs"
     },
     {
       "id": "mcp.lib.max_frame_bytes",
@@ -10031,6 +10343,19 @@
       "default": "0",
       "krate": "mcp",
       "decl": "crates/mcp/src/lib.rs"
+    },
+    {
+      "id": "mcp.oauth.max_oauth_client_id_bytes",
+      "module": "tool_exposure",
+      "class": "bounded",
+      "type": "integer",
+      "default": "1024",
+      "domain": {
+        "min": 0,
+        "max": 1024
+      },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/oauth.rs"
     },
     {
       "id": "mcp.oauth.max_oauth_secret_bytes",
@@ -10301,6 +10626,15 @@
         "min": 0,
         "max": 4096
       },
+      "krate": "mcp",
+      "decl": "crates/mcp/src/supervisor/catalog.rs"
+    },
+    {
+      "id": "mcp.supervisor.catalog.search_result_framing_bytes",
+      "module": "tool_exposure",
+      "class": "searchable",
+      "type": "integer",
+      "default": "64",
       "krate": "mcp",
       "decl": "crates/mcp/src/supervisor/catalog.rs"
     },
@@ -10851,6 +11185,15 @@
         "min": 0,
         "max": 1024
       },
+      "krate": "obs",
+      "decl": "crates/obs/src/otel/lifecycle.rs"
+    },
+    {
+      "id": "obs.otel.lifecycle.project_loop_idle_poll",
+      "module": "session_checkpoint",
+      "class": "structural",
+      "type": "duration",
+      "default": "Duration::from_millis(250)",
       "krate": "obs",
       "decl": "crates/obs/src/otel/lifecycle.rs"
     },
@@ -12021,6 +12364,15 @@
       "decl": "crates/provider/src/anthropic.rs"
     },
     {
+      "id": "provider.anthropic.thinking_output_headroom_tokens",
+      "module": "provider_sampling",
+      "class": "searchable",
+      "type": "integer",
+      "default": "4096",
+      "krate": "provider",
+      "decl": "crates/provider/src/anthropic.rs"
+    },
+    {
       "id": "provider.catalog.anthropic_pricing_source",
       "module": "provider_routing",
       "class": "searchable",
@@ -12044,6 +12396,24 @@
       "class": "searchable",
       "type": "text",
       "default": "\"https://api.anthropic.com/v1\"",
+      "krate": "provider",
+      "decl": "crates/provider/src/catalog.rs"
+    },
+    {
+      "id": "provider.catalog.bounded_response_initial_bytes",
+      "module": "provider_routing",
+      "class": "searchable",
+      "type": "integer",
+      "default": "4096",
+      "krate": "provider",
+      "decl": "crates/provider/src/catalog.rs"
+    },
+    {
+      "id": "provider.catalog.catalog_page_initial_bytes",
+      "module": "provider_routing",
+      "class": "searchable",
+      "type": "integer",
+      "default": "16 * 1024",
       "krate": "provider",
       "decl": "crates/provider/src/catalog.rs"
     },
@@ -12470,6 +12840,15 @@
       "decl": "crates/provider/src/catalog.rs"
     },
     {
+      "id": "provider.catalog.model_health_entries_per_provider",
+      "module": "provider_routing",
+      "class": "searchable",
+      "type": "integer",
+      "default": "16",
+      "krate": "provider",
+      "decl": "crates/provider/src/catalog.rs"
+    },
+    {
       "id": "provider.catalog.model_router_slot_version",
       "module": "provider_routing",
       "class": "searchable",
@@ -12533,6 +12912,37 @@
       "decl": "crates/provider/src/catalog.rs"
     },
     {
+      "id": "provider.governor.max_route_id_bytes",
+      "module": "provider_sampling",
+      "class": "bounded",
+      "type": "integer",
+      "default": "640",
+      "domain": {
+        "min": 0,
+        "max": 640
+      },
+      "krate": "provider",
+      "decl": "crates/provider/src/governor.rs"
+    },
+    {
+      "id": "provider.governor.min_admission_ceiling",
+      "module": "provider_sampling",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1",
+      "krate": "provider",
+      "decl": "crates/provider/src/governor.rs"
+    },
+    {
+      "id": "provider.governor.probe_admission_ceiling",
+      "module": "provider_sampling",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1",
+      "krate": "provider",
+      "decl": "crates/provider/src/governor.rs"
+    },
+    {
       "id": "provider.governor_policy.circuit_open_for_secs",
       "module": "provider_sampling",
       "class": "searchable",
@@ -12566,6 +12976,15 @@
       },
       "krate": "provider",
       "decl": "crates/provider/src/governor_policy.rs"
+    },
+    {
+      "id": "provider.lib.error_body_initial_bytes",
+      "module": "provider_sampling",
+      "class": "searchable",
+      "type": "integer",
+      "default": "4096",
+      "krate": "provider",
+      "decl": "crates/provider/src/lib.rs"
     },
     {
       "id": "provider.lib.error_body_timeout",
@@ -12607,6 +13026,32 @@
       "domain": {
         "min": 0,
         "max": 64
+      },
+      "krate": "provider",
+      "decl": "crates/provider/src/lib.rs"
+    },
+    {
+      "id": "provider.lib.max_error_code_chars",
+      "module": "provider_sampling",
+      "class": "bounded",
+      "type": "integer",
+      "default": "128",
+      "domain": {
+        "min": 0,
+        "max": 128
+      },
+      "krate": "provider",
+      "decl": "crates/provider/src/lib.rs"
+    },
+    {
+      "id": "provider.lib.max_request_id_chars",
+      "module": "provider_sampling",
+      "class": "bounded",
+      "type": "integer",
+      "default": "256",
+      "domain": {
+        "min": 0,
+        "max": 256
       },
       "krate": "provider",
       "decl": "crates/provider/src/lib.rs"
@@ -12671,6 +13116,15 @@
       "class": "searchable",
       "type": "array",
       "default": "[\"cache_creation_tokens\", \"cache_write_tokens\"]",
+      "krate": "provider",
+      "decl": "crates/provider/src/openai.rs"
+    },
+    {
+      "id": "provider.openai.default_chat_api_root",
+      "module": "provider_sampling",
+      "class": "searchable",
+      "type": "text",
+      "default": "\"https://api.openai.com/v1\"",
       "krate": "provider",
       "decl": "crates/provider/src/openai.rs"
     },
@@ -12863,6 +13317,19 @@
       "domain": {
         "min": 0,
         "max": 1024
+      },
+      "krate": "provider",
+      "decl": "crates/provider/src/responses.rs"
+    },
+    {
+      "id": "provider.responses.max_message_phase_bytes",
+      "module": "provider_sampling",
+      "class": "bounded",
+      "type": "integer",
+      "default": "64",
+      "domain": {
+        "min": 0,
+        "max": 64
       },
       "krate": "provider",
       "decl": "crates/provider/src/responses.rs"
@@ -14082,6 +14549,15 @@
       "class": "searchable",
       "type": "integer",
       "default": "0",
+      "krate": "record",
+      "decl": "crates/record/src/session.rs"
+    },
+    {
+      "id": "record.session.unbounded_scope_admits_line",
+      "module": "session_checkpoint",
+      "class": "searchable",
+      "type": "boolean",
+      "default": "true",
       "krate": "record",
       "decl": "crates/record/src/session.rs"
     },
@@ -15323,6 +15799,24 @@
       "decl": "crates/tools/src/lib.rs"
     },
     {
+      "id": "tools.lib.mcp_pre_dispatch_terminal_ms",
+      "module": "tool_arguments",
+      "class": "searchable",
+      "type": "integer",
+      "default": "0",
+      "krate": "tools",
+      "decl": "crates/tools/src/lib.rs"
+    },
+    {
+      "id": "tools.lsp.capability.identity_unprovable",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "boolean",
+      "default": "false",
+      "krate": "tools",
+      "decl": "crates/tools/src/lsp/capability.rs"
+    },
+    {
       "id": "tools.lsp.capability.max_capability_components",
       "module": "tool_arguments",
       "class": "bounded",
@@ -16122,6 +16616,15 @@
       "decl": "crates/tools/src/process/policy.rs"
     },
     {
+      "id": "tools.process.supervisor.exhausted_job_sequence",
+      "module": "tool_arguments",
+      "class": "searchable",
+      "type": "integer",
+      "default": "0",
+      "krate": "tools",
+      "decl": "crates/tools/src/process/supervisor.rs"
+    },
+    {
       "id": "tools.schema.max_array_items",
       "module": "tool_arguments",
       "class": "bounded",
@@ -16557,6 +17060,19 @@
       "default": "include_str!(\"../../../governance/tunables-params.json\")",
       "krate": "tunables",
       "decl": "crates/tunables/src/params.rs"
+    },
+    {
+      "id": "tunables.profile_io.max_artifact_text_bytes",
+      "module": "budget_allocation",
+      "class": "bounded",
+      "type": "integer",
+      "default": "4 * 1024",
+      "domain": {
+        "min": 0,
+        "max": 4
+      },
+      "krate": "tunables",
+      "decl": "crates/tunables/src/profile_io.rs"
     },
     {
       "id": "tunables.profile_io.max_profile_bytes",
@@ -17607,6 +18123,15 @@
       "decl": "crates/workflow/src/bindings.rs"
     },
     {
+      "id": "workflow.bindings.agent_label_preview_max",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "40",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/bindings.rs"
+    },
+    {
       "id": "workflow.bindings.binding_absent_speculative_siblings",
       "module": "planner_fanout",
       "class": "searchable",
@@ -17625,6 +18150,24 @@
         "min": 0,
         "max": 1000
       },
+      "krate": "workflow",
+      "decl": "crates/workflow/src/bindings.rs"
+    },
+    {
+      "id": "workflow.bindings.min_task_attempts",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/bindings.rs"
+    },
+    {
+      "id": "workflow.bindings.retry_evidence_preview_max",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "512",
       "krate": "workflow",
       "decl": "crates/workflow/src/bindings.rs"
     },
@@ -17675,6 +18218,15 @@
     },
     {
       "id": "workflow.execution_policy.default_speculative_siblings",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "2",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/execution_policy.rs"
+    },
+    {
+      "id": "workflow.execution_policy.default_task_attempts",
       "module": "planner_fanout",
       "class": "searchable",
       "type": "integer",
@@ -17754,6 +18306,37 @@
       "class": "searchable",
       "type": "integer",
       "default": "4",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/lib.rs"
+    },
+    {
+      "id": "workflow.lib.cores_reserved_for_host",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "2",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/lib.rs"
+    },
+    {
+      "id": "workflow.lib.max_derived_concurrency",
+      "module": "planner_fanout",
+      "class": "bounded",
+      "type": "integer",
+      "default": "16",
+      "domain": {
+        "min": 0,
+        "max": 16
+      },
+      "krate": "workflow",
+      "decl": "crates/workflow/src/lib.rs"
+    },
+    {
+      "id": "workflow.lib.min_derived_concurrency",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1",
       "krate": "workflow",
       "decl": "crates/workflow/src/lib.rs"
     },
@@ -17895,6 +18478,15 @@
       "decl": "crates/workflow/src/task_dag/runtime.rs"
     },
     {
+      "id": "workflow.task_dag.runtime.bounded_reason_chars",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "1_024",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/runtime.rs"
+    },
+    {
       "id": "workflow.task_dag.runtime.empty_snapshot_max_id",
       "module": "planner_fanout",
       "class": "searchable",
@@ -17960,6 +18552,69 @@
       "default": "1",
       "krate": "workflow",
       "decl": "crates/workflow/src/task_dag/store.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_dependency_depth",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "32",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_edges",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "2_048",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_events",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "32_768",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_hierarchy_depth",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "16",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_joins",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "256",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_messages",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "4_096",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
+    },
+    {
+      "id": "workflow.task_dag.types.default_max_tasks",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "default": "256",
+      "krate": "workflow",
+      "decl": "crates/workflow/src/task_dag/types.rs"
     },
     {
       "id": "workflow.task_dag.types.hard_max_attempts",

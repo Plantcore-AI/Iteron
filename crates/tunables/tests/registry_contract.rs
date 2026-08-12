@@ -952,10 +952,17 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
             .iter()
             .map(|binding| binding.kind)
             .collect::<Vec<_>>(),
-        vec![SourceKind::RustBuilder, SourceKind::Builtin]
+        // Revision 17 gave `prompt_cache` a `UserConfig` binding. It was runtime-reachable and
+        // operator-unreachable, which is exactly the gap that revision closed; the ordering puts
+        // the operator source first because that is the precedence the resolver applies.
+        vec![
+            SourceKind::UserConfig,
+            SourceKind::RustBuilder,
+            SourceKind::Builtin
+        ]
     );
     assert_eq!(
-        prompt_cache.source.bindings[0].locator,
+        prompt_cache.source.bindings[1].locator,
         "iteron_provider::ProviderInstance::with_prompt_cache"
     );
     assert_eq!(

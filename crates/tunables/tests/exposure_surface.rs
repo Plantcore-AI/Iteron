@@ -19,6 +19,7 @@ fn document(values: Vec<iteron_tunables::ProfileValue>) -> ProfileDocument {
         module_scope: None,
         values,
         params: Vec::new(),
+        artifacts: Vec::new(),
     }
 }
 
@@ -167,4 +168,136 @@ fn a_profile_is_pinned_to_the_bytes_it_was_computed_against() {
         load_profile(rendered.as_bytes(), &"0".repeat(64)),
         Err(ProfileLoadError::DigestMismatch { .. })
     ));
+}
+
+/// Six families are operator-settable and deliberately NOT reachable by a profile.
+///
+/// Two of them — `permission_mode` and `bypass_permissions` — decide what the agent is allowed to
+/// do at all. A tuner that could set them could widen its own authority as a side effect of
+/// searching for a better score, which is the exact failure `Principal.md` forbids. The other four
+/// are excluded for consistency: they are CLI/environment controls whose value belongs to the
+/// invocation, not to a stored candidate.
+///
+/// This test exists because that decision otherwise lives only in prose. Widening the profile
+/// surface to include any of them must be a deliberate act that fails here first.
+#[test]
+fn the_six_deliberately_unreachable_families_stay_unreachable() {
+    const EXCLUDED: [&str; 6] = [
+        "max_tokens",
+        "permission_mode",
+        "bypass_permissions",
+        "verify_command",
+        "memory_enable",
+        "max_consecutive_tool_errors",
+    ];
+    let surface = surface();
+    for id in EXCLUDED {
+        let entry = surface
+            .families
+            .iter()
+            .find(|entry| entry.id == id)
+            .unwrap_or_else(|| panic!("family `{id}` no longer exists; revisit this exclusion"));
+        assert!(
+            !entry.profile_addressable,
+            "`{id}` became profile-addressable. For `permission_mode` and `bypass_permissions` \
+             that is an authority widening and must never land; for the others, update this test \
+             in the same change that makes it deliberate."
+        );
+    }
+}
+
+/// A prompt artifact replacement is text and only text.
+///
+/// The reason an untrusted optimizer may rewrite a tool description at all is that a description
+/// carries no authority: replacing it cannot change what the tool may do, what arguments it takes,
+/// or what it is called. These assertions pin the shape of that channel; the enforcement that a
+/// replacement never reaches a capability lives at the point of use.
+#[test]
+fn a_prompt_artifact_override_is_bounded_named_and_non_empty() {
+    use iteron_tunables::{ArtifactOverride, MAX_ARTIFACT_TEXT_BYTES};
+
+    let known = iteron_tunables::PROMPT_ARTIFACTS[0].id;
+    let mut document = document(Vec::new());
+
+    document.artifacts = vec![ArtifactOverride {
+        artifact: known.to_owned(),
+        text: "You are a careful agent.".to_owned(),
+    }];
+    assert!(validate_profile(&document).is_ok());
+    assert_eq!(
+        iteron_tunables::artifact_override(&document, known),
+        Some("You are a careful agent.")
+    );
+    assert_eq!(
+        iteron_tunables::artifact_override(&document, "prompt/nope@v1"),
+        None
+    );
+
+    document.artifacts = vec![ArtifactOverride {
+        artifact: "prompt/not-a-real-artifact@v1".to_owned(),
+        text: "x".to_owned(),
+    }];
+    assert!(matches!(
+        validate_profile(&document),
+        Err(ProfileLoadError::UnknownArtifact(_))
+    ));
+
+    // A blank replacement is refused rather than treated as deletion: silently dropping the
+    // instructions a runtime depends on is not a thing an optimizer should be able to do by
+    // submitting whitespace.
+    document.artifacts = vec![ArtifactOverride {
+        artifact: known.to_owned(),
+        text: "   \n".to_owned(),
+    }];
+    assert!(matches!(
+        validate_profile(&document),
+        Err(ProfileLoadError::EmptyArtifact(_))
+    ));
+
+    document.artifacts = vec![ArtifactOverride {
+        artifact: known.to_owned(),
+        text: "x".repeat(MAX_ARTIFACT_TEXT_BYTES + 1),
+    }];
+    assert!(matches!(
+        validate_profile(&document),
+        Err(ProfileLoadError::ArtifactTooLarge { .. })
+    ));
+
+    document.artifacts = vec![
+        ArtifactOverride {
+            artifact: known.to_owned(),
+            text: "a".to_owned(),
+        },
+        ArtifactOverride {
+            artifact: known.to_owned(),
+            text: "b".to_owned(),
+        },
+    ];
+    assert!(matches!(
+        validate_profile(&document),
+        Err(ProfileLoadError::DuplicateArtifact(_))
+    ));
+}
+
+/// Every published artifact id is addressable, and every one names a distinct module member.
+#[test]
+fn every_prompt_artifact_is_addressable_and_uniquely_identified() {
+    use std::collections::BTreeSet;
+    let ids: BTreeSet<&str> = iteron_tunables::PROMPT_ARTIFACTS
+        .iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(ids.len(), 10, "artifact ids must be unique");
+    for artifact in iteron_tunables::PROMPT_ARTIFACTS {
+        let mut document = document(Vec::new());
+        document.artifacts = vec![iteron_tunables::ArtifactOverride {
+            artifact: artifact.id.to_owned(),
+            text: "replacement".to_owned(),
+        }];
+        assert!(
+            validate_profile(&document).is_ok(),
+            "published artifact `{}` is not actually addressable",
+            artifact.id
+        );
+    }
 }

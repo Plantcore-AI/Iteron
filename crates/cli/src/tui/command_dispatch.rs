@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// Compaction-ledger segments listed by one `/context` panel. A long run accumulates far more
+/// segments than a screen holds, and the totals printed above the list stay readable only if the
+/// list itself stops.
+const LEDGER_SEGMENT_ROWS: usize = 24;
+/// Workspace-review summary lines printed for uncommitted changes. A wide refactor names thousands
+/// of paths; the counts appended below the list still describe every one of them.
+const WORKSPACE_REVIEW_SUMMARY_ROWS: usize = 120;
+/// Checkpoint and turn-start events offered as rewind targets. The scan walks newest first, so the
+/// cut drops only the oldest events, which are the least likely destinations.
+const REWIND_TARGET_ROWS: usize = 30;
+/// Irrecoverable paths listed in a rewind preview. Enough evidence to judge a refused destructive
+/// apply without paging an entire deleted tree into the panel.
+const IRRECOVERABLE_PREVIEW_ROWS: usize = 20;
+
 pub(super) async fn handle_registered_command(
     app: &mut App,
     session: &mut Session,
@@ -263,7 +277,7 @@ pub(super) async fn handle_registered_command(
                             ),
                         ));
                     }
-                    for segment in ledger.segments.iter().take(24) {
+                    for segment in ledger.segments.iter().take(LEDGER_SEGMENT_ROWS) {
                         rows.push(block::PanelRow::Note(format!(
                             "#{:02} {:?} · {:?} · {} tok · {} bytes · {:?}",
                             segment.ordinal,
@@ -763,7 +777,7 @@ pub(super) async fn handle_registered_command(
                     let mut rows = review
                         .summary()
                         .into_iter()
-                        .take(120)
+                        .take(WORKSPACE_REVIEW_SUMMARY_ROWS)
                         .map(block::PanelRow::Note)
                         .collect::<Vec<_>>();
                     let blind = review.changes.invisible_to_bare_diff().len();
@@ -1111,7 +1125,7 @@ pub(super) async fn handle_registered_command(
                                     | iteron_protocol::EventKind::TurnStart
                             )
                         })
-                        .take(30)
+                        .take(REWIND_TARGET_ROWS)
                     {
                         let kind = if matches!(
                             event.kind,
@@ -1188,7 +1202,11 @@ pub(super) async fn handle_registered_command(
                         "incomplete — destructive apply refused"
                     },
                 ));
-                for entry in preview.irrecoverable().iter().take(20) {
+                for entry in preview
+                    .irrecoverable()
+                    .iter()
+                    .take(IRRECOVERABLE_PREVIEW_ROWS)
+                {
                     rows.push(item("−", &entry.path, "would be deleted"));
                 }
                 app.panel("↩", "rewind preview", rows);

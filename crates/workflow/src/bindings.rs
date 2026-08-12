@@ -59,6 +59,18 @@ const AGENT_ACTIVITY_INTERVAL: Duration = Duration::from_secs(1);
 /// workers at all.
 const BINDING_ABSENT_SPECULATIVE_SIBLINGS: usize = 0;
 
+/// Width of a progress-row label derived from a prompt: a few words, short enough that the row
+/// stays on one line in a narrow terminal beside the counters that share it.
+const AGENT_LABEL_PREVIEW_MAX: usize = 40;
+
+/// Width of the retained failure text on a retried attempt. Long enough to keep the model's stated
+/// reason usable as retry evidence, bounded so a verbose terminal cannot inflate the durable log.
+const RETRY_EVIDENCE_PREVIEW_MAX: usize = 512;
+
+/// Attempt floor applied to the retry policy. A policy of zero attempts would silently skip the
+/// assigned worker, so the call is still made once and the policy only ever adds reassignments.
+const MIN_TASK_ATTEMPTS: usize = 1;
+
 /// Fresh-per-run engine state. All fields are interior-mutable so the `Fn` host closures can share
 /// one `Arc<RunState>` without a `&mut`.
 pub struct RunState {
@@ -220,14 +232,14 @@ fn label_for(prompt: &str, idx: usize) -> String {
     if trimmed.is_empty() {
         return format!("agent {idx}");
     }
-    truncate_preview(trimmed, 40)
+    truncate_preview(trimmed, AGENT_LABEL_PREVIEW_MAX)
 }
 
 /// Keep a refused call identifiable without allowing its label to become a multi-line or terminal
 /// control surface. Empty labels fall back to the same prompt-derived identity as admitted calls.
 fn refusal_label(label: Option<&str>, prompt: &str, idx: usize) -> String {
     label
-        .map(|label| truncate_preview(label, 40))
+        .map(|label| truncate_preview(label, AGENT_LABEL_PREVIEW_MAX))
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| label_for(prompt, idx))
 }
@@ -862,7 +874,7 @@ async fn run_plain(
     task: TaskId,
     speculative_siblings: usize,
 ) -> (Record, String) {
-    let attempts = env.task_retry.max_attempts().max(1);
+    let attempts = env.task_retry.max_attempts().max(MIN_TASK_ATTEMPTS);
     let mut assigned = call.clone();
     let mut lineage = AttemptLineage::initial();
     for attempt in 0..attempts {
@@ -904,7 +916,7 @@ async fn run_plain(
                 }
                 let evidence = reason
                     .as_deref()
-                    .map(|value| truncate_preview(value, 512))
+                    .map(|value| truncate_preview(value, RETRY_EVIDENCE_PREVIEW_MAX))
                     .unwrap_or_else(|| "definite negative terminal".into());
                 let assignment = match env.task_retry.on_failure() {
                     crate::TaskFailureAction::RetrySame => AttemptAssignment::RetrySame,

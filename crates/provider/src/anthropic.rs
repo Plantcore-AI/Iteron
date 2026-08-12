@@ -23,6 +23,9 @@ const MAX_NATIVE_CONTENT_BLOCKS: usize = 4096;
 const MAX_NATIVE_STATE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_ID_OR_NAME_BYTES: usize = 1024;
 const MAX_SIGNATURE_BYTES: usize = 1024 * 1024;
+/// Output room reserved above the thinking budget. `max_tokens` covers thinking plus the visible
+/// reply, so a request whose ceiling only fits the budget returns nothing usable.
+const THINKING_OUTPUT_HEADROOM_TOKENS: u32 = 4096;
 static NEXT_DIRECT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 pub struct Anthropic {
@@ -191,7 +194,9 @@ impl Anthropic {
         if req.thinking_budget > 0 && capabilities.extended_thinking {
             body["thinking"] =
                 serde_json::json!({"type":"enabled","budget_tokens": req.thinking_budget});
-            let need = req.thinking_budget.saturating_add(4096);
+            let need = req
+                .thinking_budget
+                .saturating_add(THINKING_OUTPUT_HEADROOM_TOKENS);
             if req.max_tokens < need {
                 body["max_tokens"] = serde_json::json!(need);
             }

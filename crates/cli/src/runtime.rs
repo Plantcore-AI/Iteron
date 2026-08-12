@@ -776,6 +776,11 @@ struct StreamTiming {
 /// Coalesced progress for internal provider turns whose text is consumed by the kernel rather than
 /// appended to the assistant transcript. A single latest update is enough for the UI; limiting
 /// sends to the draw cadence prevents a chatty SSE stream from filling the unbounded event bridge.
+/// Minimum spacing between coalesced internal-progress emissions. Matches the UI draw cadence: a
+/// faster rate would add events the frame loop cannot show, a slower one would make the kernel
+/// activity line visibly lag the stream.
+const INTERNAL_STREAM_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
 struct InternalStreamProgress {
     kind: crate::workflow::KernelActivityKind,
     tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
@@ -785,8 +790,6 @@ struct InternalStreamProgress {
 }
 
 impl InternalStreamProgress {
-    const INTERVAL: Duration = Duration::from_millis(100);
-
     fn new(
         kind: crate::workflow::KernelActivityKind,
         tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
@@ -829,7 +832,7 @@ impl InternalStreamProgress {
         let counts = (self.output_chars, self.thinking_chars);
         let due = self.last_emitted.is_none_or(|(output, thinking, at)| {
             counts != (output, thinking)
-                && (force || now.saturating_duration_since(at) >= Self::INTERVAL)
+                && (force || now.saturating_duration_since(at) >= INTERNAL_STREAM_PROGRESS_INTERVAL)
         });
         if !due && !force {
             return;

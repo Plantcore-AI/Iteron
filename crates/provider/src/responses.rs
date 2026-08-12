@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 const DEFAULT_ROOT: &str = "https://api.openai.com/v1";
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const ERROR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest `phase` marker accepted on an output message. It is a short enum-like tag, so a longer
+/// one is malformed rather than merely unfamiliar.
+const MAX_MESSAGE_PHASE_BYTES: usize = 64;
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -1200,7 +1203,7 @@ fn validate_native_message(item: &serde_json::Value) -> Result<(), ProviderError
             phase.as_str().ok_or_else(|| {
                 ProviderError::Decode("Responses message phase was not a string".into())
             })?,
-            64,
+            MAX_MESSAGE_PHASE_BYTES,
             "message phase",
         )?;
     }

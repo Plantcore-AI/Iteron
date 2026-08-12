@@ -7,6 +7,11 @@ use unicode_normalization::UnicodeNormalization as _;
 
 use super::{Entry, MAX_DETAIL_BYTES, MAX_INDEX_BLOCK_BYTES, MAX_QUERY_BYTES, semantic_text};
 
+/// Ceiling on the buffer reserved before any block text is projected. The caller's byte cap can be
+/// far larger than the block it is about to bound, so reserving the cap itself would charge every
+/// small block for the largest one the viewer tolerates.
+const PROJECTION_RESERVE_BYTES: usize = 64 * 1024;
+
 pub(super) fn block_label(kind: &block::BlockKind) -> &'static str {
     match kind {
         block::BlockKind::User(_) => "user",
@@ -139,7 +144,7 @@ fn bounded_fields<const N: usize>(
     cancelled: &AtomicBool,
     fields: [&str; N],
 ) -> Result<(String, bool), ()> {
-    let mut text = String::with_capacity(max_bytes.min(64 * 1024));
+    let mut text = String::with_capacity(max_bytes.min(PROJECTION_RESERVE_BYTES));
     for field in fields {
         if cancelled.load(Ordering::Relaxed) {
             return Err(());
@@ -183,7 +188,7 @@ fn raw_tool_bounded(
         output: &card.output,
     };
     let mut writer = BoundedJsonWriter {
-        bytes: Vec::with_capacity(max_bytes.min(64 * 1024)),
+        bytes: Vec::with_capacity(max_bytes.min(PROJECTION_RESERVE_BYTES)),
         max_bytes,
         cancelled,
         truncated: false,

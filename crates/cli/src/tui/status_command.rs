@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Leading hex characters of a digest shown in a status row. Twelve separate every digest a single
+/// run actually carries, while leaving the row wide enough for its label and value.
+const STATUS_DIGEST_PREFIX_CHARS: usize = 12;
+
 pub(super) async fn handle(app: &mut App, session: &mut Session) {
     let snapshot = match session.control(app_server::Control::OperatorStatus).await {
         Some(app_server::ControlReply::OperatorStatus(snapshot)) => *snapshot,
@@ -172,7 +176,7 @@ fn format_microusd(value: u64) -> String {
 }
 
 fn short_status_digest(value: &str) -> &str {
-    value.get(..12).unwrap_or(value)
+    value.get(..STATUS_DIGEST_PREFIX_CHARS).unwrap_or(value)
 }
 
 fn append_budget(rows: &mut Vec<block::PanelRow>, budget: &crate::runtime::RuntimeBudgetHealth) {

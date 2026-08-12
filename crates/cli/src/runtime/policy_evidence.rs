@@ -17,6 +17,10 @@ pub(super) const SCHEDULER_SLOT: &str = "core/scheduler";
 pub(super) const VERIFIER_SLOT: &str = "core/verifier";
 pub(super) const MODEL_ROUTER_SLOT: &str = "core/model_router";
 
+/// Propensity recorded for the action a deterministic slot selected: the built-in strategies do not
+/// sample, so the selected action was taken with probability one (1e6 parts per million).
+const DETERMINISTIC_PROPENSITY_PPM: u32 = 1_000_000;
+
 pub(super) struct PolicyTurnCounterBaseline {
     usage: Usage,
     provider_attempts: u32,
@@ -125,7 +129,7 @@ impl PolicyDecisionDraft {
             disposition,
             selected_score_micros: None,
             propensity_ppm: (disposition == PolicyDecisionDisposition::Selected)
-                .then_some(1_000_000),
+                .then_some(DETERMINISTIC_PROPENSITY_PPM),
             feature_schema_id: feature_schema_id.to_owned(),
             feature_digest_sha256: digest_json("iteron:policy-features:v1", features)?,
             fixed_invariants_digest_sha256: digest_json(

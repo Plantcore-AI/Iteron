@@ -132,7 +132,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/workflow/src/schema_retry.rs")]), // 66 schema_retry_jitter
     source!(Builtin, Builtin, "crates/provider/src/catalog.rs"), // 67 provider_connect_tls_timeout
     source!(Builtin, Builtin, "crates/cli/src/image_input/decode.rs"), // 68 multimodal_input_admission_decode_envelope
-    source!(Builtin, Builtin, "crates/cli/src/app_server/backpressure.rs"), // 69 app_server_sq_eq_backpressure
+    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/app_server/backpressure.rs")]), // 69 app_server_sq_eq_backpressure
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 70 provider_discovery_account_probe_cache_policy
     source!(OperatorInput, Operator, "iteron_protocol::Op"), // 71 operator_prompt_stream
     source!(Catalog, Repository, "crates/cli/src/main.rs"), // 72 builtin_prompt_corpus
@@ -181,7 +181,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(DerivedPolicy, Builtin, "crates/cli/src/runtime.rs"), // 115 effecting_tool_concurrency
     source!(Builtin, Builtin, "crates/cli/src/runtime.rs"), // 116 write_set_conflict_admission
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/runtime/tool_output_spill.rs"), (RuntimeObservation, RuntimeObservation, "crates/cli/src/runtime.rs")]), // 117 tool_output_spill_to_disk_policy
-    source!([(RuntimeObservation, RuntimeObservation, "selected route image capability"), (Builtin, Builtin, "crates/cli/src/image_input/routing.rs")]), // 118 binary_media_inspection_routing
+    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (RuntimeObservation, RuntimeObservation, "selected route image capability"), (Builtin, Builtin, "crates/cli/src/image_input/routing.rs")]), // 118 binary_media_inspection_routing
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/tools/src/lsp/policy.rs"), (RuntimeObservation, RuntimeObservation, "crates/tools/src/lsp/pool.rs")]), // 119 lsp_server_language_selection
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/tools/src/lsp/policy.rs"), (RuntimeObservation, RuntimeObservation, "crates/tools/src/lsp/pool.rs")]), // 120 lsp_timeout_restart_policy
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (DerivedPolicy, Builtin, "crates/ctx/src/runtime_policy.rs")]), // 121 lsp_result_context_budget

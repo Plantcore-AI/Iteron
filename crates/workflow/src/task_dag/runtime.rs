@@ -29,6 +29,9 @@ const EMPTY_SNAPSHOT_MAX_ID: u64 = 0;
 const ATTEMPT_TOKEN_CEILING: u64 = 100_000_000;
 const TASK_COST_CEILING_MICROUSD: u64 = 100_000_000_000;
 const TASK_WALL_CEILING_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+/// Characters retained from a recovery reason before it is journaled. A reason is diagnostic text
+/// from an untrusted child, so it is truncated rather than allowed to size the durable log.
+const BOUNDED_REASON_CHARS: usize = 1_024;
 
 struct Backend(TaskDagStore);
 
@@ -676,7 +679,7 @@ fn bounded_reason(value: &str) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
-        .take(1_024)
+        .take(BOUNDED_REASON_CHARS)
         .collect()
 }
 

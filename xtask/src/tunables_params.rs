@@ -502,7 +502,7 @@ fn module_for(krate: &str, relative: &str) -> ModuleId {
 
 /// Print the whole optimization surface and assert the counts the PRD fixed. This is the gate that
 /// keeps the export honest: a surface that claims more than the loader accepts fails here.
-pub(crate) fn surface(root: &Path) -> Result<()> {
+pub(crate) fn surface(root: &Path, write: bool) -> Result<()> {
     let surface = iteron_tunables::surface();
     let counts = &surface.counts;
     println!("families                    {}", counts.families);
@@ -551,7 +551,95 @@ pub(crate) fn surface(root: &Path) -> Result<()> {
         bail!("parameter module assignment is not total");
     }
     let path = root.join("governance/tunables-surface.json");
-    std::fs::write(&path, iteron_tunables::surface_json()?)?;
-    println!("\nwrote governance/tunables-surface.json");
+    let rendered = iteron_tunables::surface_json()?;
+    if write {
+        std::fs::write(&path, &rendered)?;
+        println!("\nwrote governance/tunables-surface.json");
+        return Ok(());
+    }
+    let committed =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    if committed != rendered {
+        bail!(
+            "governance/tunables-surface.json is stale. Run `cargo run -p iteron-xtask -- \
+             tunables generate-surface`."
+        );
+    }
+    println!("\ngovernance/tunables-surface.json matches the compiled surface");
+    Ok(())
+}
+
+/// Per-crate exposure baseline.
+///
+/// The property worth enforcing is directional, not absolute: the exposed surface may grow, and
+/// the read-only `structural` share may not grow silently. A constant quietly reclassified as
+/// structural is a control leaving the surface, which is exactly the regression this whole change
+/// exists to prevent — and it would otherwise look like nothing at all in a diff.
+pub(crate) fn census_check(root: &Path, write: bool) -> Result<()> {
+    let rows = scan(root)?;
+    let mut by_crate: BTreeMap<String, [usize; 3]> = BTreeMap::new();
+    for row in &rows {
+        let slot = by_crate.entry(row.krate.clone()).or_default();
+        match row.class {
+            ParamClass::Searchable => slot[0] += 1,
+            ParamClass::Bounded => slot[1] += 1,
+            ParamClass::Structural => slot[2] += 1,
+        }
+    }
+    let settable: usize = by_crate.values().map(|slot| slot[0] + slot[1]).sum();
+    let structural: usize = by_crate.values().map(|slot| slot[2]).sum();
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "total": rows.len(),
+        "settable": settable,
+        "structural": structural,
+        "by_crate": by_crate
+            .iter()
+            .map(|(krate, [searchable, bounded, structural])| {
+                (
+                    krate.clone(),
+                    serde_json::json!({
+                        "searchable": searchable,
+                        "bounded": bounded,
+                        "structural": structural,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>(),
+    });
+    let mut rendered = serde_json::to_string_pretty(&document)?;
+    rendered.push('\n');
+    let path = root.join("governance/constants-census.json");
+    if write {
+        std::fs::write(&path, &rendered)?;
+        println!(
+            "wrote governance/constants-census.json ({settable} settable, {structural} structural)"
+        );
+        return Ok(());
+    }
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+    )?;
+    let baseline_settable = committed["settable"].as_u64().unwrap_or(0) as usize;
+    let baseline_structural = committed["structural"]
+        .as_u64()
+        .unwrap_or(usize::MAX as u64) as usize;
+    if settable < baseline_settable {
+        bail!(
+            "the exposed surface shrank: {settable} settable parameters against a baseline of \
+             {baseline_settable}. Exposure is not supposed to go backwards; if this is deliberate, \
+             update the baseline with `tunables generate-census` in the same change."
+        );
+    }
+    if structural > baseline_structural {
+        bail!(
+            "read-only parameters grew from {baseline_structural} to {structural}: something left \
+             the addressable surface. If that is deliberate, say so by updating the baseline."
+        );
+    }
+    println!(
+        "constants census within baseline: {settable} settable (>= {baseline_settable}), \
+         {structural} structural (<= {baseline_structural})"
+    );
     Ok(())
 }

@@ -63,6 +63,15 @@ pub use usage::{UsageIncompleteReason, UsageReport};
 /// unbounded allocation in the agent.
 pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Initial capacity for a captured error body. Provider error payloads are small JSON documents,
+/// so one page absorbs them without reserving anything near `MAX_ERROR_BODY_BYTES`.
+const ERROR_BODY_INITIAL_BYTES: usize = 4096;
+/// Longest provider error code kept after sanitizing. Codes are short identifiers; anything longer
+/// is payload smuggled into a diagnostic field.
+const MAX_ERROR_CODE_CHARS: usize = 128;
+/// Longest request id kept after sanitizing. Provider request ids are opaque but bounded, and this
+/// value is echoed into diagnostics.
+const MAX_REQUEST_ID_CHARS: usize = 256;
 
 /// TCP+TLS handshake budget. A peer that cannot complete a handshake this fast is unreachable
 /// for practical purposes, and failing early leaves the request deadline for the real work.
@@ -632,7 +641,7 @@ pub(crate) async fn api_error_from_response(
     let retry_after = retry_after_from_headers(response.headers());
     let request_id = request_id_from_headers(response.headers());
     let mut stream = response.bytes_stream();
-    let mut bytes = Vec::with_capacity(4096);
+    let mut bytes = Vec::with_capacity(ERROR_BODY_INITIAL_BYTES);
     let mut body_truncated = false;
     let deadline = tokio::time::Instant::now() + ERROR_BODY_TIMEOUT;
     loop {
@@ -873,7 +882,7 @@ fn sanitized_code(code: Option<String>) -> Option<String> {
     let code = code?;
     let clean: String = code
         .chars()
-        .take(128)
+        .take(MAX_ERROR_CODE_CHARS)
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })
@@ -1081,7 +1090,7 @@ fn portable_failure_kind(code: &str) -> Option<FailureKind> {
 fn sanitize_request_id(value: String) -> Option<String> {
     let clean: String = value
         .chars()
-        .take(256)
+        .take(MAX_REQUEST_ID_CHARS)
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })

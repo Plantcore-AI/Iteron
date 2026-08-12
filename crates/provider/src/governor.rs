@@ -14,6 +14,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Longest route identifier this governor will hold. Route ids are operator-supplied strings kept
+/// in memory for the whole run, so they are bounded before they reach the route map.
+const MAX_ROUTE_ID_BYTES: usize = 640;
+/// Concurrency ceiling imposed while quota is unknown or its snapshot has gone stale: one probe,
+/// whose response refreshes the counters, instead of a fan-out against numbers we cannot trust.
+const PROBE_ADMISSION_CEILING: usize = 1;
+/// Floor under a quota-derived ceiling. A route pinned at zero could never issue the request that
+/// would refresh its own remaining count.
+const MIN_ADMISSION_CEILING: usize = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionReason {
     UnknownRoute,
@@ -85,7 +95,7 @@ impl ProviderGovernor {
         }
         let mut routes = BTreeMap::new();
         for id in ids {
-            if id.is_empty() || id.len() > 640 || routes.contains_key(&id) {
+            if id.is_empty() || id.len() > MAX_ROUTE_ID_BYTES || routes.contains_key(&id) {
                 return Err(GovernorPolicyError::RouteIdentity);
             }
             routes.insert(
@@ -141,7 +151,10 @@ impl ProviderGovernor {
     /// owns the durable policy-transition transaction and may roll back a newly inserted route if
     /// that append fails.
     pub fn register_route(&self, route_id: String) -> Result<bool, GovernorPolicyError> {
-        if route_id.is_empty() || route_id.len() > 640 || route_id.chars().any(char::is_control) {
+        if route_id.is_empty()
+            || route_id.len() > MAX_ROUTE_ID_BYTES
+            || route_id.chars().any(char::is_control)
+        {
             return Err(GovernorPolicyError::RouteIdentity);
         }
         let mut routes = self
@@ -412,7 +425,7 @@ fn quota_decision(
     let Some(rate) = &route.rate else {
         return match policy.unknown_quota {
             UnknownQuotaPolicy::Conservative => {
-                *ceiling = (*ceiling).min(1);
+                *ceiling = (*ceiling).min(PROBE_ADMISSION_CEILING);
                 None
             }
             UnknownQuotaPolicy::Reject => Some(Admission::Rejected(AdmissionReason::QuotaUnknown)),
@@ -429,11 +442,15 @@ fn quota_decision(
     // conservative probe so a successful response can refresh them; otherwise a zero snapshot
     // would deadlock the route forever.
     if advertised_reset.is_some_and(|reset| elapsed >= reset) {
-        *ceiling = (*ceiling).min(1);
+        *ceiling = (*ceiling).min(PROBE_ADMISSION_CEILING);
         return None;
     }
     if let Some(remaining) = rate.snapshot.requests_remaining {
-        *ceiling = (*ceiling).min(usize::try_from(remaining).unwrap_or(usize::MAX).max(1));
+        *ceiling = (*ceiling).min(
+            usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .max(MIN_ADMISSION_CEILING),
+        );
     }
     let requests_low = rate
         .snapshot

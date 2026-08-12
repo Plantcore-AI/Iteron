@@ -34,6 +34,9 @@ const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_REASONING_STATE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 const OPENAI_CHAT_REASONING_FORMAT: &str = "openai.chat.reasoning-content.v1";
+/// API root used when the caller names no endpoint. First-party OpenAI, version prefix included,
+/// because `ApiRoot` demands the complete path prefix rather than appending one.
+const DEFAULT_CHAT_API_ROOT: &str = "https://api.openai.com/v1";
 
 static NEXT_DIRECT_CHAT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
@@ -69,7 +72,7 @@ impl OpenAiCompat {
 
     /// Build against an exact API root, including its complete version/path prefix.
     pub fn try_new(key: String, api_root: Option<String>) -> Result<Self, ProviderError> {
-        let api_root = ApiRoot::parse(api_root.as_deref().unwrap_or("https://api.openai.com/v1"))?;
+        let api_root = ApiRoot::parse(api_root.as_deref().unwrap_or(DEFAULT_CHAT_API_ROOT))?;
         Self::with_root(key, api_root)
     }
 

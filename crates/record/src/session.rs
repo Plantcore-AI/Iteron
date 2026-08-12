@@ -48,6 +48,9 @@ const RUN_ID_NANOS_FALLBACK: u128 = 0;
 /// An index manifest whose type cannot be read is treated as missing, so the projection is
 /// republished rather than trusted (the cache is never a second source of truth).
 const UNSTATABLE_INDEX_IS_MISSING: bool = true;
+/// A scoped expansion without an `upto` seq is not truncated at all, so every replayed line of the
+/// run stays in scope; the bound only ever removes lines a caller explicitly asked to cut.
+const UNBOUNDED_SCOPE_ADMITS_LINE: bool = true;
 /// An append-era index with more than two physical writes per live rollout is abandoned after one
 /// extra line and rebuilt. This makes index work O(M), independent of historical turn writes K.
 const INDEX_SCAN_LINES_PER_LIVE_RUN: usize = 2;
@@ -2181,7 +2184,10 @@ fn expand_scoped_from(
     }
 
     for l in &lines {
-        if upto.map(|u| l.seq.0 <= u).unwrap_or(true) {
+        if upto
+            .map(|u| l.seq.0 <= u)
+            .unwrap_or(UNBOUNDED_SCOPE_ADMITS_LINE)
+        {
             events.push(ScopedEvent {
                 event: l.event.clone(),
                 tenant: l.tenant.clone(),

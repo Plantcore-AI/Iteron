@@ -11,6 +11,9 @@ const STDIN_CLOSED_UNKNOWN: bool = false;
 /// Retention gaps are reported only when the supervisor says so. Absent the flag, the displayed
 /// frame is treated as contiguous rather than annotating output the supervisor never called lossy.
 const RETENTION_GAP_UNKNOWN: bool = false;
+/// Lines rendered from one attached-job output frame. The cursor printed with the frame lets the
+/// operator pull the rest, so stopping here withholds output rather than losing it.
+const JOB_FRAME_PREVIEW_LINES: usize = 80;
 
 #[derive(Debug, Clone)]
 pub(super) struct AttachedJob {
@@ -292,7 +295,7 @@ fn render_page(app: &mut App, job_id: &str, value: &serde_json::Value) {
                 if gap { " · retention gap" } else { "" }
             ),
         ));
-        for line in text.lines().take(80) {
+        for line in text.lines().take(JOB_FRAME_PREVIEW_LINES) {
             rows.push(block::PanelRow::Note(format!("{stream}> {line}")));
         }
     }

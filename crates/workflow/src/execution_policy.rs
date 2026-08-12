@@ -19,6 +19,9 @@ const MAX_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3_600);
 const DEFAULT_SPECULATIVE_SIBLINGS: usize = 2;
 /// Built-in loser-cleanup window, sized for a cancelled child to unwind without holding the run.
 const DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Built-in task attempt ceiling: the assigned worker plus exactly one reassignment, so a transient
+/// negative terminal is retried once without letting a genuinely impossible task loop on budget.
+const DEFAULT_TASK_ATTEMPTS: usize = 2;
 
 /// Immutable recursion ceiling for workflow-launched agents. A child may run tools but may never
 /// become a second workflow composition root.
@@ -346,7 +349,7 @@ impl TaskRetryPolicy {
 
 impl Default for TaskRetryPolicy {
     fn default() -> Self {
-        Self::new(2, TaskFailureAction::Reassign, true)
+        Self::new(DEFAULT_TASK_ATTEMPTS, TaskFailureAction::Reassign, true)
             .expect("built-in task retry policy is valid")
     }
 }

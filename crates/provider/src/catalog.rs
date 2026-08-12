@@ -172,6 +172,15 @@ const MAX_ACCOUNT_PROBE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCOUNT_PAGES: usize = 32;
 const MAX_ACCOUNTS: usize = 10_000;
 const MAX_PAGE_TOKEN_BYTES: usize = 4096;
+/// Model-health slots budgeted per provider slot. One provider instance serves many models, so the
+/// model table has to grow well past the provider table before it starts evicting.
+const MODEL_HEALTH_ENTRIES_PER_PROVIDER: usize = 16;
+/// Initial capacity for a bounded response body. One TCP-sized chunk, so the common short reply
+/// never reallocates while an oversized `max_bytes` still cannot preallocate the whole bound.
+const BOUNDED_RESPONSE_INITIAL_BYTES: usize = 4096;
+/// Initial capacity for a catalog page body. Catalog pages run far larger than error bodies, so
+/// they start where a typical page already fits.
+const CATALOG_PAGE_INITIAL_BYTES: usize = 16 * 1024;
 const FIREWORKS_PAGE_SIZE: usize = 200;
 const MAX_FIREWORKS_CATALOG_ACCOUNTS: usize = 64;
 const MAX_FIREWORKS_CATALOG_PAGES: usize = 128;
@@ -1463,7 +1472,7 @@ async fn read_bounded_response(
     max_bytes: usize,
     label: &'static str,
 ) -> Result<Vec<u8>, ProviderError> {
-    let mut body = Vec::with_capacity(4096.min(max_bytes));
+    let mut body = Vec::with_capacity(BOUNDED_RESPONSE_INITIAL_BYTES.min(max_bytes));
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
         let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
@@ -2034,7 +2043,7 @@ async fn read_catalog_body(
     response: reqwest::Response,
     total_bytes_before: usize,
 ) -> Result<Vec<u8>, ProviderError> {
-    let mut body = Vec::with_capacity(16 * 1024);
+    let mut body = Vec::with_capacity(CATALOG_PAGE_INITIAL_BYTES);
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
         let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
@@ -2601,7 +2610,7 @@ impl ProviderHealthStore {
             inner: Arc::new(Mutex::new(HealthState::default())),
             max_entries: max_entries.clamp(1, MAX_HEALTH_ENTRIES),
             max_model_entries: max_entries
-                .saturating_mul(16)
+                .saturating_mul(MODEL_HEALTH_ENTRIES_PER_PROVIDER)
                 .clamp(1, MAX_MODEL_HEALTH_ENTRIES),
         }
     }

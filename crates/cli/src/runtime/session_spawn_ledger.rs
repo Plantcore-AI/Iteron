@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// contain many workflow runs.
 pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = 4_096;
 
+/// Highest session spawn cap an operator may configure. Beyond this the allowance stops bounding
+/// anything a session could realistically exhaust, so the configuration is rejected outright.
+pub(crate) const MAX_SESSION_SPAWN_CAP: usize = 100_000;
+
 #[derive(Debug)]
 pub(crate) struct SessionSpawnLedger {
     limit: usize,
@@ -18,7 +22,7 @@ pub(crate) struct SessionSpawnLedger {
 
 impl SessionSpawnLedger {
     pub(crate) fn new(limit: usize) -> Result<Self, &'static str> {
-        if limit > 100_000 {
+        if limit > MAX_SESSION_SPAWN_CAP {
             return Err("session spawn cap exceeds the canonical maximum");
         }
         Ok(Self {

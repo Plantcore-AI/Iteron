@@ -16,6 +16,9 @@ pub const MAX_MCP_SEARCH_DESCRIPTION_BYTES: usize = 512;
 const MAX_SCHEMA_DEPTH: usize = 32;
 const MAX_SCHEMA_NODES: usize = 4096;
 const SUMMARY_MARKER: &str = "\n[truncated]";
+/// Per-result overhead charged against the search output ceiling on top of the strings themselves,
+/// covering the separators and labels the renderer adds around every entry.
+const SEARCH_RESULT_FRAMING_BYTES: usize = 64;
 
 /// Stable permission-binding identity within one owned supervisor lineage. Generation is
 /// deliberately absent: an unchanged tool contract keeps its identity across that instance's
@@ -207,7 +210,7 @@ impl ManagedCatalog {
                 .checked_add(description.len())
                 .and_then(|bytes| bytes.checked_add(entry.identity.server_name.len()))
                 .and_then(|bytes| bytes.checked_add(entry.identity.bare_name.len()))
-                .and_then(|bytes| bytes.checked_add(64))
+                .and_then(|bytes| bytes.checked_add(SEARCH_RESULT_FRAMING_BYTES))
                 .ok_or(McpError::InvalidToolSearch {
                     field: "output",
                     limit: MAX_MCP_SEARCH_OUTPUT_BYTES,

@@ -14,6 +14,10 @@ const MAX_VALUE_BYTES: usize = 32 * 1024;
 const MAX_REQUEST_BYTES: u64 = 128 * 1024;
 const MAX_LISTED_REQUESTS: usize = 80;
 const MAX_LISTED_BUNDLES: usize = 40;
+/// Characters a JSON value may occupy on one request row. A wider value wraps and breaks the
+/// column alignment the row shares with every other listed request; longer values are elided, and
+/// the ellipsis that replaces the tail costs one of these characters.
+const ONE_LINE_VALUE_MAX_CHARS: usize = 120;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -364,8 +368,13 @@ fn split_once_whitespace(value: &str) -> Option<(&str, &str)> {
 
 fn one_line_value(value: &serde_json::Value) -> String {
     let mut text = value.to_string().replace(['\n', '\r'], " ");
-    if text.chars().count() > 120 {
-        text = format!("{}…", text.chars().take(119).collect::<String>());
+    if text.chars().count() > ONE_LINE_VALUE_MAX_CHARS {
+        text = format!(
+            "{}…",
+            text.chars()
+                .take(ONE_LINE_VALUE_MAX_CHARS - 1)
+                .collect::<String>()
+        );
     }
     text
 }

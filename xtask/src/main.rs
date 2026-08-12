@@ -56,7 +56,19 @@ fn main() -> Result<()> {
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "surface" => {
-            tunables_params::surface(&root)?;
+            tunables_params::surface(&root, false)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "generate-surface" => {
+            tunables_params::surface(&root, true)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "census-check" => {
+            tunables_params::census_check(&root, false)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "generate-census" => {
+            tunables_params::census_check(&root, true)?;
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "constants-audit" => {
@@ -165,7 +177,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|surface> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|surface|generate-surface|census-check|generate-census> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

@@ -11,6 +11,9 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// server fails fast instead of consuming the full request budget.
 const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OAUTH_SECRET_BYTES: usize = 8192;
+/// Ceiling on a configured OAuth client id. It is a registered identifier, not a credential, so it
+/// is bounded far tighter than a secret and never reaches a request body unchecked.
+const MAX_OAUTH_CLIENT_ID_BYTES: usize = 1024;
 
 /// Refresh authority. Secrets are process-local and this type deliberately implements neither
 /// `Debug` nor `Display`.
@@ -104,12 +107,12 @@ impl OAuthRefreshGrant {
         }
         if let Some(client_id) = &client_id
             && (client_id.is_empty()
-                || client_id.len() > 1024
+                || client_id.len() > MAX_OAUTH_CLIENT_ID_BYTES
                 || client_id.chars().any(char::is_control))
         {
             return Err(McpError::InvalidEndpoint {
                 field: "oauth_client_id",
-                limit: 1024,
+                limit: MAX_OAUTH_CLIENT_ID_BYTES,
             });
         }
         Ok(Self {

@@ -16,6 +16,9 @@ pub(super) const MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
 /// frames. The count ceiling separately bounds tiny-frame iteration overhead.
 pub(super) const MAX_ANIMATION_FRAMES: u32 = 256;
 const MAX_TOTAL_FRAME_PIXELS: u64 = 64 * 1024 * 1024;
+/// A PNG with no animation control chunk still decodes one frame, so the aggregate-work check
+/// below must charge it that much rather than nothing.
+const STILL_IMAGE_FRAME_COUNT: u32 = 1;
 /// Caller-owned output plus each decoder's internal workspace remain independently bounded.
 const MAX_DECODE_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
@@ -54,7 +57,7 @@ fn validate_png(
                     .num_frames
                     .saturating_add(u32::from(info.frame_control.is_none()))
             })
-            .unwrap_or(1);
+            .unwrap_or(STILL_IMAGE_FRAME_COUNT);
         (info.width, info.height, frames)
     };
     validate_animation_bounds(width, height, frames, max_dimension, max_frames)?;

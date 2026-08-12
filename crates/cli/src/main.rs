@@ -394,11 +394,25 @@ struct SystemPromptAssembly {
     bundle: iteron_ctx::InstructionBundle,
 }
 
+/// The base system prompt, after any operator-supplied artifact replacement.
+///
+/// A prompt artifact is model-visible text and only that: replacing it changes what the model
+/// reads and nothing about what the agent is permitted to do. The capability set, the tool schemas
+/// and the tool names are all resolved elsewhere and are not reachable from here — which is what
+/// makes it safe to let an outside optimizer rewrite this string.
+fn base_system_prompt(profile: Option<&iteron_tunables::ProfileDocument>) -> String {
+    profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/system@v1"))
+        .unwrap_or(SYSTEM_PROMPT)
+        .to_string()
+}
+
 fn assemble_system_prompt(
     home_core: Option<&std::path::Path>,
     repository_root: &std::path::Path,
     active_dir: &std::path::Path,
     policy: iteron_ctx::InstructionDiscoveryPolicy,
+    tunables_profile: Option<&iteron_tunables::ProfileDocument>,
 ) -> SystemPromptAssembly {
     let bundle =
         iteron_ctx::discover_hierarchy_with_policy(home_core, repository_root, active_dir, policy);
@@ -409,7 +423,7 @@ fn assemble_system_prompt(
         iteron_protocol::Trust::Untrusted
     };
     SystemPromptAssembly {
-        base_system: SYSTEM_PROMPT.to_string(),
+        base_system: base_system_prompt(tunables_profile),
         instruction_bytes,
         instruction_trust,
         bundle,
@@ -1027,6 +1041,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                     module_scope: None,
                     values: Vec::new(),
                     params: Vec::new(),
+                    artifacts: Vec::new(),
                 });
         let rendered = iteron_tunables::render_profile(&document)
             .map_err(|error| anyhow::anyhow!("rendering tunables profile: {error}"))?;
@@ -2349,6 +2364,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         effective_settings
             .context_materialization
             .instruction_discovery,
+        tunables_profile_document.as_ref(),
     );
     for source in instruction_bundle.sources() {
         eprintln!(
@@ -4284,6 +4300,7 @@ mod tests {
             &repo,
             &active,
             iteron_ctx::InstructionDiscoveryPolicy::owner(),
+            None,
         );
         assert_eq!(
             assembly.instruction_trust,
@@ -4324,7 +4341,8 @@ mod tests {
 
         let checkpoint_policy = iteron_ctx::InstructionDiscoveryPolicy::try_new(8, 1, 1_024, 2_048)
             .expect("bounded checkpoint policy");
-        let resumed = assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy);
+        let resumed =
+            assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy, None);
         assert_eq!(
             resumed
                 .bundle

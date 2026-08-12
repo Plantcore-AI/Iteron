@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::markdown::{Inline, MarkdownDoc, MdBlock};
 
+/// Ceiling on the buffer reserved before any Markdown is reconstructed. The caller's byte cap can
+/// be far larger than the document it bounds, so reserving the cap itself would charge every short
+/// reply for the longest one the viewer tolerates.
+const MARKDOWN_RESERVE_BYTES: usize = 64 * 1024;
+
 pub(super) fn project(
     document: &MarkdownDoc,
     max_bytes: usize,
@@ -142,7 +147,7 @@ struct BoundedMarkdown<'a> {
 impl<'a> BoundedMarkdown<'a> {
     fn new(max_bytes: usize, cancelled: &'a AtomicBool) -> Self {
         Self {
-            text: String::with_capacity(max_bytes.min(64 * 1024)),
+            text: String::with_capacity(max_bytes.min(MARKDOWN_RESERVE_BYTES)),
             max_bytes,
             truncated: false,
             cancelled,

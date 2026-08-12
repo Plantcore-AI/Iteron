@@ -16,6 +16,10 @@ pub const MAX_LIVE_LOGS: usize = 4096;
 pub const MAX_LIVE_SPANS: usize = 4096;
 pub const MAX_OPEN_SPANS: usize = 1024;
 const SUBSCRIBER_CAPACITY: usize = 2048;
+/// Bounds how long the projection worker blocks on an idle channel before rechecking that the
+/// `Weak` handle is still alive, so a dropped projection retires the thread within that window
+/// instead of waiting for the next event that may never arrive.
+const PROJECT_LOOP_IDLE_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifecycleLogRecord {
@@ -168,7 +172,7 @@ fn project_loop(
         let Some(projection) = projection.upgrade() else {
             return;
         };
-        match receiver.recv_timeout(Duration::from_millis(250)) {
+        match receiver.recv_timeout(PROJECT_LOOP_IDLE_POLL) {
             Ok(event) => {
                 let mut state = projection
                     .lock()

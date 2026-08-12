@@ -49,6 +49,9 @@ const DEFAULT_EGRESS_PORT: u16 = 443;
 /// Connect-phase bound for every egress client. Separate from the overall timeout so a black-holed
 /// host fails fast instead of consuming the whole request budget.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Whether input that ends immediately after a close-tag name still closes the tag. Truncated
+/// markup has no byte left to inspect, and refusing the match there would drop the whole tail.
+const TRUNCATED_CLOSE_TAG_IS_BOUNDARY: bool = true;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
     "iteron/",
@@ -1058,7 +1061,7 @@ fn find_close_tag(hay: &str, name: &str) -> Option<usize> {
             .as_bytes()
             .get(after)
             .map(|&c| c == b'>' || c == b'/' || (c as char).is_ascii_whitespace())
-            .unwrap_or(true);
+            .unwrap_or(TRUNCATED_CLOSE_TAG_IS_BOUNDARY);
         if boundary {
             return Some(pos);
         }

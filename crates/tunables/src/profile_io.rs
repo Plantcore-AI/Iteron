@@ -19,6 +19,24 @@ pub const MAX_PROFILE_BYTES: usize = 1024 * 1024;
 /// Document schema version. Bumping it is a published-surface change.
 pub const PROFILE_DOCUMENT_SCHEMA_VERSION: u16 = 1;
 
+/// Replacement text for one addressable prompt artifact.
+///
+/// A prompt artifact is model-visible text and nothing else. It carries no capability, changes no
+/// tool schema and renames nothing — that separation is the whole reason a prompt can be optimized
+/// by an untrusted process at all, and it is enforced at the point of use rather than assumed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactOverride {
+    /// Artifact id exactly as published by the surface export, e.g. `prompt/system@v1`.
+    pub artifact: String,
+    /// Replacement text.
+    pub text: String,
+}
+
+/// Upper bound on a single replacement. Matches the producer-side bound already applied to inert
+/// prompt artifacts, so a document cannot smuggle in more text than a producer could emit.
+pub const MAX_ARTIFACT_TEXT_BYTES: usize = 4 * 1024;
+
 /// A tier-2 parameter assignment, carried beside the tier-1 `values`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +67,9 @@ pub struct ProfileDocument {
     pub values: Vec<ProfileValue>,
     #[serde(default)]
     pub params: Vec<ParamAssignment>,
+    /// Prompt-artifact replacements. Empty for a purely numeric candidate.
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +118,14 @@ pub enum ProfileLoadError {
         scope: ModuleId,
         actual: ModuleId,
     },
+    UnknownArtifact(String),
+    ArtifactTooLarge {
+        artifact: String,
+        bytes: usize,
+        max: usize,
+    },
+    EmptyArtifact(String),
+    DuplicateArtifact(String),
 }
 
 impl std::fmt::Display for ProfileLoadError {
@@ -150,6 +179,26 @@ impl std::fmt::Display for ProfileLoadError {
             }
             Self::DuplicateFamily(id) => write!(formatter, "family `{id}` is assigned twice"),
             Self::DuplicateParam(id) => write!(formatter, "parameter `{id}` is assigned twice"),
+            Self::UnknownArtifact(id) => write!(
+                formatter,
+                "unknown prompt artifact `{id}`; the surface export lists every addressable id"
+            ),
+            Self::ArtifactTooLarge {
+                artifact,
+                bytes,
+                max,
+            } => write!(
+                formatter,
+                "prompt artifact `{artifact}` is {bytes} bytes, over the {max}-byte bound"
+            ),
+            Self::EmptyArtifact(id) => write!(
+                formatter,
+                "prompt artifact `{id}` is blank; removing a prompt is not the same as replacing \
+                 it, and a blank one would silently drop instructions the runtime depends on"
+            ),
+            Self::DuplicateArtifact(id) => {
+                write!(formatter, "prompt artifact `{id}` is assigned twice")
+            }
             Self::OutsideModuleScope { id, scope, actual } => write!(
                 formatter,
                 "`{id}` belongs to module {} but the profile is scoped to {}",
@@ -293,7 +342,45 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
             });
         }
     }
+    let mut seen_artifacts = std::collections::BTreeSet::new();
+    for override_entry in &document.artifacts {
+        let artifact = crate::export::PROMPT_ARTIFACTS
+            .iter()
+            .find(|artifact| artifact.id == override_entry.artifact)
+            .ok_or_else(|| ProfileLoadError::UnknownArtifact(override_entry.artifact.clone()))?;
+        if override_entry.text.trim().is_empty() {
+            return Err(ProfileLoadError::EmptyArtifact(artifact.id.to_owned()));
+        }
+        if override_entry.text.len() > MAX_ARTIFACT_TEXT_BYTES {
+            return Err(ProfileLoadError::ArtifactTooLarge {
+                artifact: artifact.id.to_owned(),
+                bytes: override_entry.text.len(),
+                max: MAX_ARTIFACT_TEXT_BYTES,
+            });
+        }
+        if !seen_artifacts.insert(artifact.id) {
+            return Err(ProfileLoadError::DuplicateArtifact(artifact.id.to_owned()));
+        }
+        if let Some(scope) = document.module_scope
+            && artifact.module != scope
+        {
+            return Err(ProfileLoadError::OutsideModuleScope {
+                id: artifact.id.to_owned(),
+                scope,
+                actual: artifact.module,
+            });
+        }
+    }
     Ok(())
+}
+
+/// Look up a replacement for one artifact id, if the document carries one.
+pub fn artifact_override<'a>(document: &'a ProfileDocument, artifact_id: &str) -> Option<&'a str> {
+    document
+        .artifacts
+        .iter()
+        .find(|entry| entry.artifact == artifact_id)
+        .map(|entry| entry.text.as_str())
 }
 
 /// Build an emittable document from a resolved profile, so a run can publish the exact input that
@@ -308,6 +395,7 @@ pub fn emit_profile(profile: &ResolutionProfile) -> ProfileDocument {
         module_scope: None,
         values: profile.values.clone(),
         params: Vec::new(),
+        artifacts: Vec::new(),
     }
 }
 

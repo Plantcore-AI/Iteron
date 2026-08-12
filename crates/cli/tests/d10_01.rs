@@ -156,11 +156,26 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
         }
     }
 
-    // The TUI, given a real terminal, sits in its event loop; end it deterministically.
+    // The TUI, given a real terminal, sits in its event loop; end it deterministically. Capture the
+    // exit status first: if the child died on its own before printing anything, that status is the
+    // only evidence of why, and without it this test fails with an empty buffer and no reason —
+    // which is how it reads on a machine whose PTY the child rejects.
+    let early_exit = child
+        .try_wait()
+        .ok()
+        .flatten()
+        .map(|status| status.exit_code());
     let _ = child.kill();
     let _ = child.wait();
     drop(pair.master);
     let _ = reader_thread.join();
+    if capture.is_empty() {
+        eprintln!(
+            "d10_01: the child produced no terminal bytes; early exit status = {early_exit:?}. \
+             An empty capture with a non-None status means the binary refused this PTY rather \
+             than failing the handshake."
+        );
+    }
     (capture, found)
 }
 

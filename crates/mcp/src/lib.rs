@@ -388,6 +388,10 @@ pub(crate) fn encode_frame(value: &Value) -> Result<String, McpError> {
     String::from_utf8(writer.bytes).map_err(|_| McpError::InvalidUtf8)
 }
 
+/// Bytes reserved up front for one encoded frame. The limit itself is far larger than a typical
+/// frame, so reserving it eagerly would allocate megabytes for a request that serializes to a line.
+const FRAME_ENCODE_RESERVE_BYTES: usize = 4096;
+
 /// A serializer sink that refuses the write before its backing allocation can cross the limit.
 struct LimitedWriter {
     bytes: Vec<u8>,
@@ -398,7 +402,7 @@ struct LimitedWriter {
 impl LimitedWriter {
     fn new(limit: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(limit.min(4096)),
+            bytes: Vec::with_capacity(limit.min(FRAME_ENCODE_RESERVE_BYTES)),
             limit,
             exceeded: false,
         }

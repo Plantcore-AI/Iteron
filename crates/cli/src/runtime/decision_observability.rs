@@ -30,6 +30,14 @@ const ABSENT_CANDIDATE_SCORE_PPM: i64 = 0;
 
 /// Rank reported for a candidate the audit's rank vector has no entry for.
 const ABSENT_CANDIDATE_RANK: u32 = 0;
+
+/// Bytes held back from `MAX_STEER_BYTES` for the operator-memory notification's own prose, so the
+/// quoted fact cannot push the assembled notification past the steer ceiling.
+const MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES: usize = 1024;
+
+/// Headroom below `window / this` raises the context high-watermark event — one order of magnitude
+/// left is the last point at which an operator can still act before compaction is forced.
+const CONTEXT_HIGH_WATERMARK_DIVISOR: u64 = 10;
 use iteron_obs::lifecycle::LifecycleCorrelation;
 use iteron_protocol::context::{ContextSegment, ContextSource};
 use iteron_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
@@ -107,7 +115,10 @@ impl Agent {
                 state: MemoryVisibilityState::Scheduled,
             });
         self.registry.invalidate_pure_cache();
-        let fact = strict_utf8_head(text, MAX_STEER_BYTES.saturating_sub(1024));
+        let fact = strict_utf8_head(
+            text,
+            MAX_STEER_BYTES.saturating_sub(MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES),
+        );
         let notification = match superseded_id {
             Some(old_id) => format!(
                 "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was updated explicitly by the \
@@ -1067,10 +1078,9 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
-            if self
-                .model_context_window
-                .is_some_and(|window| headroom.saturating_mul(10) < window)
-            {
+            if self.model_context_window.is_some_and(|window| {
+                headroom.saturating_mul(CONTEXT_HIGH_WATERMARK_DIVISOR) < window
+            }) {
                 self.lifecycle_event(
                     "context.window.high_watermark",
                     Some(turn),
