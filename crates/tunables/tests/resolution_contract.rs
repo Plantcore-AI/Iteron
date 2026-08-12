@@ -1523,48 +1523,42 @@ fn optional_constrained_fields_need_evidence_only_when_present() {
     // the same invariant `offline_builtin_literal_candidates_cannot_override_registry_bytes`
     // pins, so resolution never reaches the per-family stage this test is about. Covering the
     // `TenantScope` ceiling needs a family that can carry the field, not a weaker assertion here.
+    let family_id = "selective_restore_scope";
+    let field = "paths";
     let mut input = complete_success_input();
-    for (family_id, field, value) in [(
-        "selective_restore_scope",
-        "paths",
+    let candidate = input
+        .declared_values
+        .iter_mut()
+        .find(|candidate| candidate.family == family_id)
+        .unwrap();
+    let ResolutionValue::Object { fields } = &mut candidate.value else {
+        panic!("{family_id} stopped being an object")
+    };
+    fields.insert(
+        field.to_owned(),
         ResolutionValue::List {
             items: vec![ResolutionValue::Text {
                 value: "/fixture/path".to_owned(),
             }],
         },
-    )] {
-        let candidate = input
-            .declared_values
-            .iter_mut()
-            .find(|candidate| candidate.family == family_id)
-            .unwrap();
-        let ResolutionValue::Object { fields } = &mut candidate.value else {
-            panic!("{family_id} stopped being an object")
-        };
-        fields.insert(field.to_owned(), value);
-    }
+    );
+
     let failure = resolve(input).unwrap_err();
     let report = failure.report.unwrap();
-    for (family_id, field, ceiling) in [(
-        "selective_restore_scope",
-        "paths",
-        ExternalCeiling::OperatorAuthority,
-    )] {
-        let entry = report
-            .entries
-            .iter()
-            .find(|entry| entry.family_id == family_id)
-            .unwrap();
-        assert!(matches!(
-            &entry.outcome,
-            EntryOutcome::Unresolved {
-                reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
-                    field: actual_field,
-                    ceiling: actual_ceiling,
-                }
-            } if actual_field == field && *actual_ceiling == ceiling
-        ));
-    }
+    let entry = report
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == family_id)
+        .unwrap();
+    assert!(matches!(
+        &entry.outcome,
+        EntryOutcome::Unresolved {
+            reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
+                field: actual_field,
+                ceiling: actual_ceiling,
+            }
+        } if actual_field == field && *actual_ceiling == ExternalCeiling::OperatorAuthority
+    ));
 }
 
 #[test]
