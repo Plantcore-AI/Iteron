@@ -24,7 +24,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 39] = [
+const WRITABLE_EVENT_TAGS: [&str; 40] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -45,6 +45,7 @@ const WRITABLE_EVENT_TAGS: [&str; 39] = [
     "policy_bundle_snapshot",
     "policy_outcome",
     "policy_changed",
+    "provider_governor_decision",
     "rate_card_bound",
     "run_start",
     "subagent_finished",
