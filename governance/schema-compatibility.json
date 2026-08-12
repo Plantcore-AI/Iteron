@@ -325,7 +325,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 13,
+      "current_version": 15,
       "version_field": null,
       "fixtures": [
         {
@@ -397,6 +397,16 @@
           "path": "governance/schema-compat/fixtures/record/rollout-turn-ceiling-v13.jsonl",
           "format": "jsonl",
           "schema_version": 13
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-provider-route-attempt-v14.jsonl",
+          "format": "jsonl",
+          "schema_version": 14
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-fixed-authority-v15.jsonl",
+          "format": "jsonl",
+          "schema_version": 15
         }
       ],
       "fields": [
@@ -1131,7 +1141,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 9,
+      "current_version": 11,
       "version_field": null,
       "fixtures": [
         {
@@ -1178,6 +1188,16 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-turn-ceiling-v9.json",
           "format": "json",
           "schema_version": 9
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-provider-route-attempt-v10.jsonl",
+          "format": "jsonl",
+          "schema_version": 10
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-fixed-authority-v11.json",
+          "format": "json",
+          "schema_version": 11
         }
       ],
       "fields": [
@@ -2070,6 +2090,11 @@
       "fixtures": [
         {
           "path": "governance/schema-compat/fixtures/record/event-kind-tunables-snapshot-v2.json",
+          "format": "json",
+          "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-fixed-authority-binding-v1.json",
           "format": "json",
           "schema_version": 1
         }

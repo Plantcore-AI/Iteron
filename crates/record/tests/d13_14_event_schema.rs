@@ -2,7 +2,8 @@ use iteron_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
     ImageContent, Message, Op, PermissionRules, PolicyDecisionEvidence, PolicyOutcomeEvidence,
-    PolicyRuntimeIdentity, PricingRoute, ProviderState, RateCard,
+    PolicyRuntimeIdentity, PricingRoute, ProviderRouteAttemptAccounting,
+    ProviderRouteAttemptIdentity, ProviderState, RateCard, RunGenesisFixedAuthorityBindingV2,
     RunGenesisPolicyBundleInheritance, RunGenesisPolicyBundleSnapshot, RunGenesisPolicySlotBinding,
     RunGenesisTunableEntry, RunGenesisTunableEntryV2, RunGenesisTunablesInheritance,
     RunGenesisTunablesSnapshot, RunGenesisTunablesSnapshotV2, SignedRateCard, TokenRateCard,
@@ -89,7 +90,7 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 33] = [
+const NAMED_SURFACE_IDS: [&str; 36] = [
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
@@ -105,8 +106,11 @@ const NAMED_SURFACE_IDS: [&str; 33] = [
     "record.named.policy-runtime-identity",
     "record.named.pricing-route",
     "record.named.provenance",
+    "record.named.provider-route-attempt-accounting",
+    "record.named.provider-route-attempt-identity",
     "record.named.provider-state",
     "record.named.rate-card",
+    "record.named.run-genesis-fixed-authority-binding-v2",
     "record.named.run-genesis-policy-bundle-inheritance",
     "record.named.run-genesis-policy-bundle-snapshot",
     "record.named.run-genesis-policy-slot-binding",
@@ -617,6 +621,15 @@ fn assert_named_surface_corpus(
             }
             "record.named.run-genesis-tunable-entry-v2" => {
                 typed_named_fixture_wires::<RunGenesisTunableEntryV2>(root, surface)
+            }
+            "record.named.run-genesis-fixed-authority-binding-v2" => {
+                typed_named_fixture_wires::<RunGenesisFixedAuthorityBindingV2>(root, surface)
+            }
+            "record.named.provider-route-attempt-identity" => {
+                typed_named_fixture_wires::<ProviderRouteAttemptIdentity>(root, surface)
+            }
+            "record.named.provider-route-attempt-accounting" => {
+                typed_named_fixture_wires::<ProviderRouteAttemptAccounting>(root, surface)
             }
             "record.named.run-genesis-tunables-inheritance" => {
                 typed_named_fixture_wires::<RunGenesisTunablesInheritance>(root, surface)
@@ -1298,6 +1311,30 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                             &artifact.provenance,
                         );
                     }
+                    EventKind::EffectIntent {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    } => record_named(
+                        &mut named_wires,
+                        "record.named.provider-route-attempt-identity",
+                        attempt,
+                    ),
+                    EventKind::EffectUnknown {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    }
+                    | EventKind::EffectDone {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    }
+                    | EventKind::EffectFailed {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    } => record_named(
+                        &mut named_wires,
+                        "record.named.provider-route-attempt-accounting",
+                        attempt,
+                    ),
                     EventKind::ToolReady { tool, .. } => {
                         record_named(&mut named_wires, "record.named.tool-use", tool);
                     }
@@ -1356,6 +1393,13 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                                 "record.named.run-genesis-tunable-entry-v2",
                                 entry,
                             );
+                            if let Some(binding) = &entry.fixed_authority_binding {
+                                record_named(
+                                    &mut named_wires,
+                                    "record.named.run-genesis-fixed-authority-binding-v2",
+                                    binding,
+                                );
+                            }
                         }
                         if let Some(inherited_from) = inherited_from {
                             record_named(
@@ -1531,9 +1575,18 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
     }
 
     assert_eq!(writable_tags, expected(&WRITABLE_EVENT_TAGS));
-    assert_eq!(
-        kind_wires, envelope_kind_wires,
-        "every typed event-kind fixture must occur in the typed envelope corpus, and vice versa"
+    // Name the offending wires. Comparing the two sets whole reports a difference of one entry as
+    // two several-thousand-character dumps, and the reader still has to diff them by eye.
+    let kind_only = kind_wires
+        .difference(&envelope_kind_wires)
+        .collect::<Vec<_>>();
+    let envelope_only = envelope_kind_wires
+        .difference(&kind_wires)
+        .collect::<Vec<_>>();
+    assert!(
+        kind_only.is_empty() && envelope_only.is_empty(),
+        "every typed event-kind fixture must occur in the typed envelope corpus, and vice versa; \
+         only in the event-kind corpus: {kind_only:#?}; only in the envelope corpus: {envelope_only:#?}"
     );
     for envelope in envelope_wires {
         assert!(
