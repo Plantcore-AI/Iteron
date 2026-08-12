@@ -561,11 +561,17 @@ mod tests {
             mod pricing;
             mod image_input;
         };
-        // `Rollout::append` contains `self.file.write_all(...)`, but its tokens do not contain the
-        // trait name `Write`. A local `EvilWrite for File` can therefore redirect that exact method
-        // call while leaving the frozen method byte-for-byte unchanged.
-        let names = referenced("self.file.write_all(line.as_bytes())");
-        assert!(path_has_frozen_executable("crates/record/src/lib.rs"));
+        // `write_json_line` contains `writer.write_all(..)`, but its tokens do not contain the
+        // trait name `Write`. A local `EvilWrite` can therefore redirect that exact method call
+        // while leaving the frozen function byte-for-byte unchanged.
+        //
+        // This used to name `Rollout::append`, which is no longer token-frozen: `record::replay`,
+        // `record::replay_timed` and `Rollout::append` moved behind the stricter structural
+        // dataflow authorities in `schema_compat_rust_runtime_record` (see the note above
+        // `WHOLE_FILES`). The illustration has to stand on a path that is still frozen here, or it
+        // argues from an example this module no longer governs.
+        let names = referenced("writer.write_all(line.as_bytes())");
+        assert!(path_has_frozen_executable("crates/cli/src/output.rs"));
         assert_eq!(
             scope_drift(&base, &redirected, Some(&names)),
             None,

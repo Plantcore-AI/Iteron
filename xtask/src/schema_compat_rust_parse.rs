@@ -118,9 +118,12 @@ mod tests {
         // 29 original tags + `effect_done` and `effect_failed`, the two purely additive terminals
         // the universal effect boundary (#16) introduced for non-registry classes, + the
         // `artifact_produced` declaration a run makes about a product it wrote (#78), + the
-        // `tunables_snapshot` run-genesis companion (#187). Every one is a purely additive
+        // `tunables_snapshot` run-genesis companion (#187), + the seven the tunables runtime
+        // binding adds (#187): `policy_decision`, `policy_outcome`, `policy_bundle_snapshot`,
+        // `tunables_snapshot_v2`, `verification_policy`, `turn_ceiling_changed` and
+        // `provider_governor_decision`. Every one is a purely additive
         // top-level tag under abi.md §4.3(b)2, so none bumped PROTOCOL_VERSION.
-        assert_eq!(shapes.len(), 33);
+        assert_eq!(shapes.len(), 40);
         assert_eq!(
             shapes["notice"],
             BTreeSet::from(["kind".to_owned(), "text".to_owned()])
