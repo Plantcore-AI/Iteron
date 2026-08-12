@@ -288,6 +288,40 @@ fn sample_value(domain: StructuredValueDomain, ordinal: u16) -> ResolutionValue 
 
 fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
     let mut value = sample_value(schema.domain, ordinal);
+    // The repairs interact, and the order rules are declared in is not a dependency order:
+    // raising a field to satisfy one rule can violate a rule an earlier pass already settled.
+    // One forward pass therefore leaves a sample whose validity depends on declaration order.
+    // Iterate to a fixpoint instead, bounded so an unsatisfiable schema fails loudly here
+    // rather than spinning.
+    let bound = schema.rules.len() + 2;
+    for _ in 0..bound {
+        let before = value.clone();
+        value = apply_sample_rules(value, schema, ordinal);
+        if value == before {
+            return value;
+        }
+    }
+    panic!(
+        "sample repairs for schema `{}` (ordinal {ordinal}) did not converge in {bound} passes",
+        schema.schema_id
+    )
+}
+
+fn sample_truthy(value: &ResolutionValue) -> bool {
+    // Mirrors `required_truthy` in the resolver: this is what a `Requires` rule actually demands.
+    match value {
+        ResolutionValue::Boolean { value } => *value,
+        ResolutionValue::Integer { value } => *value != 0,
+        ResolutionValue::Decimal { value } => value.coefficient != 0,
+        _ => false,
+    }
+}
+
+fn apply_sample_rules(
+    mut value: ResolutionValue,
+    schema: ValueSchema,
+    ordinal: u16,
+) -> ResolutionValue {
     for rule in schema.rules {
         match *rule {
             CrossFieldRule::LessOrEqual { left, right } => {
@@ -342,21 +376,37 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
                     );
                 }
             }
-            CrossFieldRule::Requires { then_field, .. } => {
-                let replacement = match value_at(&value, then_field) {
-                    Some(ResolutionValue::Boolean { .. }) => {
-                        ResolutionValue::Boolean { value: true }
-                    }
-                    Some(ResolutionValue::Integer { .. }) => ResolutionValue::Integer { value: 1 },
-                    Some(ResolutionValue::Decimal { value }) => ResolutionValue::Decimal {
-                        value: DecimalValue {
-                            coefficient: 1,
-                            scale: value.scale,
+            CrossFieldRule::Requires {
+                if_field,
+                equals,
+                then_field,
+            } => {
+                // Repair only an actual violation, for the same reason `LessOrEqual` does above.
+                // The resolver demands a truthy `then_field` *only* when the trigger matches, and
+                // any truthy value satisfies it. Rewriting to 1 unconditionally clobbered a field
+                // another rule had already raised — and did it even when the trigger did not
+                // match, so an inert rule could still corrupt the sample.
+                let triggered =
+                    value_at(&value, if_field).is_some_and(|actual| *actual == rule_value(equals));
+                let satisfied = value_at(&value, then_field).is_some_and(sample_truthy);
+                if triggered && !satisfied {
+                    let replacement = match value_at(&value, then_field) {
+                        Some(ResolutionValue::Boolean { .. }) => {
+                            ResolutionValue::Boolean { value: true }
+                        }
+                        Some(ResolutionValue::Integer { .. }) => {
+                            ResolutionValue::Integer { value: 1 }
+                        }
+                        Some(ResolutionValue::Decimal { value }) => ResolutionValue::Decimal {
+                            value: DecimalValue {
+                                coefficient: 1,
+                                scale: value.scale,
+                            },
                         },
-                    },
-                    _ => continue,
-                };
-                replace_at(&mut value, then_field, replacement);
+                        _ => continue,
+                    };
+                    replace_at(&mut value, then_field, replacement);
+                }
             }
             CrossFieldRule::MutuallyExclusive { .. }
             | CrossFieldRule::ResolvedSetSumLessOrEqual { .. }
@@ -948,6 +998,49 @@ fn complete_success_input() -> ResolutionInput {
     }
 }
 
+/// Move a family's external-ceiling attestation onto `value`.
+///
+/// `complete_success_input` attests exactly the declared value of every family; that is what makes
+/// the fixture coherent rather than merely large. A test that changes which value wins for a
+/// family — by forging a candidate, or by dropping the declaration so a default takes over — has
+/// to move the attestation with it. Otherwise it asserts against an operator who never authorized
+/// the value under test, and the resolver rejects on the stale domain long before reaching
+/// whatever the test meant to exercise.
+fn reattest_external_ceiling(input: &mut ResolutionInput, family: &str, value: &ResolutionValue) {
+    for evidence in input
+        .constraint_evidence
+        .iter_mut()
+        .filter(|evidence| evidence.family == family)
+    {
+        let Some(projected) = value_at(value, &evidence.field).cloned() else {
+            continue;
+        };
+        match &mut evidence.value {
+            ConstraintValue::UpperBound { value } | ConstraintValue::Exact { value } => {
+                *value = projected;
+            }
+            ConstraintValue::Domain {
+                minimum,
+                allowed_values,
+                preferred,
+                ..
+            } => {
+                // Replace only the facets this ceiling actually attested, so the shape of the
+                // evidence stays what `complete_success_input` built for that ceiling kind.
+                if minimum.is_some() {
+                    *minimum = Some(projected.clone());
+                }
+                if allowed_values.is_some() {
+                    *allowed_values = Some(BTreeSet::from([projected.clone()]));
+                }
+                if preferred.is_some() {
+                    *preferred = Some(projected);
+                }
+            }
+        }
+    }
+}
+
 fn constraint_subject(ceiling: ExternalCeiling, route: &RouteIdentity) -> EvidenceSubject {
     match ceiling {
         ExternalCeiling::OperatorAuthority => EvidenceSubject::Operator {
@@ -1296,7 +1389,8 @@ fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
             .find(|candidate| candidate.family == family)
             .expect("complete fixture declares every active family");
         candidate.source = SourceKind::Builtin;
-        candidate.value = exact;
+        candidate.value = exact.clone();
+        reattest_external_ceiling(&mut input, family, &exact);
     }
     resolve(input).expect("exact embedded literals remain admissible");
 }
@@ -1304,19 +1398,27 @@ fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
 #[test]
 fn failover_taxonomy_with_a_fallback_chain_fails_closed_without_capability() {
     let mut input = complete_success_input();
-    input.runtime.admitted_routes[0]
-        .capabilities
-        .remove(&iteron_tunables::CapabilityRequirement::ProviderFailover);
+    // Strip the capability from every admitted route, not just the selected one. An
+    // `AnyAdmittedRoute` requirement falls back to any other admitted route that still carries
+    // it, and the complete fixture admits two, so clearing only `[0]` leaves the requirement
+    // satisfiable and the taxonomy resolves instead of failing closed.
+    for route in &mut input.runtime.admitted_routes {
+        route
+            .capabilities
+            .remove(&iteron_tunables::CapabilityRequirement::ProviderFailover);
+    }
+    let chain = ResolutionValue::List {
+        items: vec![ResolutionValue::Enum {
+            value: "fixture:value-0".to_owned(),
+        }],
+    };
     let fallback = input
         .declared_values
         .iter_mut()
         .find(|value| value.family == "model_fallback_chain")
         .expect("fallback declaration");
-    fallback.value = ResolutionValue::List {
-        items: vec![ResolutionValue::Enum {
-            value: "fixture:value-0".to_owned(),
-        }],
-    };
+    fallback.value = chain.clone();
+    reattest_external_ceiling(&mut input, "model_fallback_chain", &chain);
 
     let failure = resolve(input).expect_err("physical failover requires route attestation");
     let entry = failure
@@ -1414,25 +1516,23 @@ fn canonical_registry_has_no_ambient_runtime_activation_channel() {
 
 #[test]
 fn optional_constrained_fields_need_evidence_only_when_present() {
+    // `per_agent_memory_scope`/`scope_id` is the registry's only other optional externally
+    // constrained field, and it cannot be reached this way: that family binds `Builtin` alone, a
+    // `Builtin` candidate must equal the embedded literal byte for byte, and that literal carries
+    // only `mode` and `inherit_parent`. Adding `scope_id` to it is refused at input validation by
+    // the same invariant `offline_builtin_literal_candidates_cannot_override_registry_bytes`
+    // pins, so resolution never reaches the per-family stage this test is about. Covering the
+    // `TenantScope` ceiling needs a family that can carry the field, not a weaker assertion here.
     let mut input = complete_success_input();
-    for (family_id, field, value) in [
-        (
-            "selective_restore_scope",
-            "paths",
-            ResolutionValue::List {
-                items: vec![ResolutionValue::Text {
-                    value: "/fixture/path".to_owned(),
-                }],
-            },
-        ),
-        (
-            "per_agent_memory_scope",
-            "scope_id",
-            ResolutionValue::Text {
-                value: "fixture:scope".to_owned(),
-            },
-        ),
-    ] {
+    for (family_id, field, value) in [(
+        "selective_restore_scope",
+        "paths",
+        ResolutionValue::List {
+            items: vec![ResolutionValue::Text {
+                value: "/fixture/path".to_owned(),
+            }],
+        },
+    )] {
         let candidate = input
             .declared_values
             .iter_mut()
@@ -1445,18 +1545,11 @@ fn optional_constrained_fields_need_evidence_only_when_present() {
     }
     let failure = resolve(input).unwrap_err();
     let report = failure.report.unwrap();
-    for (family_id, field, ceiling) in [
-        (
-            "selective_restore_scope",
-            "paths",
-            ExternalCeiling::OperatorAuthority,
-        ),
-        (
-            "per_agent_memory_scope",
-            "scope_id",
-            ExternalCeiling::TenantScope,
-        ),
-    ] {
+    for (family_id, field, ceiling) in [(
+        "selective_restore_scope",
+        "paths",
+        ExternalCeiling::OperatorAuthority,
+    )] {
         let entry = report
             .entries
             .iter()
@@ -2042,6 +2135,11 @@ fn resolve_to_explain_distinguishes_literal_and_all_dynamic_fallback_evidence_st
     literal_input
         .default_evidence
         .retain(|evidence| evidence.family != literal.id);
+    // Dropping the declaration hands this family to its embedded literal, so the attestation has
+    // to name that literal rather than the sample value that is no longer in play.
+    if let Some(default) = literal.default.value {
+        reattest_external_ceiling(&mut literal_input, literal.id, &owned_value(default));
+    }
     let literal_result = resolve(literal_input).unwrap();
     let literal_entry = &literal_result.report().entries[usize::from(literal.ordinal - 1)];
     assert!(matches!(
