@@ -14,6 +14,9 @@ pub(super) const BWRAP_PROBE_MAX_POLLS: usize = 500;
 pub(super) const BWRAP_PROBE_REAP_POLLS: usize = 100;
 pub(super) const BWRAP_PROBE_POSITIVE_TTL: Duration = Duration::from_secs(5 * 60);
 pub(super) const BWRAP_PROBE_NEGATIVE_TTL: Duration = Duration::from_secs(60);
+/// Lowest descriptor number a workspace handed to a child may occupy. Kept clear of the standard
+/// streams and of the few descriptors the spawn path itself moves around.
+pub(crate) const CHILD_INHERITED_FD_FLOOR: libc::c_int = 10;
 static PROBE_CACHE: Mutex<Option<ProbeOutcome>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +151,7 @@ fn probe_binary(binary: &Path) -> bool {
     let Ok(workspace) = File::open("/tmp") else {
         return false;
     };
-    let Ok(inherited) = duplicate_for_child(&workspace, 10) else {
+    let Ok(inherited) = duplicate_for_child(&workspace, CHILD_INHERITED_FD_FLOOR) else {
         return false;
     };
     let descriptor = inherited.as_raw_fd();

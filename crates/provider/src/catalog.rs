@@ -158,6 +158,10 @@ const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const PER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+/// Wall-clock reading used when the host clock is before the Unix epoch. Zero makes every
+/// expiry comparison treat the clock as maximally stale, so credentials refresh instead of
+/// being trusted on a nonsensical clock.
+const PRE_EPOCH_CLOCK_UNIX_SECS: u64 = 0;
 const MAX_MODEL_ID_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 512;
 const MAX_INSTANCE_ID_BYTES: usize = 128;
@@ -554,7 +558,7 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(PRE_EPOCH_CLOCK_UNIX_SECS)
 }
 
 /// Read a credential document through a bounded, permission-checked descriptor.

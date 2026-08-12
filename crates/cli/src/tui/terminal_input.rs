@@ -23,6 +23,10 @@ const CANDIDATE_TIMEOUT: Duration = Duration::from_millis(40);
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 #[cfg(any(windows, test))]
 const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
+/// Verdict when the terminal gives no usable answer about progressive keyboard enhancement. It is
+/// fail-closed: assuming support the terminal lacks would turn its replies into operator keystrokes.
+#[cfg(unix)]
+const KEYBOARD_ENHANCEMENT_UNKNOWN: bool = false;
 const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
 /// Operator escape hatch for the blocking progressive-keyboard probe. Any value other than empty
@@ -85,7 +89,8 @@ impl TerminalInput {
         }
         #[cfg(unix)]
         {
-            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+            crossterm::terminal::supports_keyboard_enhancement()
+                .unwrap_or(KEYBOARD_ENHANCEMENT_UNKNOWN)
         }
         #[cfg(not(any(unix, windows)))]
         {

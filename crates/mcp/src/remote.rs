@@ -17,6 +17,10 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+/// A `tools/call` result that omits `isError` is a success: the field is optional in the protocol
+/// and absence must not be read as failure.
+const TOOL_RESULT_IS_ERROR_DEFAULT: bool = false;
+
 struct OAuthState {
     client: crate::oauth::OAuthClient,
     grant: crate::oauth::OAuthRefreshGrant,
@@ -348,7 +352,7 @@ impl McpRemoteClient {
             is_error: result
                 .get("isError")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(TOOL_RESULT_IS_ERROR_DEFAULT),
             evidence,
         }
     }

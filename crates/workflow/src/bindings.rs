@@ -55,6 +55,10 @@ pub const LIFETIME_CAP: usize = 1000;
 /// while bounding traffic into frontend sinks that commonly forward through unbounded channels.
 const AGENT_ACTIVITY_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Speculation is never implicit: a call that omits `speculativeSiblings` requests no duplicate
+/// workers at all.
+const BINDING_ABSENT_SPECULATIVE_SIBLINGS: usize = 0;
+
 /// Fresh-per-run engine state. All fields are interior-mutable so the `Fn` host closures can share
 /// one `Arc<RunState>` without a `&mut`.
 pub struct RunState {
@@ -1121,7 +1125,9 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
             return null_envelope("task DAG admission failed");
         }
     };
-    let speculative_siblings = raw.speculative_siblings.unwrap_or(0);
+    let speculative_siblings = raw
+        .speculative_siblings
+        .unwrap_or(BINDING_ABSENT_SPECULATIVE_SIBLINGS);
     if speculative_siblings > env.speculative_siblings.max_siblings() {
         if env
             .task_dag

@@ -420,12 +420,19 @@ impl Write for LimitedWriter {
     }
 }
 
+/// JSON-RPC requires a numeric `code` on every error object; a server that omits one has told us
+/// nothing, so it is reported as an unclassified failure rather than mapped to a real code.
+const UNSPECIFIED_SERVER_ERROR_CODE: i64 = 0;
+
 /// Parse a JSON-RPC response line, returning the `result` or a typed server error.
 pub fn parse_response(line: &str) -> Result<Value, McpError> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(err) = v.get("error") {
         return Err(McpError::Server {
-            code: err.get("code").and_then(|x| x.as_i64()).unwrap_or(0),
+            code: err
+                .get("code")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(UNSPECIFIED_SERVER_ERROR_CODE),
             message: err
                 .get("message")
                 .and_then(|x| x.as_str())

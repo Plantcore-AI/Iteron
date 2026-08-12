@@ -10,6 +10,26 @@ use iteron_ctx::{
     MemorySelectionEvidence, MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence,
     MemoryVisibilityState, TokenRange,
 };
+
+/// Recalled fact count reported for a turn whose memory trace carries no injection.
+const NO_RECALLED_FACTS: u64 = 0;
+
+/// Tool output byte count reported when the result carries no textual stream to measure.
+const NO_TOOL_OUTPUT_BYTES: u64 = 0;
+
+/// Query-rewrite count reported when the turn ran without a recall audit.
+const NO_QUERY_REWRITES: u16 = 0;
+
+/// Candidate count reported when there is no recall audit, or the real count does not fit the
+/// evidence field's `u32`. Evidence stays emitted rather than dropped.
+const UNCOUNTED_MEMORY_CANDIDATES: u32 = 0;
+
+/// Score reported for a candidate the audit's score vector has no entry for, which the projection
+/// then classifies as below threshold.
+const ABSENT_CANDIDATE_SCORE_PPM: i64 = 0;
+
+/// Rank reported for a candidate the audit's rank vector has no entry for.
+const ABSENT_CANDIDATE_RANK: u32 = 0;
 use iteron_obs::lifecycle::LifecycleCorrelation;
 use iteron_protocol::context::{ContextSegment, ContextSource};
 use iteron_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
@@ -270,7 +290,7 @@ impl Agent {
             .find(|trace| trace.turn_id == turn)
             .and_then(|trace| trace.injection)
             .map(|injection| u64::from(injection.fact_count))
-            .unwrap_or(0);
+            .unwrap_or(NO_RECALLED_FACTS);
         count = count.saturating_add(recalled);
         if count > 0 {
             self.lifecycle_event(
@@ -487,11 +507,11 @@ impl Agent {
                                         .and_then(|stream| stream.get("text"))
                                         .and_then(serde_json::Value::as_str)
                                         .map(|text| u64::try_from(text.len()).unwrap_or(u64::MAX))
-                                        .unwrap_or(0),
+                                        .unwrap_or(NO_TOOL_OUTPUT_BYTES),
                                 )
                             })
                     })
-                    .unwrap_or(0);
+                    .unwrap_or(NO_TOOL_OUTPUT_BYTES);
                 if output_bytes > 0 {
                     self.process_lifecycle_event(
                         "tool.output_chunk",
@@ -1198,7 +1218,9 @@ impl Agent {
         let query = memory_audit
             .map(|audit| audit.rewritten_query.as_str())
             .unwrap_or(task);
-        let rewrite_count = memory_audit.map(|audit| audit.rewrite_count).unwrap_or(0);
+        let rewrite_count = memory_audit
+            .map(|audit| audit.rewrite_count)
+            .unwrap_or(NO_QUERY_REWRITES);
         let parent_access_rejections = memory_audit
             .map(|audit| {
                 audit
@@ -1210,7 +1232,7 @@ impl Agent {
                     .count()
             })
             .and_then(|count| u32::try_from(count).ok())
-            .unwrap_or(0)
+            .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES)
             .saturating_add(benchmark_memory_rejections);
         let mut trace = MemoryDecisionTrace::new(
             turn,
@@ -1265,7 +1287,7 @@ impl Agent {
             opened: self.memory_workspace.is_some(),
             scanned_items: memory_audit
                 .map(|audit| u32::try_from(audit.observation.candidates.len()).unwrap_or(u32::MAX))
-                .unwrap_or(0),
+                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES),
             elapsed_us,
             failure_code: None,
         });
@@ -1370,7 +1392,13 @@ impl Agent {
                 } else if audit.novelty_deduplicated.contains(&candidate.slug) {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::Duplicate
-                } else if audit.scores_ppm.get(index).copied().unwrap_or(0) <= 0 {
+                } else if audit
+                    .scores_ppm
+                    .get(index)
+                    .copied()
+                    .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM)
+                    <= 0
+                {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::BelowThreshold
                 } else {
@@ -1385,10 +1413,22 @@ impl Agent {
                     store_id: 0,
                     tier: memory_tier(candidate.trust),
                     trust: candidate.trust,
-                    bm25_term_ppm: audit.lexical_scores_ppm.get(index).copied().unwrap_or(0),
-                    bm25_length_ppm: audit.structural_scores_ppm.get(index).copied().unwrap_or(0),
+                    bm25_term_ppm: audit
+                        .lexical_scores_ppm
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
+                    bm25_length_ppm: audit
+                        .structural_scores_ppm
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
                     semantic_ppm: Some(
-                        audit.structural_scores_ppm.get(index).copied().unwrap_or(0),
+                        audit
+                            .structural_scores_ppm
+                            .get(index)
+                            .copied()
+                            .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
                     ),
                     recency_ppm: i64::from(
                         audit
@@ -1398,9 +1438,17 @@ impl Agent {
                             .unwrap_or(iteron_ctx::SCORE_SCALE),
                     ),
                     confidence_ppm: 0,
-                    combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(0),
+                    combined_ppm: audit
+                        .scores_ppm
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
                     threshold_ppm: 1,
-                    rank: audit.ranks.get(index).copied().unwrap_or(0),
+                    rank: audit
+                        .ranks
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ABSENT_CANDIDATE_RANK),
                     requested_bytes: candidate_bytes,
                     requested_tokens: candidate_tokens,
                     decision,
@@ -1580,7 +1628,7 @@ impl Agent {
                     )
                 })
                 .and_then(|count| u32::try_from(count).ok())
-                .unwrap_or(0);
+                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES);
             let rejected_candidates = memory_audit
                 .map(|audit| {
                     audit
@@ -1592,7 +1640,7 @@ impl Agent {
                         .count()
                 })
                 .and_then(|count| u32::try_from(count).ok())
-                .unwrap_or(0)
+                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES)
                 .saturating_add(benchmark_memory_rejections);
             let leaked = !memory_segments.is_empty()
                 || memory_audit.is_some_and(|audit| !audit.selected.is_empty());

@@ -14,6 +14,9 @@ use std::path::{Component, Path};
 
 const MAX_CAPABILITY_PATH_BYTES: usize = 4 * 1024;
 const MAX_CAPABILITY_COMPONENTS: usize = 128;
+/// Identity verdict when `stat` itself fails during rebinding. Fail-closed: an unprovable match is
+/// treated as a changed path, so a broken check can only refuse, never admit. Not a tunable.
+const SAME_FILE_UNPROVEN: bool = false;
 
 fn c_string(value: &OsStr) -> io::Result<CString> {
     CString::new(value.as_bytes())
@@ -168,7 +171,7 @@ impl RootBinding {
             let Ok(reopened) = open_dir(&current, component) else {
                 return false;
             };
-            if !same_file(expected, &reopened).unwrap_or(false) {
+            if !same_file(expected, &reopened).unwrap_or(SAME_FILE_UNPROVEN) {
                 return false;
             }
             current = reopened;

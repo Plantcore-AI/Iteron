@@ -206,7 +206,9 @@ impl ConfinedProcess {
             match self.child.try_wait() {
                 Ok(Some(status)) => return Some(status),
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        crate::BLOCKING_REAP_POLL_MS,
+                    ));
                 }
                 Ok(None) | Err(_) => return None,
             }
@@ -286,8 +288,11 @@ pub async fn spawn_confined_process_from_workspace(
         let Some(binary) = crate::bubblewrap::Bubblewrap::usable_bwrap_off_worker().await else {
             return Err(SandboxError::Unsupported);
         };
-        let inherited = crate::bubblewrap::duplicate_for_child(workspace, 10)
-            .map_err(|_| SandboxError::Profile("workspace descriptor admission failed".into()))?;
+        let inherited = crate::bubblewrap::duplicate_for_child(
+            workspace,
+            crate::bubblewrap::CHILD_INHERITED_FD_FLOOR,
+        )
+        .map_err(|_| SandboxError::Profile("workspace descriptor admission failed".into()))?;
         let descriptor = inherited.as_raw_fd();
         let mut process = tokio::process::Command::new(binary);
         process.args(crate::bubblewrap::bwrap_args_with_workspace_fd(

@@ -8,6 +8,16 @@ pub const MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS: u64 = 120_000;
 pub const MAX_LSP_RESTARTS: u32 = 8;
 pub const MAX_LSP_BACKOFF_MILLISECONDS: u64 = 60_000;
 
+/// Shipped recovery defaults, well inside the `MAX_LSP_*` ceilings above, which stay code-owned.
+/// Deadline for one LSP request before the query is abandoned and the server is suspected.
+const DEFAULT_LSP_REQUEST_TIMEOUT_MILLISECONDS: u64 = 30_000;
+/// Restarts of one server before its route is left down for the session.
+const DEFAULT_LSP_MAX_RESTARTS: u32 = 3;
+/// First restart backoff; each further attempt doubles from here.
+const DEFAULT_LSP_BACKOFF_BASE_MILLISECONDS: u64 = 250;
+/// Ceiling the doubling backoff saturates at, so a dead server is still retried periodically.
+const DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS: u64 = 10_000;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LspLanguageRoute {
     pub language_id: String,
@@ -68,10 +78,10 @@ impl LspRecoveryPolicy {
 impl Default for LspRecoveryPolicy {
     fn default() -> Self {
         Self {
-            request_timeout_milliseconds: 30_000,
-            max_restarts: 3,
-            backoff_base_milliseconds: 250,
-            backoff_cap_milliseconds: 10_000,
+            request_timeout_milliseconds: DEFAULT_LSP_REQUEST_TIMEOUT_MILLISECONDS,
+            max_restarts: DEFAULT_LSP_MAX_RESTARTS,
+            backoff_base_milliseconds: DEFAULT_LSP_BACKOFF_BASE_MILLISECONDS,
+            backoff_cap_milliseconds: DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS,
         }
     }
 }

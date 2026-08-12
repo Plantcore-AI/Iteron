@@ -43,6 +43,9 @@ pub(super) const STOP_QUEUE_CAPACITY: usize = 1;
 pub(super) const CONTROL_RESPONSE_SECS: u64 = 3;
 pub(super) const STDIN_WRITE_SECS: u64 = 1;
 pub(super) const OUTPUT_DRAIN_SECS: u64 = 1;
+/// Whether a write to a job's stdin also closes it when the call omits `eof`. Kept open, because
+/// closing stdin is irreversible for the job and must be asked for explicitly.
+pub(super) const DEFAULT_STDIN_EOF: bool = false;
 pub(super) const DEFAULT_PTY_ROWS: u16 = 24;
 pub(super) const DEFAULT_PTY_COLS: u16 = 80;
 
@@ -363,7 +366,7 @@ fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                     .input
                     .get("eof")
                     .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
+                    .unwrap_or(DEFAULT_STDIN_EOF);
                 if input.is_empty() && !eof {
                     return definite_error(call.id, "input must be non-empty unless eof is true");
                 }

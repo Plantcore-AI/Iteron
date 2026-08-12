@@ -8,6 +8,9 @@ use super::worktree::WriterWorktree;
 use super::{KernelSpawner, safe_agent_refusal};
 use crate::runtime::{UiEvent, bounded_child_report, ui_workflow_label, usage_tokens};
 
+/// Leaves reported as dropped when the plan records no fan-cap truncation at all.
+const NO_LEAVES_TRUNCATED: usize = 0;
+
 fn workflow_child_activity(event: &UiEvent) -> Option<String> {
     match event {
         UiEvent::ToolStart { name, args, .. } => {
@@ -394,7 +397,7 @@ impl KernelSpawner {
                     .collect::<Vec<_>>();
                 (
                     tasks,
-                    plan.truncated.unwrap_or(0),
+                    plan.truncated.unwrap_or(NO_LEAVES_TRUNCATED),
                     plan.duplicates_removed,
                     plan.invalid_removed,
                 )

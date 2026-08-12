@@ -8,6 +8,10 @@ use std::process::{Command, ExitStatus, Stdio};
 use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
 
+/// Symlink verdict for a path whose metadata cannot be read at all: provisioning refuses it rather
+/// than treating an unreadable owner directory as safe.
+const UNREADABLE_PATH_IS_SYMLINK: bool = true;
+
 const MAX_GIT_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_WRITER_PATCH_BYTES: u64 = 128 * 1024 * 1024;
 const VERIFY_TIMEOUT_SECS: u64 = 600;
@@ -757,7 +761,7 @@ fn bounded_detail(value: &str) -> String {
 fn reject_symlink(path: &Path) -> Result<(), MergeFailure> {
     if std::fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(true)
+        .unwrap_or(UNREADABLE_PATH_IS_SYMLINK)
     {
         return Err(MergeFailure::new(
             MergeFailureKind::WorktreeProvision,

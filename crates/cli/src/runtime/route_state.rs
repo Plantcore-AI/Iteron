@@ -2,6 +2,10 @@ use super::*;
 
 const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 
+/// Governor-bound verdict recorded when the route carries no governor metadata at all: absence is
+/// not a grant, so the route is treated as unbound rather than pre-approved.
+const GOVERNOR_ROUTE_BOUND_ABSENT: bool = false;
+
 impl Agent {
     /// Record the composition root's already-resolved initial route as one deterministic
     /// `core/model_router` decision before the route itself becomes executable.
@@ -231,7 +235,7 @@ impl Agent {
                 self.record_model_router_abstention(turn, source, "governor_route_refused")?;
                 Err(error)
             })?
-            .unwrap_or(false);
+            .unwrap_or(GOVERNOR_ROUTE_BOUND_ABSENT);
 
         if let Err(error) = self.record_model_router_selection(
             turn,

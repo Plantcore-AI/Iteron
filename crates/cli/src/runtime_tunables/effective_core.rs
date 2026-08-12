@@ -12,6 +12,20 @@ use iteron_protocol::{
 use iteron_sched::BackoffPolicy;
 use iteron_tunables::{DecimalValue, ResolutionValue, RuntimeGetterId};
 
+/// Prompt caching stays off unless the effective view carries an explicit owner decision, because
+/// enabling it silently would change provider billing shape for a resumed run.
+const PROMPT_CACHE_DEFAULT_ENABLED: bool = false;
+/// An absent multimodal budget means the run reserves no transcript tokens for attachments at all,
+/// not that it inherits some share of the transcript.
+const ABSENT_MULTIMODAL_TOKEN_BUDGET: usize = 0;
+/// Same rule for LSP results: unowned means zero reserved tokens, never an implicit slice.
+const ABSENT_LSP_RESULT_TOKEN_BUDGET: usize = 0;
+/// Auto-compaction is on unless an owner turned it off; a run that silently stopped compacting
+/// would fail at the context ceiling instead of degrading.
+const AUTO_COMPACTION_DEFAULT_ENABLED: bool = true;
+/// Summary coverage checking costs an extra verification pass, so it is opt-in.
+const SUMMARY_COVERAGE_CHECK_DEFAULT_ENABLED: bool = false;
+
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveCoreSettings {
     pub provider_id: String,
@@ -104,7 +118,8 @@ impl EffectiveCoreSettings {
             .map(|value| u32v(value, "request_output_cap"))
             .transpose()?;
         let (allow_code, permission_rules) = decode_governance(view)?;
-        let prompt_cache_enabled = optional_boolean(view, "prompt_cache")?.unwrap_or(false);
+        let prompt_cache_enabled =
+            optional_boolean(view, "prompt_cache")?.unwrap_or(PROMPT_CACHE_DEFAULT_ENABLED);
         let provider_governor = constrain_prompt_cache(
             super::effective_provider::decode(view)?,
             prompt_cache_enabled,
@@ -621,11 +636,11 @@ fn decode_context_policies(
     budget.multimodal_tokens = optional_integer(view, "multimodal_token_budget")?
         .map(|value| usizev(value, "multimodal_token_budget"))
         .transpose()?
-        .unwrap_or(0);
+        .unwrap_or(ABSENT_MULTIMODAL_TOKEN_BUDGET);
     budget.lsp_result_tokens = optional_integer(view, "lsp_result_context_budget")?
         .map(|value| usizev(value, "lsp_result_context_budget"))
         .transpose()?
-        .unwrap_or(0);
+        .unwrap_or(ABSENT_LSP_RESULT_TOKEN_BUDGET);
 
     let memory = view.object("memory_budgets")?;
     let instruction_discovery = decode_instruction_discovery(view)?;
@@ -882,7 +897,8 @@ fn decode_compaction(
     let mut policy = iteron_ctx::CompactionPolicy::default();
     policy.trigger_tokens = fallback;
     policy.keep_recent = keep_recent;
-    policy.enabled = optional_boolean(view, "auto_compaction_enable")?.unwrap_or(true);
+    policy.enabled = optional_boolean(view, "auto_compaction_enable")?
+        .unwrap_or(AUTO_COMPACTION_DEFAULT_ENABLED);
     let summary = view.object("summary_profile")?;
     let summary_effort = enum_field(summary, "summary_profile", "effort")?;
     policy.summary_profile = iteron_ctx::SummaryProfile {
@@ -922,8 +938,8 @@ fn decode_compaction(
         policy.summary_topology = iteron_ctx::SummaryTopology::parse(topology)
             .ok_or_else(|| unknown("multi_stage_summary_topology", topology))?;
     }
-    policy.coverage_check =
-        optional_boolean(view, "summary_consistency_coverage_check")?.unwrap_or(false);
+    policy.coverage_check = optional_boolean(view, "summary_consistency_coverage_check")?
+        .unwrap_or(SUMMARY_COVERAGE_CHECK_DEFAULT_ENABLED);
     match mode {
         "adaptive" => {}
         "fixed" => policy.set_fixed_trigger_tokens(fallback),

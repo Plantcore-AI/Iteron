@@ -29,6 +29,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod tests;
 
 const MAX_RUN_POLICY_OPPORTUNITIES: usize = MAX_POLICY_ACTIONS * 16;
+
+/// Turn-start stamp assumed when no `observe_turn_start` was recorded for the turn, so latency is
+/// measured from the epoch rather than dropping the evidence.
+const UNOBSERVED_TURN_START_US: u64 = 0;
 static NEXT_RECORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,7 +427,12 @@ impl PolicyEvidenceRecorder {
     }
 
     pub(crate) fn turn_latency_us(&self, turn: TurnId, now_us: u64) -> u64 {
-        now_us.saturating_sub(self.turn_started_at_us.get(&turn.0).copied().unwrap_or(0))
+        now_us.saturating_sub(
+            self.turn_started_at_us
+                .get(&turn.0)
+                .copied()
+                .unwrap_or(UNOBSERVED_TURN_START_US),
+        )
     }
 
     pub(crate) fn is_turn_terminal(&self, turn: TurnId) -> bool {

@@ -8,6 +8,10 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::Path;
 
+/// Timestamp given to a run id whose hex fields do not parse. Legacy ids sort last as a block and
+/// then fall back to lexicographic id order, which is why the floor is the minimum, not a guess.
+const UNPARSED_RUN_TIMESTAMP: u128 = 0;
+
 /// Reuse the command-side sidecar reader for at most `limit` recently-active run directories.
 ///
 /// Fresh run ids carry their creation nanoseconds (both `wf_<nanos>_<seq>` and the standalone
@@ -45,11 +49,11 @@ fn run_timestamp(run_id: &str) -> u128 {
     let first = parts
         .next()
         .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(0);
+        .unwrap_or(UNPARSED_RUN_TIMESTAMP);
     let second = parts
         .next()
         .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(0);
+        .unwrap_or(UNPARSED_RUN_TIMESTAMP);
     first.max(second)
 }
 

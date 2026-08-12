@@ -293,3 +293,14 @@ fn conditional_tpe_prefers_the_pending_value_seen_in_the_good_density() {
     let suggested = tuner.issue_trials().unwrap().remove(0);
     assert_eq!(suggested.candidate.id, "z-good-pending");
 }
+
+/// A candidate must be able to name the whole registry. Pinning this to the family count rather
+/// than a literal is the point: a later registry growth that left the width behind would silently
+/// cap every candidate below the space it is searching, and nothing else would notice.
+#[test]
+fn candidate_width_tracks_the_family_count() {
+    assert_eq!(
+        crate::tuner::MAX_FAMILIES_PER_CANDIDATE,
+        iteron_tunables::EXPECTED_FAMILY_COUNT
+    );
+}

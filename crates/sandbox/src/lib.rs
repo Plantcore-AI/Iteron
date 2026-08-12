@@ -104,6 +104,10 @@ pub struct Confinement {
 
 impl Confinement {
     pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+    /// Wall-clock ceiling for a confined run. A confined child is a build or a test step, so two
+    /// minutes is the bound that catches a wedged child without failing ordinary work; the
+    /// unconfined posture raises it deliberately (`UNCONFINED_TIMEOUT_SECS`).
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
     /// Retained bytes per stream once the sandbox is not the thing bounding the run. A confined
     /// child is a build or a test; an unconfined one is routinely a full log the operator asked
     /// for, and truncating it at 256 KiB was the ceiling this change exists to remove.
@@ -149,7 +153,7 @@ impl Confinement {
                 std::process::id()
             )),
             allow_egress: false,
-            timeout_secs: 120,
+            timeout_secs: Self::DEFAULT_TIMEOUT_SECS,
             max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
             sensitive_env_names: Vec::new(),
             child_environment: None,
@@ -175,6 +179,19 @@ pub struct RunOutput {
 const POST_KILL_DRAIN_SECS: u64 = 1;
 #[cfg(unix)]
 const TERMINATION_GRACE_MS: u64 = 50;
+/// Poll interval of the blocking reap fallback. It runs on a thread with no runtime to yield to,
+/// so the interval trades reap latency directly against spinning on `try_wait`.
+#[cfg(unix)]
+const BLOCKING_REAP_POLL_MS: u64 = 10;
+/// Exit code reported when the child left no wait-status code of its own — the signalled case,
+/// including the sandbox's own KILL after a timeout.
+const SIGNALLED_EXIT_CODE: i32 = -1;
+/// Bytes read per `read` while draining a child pipe. One page-sized chunk keeps the syscall count
+/// down without holding a large buffer per stream for the whole run.
+const DRAIN_CHUNK_BYTES: usize = 8 * 1024;
+/// Upper bound on the capture buffer preallocated per stream. The output ceiling can be megabytes,
+/// and most children never approach it, so the allocation grows on demand instead.
+const INITIAL_CAPTURE_CAPACITY_BYTES: usize = 8 * 1024;
 
 /// Immutable process-group termination policy consumed by every sandbox backend.
 ///
@@ -207,7 +224,7 @@ struct BoundedCapture {
 impl BoundedCapture {
     fn with_limit(limit: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(limit.min(8 * 1024)),
+            bytes: Vec::with_capacity(limit.min(INITIAL_CAPTURE_CAPACITY_BYTES)),
             truncated: false,
         }
     }
@@ -245,7 +262,7 @@ async fn drain_bounded<R: AsyncRead + Unpin>(
     capture: &mut BoundedCapture,
     limit: usize,
 ) -> std::io::Result<()> {
-    let mut chunk = [0_u8; 8 * 1024];
+    let mut chunk = [0_u8; DRAIN_CHUNK_BYTES];
     loop {
         let read = reader.read(&mut chunk).await?;
         if read == 0 {
@@ -398,7 +415,9 @@ pub(crate) async fn collect_child_output(
     let (stdout, stdout_truncated) = out.finish("stdout", conf.max_output_bytes);
     let (stderr, stderr_truncated) = err.finish("stderr", conf.max_output_bytes);
     Ok(RunOutput {
-        exit_code: status.and_then(|status| status.code()).unwrap_or(-1),
+        exit_code: status
+            .and_then(|status| status.code())
+            .unwrap_or(SIGNALLED_EXIT_CODE),
         stdout,
         stderr,
         stdout_truncated,

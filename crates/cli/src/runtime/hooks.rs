@@ -44,6 +44,9 @@ const HOOK_READ_CHUNK_BYTES: usize = 8 * 1024;
 const MAX_HOOKS_PER_EVENT: usize = 128;
 pub(crate) const MAX_HOOK_CATALOG_ENTRIES: usize = 256;
 const MAX_HOOK_COMMAND_BYTES: usize = 4_096;
+/// Per-hook wall bound (invariant #1). A hook that outlives it is "no opinion", so the bound is the
+/// only thing keeping an operator command from wedging the turn.
+const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
 
 /// A lifecycle event a hook can bind to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +92,7 @@ impl Default for Hooks {
     fn default() -> Self {
         Self {
             by_event: BTreeMap::new(),
-            timeout_secs: 30,
+            timeout_secs: DEFAULT_HOOK_TIMEOUT_SECS,
             sensitive_env_names: Vec::new(),
         }
     }
@@ -128,6 +131,12 @@ pub struct LifecycleHookReport {
 const MAX_LIFECYCLE_HOOK_AUGMENTATIONS: usize = 32;
 const LIFECYCLE_GATE_TIMEOUT: Duration = Duration::from_secs(2);
 const LIFECYCLE_OBSERVER_TIMEOUT: Duration = Duration::from_secs(10);
+/// Exit code attributed to a hook process that carried none because a signal killed it; negative so
+/// it can never collide with a real hook exit status.
+const SIGNAL_TERMINATED_EXIT_CODE: i32 = -1;
+/// Cancel/drain poll cadence while awaiting a hook process, so an operator interrupt is observed
+/// without busy-waiting on the child.
+const HOOK_CANCEL_POLL: Duration = Duration::from_millis(25);
 
 impl Hooks {
     /// Load hooks from the USER config `<home>/.iteron/config.json` only. A project config is
@@ -142,7 +151,7 @@ impl Hooks {
             .unwrap_or_default();
         Hooks {
             by_event,
-            timeout_secs: 30,
+            timeout_secs: DEFAULT_HOOK_TIMEOUT_SECS,
             sensitive_env_names: Vec::new(),
         }
     }
@@ -861,7 +870,7 @@ async fn run_one_with_shell(
         let stdout = stdout.ok()?.into_marked_string("stdout");
         let stderr = stderr.ok()?.into_marked_string("stderr");
         Some(HookRunOutput {
-            code: status.ok()?.code().unwrap_or(-1),
+            code: status.ok()?.code().unwrap_or(SIGNAL_TERMINATED_EXIT_CODE),
             stdout,
             stderr,
         })
@@ -880,7 +889,7 @@ async fn run_one_with_shell(
             tokio::select! {
                 result = &mut work => break WaitOutcome::Completed(result),
                 () = &mut deadline => break WaitOutcome::TimedOut,
-                () = tokio::time::sleep(Duration::from_millis(25)),
+                () = tokio::time::sleep(HOOK_CANCEL_POLL),
                     if cancel.is_some() || drain.is_some() =>
                 {
                     if stopped() {

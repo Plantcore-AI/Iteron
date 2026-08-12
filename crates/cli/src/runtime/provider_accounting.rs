@@ -1,10 +1,14 @@
 use super::*;
 
+/// Wall-clock stamp reported when the host clock reads before the Unix epoch; accounting keeps an
+/// unusable stamp rather than failing the caller.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
 pub(super) fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(CLOCK_BEFORE_EPOCH_SECS)
 }
 
 pub(super) fn elapsed_us(started: Instant) -> u64 {

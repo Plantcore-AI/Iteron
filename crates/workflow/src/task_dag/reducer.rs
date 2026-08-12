@@ -12,6 +12,10 @@ use super::types::{
 
 const LOG_VERSION: u32 = 1;
 
+/// Depth recorded for a task whose dependency set is empty: it is a root of the dependency order,
+/// so nothing precedes it.
+const ROOT_DEPENDENCY_DEPTH: usize = 0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyReceipt {
     pub sequence: u64,
@@ -466,7 +470,7 @@ impl TaskDag {
             .filter_map(|dependency| self.tasks.get(dependency))
             .map(|dependency| dependency.dependency_depth + 1)
             .max()
-            .unwrap_or(0);
+            .unwrap_or(ROOT_DEPENDENCY_DEPTH);
         let state = initial_state(&self.tasks, &spec.dependencies);
         let reservation = spec.budget.reservable();
         match spec.parent {

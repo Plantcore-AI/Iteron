@@ -3,6 +3,13 @@
 use crate::MemBudget;
 use serde::{Deserialize, Serialize};
 
+/// Model window assumed by the default budget split when no route has been selected yet.
+const DEFAULT_MODEL_WINDOW_TOKENS: usize = 120_000;
+/// Output space held back from input budgeting so a full answer always fits.
+const DEFAULT_OUTPUT_RESERVE_TOKENS: u32 = 8_192;
+/// Additional space held back for the post-answer verification pass.
+const DEFAULT_VERIFICATION_RESERVE_TOKENS: u32 = 4_096;
+
 /// Separately-accounted request components. These are ceilings, not allocation targets: unused
 /// budget in one class cannot silently widen another class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +37,11 @@ pub struct ContextBudgetPolicy {
 
 impl Default for ContextBudgetPolicy {
     fn default() -> Self {
-        Self::for_usable_window(120_000, 8_192, 4_096)
+        Self::for_usable_window(
+            DEFAULT_MODEL_WINDOW_TOKENS,
+            DEFAULT_OUTPUT_RESERVE_TOKENS,
+            DEFAULT_VERIFICATION_RESERVE_TOKENS,
+        )
     }
 }
 

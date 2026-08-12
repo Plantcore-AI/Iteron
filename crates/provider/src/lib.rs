@@ -64,6 +64,20 @@ pub use usage::{UsageIncompleteReason, UsageReport};
 pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// TCP+TLS handshake budget. A peer that cannot complete a handshake this fast is unreachable
+/// for practical purposes, and failing early leaves the request deadline for the real work.
+const TRANSPORT_CONNECT_TLS_SECS: u64 = 30;
+/// Physical deadline for one provider request, long-running generations included. This is the
+/// outer bound the agent can never exceed, not an expected duration.
+const TRANSPORT_REQUEST_TOTAL_SECS: u64 = 15 * 60;
+/// Stream-idle watchdog: a stream that emits nothing for this long is treated as dead rather
+/// than held open until the total deadline.
+const TRANSPORT_STREAM_IDLE_SECS: u64 = 120;
+/// How long an idle pooled connection is kept for reuse before the pool drops it.
+const TRANSPORT_POOL_IDLE_SECS: u64 = 300;
+/// TCP keepalive interval, kept well under common NAT/idle-connection reaping windows.
+const TRANSPORT_TCP_KEEPALIVE_SECS: u64 = 30;
+
 /// One immutable owner for the physical request deadline and stream-idle watchdog used by every
 /// network adapter. Keeping these together prevents a newly added adapter from silently acquiring
 /// a looser transport lifetime than the checkpointed fixed authority.
@@ -79,11 +93,11 @@ pub struct ProviderTransportTimeoutPolicy {
 
 pub const fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
     ProviderTransportTimeoutPolicy {
-        connect_tls: Duration::from_secs(30),
-        request_total: Duration::from_secs(15 * 60),
-        stream_idle: Duration::from_secs(120),
-        pool_idle: Duration::from_secs(300),
-        tcp_keepalive: Duration::from_secs(30),
+        connect_tls: Duration::from_secs(TRANSPORT_CONNECT_TLS_SECS),
+        request_total: Duration::from_secs(TRANSPORT_REQUEST_TOTAL_SECS),
+        stream_idle: Duration::from_secs(TRANSPORT_STREAM_IDLE_SECS),
+        pool_idle: Duration::from_secs(TRANSPORT_POOL_IDLE_SECS),
+        tcp_keepalive: Duration::from_secs(TRANSPORT_TCP_KEEPALIVE_SECS),
         connection_reuse: true,
     }
 }

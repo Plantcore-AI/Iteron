@@ -1,5 +1,10 @@
 use super::*;
 
+/// Poll cadence while the parent awaits an admitted child, so an operator interrupt reaches the
+/// child within one interval instead of at its own completion. Fixed and bounded like the
+/// verification cancellation poll.
+const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
+
 impl Agent {
     /// Spawn a READ-ONLY subagent to investigate a subtask, returning its compressed summary
     /// (ADR-001: a subagent is a context-management device, not a teammate; it explores an
@@ -51,7 +56,6 @@ impl Agent {
         child: &mut Agent,
         task: &str,
     ) -> Result<Outcome, KernelError> {
-        const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Seed before the child starts: a stop the operator raised while the parent was still
         // admitting must make the child refuse at its first safe point, not one poll interval in.

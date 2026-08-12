@@ -22,6 +22,9 @@ const MAX_GITIGNORE_FILES: usize = 128;
 const MAX_GITIGNORE_FILE_BYTES: usize = 64 * 1024;
 const MAX_GITIGNORE_TOTAL_BYTES: usize = 256 * 1024;
 const MAX_GITIGNORE_PATTERNS: usize = 4_096;
+/// Search mode when the call omits `regex`: literal, because a pattern written for literal search
+/// is inert as a regex, while the reverse silently matches the wrong lines.
+const DEFAULT_GREP_REGEX_MODE: bool = false;
 
 enum Matcher {
     Literal(String),
@@ -215,7 +218,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     call.input
                         .get("regex")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
+                        .unwrap_or(DEFAULT_GREP_REGEX_MODE),
                 ) {
                     Ok(matcher) => matcher,
                     Err(error) => return err_result(id, error),

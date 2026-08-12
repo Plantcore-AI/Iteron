@@ -9,6 +9,7 @@ mod schema_compat;
 mod seams;
 mod spec_shapes;
 mod tunables;
+mod tunables_params;
 mod validate;
 
 use anyhow::{Context, Result, bail};
@@ -44,6 +45,22 @@ fn main() -> Result<()> {
         [group, command] if group == "docs" && command == "generate" => {
             docs_cli::generate(&root)?;
             println!("generated docs/reference/cli.md");
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "generate-params" => {
+            tunables_params::generate(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "check-params" => {
+            tunables_params::check(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "surface" => {
+            tunables_params::surface(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "constants-audit" => {
+            tunables_params::census(&root)?;
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "check" => {
@@ -148,7 +165,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|surface> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

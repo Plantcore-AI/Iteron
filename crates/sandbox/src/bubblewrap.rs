@@ -31,7 +31,9 @@ use capability::{
     test_fingerprint,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use capability::{duplicate_for_child, inherit_fd_in_tokio_command};
+pub(crate) use capability::{
+    CHILD_INHERITED_FD_FLOOR, duplicate_for_child, inherit_fd_in_tokio_command,
+};
 
 /// Credential-free, user-scoped toolchain roots that may be exposed read-only inside the Linux
 /// namespace. Keep these narrower than their parent configuration directories: for example,

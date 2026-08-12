@@ -1,5 +1,9 @@
 use super::*;
 
+/// Approval sequence a replay starts from when the journal holds no `Approval` event, so the first
+/// approval of the resumed run still mints a strictly increasing id.
+const NO_APPROVAL_SEQ: u64 = 0;
+
 /// Complete fallible projection of an adopted journal. Construction may verify signatures,
 /// validate identities, allocate bounded state, and append a monotone USD tightening to the target
 /// journal; applying it to the resident `Agent` is assignments only.
@@ -224,7 +228,7 @@ impl Agent {
                         _ => None,
                     })
                     .max()
-                    .unwrap_or(0);
+                    .unwrap_or(NO_APPROVAL_SEQ);
                 self.selected_route = events.iter().rev().find_map(|event| match &event.kind {
                     EventKind::ModelSelected {
                         provider_id,
@@ -502,7 +506,7 @@ impl Agent {
                 _ => None,
             })
             .max()
-            .unwrap_or(0);
+            .unwrap_or(NO_APPROVAL_SEQ);
         let selected_route = events.iter().rev().find_map(|event| match &event.kind {
             EventKind::ModelSelected {
                 provider_id,

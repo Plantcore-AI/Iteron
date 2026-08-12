@@ -21,6 +21,24 @@ use std::path::Path;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_MCP_SERVERS: usize = 32;
 const MAX_MCP_SERVER_ARGS: usize = 128;
+/// A provider instance a released config declared without saying otherwise is usable and its
+/// catalog is queried; both switches exist to turn something off, so absence means on.
+const PROVIDER_SWITCH_DEFAULT: bool = true;
+/// Age charged to a config lock whose file timestamp is in the future (a clock step or a
+/// network filesystem). Zero, so an unreadable age never makes the lock look stale.
+const CONFIG_LOCK_AGE_ON_UNUSABLE_CLOCK_SECS: u64 = 0;
+/// Staleness verdict when the lock file's metadata cannot be read at all. False, so the holder
+/// keeps the lock: breaking a lock we cannot inspect is the destructive answer.
+const CONFIG_LOCK_STALE_WHEN_UNREADABLE: bool = false;
+/// Backoff between contended attempts to create the lock file. 300 attempts at this interval
+/// bound the wait at roughly the stale-lock timeout.
+const CONFIG_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+/// Temp-file nonce used when the clock reads before the UNIX epoch. The pid and the `.tmp`
+/// suffix still disambiguate, so a degenerate nonce costs uniqueness, not correctness.
+const TEMP_FILE_NONCE_ON_UNUSABLE_CLOCK: u128 = 0;
+/// Terminal completion notifications when no operator-owned config mentions them. Off, because
+/// absence is not consent to emit terminal control output.
+const COMPLETION_NOTIFICATIONS_DEFAULT: bool = false;
 /// Upper bound for an operator-declared context window. Two orders of magnitude above any
 /// window a provider currently documents, and far enough below `u64::MAX / 4` that the
 /// window-relative compaction arithmetic never saturates. It bounds absurd input; it is not a
@@ -650,7 +668,7 @@ pub struct ProviderModelCapabilities {
 }
 
 fn default_true() -> bool {
-    true
+    PROVIDER_SWITCH_DEFAULT
 }
 
 impl ProviderConfig {
@@ -1226,15 +1244,18 @@ impl ConfigLock {
                     let stale = std::fs::metadata(&path)
                         .and_then(|metadata| metadata.modified())
                         .map(|modified| {
-                            modified.elapsed().map(|age| age.as_secs()).unwrap_or(0)
+                            modified
+                                .elapsed()
+                                .map(|age| age.as_secs())
+                                .unwrap_or(CONFIG_LOCK_AGE_ON_UNUSABLE_CLOCK_SECS)
                                 > CONFIG_LOCK_STALE_SECS
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(CONFIG_LOCK_STALE_WHEN_UNREADABLE);
                     if stale {
                         let _ = std::fs::remove_file(&path);
                         continue;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(CONFIG_LOCK_RETRY_INTERVAL);
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -1299,7 +1320,7 @@ pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or(TEMP_FILE_NONCE_ON_UNUSABLE_CLOCK);
     let temp = parent.join(format!(
         ".{}.{}.{nonce}.tmp",
         path.file_name()
@@ -1578,7 +1599,7 @@ pub(crate) fn resolve_completion_notifications(
     untrusted_project: Option<bool>,
 ) -> CompletionNotificationResolution {
     CompletionNotificationResolution {
-        enabled: trusted_user.unwrap_or(false),
+        enabled: trusted_user.unwrap_or(COMPLETION_NOTIFICATIONS_DEFAULT),
         project_ignored: untrusted_project.is_some(),
     }
 }

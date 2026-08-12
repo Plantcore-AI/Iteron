@@ -27,6 +27,9 @@ const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 1024;
+/// Slot a streamed tool-call delta lands in when the provider omits `index`. Single-tool-call
+/// streams from compatible servers legitimately drop the field, and they mean the first slot.
+const DEFAULT_TOOL_CALL_INDEX: u64 = 0;
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_REASONING_STATE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -1109,7 +1112,10 @@ impl Provider for OpenAiCompat {
                     .and_then(|x| x.as_array())
                 {
                     for tc in tcs {
-                        let raw_index = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let raw_index = tc
+                            .get("index")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(DEFAULT_TOOL_CALL_INDEX);
                         let idx = usize::try_from(raw_index).map_err(|_| {
                             ProviderError::Decode("tool call index exceeded platform bounds".into())
                         })?;

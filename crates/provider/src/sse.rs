@@ -20,6 +20,10 @@
 use crate::UsageReport;
 use iteron_protocol::{Block, ProviderState, StopReason, StopReasonCode, ToolUse, Usage};
 
+/// Cache token counts an Anthropic `message_start` may omit entirely. Absence means the request
+/// touched no cache, which is a count of zero, not unknown usage.
+const ABSENT_CACHE_TOKENS: u64 = 0;
+
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CONTENT_BLOCKS: usize = 4096;
@@ -193,9 +197,10 @@ impl StreamParser {
                     .ok_or("message_start lacked a usage object")?;
                 self.usage.input = required_usage_u64(usage, "input_tokens")?;
                 self.usage.cache_creation =
-                    optional_usage_u64(usage, "cache_creation_input_tokens")?.unwrap_or(0);
-                self.usage.cache_read =
-                    optional_usage_u64(usage, "cache_read_input_tokens")?.unwrap_or(0);
+                    optional_usage_u64(usage, "cache_creation_input_tokens")?
+                        .unwrap_or(ABSENT_CACHE_TOKENS);
+                self.usage.cache_read = optional_usage_u64(usage, "cache_read_input_tokens")?
+                    .unwrap_or(ABSENT_CACHE_TOKENS);
                 self.message_start_seen = true;
             }
             "content_block_start" => {

@@ -250,9 +250,12 @@ pub(super) fn apply(
             (
                 "max_output_tokens",
                 int(i64v(
-                    decomposition
-                        .max_output_tokens
-                        .min(input.budget.max_tokens.unwrap_or(65_536)),
+                    decomposition.max_output_tokens.min(
+                        input
+                            .budget
+                            .max_tokens
+                            .unwrap_or(ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING),
+                    ),
                     "decomposition_profile",
                 )?),
             ),

@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "4f79c8296326a2b1b84ccf3bbea61a3f30095cc5b634c4ae0371efc9b0b51b55"
+    "value": "37e34c87bc64684d64d7d8c913e70d32e6c2d8e4e57db1c553cebe9c00fa44fc"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 16,
+    "registry_revision": 17,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -2746,7 +2746,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ed2b7e7234d2f9c616d536838c873964eb3ccd6ed7470b1fe2ba0e57718bfff4"
+          "value": "74a24b698c1941d51e9160e54d04c4dcaea86c961b0eabab4b1bd83f18eb5b7d"
         },
         "schema_version": 3,
         "ordinal": 23,
@@ -2784,6 +2784,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "rust_builder",
               "trust": "operator",
@@ -3232,7 +3238,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f709b984d8882566809d0f6299b19a2b0b07b38c2c625f9fe2594243be547093"
+          "value": "8ebc7c36515c6e47f552d99038af446948d3a456a6d05929b7f0967b0bce0614"
         },
         "schema_version": 3,
         "ordinal": 27,
@@ -3268,6 +3274,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -3479,7 +3491,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a93a117bb63b1aea3b8ab5ce5e05b6ca1514202a38cfa2160b07bcaba0f80836"
+          "value": "552d3b1f287d2bc51f4452eb160a9f9d4c0f056ec141b0ca5503975b5f57cb3a"
         },
         "schema_version": 3,
         "ordinal": 29,
@@ -3514,6 +3526,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -3735,7 +3753,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e4f7dd76de08a76886bd6f6842c790e1d505a8a9288d671852189369c1592243"
+          "value": "14671f4b1a10be9e2e42d98b1ac8156430a49dded92f46328fbea9b690bf2c58"
         },
         "schema_version": 3,
         "ordinal": 31,
@@ -3771,6 +3789,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -4722,7 +4746,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "269a8ec4d96d1f0c295bc1e29505e97ae686d0209f7149d5eed0c21f328f5d8e"
+          "value": "d7e515f1d46da6e7f1a556ef3e59a330ab6363005e64efd383354d0efe20df18"
         },
         "schema_version": 3,
         "ordinal": 39,
@@ -4783,6 +4807,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -4902,7 +4932,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1faa86a71ce11309aed1d666ad903b33efa0facbbec86adcc2bb8591b51b1cac"
+          "value": "6c2b8f314044cec13dc0923bcaf2c38e888d6e094c1bd587fc2bf6b0d2fcbf6f"
         },
         "schema_version": 3,
         "ordinal": 40,
@@ -4938,6 +4968,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5042,7 +5078,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "95e8580fe8f1dd61e8372b36f4c584d7b6346b8f728bbd01107b7f8aa2bcf862"
+          "value": "27448579a9dacf1a11e5215ebb9bb89608ed9f9a448fdd4377a1de23d95bd7df"
         },
         "schema_version": 3,
         "ordinal": 41,
@@ -5078,6 +5114,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5177,7 +5219,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "322e71074d65449ae7be3062c07e329ec795aedf8c3dfea837e5ab4484b19594"
+          "value": "b45acd45c53bf6439258266a7de778876f3e1d783cf82ef0c9fa720e04694ae0"
         },
         "schema_version": 3,
         "ordinal": 42,
@@ -5213,6 +5255,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5312,7 +5360,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e92215826fc157f2f29b2f6fd2cec0d895ddd9155d29279c9a245f6299068cf8"
+          "value": "f44082e820dafcb6233f6f95a143ea6ddc90922d3c4a96e6e4768486456b086d"
         },
         "schema_version": 3,
         "ordinal": 43,
@@ -5348,6 +5396,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5452,7 +5506,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fe6bc6e953f69c41293be3f4ecba2564629577880d6ee1556f5bf96ec305a664"
+          "value": "2133dc721ff971330a450e959f2de7a44d60f0ebadf19f75af8785c948309b1a"
         },
         "schema_version": 3,
         "ordinal": 44,
@@ -5488,6 +5542,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5587,7 +5647,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "22485222719236938528add6564d67109d21f15be937f741ffe78cf4fa3640e9"
+          "value": "f0efb8719cbe22add40a7773e78239608b6930b2c83129bf843ef94747c0a6d4"
         },
         "schema_version": 3,
         "ordinal": 45,
@@ -5623,6 +5683,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -5745,7 +5811,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2b5394737f82b6eb919a6e879192d7ef66839a04b7808503946fa865e03999d9"
+          "value": "4141b329cea8dd511e1ab175f627aba2b87aa431c6f68b44f3c9e8ff00336cd4"
         },
         "schema_version": 3,
         "ordinal": 46,
@@ -5781,6 +5847,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -6097,7 +6169,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7f286084a35dc4374fdbe6744add73f278893c1508286a9e86d8433871b1b1b0"
+          "value": "4e44c13763a75365379fd1ac1e61a7550018b6f4198081a45d298f11e3ca8fee"
         },
         "schema_version": 3,
         "ordinal": 49,
@@ -6133,6 +6205,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -7567,7 +7645,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9c4fdadac73a55295a8bd781d6548162ff04f2823f933366d0a420d19280b341"
+          "value": "81292f79e06c0539b667ce169ca925e6096558b9b0c377a96073447af8b87513"
         },
         "schema_version": 3,
         "ordinal": 61,
@@ -7603,6 +7681,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -8138,7 +8222,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e43626e32d491bdeada2d5d29e8cc96763b9e0c82f7a9b021a083ab2b548b241"
+          "value": "03e063eec8626014df291d77bdd4d4d107bfba4bd11f4803716913045e4b7414"
         },
         "schema_version": 3,
         "ordinal": 65,
@@ -8174,6 +8258,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -8306,7 +8396,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "037ed9319908f697d8958266b251f8ae12d741c44224ef4ba4ad1afb4864dd2a"
+          "value": "af60286d94b93d004ea7dc93f394346f7e7b1483cfb9dfc328a21e83422da801"
         },
         "schema_version": 3,
         "ordinal": 66,
@@ -8342,6 +8432,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -9898,7 +9994,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e5458b2a8dbebbbc509b5d1f739caeda43c66288aa1be5f5c19b2751643ac021"
+          "value": "3e9341f4e48bc92e442da919287b4f4bb3871164927efca36ae05dd594c54b55"
         },
         "schema_version": 3,
         "ordinal": 76,
@@ -9937,6 +10033,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "catalog",
               "trust": "repository",
@@ -10547,7 +10649,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cc63874fe962e5f1f2dcce3a9adfc367b20f36213e662394642c013b65783ec5"
+          "value": "2e7e18971a78b48d83d9cad2f86251197269418651f47ca7f405ffd5295873b5"
         },
         "schema_version": 3,
         "ordinal": 80,
@@ -10583,6 +10685,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "catalog",
               "trust": "repository",
@@ -12547,7 +12655,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fbba0ffc30cf61d453cc37e60d1f4eb9ba90da1ee9c41adef4b5aacc4d5a2474"
+          "value": "bdeb5e5bf055098f058d7103e86fdda72c5ca59b12f65519498e83eb290aed22"
         },
         "schema_version": 3,
         "ordinal": 93,
@@ -12584,6 +12692,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -13166,7 +13280,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bc50fdb1f3937e7090fcb8ab77c775fd82977cd7d5031956acb725183efe5117"
+          "value": "27bb4a9cd0b3286293651080c742079f7765dc3c8c81a52c93ec48d7eab1bd55"
         },
         "schema_version": 3,
         "ordinal": 97,
@@ -13201,6 +13315,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -13264,7 +13384,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f99388de2fa8908d106e2b4b5ebf8c0ec56927d81cf2ef2ebcd5902e033f01f3"
+          "value": "cc5d97501c04067686821fe349b41aa190e6b9f10d5b821884a38254f56a2d79"
         },
         "schema_version": 3,
         "ordinal": 98,
@@ -13299,6 +13419,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -13362,7 +13488,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8823dce7ef1bbbb368cab70585a1c02f1bd7dedbb851ab3fdb1413212882fa3e"
+          "value": "a5fc9a7980cb0951f601a5052d2ccbe07cbfc49e6207bcb18d4ff4aca907c80f"
         },
         "schema_version": 3,
         "ordinal": 99,
@@ -13397,6 +13523,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -13460,7 +13592,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c7b2a16b1262b0f1943461454895efac7f27df791063edda99b997ee5fb4a508"
+          "value": "13ee97bf4990d79358919964bd8801e18c1975345e92170e91d1df5389c62357"
         },
         "schema_version": 3,
         "ordinal": 100,
@@ -13496,6 +13628,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -13665,7 +13803,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8260587146a0f6051527d1710bf49eb9ae25baa537c0198c8c0fd7078d9325fb"
+          "value": "d44c5428e128bc2127810428d89b7dba68c3b6784443c9f21cccf6e954752c46"
         },
         "schema_version": 3,
         "ordinal": 102,
@@ -13700,6 +13838,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -13818,7 +13962,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8538c4830a6e574c6e81b55dc7a098dff4cdcc0957ee827f3887128f43000b0a"
+          "value": "7a4ec2fd16d6d0fbaad24da51b4b5b1dd0afb57ba3dd5d2d0d94c992e763ea00"
         },
         "schema_version": 3,
         "ordinal": 103,
@@ -13855,6 +13999,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -13921,7 +14071,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "584023831b3311ac2986088f8fd4667f4ea329e21cb8c3f445892addb178648b"
+          "value": "26167a86fb1c4b680d2809cd186351734bb8c63710a1270b2b340a41af7841e4"
         },
         "schema_version": 3,
         "ordinal": 104,
@@ -13960,6 +14110,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14020,7 +14176,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da71588f6dda252b229e8eed28fc3a13ca1a20c8fac6ff37a59f127da26f295b"
+          "value": "8903c303340c2a9ede2b986057b2f9a149cc2282b86d8972137adb72f26eb538"
         },
         "schema_version": 3,
         "ordinal": 105,
@@ -14070,6 +14226,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14176,7 +14338,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "44d8067924a97a0f876ca22de71c18dd4e82898aec3954b4ee627499ce30b47b"
+          "value": "4b4897022fdbd5b8ae27c04d4c04852d3530fb12062f3a444124b19cb3ce0162"
         },
         "schema_version": 3,
         "ordinal": 106,
@@ -14216,6 +14378,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14286,7 +14454,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "143a525d4a0d5adc94eacbc66307ec8dd2d48f687fc2845bf2b040e7e342d8e2"
+          "value": "6f2d70ffcf2794f65ff287cffd6e53289e178f10a14d45957848816d9f978b5a"
         },
         "schema_version": 3,
         "ordinal": 107,
@@ -14328,6 +14496,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14398,7 +14572,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a1cdcc3f7db89a59cb2c200e4535b91cc5b0097861a0ddd35f25b1272abb3d47"
+          "value": "aa97bf5a45e9ffae95bce383cf2d886db9058432eb5994dfd03e32e7b0831c0d"
         },
         "schema_version": 3,
         "ordinal": 108,
@@ -14433,6 +14607,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14515,7 +14695,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "927899d0056d001c8fa127754abc4be99fc2a83a4f05317299403b96765531d3"
+          "value": "2801fed19f4c81fa6620ebc32301bea66f9b1677099bcf8f8e7597eb4c483c43"
         },
         "schema_version": 3,
         "ordinal": 109,
@@ -14551,6 +14731,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14620,7 +14806,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7a062ea7b40bffc447751c1bb61cceeb2679b9b99f0929ab59b9babe995bd553"
+          "value": "7e40247eb2b247a45644612157e105469d49356c75bd984e98618bc985c93e8a"
         },
         "schema_version": 3,
         "ordinal": 110,
@@ -14655,6 +14841,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14724,7 +14916,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d80440ece533b62a96af1dbe99fb37f65449a691203df9b9b482226e3c6b0dce"
+          "value": "d5319d4a127ecd88753b180d2efea9e206b36740bc0695a249ec9df5e5d911b7"
         },
         "schema_version": 3,
         "ordinal": 111,
@@ -14759,6 +14951,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -14965,7 +15163,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ff029d81d109b765a66d271276973cad06d2612f256039514c3c875d51f188b2"
+          "value": "34446e47cf3818f63d4b6097752e27c9fcd2f3e13d69a01766e58844d65476b9"
         },
         "schema_version": 3,
         "ordinal": 113,
@@ -15000,6 +15198,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -15125,7 +15329,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da56401c31276c9850a9c414a81f68124b8bacd2150abfdc75ca574e6efda918"
+          "value": "1e0ff13e21d06790f26becac9dc08f28719a5346f364f687e87a2dd31bd7acab"
         },
         "schema_version": 3,
         "ordinal": 114,
@@ -15160,6 +15364,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -15556,7 +15766,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fa84e3ccd82bf390df0302ab05e00983b0fb3f71fda7a11d8f53570b8af44e8c"
+          "value": "f3235782589396bf7ca932a2395669a207e899a051a266639b4b32eb5bf76d1e"
         },
         "schema_version": 3,
         "ordinal": 117,
@@ -15592,6 +15802,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -15875,7 +16091,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "db36d50ae3f1b6e9ca8adfe0d125d909644d5558c525f64f8d79fdb50a7b73e1"
+          "value": "31737d58a0625fd01ba87119c7df6eae18980bf0e71be19bfe14294aa73eb0c4"
         },
         "schema_version": 3,
         "ordinal": 119,
@@ -15910,6 +16126,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -16049,7 +16271,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5b31110e5e1e6bd9c8a0ce0657d63fefd2fbc1a1e2033e74b352b84b7383b4d0"
+          "value": "69fc09d21e301a306d09be6be54deeb0beb5781fdccbba387eebc68b049cceeb"
         },
         "schema_version": 3,
         "ordinal": 120,
@@ -16084,6 +16306,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -16207,7 +16435,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b013e4f43c3d72c9bc40efa8a1bb8c08b707cae2222dbb730d6affb991790d71"
+          "value": "eddf0d9485b42f79abd5b9a887a2a71d5cbc0b2314c1d30266418a5f83bb37da"
         },
         "schema_version": 3,
         "ordinal": 121,
@@ -16244,6 +16472,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -16307,7 +16541,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a714a73e0fc915ba0b1190af626e9a9411a38d250804af33fcf75dd25112193d"
+          "value": "9c7a89e739971fcf325fa5dd6823844dc5e11105c86405b5edef25fe7afd354b"
         },
         "schema_version": 3,
         "ordinal": 122,
@@ -16342,6 +16576,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -16669,7 +16909,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ef52a9fd6a558b9e45351dfb545c62eda709ac3072a190ef35c9964d9c554d95"
+          "value": "4e8f8a76805791a101c353264cdde582e244a8cf5e5b88c92b8801c69986331d"
         },
         "schema_version": 3,
         "ordinal": 125,
@@ -16735,6 +16975,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -17851,7 +18097,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "66ab86d9691a8a316a94b5c2f15ef94fa7930f9db27031d0ff65e33413e4c2eb"
+          "value": "b99edcf0806d5aba838a57d3cae23f5c8a3559dd8cfc3f0666178d00edfb4562"
         },
         "schema_version": 3,
         "ordinal": 133,
@@ -17888,6 +18134,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -17961,7 +18213,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e4b8e663f0d57bb2051ed1012ccafe1c33c3eb99fc45e7d4130b20fd48c4665d"
+          "value": "26c95304fda8aea615aebc7981451c9ee29e0985aad32fddd9d0ba08342fb531"
         },
         "schema_version": 3,
         "ordinal": 134,
@@ -17997,6 +18249,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -18066,7 +18324,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0be9593b7a2d3ed213e0c40e8673faefe0fc32cdb5deb2782eb68cf1de7f229a"
+          "value": "219f50260aa6eeb83df9200133f9ae48cfbf18e71622f384fe34d91e7e7cb0ed"
         },
         "schema_version": 3,
         "ordinal": 135,
@@ -18103,6 +18361,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "derived_policy",
               "trust": "builtin",
@@ -18180,7 +18444,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a13108e6643f81bd12280c8edef8fd303cb0f15d64ddb3ee6560b2f769f203f4"
+          "value": "4bd310e8e036727992a7eef884804ce14584d3ceb0cdaa9ff4d19170515e45eb"
         },
         "schema_version": 3,
         "ordinal": 136,
@@ -18234,6 +18498,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -18434,7 +18704,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "40a18ba5a4846c00ea8fce0c3e66b5cdf0249171688fe29e046a7a4ce009a54d"
+          "value": "20d96909a7d5bbcbe6a09fe48749fd6f3c00a1c0955ec9556f47b52175c56530"
         },
         "schema_version": 3,
         "ordinal": 138,
@@ -18469,6 +18739,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -18687,7 +18963,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1804a9078f788f6e5575583a5749c2b09a572947241ffd8baa854cf093e6f4dd"
+          "value": "7ad8be286b83d80b5389cf25383dcd3526018dee50e16f896aae730e38c9b58e"
         },
         "schema_version": 3,
         "ordinal": 140,
@@ -18724,6 +19000,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -18797,7 +19079,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8ee4b392943a1e272f7d2f9fec5d8075a20bbfd7adf8b2e3bcf090cfe75db0d2"
+          "value": "0853c0cf1aea3b70537862a65e6ed645525c968d1cc6438ee1e60c70bc0851e4"
         },
         "schema_version": 3,
         "ordinal": 141,
@@ -18832,6 +19114,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -18951,7 +19239,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "921b335dba09e02b20bc57a588dee2726c5365ac12355441a0284f5cb8e7de02"
+          "value": "963864f89ba8bff5444808ed4beb4cc1b766c52eaff2fb1ed0954cf765a5a83b"
         },
         "schema_version": 3,
         "ordinal": 142,
@@ -19011,6 +19299,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -19459,7 +19753,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ecf1974f807e9c0e62b81444df68eb693bb841d00802e2c727b97bba46c5022d"
+          "value": "154d4035b333f7cf50690ea74394fb8d2909a8a6468fca0c2d0cad5eea6910a0"
         },
         "schema_version": 3,
         "ordinal": 146,
@@ -19495,6 +19789,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -19723,7 +20023,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9f9c545e47692eb5bf57a76588a0ff5a36421b95a157dea5290b5484f83cb033"
+          "value": "90afe859c2c2f8f873d7bc0fce68b46e9b7e0b27873c8ed8ab0fef0a241f365d"
         },
         "schema_version": 3,
         "ordinal": 148,
@@ -19762,6 +20062,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -19814,7 +20120,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4cb81653ae7c62c13c488b375308706d2ddd4071482b5f070ef31e929ce98457"
+          "value": "16f1a0f0ed1a23ec7ceadfe66af5b9f8f330e0295216d18fda41b0bb352e9c11"
         },
         "schema_version": 3,
         "ordinal": 149,
@@ -19849,6 +20155,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -20215,7 +20527,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d5858a0ffc184698cf4cc5e086d134384319799823bf6e8b932e773311ab5789"
+          "value": "fd84480d3479966cd3b36a9ab46978fcf39917b337533ea8d9cc735b9e4be426"
         },
         "schema_version": 3,
         "ordinal": 152,
@@ -20283,6 +20595,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",
@@ -20655,7 +20973,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f913d818a29c310848ea5564584b94562566438758e9d914b4d3dc28fe813a09"
+          "value": "4b5a28a7960e20bcad9ba845b53253525fdd8ae1d04ba8d98876fd97aa28242e"
         },
         "schema_version": 3,
         "ordinal": 154,
@@ -20744,6 +21062,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "runtime_observation",
               "trust": "runtime_observation",
@@ -21530,7 +21854,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d6164ba237bf7ec16f0f2fad533f20689d4dbe4dc1f16c4f00956958bc334793"
+          "value": "a32252b1fa7884c188e69b05d7f0a33cbb79fdf2137bf931f92a50181c00e742"
         },
         "schema_version": 3,
         "ordinal": 159,
@@ -21569,6 +21893,12 @@
         },
         "source": {
           "bindings": [
+            {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs",
+              "merge": "override"
+            },
             {
               "kind": "builtin",
               "trust": "builtin",

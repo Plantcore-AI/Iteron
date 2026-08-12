@@ -39,6 +39,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MICROUSD_PER_USD: f64 = 1_000_000.0;
+/// Projection timestamps are cache metadata, not chain state, so a pre-epoch clock reads as the
+/// epoch rather than failing the projection.
+const PRE_EPOCH_TIMESTAMP_SECS: u64 = 0;
+/// A run id only has to be collision-resistant: a pre-epoch clock still yields a name, uniqueness
+/// then resting on the pid.
+const RUN_ID_NANOS_FALLBACK: u128 = 0;
+/// An index manifest whose type cannot be read is treated as missing, so the projection is
+/// republished rather than trusted (the cache is never a second source of truth).
+const UNSTATABLE_INDEX_IS_MISSING: bool = true;
 /// An append-era index with more than two physical writes per live rollout is abandoned after one
 /// extra line and rebuilt. This makes index work O(M), independent of historical turn writes K.
 const INDEX_SCAN_LINES_PER_LIVE_RUN: usize = 2;
@@ -839,7 +848,7 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(PRE_EPOCH_TIMESTAMP_SECS)
 }
 
 /// Deterministic title: the first user message's first non-empty line, char-truncated (SESS-3).
@@ -1224,7 +1233,7 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     let index_manifest_missing = !existing.is_empty()
         && std::fs::symlink_metadata(index_path(runs_dir))
             .map(|metadata| !metadata.file_type().is_file())
-            .unwrap_or(true);
+            .unwrap_or(UNSTATABLE_INDEX_IS_MISSING);
     let index = read_index(runs_dir, existing.len());
     // A missing manifest decodes as an exact empty cache so ordinary first-use remains cheap. If
     // rollouts do exist, however, it also means revocation/crash invalidated the projection and
@@ -1659,7 +1668,7 @@ fn mint_run_id() -> RunId {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or(RUN_ID_NANOS_FALLBACK);
     RunId(format!("run-{}-{}", std::process::id(), nanos))
 }
 

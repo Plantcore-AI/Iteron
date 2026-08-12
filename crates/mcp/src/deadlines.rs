@@ -8,6 +8,16 @@ use std::time::Duration;
 
 pub const MAX_MCP_DEADLINE_MILLISECONDS: u64 = 86_400_000;
 
+/// Default stdio startup bound: spawning and handshaking a local process is fast, so a short
+/// bound surfaces a wedged server instead of hiding it.
+const DEFAULT_STDIO_STARTUP_MS: u64 = 15_000;
+/// Default stdio tool-call bound: local servers do real work, so this is far wider than startup.
+const DEFAULT_STDIO_TOOL_CALL_MS: u64 = 60_000;
+/// Default HTTP startup bound: a remote handshake is one network round trip, not a process spawn.
+const DEFAULT_HTTP_STARTUP_MS: u64 = 10_000;
+/// Default HTTP tool-call bound: remote tools absorb network latency on top of server work.
+const DEFAULT_HTTP_TOOL_CALL_MS: u64 = 120_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct McpTransportDeadlines {
     startup_milliseconds: u64,
@@ -79,12 +89,12 @@ impl Default for McpDeadlinePolicy {
     fn default() -> Self {
         Self {
             stdio: McpTransportDeadlines {
-                startup_milliseconds: 15_000,
-                tool_call_milliseconds: 60_000,
+                startup_milliseconds: DEFAULT_STDIO_STARTUP_MS,
+                tool_call_milliseconds: DEFAULT_STDIO_TOOL_CALL_MS,
             },
             http: McpTransportDeadlines {
-                startup_milliseconds: 10_000,
-                tool_call_milliseconds: 120_000,
+                startup_milliseconds: DEFAULT_HTTP_STARTUP_MS,
+                tool_call_milliseconds: DEFAULT_HTTP_TOOL_CALL_MS,
             },
         }
     }

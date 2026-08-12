@@ -7,6 +7,9 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// TCP connect is bounded well below the whole-exchange timeout so an unreachable authorization
+/// server fails fast instead of consuming the full request budget.
+const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OAUTH_SECRET_BYTES: usize = 8192;
 
 /// Refresh authority. Secrets are process-local and this type deliberately implements neither
@@ -131,7 +134,7 @@ impl OAuthClient {
     pub(crate) fn new() -> Result<Self, McpError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(OAUTH_CONNECT_TIMEOUT)
             .timeout(OAUTH_TIMEOUT)
             .build()
             .map_err(|_| transport_error("client"))?;

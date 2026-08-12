@@ -18,6 +18,9 @@ use crate::theme;
 use crate::workflow::{SupervisedRunInfo, SupervisedRunStatus};
 
 pub(crate) const MAX_RUNS: usize = 32;
+/// Row cycling starts here when the remembered selection is no longer in the projected run list.
+/// Anchoring on the first row keeps `+1`/`-1` reachable from a stale selection without a special case.
+const CYCLE_ANCHOR_INDEX: usize = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunState {
@@ -198,7 +201,7 @@ impl View {
             .selected_run
             .as_deref()
             .and_then(|id| runs.iter().position(|run| run.run_id == id))
-            .unwrap_or(0);
+            .unwrap_or(CYCLE_ANCHOR_INDEX);
         let next = (current as isize + delta).rem_euclid(runs.len() as isize) as usize;
         self.selected_run = Some(runs[next].run_id.clone());
         self.selected_phase = 0;

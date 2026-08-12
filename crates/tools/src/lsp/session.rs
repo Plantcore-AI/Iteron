@@ -16,6 +16,9 @@ use tokio::io::{AsyncReadExt, BufReader};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const STDERR_OBSERVED_LIMIT: u64 = 64 * 1024 * 1024;
+/// Grace given to the stderr reader task after the process is gone. Short, because the pipe is
+/// already closed at this point and the task is aborted rather than waited on further.
+const STDERR_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub(super) struct LiveResult {
     pub(super) value: Value,
@@ -292,7 +295,7 @@ impl Driver {
         let Some(mut task) = self.stderr_task.take() else {
             return;
         };
-        if tokio::time::timeout(Duration::from_secs(1), &mut task)
+        if tokio::time::timeout(STDERR_JOIN_TIMEOUT, &mut task)
             .await
             .is_err()
         {

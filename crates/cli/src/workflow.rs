@@ -861,6 +861,15 @@ impl ShutdownReport {
 /// A silently forgotten result would be indistinguishable from a run that never happened.
 const MAX_RETAINED_SUMMARY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TASK_NOTIFICATION_RESULT_BYTES: usize = 48 * 1024;
+/// Unix second stamp recorded when the clock reads before the epoch. Zero rather than a guess, so
+/// a sidecar carries an obviously-unset time instead of a fabricated one.
+const UNIX_SECS_ON_UNUSABLE_CLOCK: u64 = 0;
+/// Whether a directory entry whose file type cannot be read is treated as a run directory. False,
+/// so an unreadable entry is skipped rather than listed as a run with no sidecars.
+const UNREADABLE_ENTRY_IS_RUN_DIR: bool = false;
+/// Creation time listed for a run whose manifest is missing or unreadable. Zero sorts it last in
+/// the newest-first listing, which is where a run with no recoverable metadata belongs.
+const MISSING_MANIFEST_CREATED_AT: u64 = 0;
 
 fn utf8_head(text: &str, max_bytes: usize) -> &str {
     if text.len() <= max_bytes {
@@ -1581,7 +1590,7 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK)
 }
 
 /// `<workflows_dir>/<run_id>/`.
@@ -1759,7 +1768,11 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
         return out;
     };
     for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        if !entry
+            .file_type()
+            .map(|t| t.is_dir())
+            .unwrap_or(UNREADABLE_ENTRY_IS_RUN_DIR)
+        {
             continue;
         }
         let run_id = entry.file_name().to_string_lossy().into_owned();
@@ -1769,7 +1782,10 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
             .join("journal.jsonl")
             .exists();
         let status = derive_status(result.as_ref(), has_journal);
-        let created_at = manifest.as_ref().map(|m| m.created_at).unwrap_or(0);
+        let created_at = manifest
+            .as_ref()
+            .map(|m| m.created_at)
+            .unwrap_or(MISSING_MANIFEST_CREATED_AT);
         out.push(RunListing {
             run_id: run_id.clone(),
             name: manifest

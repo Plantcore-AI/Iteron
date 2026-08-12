@@ -11,6 +11,10 @@ use iteron_tools::Registry;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+/// Latency reported for a definite MCP failure that carried no dispatch evidence. Zero, because
+/// no interval was actually observed and inventing one would corrupt latency accounting.
+const UNMEASURED_DISPATCH_LATENCY_MS: u64 = 0;
+
 #[cfg(test)]
 struct DiscoveredServer {
     client: Arc<ConfiguredMcpClient>,
@@ -585,7 +589,7 @@ fn mcp_tool_execution(
                 trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: evidence
                     .map(|evidence| evidence.dispatch_to_terminal_ms.get())
-                    .unwrap_or(0),
+                    .unwrap_or(UNMEASURED_DISPATCH_LATENCY_MS),
             })
         }
         iteron_mcp::McpToolOutcome::Unknown { evidence, .. } => {

@@ -159,6 +159,9 @@ pub(super) const SPINNER_TICK: Duration = Duration::from_millis(100);
 /// matches the idle cadence the loop used to poll at, so moving input off the loop costs no extra
 /// wakeups on an idle session.
 pub(super) const TERMINAL_READ_SLICE: Duration = Duration::from_secs(1);
+/// Slack added to one read slice when waiting for the input thread to acknowledge a pause. The
+/// reader can only observe Pause between reads, so the wait must outlast a full in-flight slice.
+pub(super) const INPUT_PAUSE_ACK_SLACK: Duration = Duration::from_secs(1);
 
 /// The next instant the render loop must wake up on its own account: a frame that is being held
 /// back by the coalescing interval, the animation tick of a live run, or a queued tool card whose
@@ -337,7 +340,7 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
         .send(InputThreadControl::Pause(acknowledge))
         .map_err(|_| "terminal input reader is no longer available".to_owned())?;
     if acknowledged
-        .recv_timeout(TERMINAL_READ_SLICE + Duration::from_secs(1))
+        .recv_timeout(TERMINAL_READ_SLICE + INPUT_PAUSE_ACK_SLACK)
         .is_err()
     {
         // The reader may observe Pause after this timeout. Queue Resume before returning so it

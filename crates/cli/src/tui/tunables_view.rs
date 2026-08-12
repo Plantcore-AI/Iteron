@@ -24,6 +24,10 @@ use std::path::{Component, Path};
 const MAX_REQUEST_PATH_BYTES: usize = 4_096;
 const MAX_REQUEST_COMPONENTS: usize = 128;
 const SAFE_LOAD_REFUSAL: &str = "request could not be loaded safely from this workspace";
+/// Rebinding verdict when the identity check itself errors. Fail-closed: an unprovable match keeps
+/// the loaded bytes from crossing the resolver boundary. Not a tunable.
+#[cfg(target_os = "linux")]
+const REBIND_UNPROVEN: bool = false;
 
 pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
@@ -348,7 +352,7 @@ fn read_workspace_request_with_hook(
                 let current_leaf = capability_fs::open_regular_nonblocking(&current_parent, &leaf)?;
                 capability_fs::same_file(&file, &current_leaf)
             })
-            .unwrap_or(false)
+            .unwrap_or(REBIND_UNPROVEN)
         && binding.still_bound();
     if !rebound {
         return Err(LoadError(SAFE_LOAD_REFUSAL));

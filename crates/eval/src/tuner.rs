@@ -14,7 +14,10 @@ use state_ops::{apply_event, digest, initial_state, result_order, tpe_score, val
 pub const MAX_TUNER_TRIALS: u16 = 256;
 pub const MAX_TUNER_CONCURRENCY: u16 = 64;
 const MAX_CANDIDATES: usize = 256;
-const MAX_FAMILIES_PER_CANDIDATE: usize = 64;
+/// A candidate must be able to express a whole-registry configuration. Deriving this from the
+/// family count rather than pinning a literal means growing the registry cannot silently re-cap
+/// candidates at a number smaller than the space they are searching.
+const MAX_FAMILIES_PER_CANDIDATE: usize = iteron_tunables::EXPECTED_FAMILY_COUNT;
 const MAX_SPEC_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

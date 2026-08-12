@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// Byte and cursor counters shown when the supervisor's reply omits or mistypes the field. Zero is
+/// the pre-write value of both counters, so a malformed reply reads as "nothing observed yet".
+const MISSING_COUNTER: u64 = 0;
+/// Stdin is reported as still open when the supervisor's reply omits `stdin_closed`. Claiming a
+/// close we did not observe would tell the operator a write is impossible when it may still land.
+const STDIN_CLOSED_UNKNOWN: bool = false;
+/// Retention gaps are reported only when the supervisor says so. Absent the flag, the displayed
+/// frame is treated as contiguous rather than annotating output the supervisor never called lossy.
+const RETENTION_GAP_UNKNOWN: bool = false;
+
 #[derive(Debug, Clone)]
 pub(super) struct AttachedJob {
     job_id: String,
@@ -196,7 +206,7 @@ async fn write(app: &mut App, session: &mut Session, job_id: &str, input: String
                     &value
                         .get("accepted_bytes")
                         .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0)
+                        .unwrap_or(MISSING_COUNTER)
                         .to_string(),
                 ),
                 kv(
@@ -204,7 +214,7 @@ async fn write(app: &mut App, session: &mut Session, job_id: &str, input: String
                     if value
                         .get("stdin_closed")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false)
+                        .unwrap_or(STDIN_CLOSED_UNKNOWN)
                     {
                         "closed"
                     } else {
@@ -266,7 +276,7 @@ fn render_page(app: &mut App, job_id: &str, value: &serde_json::Value) {
         let gap = frame
             .get("gap")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(RETENTION_GAP_UNKNOWN);
         let text = frame
             .get("text")
             .and_then(serde_json::Value::as_str)
@@ -278,7 +288,7 @@ fn render_page(app: &mut App, job_id: &str, value: &serde_json::Value) {
                 frame
                     .get("next_cursor")
                     .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
+                    .unwrap_or(MISSING_COUNTER),
                 if gap { " · retention gap" } else { "" }
             ),
         ));

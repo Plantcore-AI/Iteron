@@ -7,6 +7,10 @@ something up. This conversation is separate from the operator's main session —
 enters that transcript — so do not assume you can see what happened there, and ask for the \
 context you need instead of guessing.";
 
+/// Child-genesis `created_at` written when the host clock reads before the Unix epoch; the side
+/// conversation still opens, with an unusable stamp.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
 /// An operator-opened conversation with its own context, cost ledger and append-only record.
 pub struct SideConversation {
     pub(super) agent: Agent,
@@ -151,7 +155,7 @@ impl Agent {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
         let parent_run = self.rollout.run_id().clone();
         side.record_child_genesis_with_tunables(
             &parent_run,

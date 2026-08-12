@@ -4,6 +4,10 @@ use sha2::{Digest, Sha256};
 
 const MAX_OTLP_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
+/// Histogram min/max exported when the metric recorded no observation, so the data point stays
+/// well-formed for the collector instead of being omitted.
+const UNOBSERVED_HISTOGRAM_BOUND: u64 = 0;
+
 pub(super) struct Batch {
     pub endpoint: String,
     pub body: Vec<u8>,
@@ -141,8 +145,8 @@ fn metrics(export: &Export, resource: &Value) -> Value {
                         "timeUnixNano": "0",
                         "count": metric.observations.to_string(),
                         "sum": metric.value,
-                        "min": metric.min.unwrap_or(0),
-                        "max": metric.max.unwrap_or(0),
+                        "min": metric.min.unwrap_or(UNOBSERVED_HISTOGRAM_BOUND),
+                        "max": metric.max.unwrap_or(UNOBSERVED_HISTOGRAM_BOUND),
                         "explicitBounds": [],
                         "bucketCounts": [metric.observations.to_string()],
                     }]

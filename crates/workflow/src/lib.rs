@@ -77,6 +77,14 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+/// Assumed core count when the OS refuses to report parallelism; four keeps the derived default
+/// concurrency inside the same clamp a small machine would land on.
+const ASSUMED_CORES_WHEN_UNKNOWN: usize = 4;
+
+/// Clock reading used for a run id when the system clock is before the Unix epoch. Run ids are
+/// metadata only, so a zero prefix is a labelling fallback, never a determinism input.
+const RUN_ID_FALLBACK_NANOS: u128 = 0;
+
 /// Aggregate engine ceilings supplied by the authority-owning composition root.
 ///
 /// Both values are non-zero and immutable. A workflow script can consume these bounds but cannot
@@ -117,7 +125,7 @@ impl Default for RunLimits {
     fn default() -> Self {
         let cores = std::thread::available_parallelism()
             .map(|count| count.get())
-            .unwrap_or(4);
+            .unwrap_or(ASSUMED_CORES_WHEN_UNKNOWN);
         Self {
             max_concurrency: cores.saturating_sub(2).clamp(1, 16),
             max_agent_calls: LIFETIME_CAP,
@@ -137,7 +145,7 @@ impl RunId {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .unwrap_or(RUN_ID_FALLBACK_NANOS);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         RunId(format!("wf_{nanos:x}_{seq:x}"))
     }

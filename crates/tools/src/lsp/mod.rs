@@ -26,6 +26,9 @@ use std::sync::Arc;
 use supervisor::run_query;
 
 const DEFAULT_LOCATION_LIMIT: usize = 50;
+/// Whether a `references` query counts the declaration itself when the call is silent. Included,
+/// because the declaration is the one location a caller asking "where is this used" always needs.
+const DEFAULT_INCLUDE_DECLARATION: bool = true;
 const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
 const LSP_TOOL_CLEANUP_RESERVE: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -344,7 +347,7 @@ async fn execute_inner(
                 .input
                 .get("include_declaration")
                 .and_then(Value::as_bool)
-                .unwrap_or(true),
+                .unwrap_or(DEFAULT_INCLUDE_DECLARATION),
         },
         "hover" => QueryKind::Hover { position },
         _ => return Err((LspToolError::InvalidArguments, false)),

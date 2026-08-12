@@ -23,6 +23,9 @@ use super::{
 };
 use crate::{RunId, RunLimits};
 
+/// Highest id assumed present when a replayed snapshot holds none. Every durable id is non-zero,
+/// so zero is unused and the next allocation lands on 1.
+const EMPTY_SNAPSHOT_MAX_ID: u64 = 0;
 const ATTEMPT_TOKEN_CEILING: u64 = 100_000_000;
 const TASK_COST_CEILING_MICROUSD: u64 = 100_000_000_000;
 const TASK_WALL_CEILING_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
@@ -145,21 +148,21 @@ impl ExecutionLedger {
                 .iter()
                 .map(|task| task.spec.id.0)
                 .max()
-                .unwrap_or(0)
+                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
                 .saturating_add(1);
             let next_attempt = snapshot
                 .attempts
                 .iter()
                 .map(|attempt| attempt.spec.id.0)
                 .max()
-                .unwrap_or(0)
+                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
                 .saturating_add(1);
             let next_message = snapshot
                 .messages
                 .iter()
                 .map(|message| message.id.0)
                 .max()
-                .unwrap_or(0)
+                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
                 .saturating_add(1);
             let mut declaration_tasks = BTreeMap::new();
             for task in &snapshot.tasks {

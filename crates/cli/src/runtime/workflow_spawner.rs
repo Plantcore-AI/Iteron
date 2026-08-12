@@ -44,6 +44,10 @@ use iteron_obs::Ledger;
 const MAX_AGENT_REFUSAL_BYTES: usize = 512;
 const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
 
+/// Child-genesis `created_at` written when the host clock reads before the Unix epoch; genesis is
+/// recorded with an unusable stamp rather than refused.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
 type ChildLedgerCollector = Arc<Mutex<Vec<(u64, Ledger)>>>;
 type ChildOutcomeCollector = Arc<Mutex<Vec<(u64, Result<Outcome, String>)>>>;
 
@@ -773,7 +777,7 @@ impl KernelSpawner {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
         let parent_run = iteron_protocol::RunId(cx.parent_run_id.clone());
         sub.record_child_genesis_with_tunables(
             &parent_run,

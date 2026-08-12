@@ -9,6 +9,19 @@ pub const MAX_STDIN_POLL_MILLISECONDS: u64 = 60_000;
 pub const MAX_CHILD_ENV_ENTRIES: usize = 4_096;
 pub const MAX_CHILD_ENV_BYTES: usize = 1_048_576;
 
+/// Shipped runtime defaults, all inside the hard ceilings above.
+/// Background jobs one session may hold open, half the `MAX_BACKGROUND_JOBS` ceiling.
+const DEFAULT_BACKGROUND_JOB_CAP: usize = 8;
+/// Silence after which a job is reported as idle or stalled rather than waited on further.
+const DEFAULT_IDLE_STALL_MILLISECONDS: u64 = 5 * 60 * 1_000;
+/// How often an interactive job is polled while it is waiting on stdin.
+const DEFAULT_STDIN_POLL_MILLISECONDS: u64 = 1_000;
+/// Silence on an interactive job before its stdin wait gives up.
+const DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MILLISECONDS: u64 = 5 * 60 * 1_000;
+/// Whether a job blocked on stdin surfaces a prompt to the operator; on, because the alternative
+/// is a job that appears hung with no way to see what it wants.
+const DEFAULT_OPERATOR_PROMPT: bool = true;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistentBackendSelection {
@@ -201,12 +214,12 @@ impl Default for ProcessRuntimePolicy {
     fn default() -> Self {
         Self::new(
             PersistentBackendSelection::Persistent,
-            8,
-            5 * 60 * 1_000,
+            DEFAULT_BACKGROUND_JOB_CAP,
+            DEFAULT_IDLE_STALL_MILLISECONDS,
             InteractiveStdinWaitPolicy {
-                poll_milliseconds: 1_000,
-                idle_timeout_milliseconds: 5 * 60 * 1_000,
-                operator_prompt: true,
+                poll_milliseconds: DEFAULT_STDIN_POLL_MILLISECONDS,
+                idle_timeout_milliseconds: DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MILLISECONDS,
+                operator_prompt: DEFAULT_OPERATOR_PROMPT,
             },
         )
         .expect("the built-in process policy must satisfy its hard ceilings")

@@ -17,6 +17,9 @@ const MAX_LIST_NESTING: u8 = 8;
 /// A single item cannot absorb an unbounded number of following source lines. Remaining lines are
 /// parsed as ordinary blocks instead of being discarded.
 const MAX_LIST_CONTINUATION_LINES: usize = 64;
+/// Display width charged to a table cell that a row does not have. Zero, so a ragged row cannot
+/// widen a column it contributes nothing to.
+const ABSENT_TABLE_CELL_WIDTH: usize = 0;
 
 /// An inline run within a paragraph/heading/list item.
 #[derive(Debug, Clone, PartialEq)]
@@ -957,9 +960,13 @@ fn render_table(
             let h = cell_w(&headers[c]);
             let b = rows
                 .iter()
-                .map(|r| r.get(c).map(|x| cell_w(x)).unwrap_or(0))
+                .map(|r| {
+                    r.get(c)
+                        .map(|x| cell_w(x))
+                        .unwrap_or(ABSENT_TABLE_CELL_WIDTH)
+                })
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(ABSENT_TABLE_CELL_WIDTH);
             h.max(b).max(1)
         })
         .collect();

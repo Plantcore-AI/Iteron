@@ -24,6 +24,10 @@ const MAX_EXPORT_PATH_BYTES: usize = 4 * 1024;
 const MAX_EXPORT_COMPONENTS: usize = 128;
 #[cfg(target_os = "linux")]
 const MAX_VERSION_ATTEMPTS: usize = 100;
+/// Rebinding verdict when the identity check itself errors. Fail-closed: an unprovable match is
+/// reported as a changed path so the export refuses instead of publishing blind. Not a tunable.
+#[cfg(target_os = "linux")]
+const REBIND_UNPROVEN: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionPolicy {
@@ -296,7 +300,7 @@ where
     let rebound = root_binding.still_bound()
         && capability_fs::traverse(root, &parents)
             .and_then(|current| capability_fs::same_file(&parent, &current))
-            .unwrap_or(false);
+            .unwrap_or(REBIND_UNPROVEN);
     if !rebound {
         return Err(ExportError::known(
             "workspace root or export parent changed after its directory capability was acquired",
@@ -314,7 +318,7 @@ where
                 let still_bound = root_binding.still_bound()
                     && capability_fs::traverse(root, &parents)
                         .and_then(|current| capability_fs::same_file(&parent, &current))
-                        .unwrap_or(false);
+                        .unwrap_or(REBIND_UNPROVEN);
                 if !still_bound {
                     return Err(ExportError::unknown(
                         "workspace root or export parent changed during dispatch; publication outcome is unknown",
