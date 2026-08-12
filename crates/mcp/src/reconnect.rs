@@ -11,7 +11,7 @@ pub const MAX_RECONNECT_BASE_MS: u64 = 60_000;
 pub const MAX_RECONNECT_CAP_MS: u64 = 3_600_000;
 
 /// Validated finite retry policy. `max_attempts` counts reconnects after the first lazy attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct ReconnectPolicy {
     max_attempts: u32,
     base_ms: u64,

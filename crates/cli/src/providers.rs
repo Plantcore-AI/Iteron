@@ -4,15 +4,19 @@
 //! `iteron-provider`; this layer supplies built-in instance definitions, merges trusted user config,
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
+#[path = "providers/setup_effect.rs"]
+mod setup_effect;
+
 use crate::config::{ProviderConfig, ProviderCredential};
 use futures_util::future::join_all;
 use iteron_provider::catalog::glm_standard_schema_catalog;
 use iteron_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, CredentialSource,
-    ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError,
-    ProviderHealth, ProviderHealthStore, ProviderInstance, RawModel, Selectability,
-    StaticProviderMetadata, StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
+    ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider,
+    ProviderAttemptSemantics, ProviderError, ProviderHealth, ProviderHealthStore, ProviderInstance,
+    RawModel, Selectability, StaticProviderMetadata, StreamItem, TurnRequest, TurnResult,
+    discover_catalog, probe_account,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -73,6 +77,49 @@ const MAX_PROBE_CACHE_BYTES: usize = 64 * 1024;
 const MAX_PROBE_CACHE_ENTRIES: usize = MAX_PROVIDER_INSTANCES;
 static CACHE_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
+/// Immutable bootstrap owner for provider discovery and account-probe reuse. Discovery happens
+/// before a run checkpoint can be resolved, so resumed checkpoints may only attest these exact
+/// binary-owned values; a different pin is rejected instead of pretending it changed work that
+/// already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct ProviderDiscoveryPolicy {
+    eager_budget_milliseconds: u64,
+    positive_ttl_seconds: u64,
+    failure_backoff_base_seconds: u64,
+    failure_backoff_cap_seconds: u64,
+}
+
+impl ProviderDiscoveryPolicy {
+    pub(crate) const fn owner() -> Self {
+        Self {
+            eager_budget_milliseconds: EAGER_DISCOVERY_BUDGET.as_millis() as u64,
+            positive_ttl_seconds: PROBE_CACHE_TTL_SECS,
+            failure_backoff_base_seconds: PROBE_BACKOFF_BASE_SECS,
+            failure_backoff_cap_seconds: PROBE_BACKOFF_CAP_SECS,
+        }
+    }
+
+    pub(crate) const fn eager_budget_milliseconds(self) -> u64 {
+        self.eager_budget_milliseconds
+    }
+
+    pub(crate) const fn positive_ttl_seconds(self) -> u64 {
+        self.positive_ttl_seconds
+    }
+
+    pub(crate) const fn failure_backoff_base_seconds(self) -> u64 {
+        self.failure_backoff_base_seconds
+    }
+
+    pub(crate) const fn failure_backoff_cap_seconds(self) -> u64 {
+        self.failure_backoff_cap_seconds
+    }
+
+    const fn eager_budget(self) -> Duration {
+        Duration::from_millis(self.eager_budget_milliseconds)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelSelection {
     pub provider_id: String,
@@ -90,6 +137,7 @@ pub(crate) struct ModelCapabilities {
     pub image_input: Option<bool>,
     pub image_input_version: Option<String>,
     pub image_input_source: Option<String>,
+    pub routing_objectives: Option<iteron_provider::RouteObjectiveScores>,
     pub version: Option<String>,
     pub source: Option<String>,
 }
@@ -104,6 +152,7 @@ impl ModelCapabilities {
             image_input: None,
             image_input_version: None,
             image_input_source: None,
+            routing_objectives: None,
             version: None,
             source: None,
         }
@@ -740,7 +789,12 @@ impl ProbeCache {
     }
 
     /// Decide the probe for one entry without making any request.
-    fn decide(&self, identity: &ProbeIdentity, now: u64) -> ProbeDecision {
+    fn decide(
+        &self,
+        identity: &ProbeIdentity,
+        now: u64,
+        policy: ProviderDiscoveryPolicy,
+    ) -> ProbeDecision {
         let Some(cached) = self
             .entries
             .iter()
@@ -757,14 +811,14 @@ impl ProbeCache {
             CachedProbeOutcome::Observed {
                 availability,
                 balance,
-            } if age < PROBE_CACHE_TTL_SECS => ProbeDecision::Reuse(AccountProbeResult {
+            } if age < policy.positive_ttl_seconds() => ProbeDecision::Reuse(AccountProbeResult {
                 availability: availability.to_live(),
                 balance: balance.to_live(),
             }),
             CachedProbeOutcome::Observed { .. } => ProbeDecision::Run { failures: 0 },
             CachedProbeOutcome::Failed {
                 consecutive_failures,
-            } if age < probe_backoff_secs(consecutive_failures) => ProbeDecision::Skip,
+            } if age < probe_backoff_secs(policy, consecutive_failures) => ProbeDecision::Skip,
             CachedProbeOutcome::Failed {
                 consecutive_failures,
             } => ProbeDecision::Run {
@@ -825,15 +879,16 @@ impl CachedProbe {
 }
 
 /// One minute, doubling per consecutive failure, capped at a day. Zero failures never backs off.
-fn probe_backoff_secs(consecutive_failures: u32) -> u64 {
+fn probe_backoff_secs(policy: ProviderDiscoveryPolicy, consecutive_failures: u32) -> u64 {
     if consecutive_failures == 0 {
         return 0;
     }
     let exponent = (consecutive_failures - 1).min(MAX_PROBE_FAILURE_EXPONENT);
-    PROBE_BACKOFF_BASE_SECS
+    policy
+        .failure_backoff_base_seconds()
         .checked_shl(exponent)
-        .unwrap_or(PROBE_BACKOFF_CAP_SECS)
-        .min(PROBE_BACKOFF_CAP_SECS)
+        .unwrap_or(policy.failure_backoff_cap_seconds())
+        .min(policy.failure_backoff_cap_seconds())
 }
 
 fn account_probe_key(probe: AccountProbe) -> &'static str {
@@ -1627,7 +1682,9 @@ async fn resolve_entry(
         .and_then(|scope_key| probe_identity(&entry, probe, scope_key));
     let now = current_unix_secs();
     let decision = match (&identity, now) {
-        (Some(identity), Some(now)) => probe_cache.decide(identity, now),
+        (Some(identity), Some(now)) => {
+            probe_cache.decide(identity, now, ProviderDiscoveryPolicy::owner())
+        }
         _ => ProbeDecision::Run { failures: 0 },
     };
     match decision {
@@ -1896,7 +1953,7 @@ impl ProviderDirectory {
             probe_updates: probe_updates.clone(),
             cache_scope_key: cache_scope_key.clone(),
         };
-        let budget = eager.map(|_| EAGER_DISCOVERY_BUDGET);
+        let budget = eager.map(|_| ProviderDiscoveryPolicy::owner().eager_budget());
         let mut resolved: Vec<(usize, ProviderEntry)> = Vec::new();
         for (index, entry, served, settled) in
             join_all(eager_entries.into_iter().map(|(index, entry, served)| {
@@ -2451,6 +2508,7 @@ impl ProviderDirectory {
             resolved.tool_calling = capabilities.tool_calling;
             resolved.semantic_effort = capabilities.semantic_effort;
             resolved.image_input = capabilities.image_input;
+            resolved.routing_objectives = capabilities.routing_objectives;
             resolved.version = Some(capabilities.version.clone());
             resolved.source = Some(capabilities.source.clone());
             if capabilities.image_input.is_some() {
@@ -2495,6 +2553,13 @@ impl ProviderDirectory {
                 resolved.image_input = Some(supported);
                 resolved.image_input_version = Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into());
                 resolved.image_input_source = Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into());
+            }
+            if resolved.routing_objectives.is_none()
+                && let Some(scores) = declared.routing_objectives
+            {
+                resolved.routing_objectives = Some(scores);
+                resolved.version = Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into());
+                resolved.source = Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into());
             }
         }
         resolved
@@ -2620,6 +2685,19 @@ impl ProviderDirectory {
                 None => b"images:unknown",
             },
         );
+        for score in documented
+            .routing_objectives
+            .map(|scores| {
+                [
+                    scores.quality_millionths,
+                    scores.cost_efficiency_millionths,
+                    scores.latency_millionths,
+                ]
+            })
+            .unwrap_or([u32::MAX; 3])
+        {
+            hash_part(&mut capability, score.to_string().as_bytes());
+        }
         hash_part(
             &mut capability,
             documented
@@ -3150,6 +3228,12 @@ pub(crate) async fn validate_credential(
     let provider = instance
         .build_turn_provider()
         .map_err(|error| format!("cannot build a request for `{provider_id}`: {error}"))?;
+    if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
+        return Err(
+            "credential validation refused a provider with opaque internal retries; every physical setup attempt must cross Core's durable boundary"
+                .into(),
+        );
+    }
     // One token of output against one short message: enough for the provider to authenticate and
     // authorize the route, cheap enough to run on every setup.
     let request = TurnRequest {
@@ -3162,11 +3246,62 @@ pub(crate) async fn validate_credential(
         cache_system: false,
         thinking_budget: 0,
         reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+        controls: Default::default(),
     };
-    match provider.turn(&request, &mut |_item: StreamItem| {}).await {
-        Ok(_) => Ok(CredentialProof { model_id }),
-        Err(error) => Err(describe_validation_failure(&error)),
+    let mut journal = setup_effect::SetupEffectJournal::open()?;
+    // This is a setup-operation identity, deliberately not a rollout/run attempt. Intent reaches
+    // stable storage before the only admitted physical request can cross the provider boundary.
+    let attempt = journal.begin(provider_id, &model_id)?;
+    match tokio::time::timeout(
+        setup_effect::physical_deadline(),
+        provider.turn(&request, &mut |_item: StreamItem| {}),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            journal.terminal(
+                &attempt,
+                setup_effect::SetupAttemptOutcome::Succeeded,
+                setup_effect::SetupAttemptReason::Accepted,
+            )?;
+            Ok(CredentialProof { model_id })
+        }
+        Ok(Err(error)) => {
+            let (outcome, reason_code) = if setup_provider_outcome_is_unobservable(&error) {
+                (
+                    setup_effect::SetupAttemptOutcome::Unknown,
+                    setup_effect::SetupAttemptReason::ProviderOutcomeUnobservable,
+                )
+            } else {
+                (
+                    setup_effect::SetupAttemptOutcome::FailedDefinite,
+                    setup_effect::SetupAttemptReason::ProviderFailedDefinite,
+                )
+            };
+            // Terminal durability precedes the operator-facing return. Provider bodies and the
+            // candidate credential never enter this setup-operation record.
+            journal.terminal(&attempt, outcome, reason_code)?;
+            Err(describe_validation_failure(&error))
+        }
+        Err(_) => {
+            journal.terminal(
+                &attempt,
+                setup_effect::SetupAttemptOutcome::Unknown,
+                setup_effect::SetupAttemptReason::SetupDeadline,
+            )?;
+            Err("credential validation reached its 60 second deadline; the provider outcome is unknown and was not retried".into())
+        }
     }
+}
+
+fn setup_provider_outcome_is_unobservable(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::Interrupted
+            | ProviderError::DeadlineExceeded
+            | ProviderError::Stream(_)
+            | ProviderError::Decode(_)
+    )
 }
 
 /// Pick a model to validate against without asking the operator for one.
@@ -4403,6 +4538,7 @@ mod tests {
 
     #[test]
     fn probe_cache_reuses_fresh_evidence_and_backs_a_failing_account_off_exponentially() {
+        let policy = ProviderDiscoveryPolicy::owner();
         let path = test_cache_path("probe-decisions");
         let scope_key = test_scope_key(&path);
         let entry = policy_entry("deepseek", DEEPSEEK_API_ROOT);
@@ -4413,7 +4549,7 @@ mod tests {
         // No record at all: probe, extending a zero-length failure run.
         let empty = ProbeCache::default();
         assert_eq!(
-            empty.decide(&identity, now),
+            empty.decide(&identity, now, policy),
             ProbeDecision::Run { failures: 0 }
         );
 
@@ -4434,7 +4570,7 @@ mod tests {
             balance: CachedBalance::Sufficient,
         };
         assert_eq!(
-            observe(now - 1, ready).decide(&identity, now),
+            observe(now - 1, ready).decide(&identity, now, policy),
             ProbeDecision::Reuse(AccountProbeResult {
                 availability: AccountAvailability::Ready,
                 balance: BalanceAvailability::Sufficient,
@@ -4442,13 +4578,13 @@ mod tests {
             "a fresh observation stands in for the request"
         );
         assert_eq!(
-            observe(now - PROBE_CACHE_TTL_SECS, ready).decide(&identity, now),
+            observe(now - PROBE_CACHE_TTL_SECS, ready).decide(&identity, now, policy),
             ProbeDecision::Run { failures: 0 },
             "past the TTL the account is observed again"
         );
         // A record stamped in the future is a clock change, not evidence.
         assert_eq!(
-            observe(now + 1, ready).decide(&identity, now),
+            observe(now + 1, ready).decide(&identity, now, policy),
             ProbeDecision::Run { failures: 0 }
         );
 
@@ -4458,21 +4594,21 @@ mod tests {
             consecutive_failures: failures,
         };
         assert_eq!(
-            observe(now - 1, failed(1)).decide(&identity, now),
+            observe(now - 1, failed(1)).decide(&identity, now, policy),
             ProbeDecision::Skip
         );
         assert_eq!(
-            observe(now - PROBE_BACKOFF_BASE_SECS, failed(1)).decide(&identity, now),
+            observe(now - PROBE_BACKOFF_BASE_SECS, failed(1)).decide(&identity, now, policy),
             ProbeDecision::Run { failures: 1 },
             "the run length is carried forward so the next wait doubles"
         );
-        assert_eq!(probe_backoff_secs(0), 0);
-        assert_eq!(probe_backoff_secs(1), PROBE_BACKOFF_BASE_SECS);
-        assert_eq!(probe_backoff_secs(2), PROBE_BACKOFF_BASE_SECS * 2);
-        assert_eq!(probe_backoff_secs(u32::MAX), PROBE_BACKOFF_CAP_SECS);
+        assert_eq!(probe_backoff_secs(policy, 0), 0);
+        assert_eq!(probe_backoff_secs(policy, 1), PROBE_BACKOFF_BASE_SECS);
+        assert_eq!(probe_backoff_secs(policy, 2), PROBE_BACKOFF_BASE_SECS * 2);
+        assert_eq!(probe_backoff_secs(policy, u32::MAX), PROBE_BACKOFF_CAP_SECS);
         // Yesterday's failure, today's launch: still inside the capped window, still no request.
         assert_eq!(
-            observe(now - 20 * 60 * 60, failed(24)).decide(&identity, now),
+            observe(now - 20 * 60 * 60, failed(24)).decide(&identity, now, policy),
             ProbeDecision::Skip
         );
 
@@ -4480,7 +4616,7 @@ mod tests {
         let mut other = identity.clone();
         other.3 = format!("{}{}", CATALOG_CACHE_SCOPE_PREFIX, "ab".repeat(32));
         assert_eq!(
-            observe(now - 1, failed(9)).decide(&other, now),
+            observe(now - 1, failed(9)).decide(&other, now, policy),
             ProbeDecision::Run { failures: 0 }
         );
         remove_test_cache(&path);
@@ -4516,7 +4652,10 @@ mod tests {
         assert!(text.contains(CATALOG_CACHE_SCOPE_PREFIX));
         let loaded = ProbeCache::load(&probe_path);
         assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.decide(&identity, 1_800_000_001), ProbeDecision::Skip);
+        assert_eq!(
+            loaded.decide(&identity, 1_800_000_001, ProviderDiscoveryPolicy::owner(),),
+            ProbeDecision::Skip
+        );
 
         fs::write(&probe_path, br#"{"version":999,"entries":[]}"#).unwrap();
         assert!(ProbeCache::load(&probe_path).entries.is_empty());
@@ -4843,6 +4982,7 @@ mod tests {
             cache_system: true,
             thinking_budget: 4_096,
             reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         assert!(matches!(
             provider.effort_application(&request),
@@ -5070,6 +5210,7 @@ mod tests {
             crate::config::ProviderModelCapabilities {
                 context_window_tokens: Some(window),
                 image_input: None,
+                routing_objectives: None,
             },
         )])
     }
@@ -5083,6 +5224,7 @@ mod tests {
             crate::config::ProviderModelCapabilities {
                 context_window_tokens: None,
                 image_input: Some(supported),
+                routing_objectives: None,
             },
         )])
     }

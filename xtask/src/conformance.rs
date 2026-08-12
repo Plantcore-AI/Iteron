@@ -103,7 +103,7 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
     MatrixRow {
         group: "component",
         id: "K6 bounded-cancellation",
-        path: "crates/cli/src/runtime/tests.rs",
+        path: "crates/cli/src/runtime.rs",
         test: "max_tokens_is_a_hard_recorded_terminal_at_the_safe_turn_boundary",
     },
     MatrixRow {

@@ -2,10 +2,8 @@ use crate::{CapabilityRequirement, Domain, ProviderRequirement, RequirementSpec}
 
 const INFERENCE: &[CapabilityRequirement] = &[CapabilityRequirement::Inference];
 const PROVIDER_CATALOG: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderCatalog];
-const PROVIDER_STREAMING: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderStreaming];
 const SERVICE_TIER: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderServiceTier];
 const PROMPT_CACHE: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderPromptCache];
-const MULTIMODAL: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderMultimodal];
 const REQUEST_COMPRESSION: &[CapabilityRequirement] =
     &[CapabilityRequirement::ProviderRequestCompression];
 const PROVIDER_TRANSPORT: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderTransport];
@@ -15,13 +13,7 @@ const PROVIDER_REASONING_CONTROL: &[CapabilityRequirement] =
     &[CapabilityRequirement::ProviderReasoningControl];
 const PROVIDER_DISCOVERY: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderDiscovery];
 const PROVIDER_FAILOVER: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderFailover];
-const PROVIDER_HEALTH: &[CapabilityRequirement] = &[
-    CapabilityRequirement::ProviderHealth,
-    CapabilityRequirement::RuntimeObservation,
-];
 const PROVIDER_HEDGING: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderHedging];
-const PROVIDER_REQUEST_DEADLINE: &[CapabilityRequirement] =
-    &[CapabilityRequirement::ProviderRequestDeadline];
 const PROVIDER_RESPONSE_VERBOSITY: &[CapabilityRequirement] = &[
     CapabilityRequirement::ProviderResponseVerbosity,
     CapabilityRequirement::Reasoning,
@@ -51,10 +43,6 @@ const INTERFACE: &[CapabilityRequirement] = &[CapabilityRequirement::OperatorInt
 const EVALUATION: &[CapabilityRequirement] = &[CapabilityRequirement::Evaluation];
 const GOVERNANCE: &[CapabilityRequirement] = &[CapabilityRequirement::AuthorityConfiguration];
 
-const CATALOG_BUDGET: &[CapabilityRequirement] = &[
-    CapabilityRequirement::ProviderCatalog,
-    CapabilityRequirement::BudgetAccounting,
-];
 const CATALOG_AGENT: &[CapabilityRequirement] = &[
     CapabilityRequirement::ProviderCatalog,
     CapabilityRequirement::AgentSpawn,
@@ -67,17 +55,9 @@ const MODEL_METADATA_CONTEXT: &[CapabilityRequirement] = &[
     CapabilityRequirement::ProviderModelMetadata,
     CapabilityRequirement::ContextRead,
 ];
-const REASONING_CONTROL_CONTEXT: &[CapabilityRequirement] = &[
-    CapabilityRequirement::ProviderReasoningControl,
-    CapabilityRequirement::ContextRead,
-];
 const REASONING_CONTROL_AGENT: &[CapabilityRequirement] = &[
     CapabilityRequirement::ProviderReasoningControl,
     CapabilityRequirement::AgentSpawn,
-];
-const MULTIMODAL_BINARY: &[CapabilityRequirement] = &[
-    CapabilityRequirement::ProviderMultimodal,
-    CapabilityRequirement::BinaryInspection,
 ];
 const CONTEXT_VERIFY: &[CapabilityRequirement] = &[
     CapabilityRequirement::ContextRead,
@@ -142,7 +122,10 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::AnyAdmittedRoute, // 1 provider
     ProviderRequirement::SelectedRoute, // 2 model
     ProviderRequirement::AnyAdmittedRoute, // 3 base_url
-    ProviderRequirement::SelectedRoute, // 4 effort
+    // Harness effort always controls local planning/orchestration. Whether the selected adapter can
+    // also serialize a semantic reasoning control is a separate family-20/21 capability; an
+    // incapable route must omit that wire control rather than deactivate the local policy.
+    ProviderRequirement::None, // 4 effort
     ProviderRequirement::None, // 5 max_turns
     ProviderRequirement::None, // 6 max_usd
     ProviderRequirement::None, // 7 max_tokens
@@ -161,11 +144,16 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::SelectedRoute, // 20 effort_reasoning_map
     ProviderRequirement::SelectedRoute, // 21 thinking_map
     ProviderRequirement::None, // 22 orchestration_map
-    ProviderRequirement::SelectedRoute, // 23 prompt_cache
+    // The outer prompt-cache switch is runtime-effective even on an incapable route: that route
+    // owns the exact value `false`. Provider capability is an executable external ceiling, not an
+    // activation prerequisite that makes the always-active family impossible to resolve.
+    ProviderRequirement::None, // 23 prompt_cache
     ProviderRequirement::None, // 24 compaction_adaptive
     ProviderRequirement::None, // 25 compaction_keep_recent
     ProviderRequirement::None, // 26 token_estimator
-    ProviderRequirement::SelectedRoute, // 27 summary_profile
+    // Compaction summaries are produced by the local context runtime. Provider reasoning support
+    // only controls whether a semantic effort hint can be serialized on the outbound request.
+    ProviderRequirement::None, // 27 summary_profile
     ProviderRequirement::None, // 28 compaction_failure
     ProviderRequirement::None, // 29 instruction_discovery_render
     ProviderRequirement::None, // 30 memory_enable
@@ -190,7 +178,7 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 49 verifier_feedback_tails
     ProviderRequirement::None, // 50 verifier_timeout
     ProviderRequirement::None, // 51 route_topology
-    ProviderRequirement::SelectedRoute, // 52 decomposition_profile
+    ProviderRequirement::None, // 52 decomposition_profile
     ProviderRequirement::None, // 53 fan_breadth
     ProviderRequirement::None, // 54 admission
     ProviderRequirement::None, // 55 writer_fan_turn_split
@@ -200,13 +188,19 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 59 fan_concurrency
     ProviderRequirement::None, // 60 child_ceiling
     ProviderRequirement::None, // 61 direct_child_allocation
-    ProviderRequirement::SelectedRoute, // 62 subagent_effort_inheritance
+    // Child effort inheritance is a local orchestration policy. Provider reasoning support only
+    // gates the outbound reasoning field; it must not deactivate the checkpointed child policy.
+    ProviderRequirement::None, // 62 subagent_effort_inheritance
     ProviderRequirement::None, // 63 report_budget
     ProviderRequirement::None, // 64 join_reduce
     ProviderRequirement::None, // 65 workflow_aggregate
     ProviderRequirement::None, // 66 schema_retry_jitter
-    ProviderRequirement::AnyAdmittedRoute, // 67 provider_connect_tls_timeout
-    ProviderRequirement::SelectedRoute, // 68 multimodal_input_admission_decode_envelope
+    // Local transport bounds remain defined before/without provider capability discovery. The
+    // exact admitted route selects an endpoint, but it does not own Core's TCP/TLS deadline.
+    ProviderRequirement::None, // 67 provider_connect_tls_timeout
+    // Image admission/inspection is a local pre-provider safety boundary and remains effective for
+    // text-only routes (where provider-side multimodal admission is separately clamped to zero).
+    ProviderRequirement::None, // 68 multimodal_input_admission_decode_envelope
     ProviderRequirement::None, // 69 app_server_sq_eq_backpressure
     ProviderRequirement::AnyAdmittedRoute, // 70 provider_discovery_account_probe_cache_policy
     ProviderRequirement::None, // 71 operator_prompt_stream
@@ -226,19 +220,24 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 85 web_search_backend_catalog
     ProviderRequirement::AnyAdmittedRoute, // 86 model_fallback_chain
     ProviderRequirement::AnyAdmittedRoute, // 87 failover_eligible_error_taxonomy
-    ProviderRequirement::AnyAdmittedRoute, // 88 route_quality_cost_latency_objective_weights
+    // These are local deterministic governor policies. Typed per-route cost/health observations
+    // gate candidate ranking and circuit transitions; their absence must not erase the policy.
+    ProviderRequirement::None, // 88 route_quality_cost_latency_objective_weights
     ProviderRequirement::AnyAdmittedRoute, // 89 provider_health_circuit_breaker_state_policy
     ProviderRequirement::SelectedRoute, // 90 hedged_request_policy
     ProviderRequirement::SelectedRoute, // 91 provider_service_tier
     ProviderRequirement::SelectedRoute, // 92 response_verbosity
     ProviderRequirement::AnyAdmittedRoute, // 93 role_specific_model_map
-    ProviderRequirement::SelectedRoute, // 94 provider_request_total_deadline
-    ProviderRequirement::SelectedRoute, // 95 stream_idle_watchdog
+    // Local physical deadlines are installed in every adapter; route capabilities may only
+    // narrow wire controls and cannot erase the deadline owner itself.
+    ProviderRequirement::None, // 94 provider_request_total_deadline
+    ProviderRequirement::None, // 95 stream_idle_watchdog
     ProviderRequirement::SelectedRoute, // 96 context_window_override_reserve
     ProviderRequirement::None, // 97 system_prefix_budget
     ProviderRequirement::None, // 98 conversation_history_budget
     ProviderRequirement::None, // 99 tool_result_history_budget
-    ProviderRequirement::SelectedRoute, // 100 multimodal_token_budget
+    // A text-only route owns the exact zero token budget; it must not make the family inactive.
+    ProviderRequirement::None, // 100 multimodal_token_budget
     ProviderRequirement::None, // 101 auto_compaction_enable
     ProviderRequirement::None, // 102 compaction_cooldown_hysteresis
     ProviderRequirement::None, // 103 multi_stage_summary_topology
@@ -256,7 +255,9 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 115 effecting_tool_concurrency
     ProviderRequirement::None, // 116 write_set_conflict_admission
     ProviderRequirement::None, // 117 tool_output_spill_to_disk_policy
-    ProviderRequirement::SelectedRoute, // 118 binary_media_inspection_routing
+    // The local binary inspector routes before provider dispatch and does not require multimodal
+    // provider support.
+    ProviderRequirement::None, // 118 binary_media_inspection_routing
     ProviderRequirement::None, // 119 lsp_server_language_selection
     ProviderRequirement::None, // 120 lsp_timeout_restart_policy
     ProviderRequirement::None, // 121 lsp_result_context_budget
@@ -272,7 +273,9 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 131 verification_quorum_consensus
     ProviderRequirement::None, // 132 recovery_escalation_policy
     ProviderRequirement::SelectedRoute, // 133 per_agent_model
-    ProviderRequirement::SelectedRoute, // 134 per_agent_effort_thinking
+    // Child effort is a local orchestration ceiling. Unsupported provider reasoning fields are
+    // omitted at the adapter boundary rather than deactivating the child policy.
+    ProviderRequirement::None, // 134 per_agent_effort_thinking
     ProviderRequirement::None, // 135 per_agent_tool_profile
     ProviderRequirement::None, // 136 per_agent_memory_scope
     ProviderRequirement::None, // 137 spawn_depth_control
@@ -294,7 +297,7 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
     ProviderRequirement::None, // 153 oauth_auth_lifecycle_policy
     ProviderRequirement::None, // 154 resource_prompt_plugin_capability_exposure
     ProviderRequirement::SelectedRoute, // 155 request_compression_policy
-    ProviderRequirement::AnyAdmittedRoute, // 156 http_pool_keepalive_idle_policy
+    ProviderRequirement::None, // 156 http_pool_keepalive_idle_policy
     ProviderRequirement::SelectedRoute, // 157 rate_limit_aware_admission
     ProviderRequirement::SelectedRoute, // 158 prompt_cache_ttl_breakpoint_strategy
     ProviderRequirement::None, // 159 session_isolation_profile
@@ -305,25 +308,31 @@ pub(crate) const fn requirements(ordinal: u16, domain: Domain) -> RequirementSpe
     let capabilities = match ordinal {
         1 | 77 => PROVIDER_CATALOG,
         2 | 19 => PROVIDER_MODEL_METADATA,
-        3 | 67 | 156 => PROVIDER_TRANSPORT,
-        4 | 20 | 21 => PROVIDER_REASONING_CONTROL,
+        3 => PROVIDER_TRANSPORT,
+        20 | 21 => PROVIDER_REASONING_CONTROL,
         13 | 96 => MODEL_METADATA_CONTEXT,
+        // The capability name identifies the external ceiling owner. ProviderRequirement::None
+        // below deliberately keeps the outer bool active: an incapable route contributes the
+        // exact clamp `false` instead of making the family inactive.
         23 => PROMPT_CACHE,
-        68 => MULTIMODAL,
+        // Family 100 retains the provider capability name because it owns an exact external clamp
+        // (`0` for text-only routes), but ProviderRequirement::None above prevents activation from
+        // depending on that capability.
         100 => MULTIMODAL_CONTEXT,
         158 => PROMPT_CACHE_CONTEXT,
-        27 => REASONING_CONTROL_CONTEXT,
-        52 | 62 | 134 => REASONING_CONTROL_AGENT,
+        // Decomposition is a local agent-orchestration policy. Provider reasoning support only
+        // controls the outbound child request and must not deactivate the checkpoint policy.
+        52 => COLLABORATION,
+        62 => REASONING_CONTROL_AGENT,
         70 => PROVIDER_DISCOVERY,
         86 | 87 => PROVIDER_FAILOVER,
-        88 => CATALOG_BUDGET,
-        89 => PROVIDER_HEALTH,
+        88 => REASONING,
+        89 => RUNTIME,
         90 => PROVIDER_HEDGING,
         91 => SERVICE_TIER,
         92 => PROVIDER_RESPONSE_VERBOSITY,
         93 => CATALOG_AGENT,
-        94 => PROVIDER_REQUEST_DEADLINE,
-        95 => PROVIDER_STREAMING,
+        67 | 94 | 95 | 156 => RUNTIME,
         104 => CONTEXT_VERIFY,
         105 | 107 => MEMORY_CONTEXT,
         108 | 113 | 114 => PERSISTENT_PROCESS,
@@ -332,7 +341,6 @@ pub(crate) const fn requirements(ordinal: u16, domain: Domain) -> RequirementSpe
         112 => PROCESS_SIGNAL,
         116 => FILESYSTEM_WRITE,
         117 => TOOL_CONTEXT,
-        118 => MULTIMODAL_BINARY,
         119 | 120 => LANGUAGE_SERVER,
         121 => LSP_CONTEXT,
         122 => TOOL_CACHE,
@@ -344,7 +352,8 @@ pub(crate) const fn requirements(ordinal: u16, domain: Domain) -> RequirementSpe
         143 => WORKTREE,
         145 => MESSAGING,
         147 | 149 | 150 | 151 => MCP,
-        148 | 152 => MCP_CONTEXT,
+        148 => TOOL_CONTEXT,
+        152 => MCP_CONTEXT,
         153 => OAUTH,
         154 => RESOURCE_CONTEXT,
         155 => REQUEST_COMPRESSION,

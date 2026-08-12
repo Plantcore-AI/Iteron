@@ -15,37 +15,63 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+/// One in-flight pure tool call: its index among the turn's blocks, the call, the task running it,
+/// and when that task started. Named because the inline tuple is unreadable at the use site.
+type PureToolInFlight = (
+    usize,
+    ToolUse,
+    tokio::task::JoinHandle<(
+        tool_output_spill::ManagedToolResult,
+        Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
+    )>,
+    Instant,
+);
+
 mod agent_config;
 mod agent_loop;
 mod budget_control;
 mod compaction;
+mod compaction_coverage;
 mod context_runtime;
 mod decision_observability;
 mod decomposition;
 mod deferred_tools;
 mod durability;
+mod failed_action_cache;
 mod file_submission;
 mod frontend;
 pub mod hooks;
 mod inbound_control;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;
+mod mcp_control;
+mod operator_status;
 mod orchestration_route;
 mod orchestration_run;
 mod permission_policy;
+mod policy_evidence;
+pub(crate) mod policy_evidence_recorder;
 mod pricing;
+mod private_attachments;
 mod provider_accounting;
+mod provider_governor_state;
+mod provider_hedge;
 mod provider_route;
 mod resume;
+mod route_attempt_accounting;
 mod route_state;
 mod route_validation;
+mod runtime_policy_overlay;
+mod session_spawn_ledger;
 mod side_conversation;
 mod strategy_ports;
 mod strategy_runtime;
 mod subagent_control;
 pub mod telemetry;
 mod tool_interrupt;
+pub(crate) mod tool_output_spill;
 mod transcript;
+mod tunables_pin;
 mod verification;
 mod workflow_collect;
 mod workflow_fan_progress;
@@ -101,12 +127,44 @@ use tool_interrupt::{
     await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
 };
 use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
+#[cfg(test)]
 pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
+pub(crate) type RuntimeBudgetHealth = operator_status::RuntimeBudgetHealth;
+pub(crate) type CollaborationRuntimeHealth = operator_status::CollaborationRuntimeHealth;
+pub(crate) type RuntimeOperatorStatusSnapshot = operator_status::RuntimeOperatorStatusSnapshot;
+pub(crate) type RuntimeOperatorStatusSources = operator_status::RuntimeOperatorStatusSources;
+pub(crate) type RuntimePolicyObservation = runtime_policy_overlay::RuntimePolicyObservation;
+pub(crate) type RuntimePolicyOverlayHandle = runtime_policy_overlay::RuntimePolicyOverlayHandle;
+pub(crate) type RuntimePolicyOverlaySnapshot = runtime_policy_overlay::RuntimePolicyOverlaySnapshot;
+pub(crate) type RuntimePolicyValue<T> = runtime_policy_overlay::RuntimePolicyValue<T>;
+pub(crate) type FailedActionCache = failed_action_cache::FailedActionCache;
+pub(crate) type GovernedProviderRoute = provider_governor_state::GovernedProviderRoute;
+pub(crate) type SessionSpawnLedger = session_spawn_ledger::SessionSpawnLedger;
+pub(crate) const FAILED_ACTION_CACHE_MAX_IDENTITIES: usize = failed_action_cache::MAX_IDENTITIES;
+pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP;
+
+pub(crate) fn ui_workflow_label(content: &str) -> String {
+    frontend::ui_workflow_label(content)
+}
+
+pub(crate) const fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy
+{
+    deferred_tools::effecting_tool_admission_policy()
+}
+
+pub(crate) fn governed_workflow_limits(
+    budget: &Budget,
+    limits: iteron_workflow::RunLimits,
+) -> Result<iteron_workflow::RunLimits, &'static str> {
+    workflow_spawner::governed_workflow_limits(budget, limits)
+}
+
 /// A failing strong oracle may return control to the model only this many times per run.
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
-const MAX_VERIFY_ATTEMPTS: u32 = 3;
+#[cfg(test)]
+const MAX_VERIFY_ATTEMPTS: u32 = iteron_verify::DEFAULT_VERIFICATION_REPAIR_ATTEMPTS;
 /// How often a mid-stream provider turn re-checks the cooperative interrupt flag. Matches the
 /// bounded cancellation-poll cadence used for child-agent and verification cancellation; it caps
 /// the latency between an operator interrupt and the in-flight stream being dropped.
@@ -138,6 +196,7 @@ const INTERRUPTED_STREAM_MARKER: &str =
 const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
 const IMAGE_INPUT_UNSUPPORTED_REASON: &str =
     "the selected model has no verified image-input capability; attachments were not submitted";
+const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
 const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
@@ -146,6 +205,9 @@ pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Core runtime notification — not an operator instruction]";
 pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
     "[Core runtime memory-added — operator-authored]";
+/// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
+/// narrow this per opportunity, but it cannot expand beyond this owner value.
+pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
 
 /// Events a UI (the TUI) renders. The kernel sends these to an optional channel so a front-end
 /// can display the run live without the kernel writing to stdout.
@@ -488,6 +550,13 @@ fn truncate_tail(s: &str, max: usize) -> String {
     iteron_protocol::text::tail(s, max)
 }
 
+pub(crate) fn bounded_child_report(
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+    report: &str,
+) -> String {
+    strict_utf8_head(report.trim(), policy.report_budget_bytes)
+}
+
 /// Build the `ToolEnd` UI event from a completed `ToolResult`: correlate by the tool_use id and
 /// carry the scrubbed+bounded output so the TUI can render a collapsible result card (ADR-015).
 fn tool_end_ui(tu: &ToolUse, r: &ToolResult) -> UiEvent {
@@ -569,90 +638,6 @@ fn ui_tool_output(content: &str) -> String {
     let scrubbed = iteron_record::redact::scrub(content);
     let bounded = bound_middle(&scrubbed, 60, 20);
     iteron_protocol::text::head(&bounded, 12_000)
-}
-
-/// Prepare a workflow task label for a frontend: collapse control whitespace, redact credentials,
-/// and cap retained bytes. The full prompt remains in the child rollout and parent reduce bundle;
-/// the UI gets only a safe, one-line identity for the live task tree.
-fn ui_workflow_label(content: &str) -> String {
-    let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let scrubbed = iteron_record::redact::scrub(&one_line);
-    strict_utf8_head(&scrubbed, 240)
-}
-
-fn workflow_child_activity(event: &UiEvent) -> Option<String> {
-    match event {
-        UiEvent::ToolStart { name, args, .. } => {
-            let detail = ["path", "pattern", "query", "key"]
-                .into_iter()
-                .find_map(|key| args.get(key).and_then(|value| value.as_str()))
-                .map(ui_workflow_label)
-                .filter(|detail| !detail.is_empty());
-            Some(match detail {
-                Some(detail) => format!("{name} · {detail}"),
-                None => name.clone(),
-            })
-        }
-        UiEvent::Phase(Phase::Model) => Some("reasoning over evidence".into()),
-        UiEvent::Phase(Phase::Tools) => Some("reading repository".into()),
-        UiEvent::Phase(Phase::Verify) => Some("checking evidence".into()),
-        UiEvent::TurnEnd { .. } => Some("organizing findings".into()),
-        UiEvent::ToolEnd { .. }
-        | UiEvent::Phase(Phase::Context | Phase::Idle)
-        | UiEvent::Text(_)
-        | UiEvent::Thinking(_)
-        | UiEvent::Workflow(_)
-        | UiEvent::SteerApplied { .. }
-        | UiEvent::Notice(_)
-        | UiEvent::ApprovalRequest { .. }
-        | UiEvent::Done(_) => None,
-    }
-}
-
-/// How one provider dispatch settles at the boundary.
-///
-/// Shared by the two call shapes: the `&mut self` helper used by the compaction and decomposition
-/// turns, and the main turn loop, which cannot take `&mut self` across its dispatch because the
-/// mid-stream pure-tool path holds a borrow of the registry. One classifier so the two shapes
-/// cannot drift into disagreeing about what counts as unknown.
-fn provider_settlement(
-    turn: TurnId,
-    ordinal: usize,
-    result: &Result<iteron_provider::TurnResult, KernelError>,
-) -> effects::Settlement {
-    let class = effect_class::EffectClass::Provider;
-    match result {
-        Ok(_) => effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
-        Err(KernelError::Provider(error)) if provider_outcome_is_unobservable(error) => {
-            effects::Settlement::Unknown(format!(
-                "provider request was dispatched and produced no authoritative outcome ({}); \
-                 automatic retry is forbidden",
-                error.public_summary()
-            ))
-        }
-        Err(error) => effects::Settlement::Definite(effect_failed_terminal(
-            turn,
-            class,
-            ordinal,
-            &error.public_summary(),
-        )),
-    }
-}
-
-/// Did this provider failure leave the turn's outcome unobservable?
-///
-/// The distinction the effect boundary needs: an endpoint that answered — even to refuse — closed
-/// the turn, while a dropped stream or an unreadable response leaves a possibly-billed turn whose
-/// result nobody can name. Only the second may ever be journalled as unknown, because unknown is
-/// the state that blocks a run until a human reconciles it.
-fn provider_outcome_is_unobservable(error: &iteron_provider::ProviderError) -> bool {
-    matches!(
-        error,
-        iteron_provider::ProviderError::Interrupted
-            | iteron_provider::ProviderError::DeadlineExceeded
-            | iteron_provider::ProviderError::Stream(_)
-            | iteron_provider::ProviderError::Decode(_)
-    )
 }
 
 /// What the verifier dispatch proved, which is a different question from what it decided.
@@ -746,6 +731,7 @@ where
         capability,
         audit_arguments,
         workspace: effect_workspace(workspace),
+        provider_route_attempt: None,
     };
     effects::broker_effect(rollout, admissions, brokered, execute).await
 }
@@ -866,6 +852,7 @@ fn effect_done_terminal(
         // all seven classes are timed at the same two points by the same clock. A number minted
         // here would be scoped to whatever this caller happened to wrap.
         duration_ms: None,
+        provider_route_attempt: None,
     }
 }
 
@@ -883,6 +870,7 @@ fn effect_failed_terminal(
         reason: strict_utf8_head(reason, EFFECT_REASON_MAX_BYTES),
         // See `effect_done_terminal`: the boundary owns the measurement.
         duration_ms: None,
+        provider_route_attempt: None,
     }
 }
 
@@ -1038,28 +1026,37 @@ fn allocate_orchestration(
     remaining_turns: u32,
     task_count: usize,
     remaining_wall_secs: u64,
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
 ) -> Option<OrchestrationAllocation> {
-    if task_count == 0 || remaining_turns < 6 || remaining_wall_secs < 3 {
+    let fan_breadth = policy.fan_breadth?;
+    let worker_min_turns = policy.worker_min_turns?.max(1);
+    let child_ceiling = policy.child_ceiling?;
+    if task_count == 0
+        || remaining_turns < policy.admission.minimum_remaining_turns
+        || remaining_wall_secs < policy.admission.minimum_remaining_wall_seconds
+    {
         return None;
     }
-    // Half-plus-one keeps the writer strictly dominant while relaxing the old two-thirds reserve.
-    let initial_writer_reserve = ((remaining_turns / 2).saturating_add(1))
-        .max(4)
-        .min(remaining_turns);
+    let initial_writer_reserve = policy.writer_fan_turn_split.writer_reserve(remaining_turns);
     let fan_available = remaining_turns.saturating_sub(initial_writer_reserve);
-    // Admit as many distinct investigators as the fan turn budget can each fund with >=2 turns,
-    // capped by FAN_CAP. Wall-clock is bounded separately by the concurrency permit count.
+    // Admit as many distinct investigators as the pinned fan/worker controls allow. Wall-clock is
+    // bounded separately by the concurrency permit count.
     let active_workers = task_count
-        .min(iteron_agents::FAN_CAP)
-        .min((fan_available / 2) as usize);
+        .min(fan_breadth)
+        .min((fan_available / worker_min_turns) as usize);
     if active_workers == 0 {
         return None;
     }
     // Each admitted worker may reach the per-worker ceiling, but the aggregate never exceeds the
     // fan half — so the writer reserve is preserved even though workers run concurrently.
-    let ceiling = iteron_agents::subagent_budget_ceiling().max_turns;
+    let ceiling = child_ceiling.max_turns;
     let fan_turns = fan_available.min((active_workers as u32).saturating_mul(ceiling));
-    let fan_wall_secs = (remaining_wall_secs / 3).max(1);
+    let fan_wall_secs = policy
+        .wall_split
+        .fan_share
+        .floor_u64(remaining_wall_secs)
+        .max(policy.wall_split.minimum_fan_seconds)
+        .min(remaining_wall_secs);
     Some(OrchestrationAllocation {
         fan_turns,
         writer_turns_reserved: remaining_turns.saturating_sub(fan_turns),
@@ -1152,11 +1149,12 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
 /// concurrency, `LIFETIME_CAP` lifetime), so the in-turn path adopts them instead of inventing a
 /// narrower pair. Cost stays bounded where it belongs: the per-child turn/token ceilings above and
 /// the aggregate USD budget shared with the parent.
-fn in_turn_workflow_budget() -> Result<iteron_kernel::ports::WorkflowRunBudget, &'static str> {
-    let defaults = iteron_workflow::RunLimits::default();
+fn in_turn_workflow_budget(
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+) -> Result<iteron_kernel::ports::WorkflowRunBudget, &'static str> {
     iteron_kernel::ports::WorkflowRunBudget::new(
-        defaults.max_concurrency(),
-        defaults.max_agent_calls(),
+        policy.workflow.max_concurrency,
+        policy.workflow.max_calls,
     )
 }
 
@@ -1228,14 +1226,41 @@ fn sha256_hex(content: &str) -> String {
         .collect()
 }
 
+/// Bind every workflow control from the run's immutable execution policy.  This tiny composition
+/// seam is shared by ordinary and resumed workflow preparation; neither may inherit `RunSpec`
+/// defaults that were not present in the run checkpoint.
+fn apply_workflow_execution_policy(
+    spec: iteron_workflow::RunSpec,
+    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+) -> iteron_workflow::RunSpec {
+    spec.with_early_stop_quorum(policy.early_stop_quorum)
+        .with_speculative_siblings(policy.speculative_siblings)
+        .with_task_retry(policy.task_retry)
+        .with_schema_retry(policy.schema_retry)
+}
+
 #[cfg(test)]
 mod orchestration_allocation_tests {
     use super::*;
 
+    fn policy() -> crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy {
+        crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
+            iteron_protocol::Effort::Ultracode,
+            &Budget {
+                max_turns: 59,
+                max_usd: None,
+                max_tokens: Some(101),
+                max_wall_secs: 900,
+                max_consecutive_tool_errors: 3,
+            },
+            iteron_workflow::RunLimits::default(),
+        )
+    }
+
     #[test]
     fn writer_is_reserved_before_fan_and_workers_have_two_turns() {
         // Writer keeps half-plus-one (30 of 59); the fan gets the rest and stays strictly smaller.
-        let allocation = allocate_orchestration(59, 6, 900).expect("viable fan");
+        let allocation = allocate_orchestration(59, 6, 900, policy()).expect("viable fan");
         assert_eq!(allocation.writer_turns_reserved, 30);
         assert_eq!(allocation.fan_turns, 29);
         assert!(allocation.writer_turns_reserved > allocation.fan_turns);
@@ -1247,9 +1272,71 @@ mod orchestration_allocation_tests {
 
     #[test]
     fn tiny_budget_bypasses_fan_instead_of_starving_writer() {
-        assert!(allocate_orchestration(5, 6, 900).is_none());
-        assert!(allocate_orchestration(59, 0, 900).is_none());
-        assert!(allocate_orchestration(59, 6, 2).is_none());
+        assert!(allocate_orchestration(5, 6, 900, policy()).is_none());
+        assert!(allocate_orchestration(59, 0, 900, policy()).is_none());
+        assert!(allocate_orchestration(59, 6, 2, policy()).is_none());
+    }
+
+    #[test]
+    fn pinned_execution_policy_changes_real_allocation_report_and_engine_limits() {
+        let mut custom = policy();
+        custom.writer_fan_turn_split.writer_share =
+            crate::runtime_tunables::execution_policy::ExactRatio::new(2, 3).unwrap();
+        custom.report_budget_bytes = 5;
+        custom.workflow.max_calls = 7;
+        custom.workflow.max_concurrency = 2;
+        custom.early_stop_quorum =
+            iteron_workflow::EarlyStopQuorumPolicy::new(2, 1, false).unwrap();
+        custom.speculative_siblings =
+            iteron_workflow::SpeculativeSiblingPolicy::new(7, std::time::Duration::from_secs(9))
+                .unwrap();
+        custom.task_retry = iteron_workflow::TaskRetryPolicy::new(
+            3,
+            iteron_workflow::TaskFailureAction::RetrySame,
+            false,
+        )
+        .unwrap();
+
+        let allocation = allocate_orchestration(60, 6, 90, custom).unwrap();
+        assert_eq!(allocation.writer_turns_reserved, 40);
+        assert_eq!(allocation.fan_turns, 20);
+        assert_eq!(allocation.fan_wall_secs, 30);
+        assert_eq!(bounded_child_report(custom, "abcdefgh"), "ab…");
+        let engine = in_turn_workflow_budget(custom).unwrap();
+        assert_eq!(engine.max_agent_calls(), 7);
+        assert_eq!(engine.max_concurrency(), 2);
+
+        let child = custom
+            .direct_child_allocation
+            .allocate(60, 90, Some(100), &iteron_agents::subagent_budget_ceiling())
+            .unwrap();
+        assert_eq!(child.max_turns, 29);
+        assert_eq!(child.max_tokens, Some(50));
+        assert_eq!(child.max_wall_secs, 30);
+
+        let spec = apply_workflow_execution_policy(
+            iteron_workflow::RunSpec::new("export default async () => null"),
+            custom,
+        );
+        assert_eq!(spec.early_stop_quorum, custom.early_stop_quorum);
+        assert_eq!(spec.speculative_siblings, custom.speculative_siblings);
+        assert_eq!(spec.task_retry, custom.task_retry);
+        custom.per_agent_effort = iteron_protocol::Effort::Medium;
+        assert_eq!(
+            custom
+                .admit_child_effort(Some(iteron_protocol::Effort::Low))
+                .unwrap(),
+            iteron_protocol::Effort::Low
+        );
+        assert!(
+            custom
+                .admit_child_effort(Some(iteron_protocol::Effort::High))
+                .is_err()
+        );
+        assert_eq!(
+            custom.per_agent_memory,
+            crate::runtime_tunables::execution_policy::ChildMemoryPolicy::Isolated
+        );
     }
 
     #[test]
@@ -1281,7 +1368,7 @@ mod orchestration_allocation_tests {
 
     #[test]
     fn an_in_turn_workflow_never_collapses_to_a_single_agent() {
-        let budget = in_turn_workflow_budget().expect("in-turn aggregate budget");
+        let budget = in_turn_workflow_budget(policy()).expect("in-turn aggregate budget");
         // The regression: the aggregate ceiling used to be `remaining_turns / per_child_turns`,
         // and `per_child_turns` is `min(child_ceiling, remaining_turns)` — so the quotient was 1
         // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
@@ -1434,6 +1521,36 @@ fn ui_approval_arguments(value: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(retained)
 }
 
+/// Preserve the internally-generated structural digests that bind a verification rollback
+/// approval while continuing to scrub every operator-controlled string (notably paths).  The
+/// generic scanner intentionally masks long hex strings because arbitrary tool arguments may
+/// contain credentials; these four fields are different: they are computed by the checkpoint and
+/// verification-policy owners, and the operator must see the exact identities being approved.
+/// A model cannot reach this projection through a registered tool -- `verification_rollback` is
+/// an internal pseudo-tool used only by the verification runtime.
+fn ui_verification_rollback_arguments(value: &serde_json::Value) -> Option<serde_json::Value> {
+    fn exact_hex(value: &serde_json::Value, lengths: &[usize]) -> Option<String> {
+        let value = value.as_str()?;
+        (lengths.contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| value.to_owned())
+    }
+
+    let source = value.as_object()?;
+    let mut projected = ui_approval_arguments(value).as_object()?.clone();
+    for (field, lengths) in [
+        ("checkpoint_tree_ref", &[40_usize, 64_usize][..]),
+        ("live_workspace_tree_ref", &[40_usize, 64_usize][..]),
+        ("policy_digest_sha256", &[64_usize][..]),
+        ("scope_digest_sha256", &[64_usize][..]),
+    ] {
+        projected.insert(
+            field.to_owned(),
+            serde_json::Value::String(exact_hex(source.get(field)?, lengths)?),
+        );
+    }
+    Some(serde_json::Value::Object(projected))
+}
+
 #[cfg(test)]
 mod ui_seam_tests {
     //! ADR-015 R1: secrets must be masked BEFORE they cross the UiEvent channel — the live UI,
@@ -1486,7 +1603,7 @@ ant-api03-AnotherLeakedSecret99887766"});
         let secret = "sk-\
 ant-api03-AnotherLeakedSecret99887766";
         let raw = format!("inspect\n{secret}  {}", "wide ".repeat(200));
-        let label = ui_workflow_label(&raw);
+        let label = frontend::ui_workflow_label(&raw);
         assert!(!label.contains('\n'));
         assert!(!label.contains("AnotherLeakedSecret"));
         assert!(label.contains("[REDACTED"));
@@ -1638,9 +1755,14 @@ enum DurableAppendFault {
     ContextInjection,
     Notice,
     TurnStart,
+    EffectIntent,
     ToolDone,
+    ToolPolicyDecision,
     SubagentFinished,
     UsdCeiling,
+    TurnCeiling,
+    GenesisPolicyTail,
+    AdoptProjection,
 }
 
 /// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
@@ -1669,6 +1791,9 @@ pub struct Agent {
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
     pub provider: std::sync::Arc<dyn Provider>,
     pub registry: Registry,
+    /// Private, run-owned overflow storage for ordinary tool results. MCP results retain their
+    /// independent transport/session owner and are explicitly excluded at dispatch.
+    tool_output_spill: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
     pub rollout: Rollout,
     /// Root directory for mutable rollout/session state. Descendants inherit the root value even
     /// though their own journals live under `subagents/`, so every drain checkpoint excludes the
@@ -1688,6 +1813,12 @@ pub struct Agent {
     /// first token of the answer, so a shrinking budget is visible while there is still time to
     /// act on it rather than only after the 429 that already cost a request (I-53).
     last_rate_limit: Option<iteron_provider::RateLimitSnapshot>,
+    /// Immutable request controls decoded from the fresh/resumed tunables checkpoint.
+    provider_controls: iteron_provider::ProviderRequestControls,
+    /// Bounded admission/circuit owner for every configured physical provider route.
+    provider_governor: Option<iteron_provider::ProviderGovernor>,
+    /// Ordered, pre-attested fallback bindings. The primary route stays in `provider`.
+    fallback_provider_routes: Vec<GovernedProviderRoute>,
     /// Injected, pure pricing strategy port. Its concrete implementation owns trust material; the
     /// kernel stores neither HMAC bytes nor a price table.
     pricing_port: Option<std::sync::Arc<dyn PricingPort>>,
@@ -1724,16 +1855,28 @@ pub struct Agent {
     /// provenance and become authoritative only after the enclosing ContextInjection is durable.
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
+    /// Exact fresh-run environment retained after the live proposal is consumed so resumed
+    /// parents and every child can reproduce the same immutable environment identity.
+    composition_environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
     /// One compaction per top-level submission. Set by whichever path took it — the emergency
     /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
     /// submission is admitted, so the two can never both fire on one run.
     compacted_in_run: bool,
+    /// Last durable compaction turn. Routine compaction consults this session state so the
+    /// resolved cooldown survives across submissions; emergency overflow handling remains a
+    /// separate fail-safe.
+    last_compaction_turn: Option<u64>,
     /// Session-scoped context accounting (I-60). Keeps a per-message token estimate with a running
     /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
     /// transcript once per consumer. Every path that rewrites an already-counted message instead of
     /// appending must invalidate it; the two that do are compaction and steering.
     context_estimator: iteron_ctx::RequestEstimator,
+    /// Maximum task-relevant schemas sent eagerly. The remaining admitted catalog stays reachable
+    /// through `tool_search`; `None` preserves eager compatibility for manually-constructed agents.
+    deferred_tool_eager_limit: Option<usize>,
+    context_budget_policy: iteron_ctx::ContextBudgetPolicy,
+    context_materialization_policy: iteron_ctx::ContextMaterializationPolicy,
     context_source_evidence: Vec<iteron_ctx::ContextSegmentEvidence>,
     /// Invocation-local file provenance. `None` for text/image-only submissions and cleared when
     /// emergency compaction replaces the source message with a summary.
@@ -1761,6 +1904,34 @@ pub struct Agent {
     /// claims done, and refuses to accept "done" if it fails (ADR-005: ground truth in the loop,
     /// don't trust the self-report). None disables the gate.
     pub verify_command: Option<String>,
+    /// Immutable verification selection/quorum/quarantine/recovery policy decoded from the same
+    /// run-genesis tunables checkpoint as `verify_command`.
+    verification_policy: iteron_verify::VerificationRuntimePolicy,
+    /// Immutable routing, child-allocation, report, and workflow aggregate owner decoded from the
+    /// same run checkpoint. The unpinned constructor starts fail-closed.
+    execution_policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
+    /// SQ/EQ capacities and overflow semantics decoded before the resident actor is wired.
+    app_server_queue_policy: crate::app_server::AppServerQueuePolicy,
+    /// Executable MIME-to-inspector table decoded from the same immutable checkpoint.
+    binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy,
+    /// Count, raw-byte, dimension, frame, and decoder-work limits pinned at run genesis.
+    multimodal_decode_envelope: crate::image_input::MultimodalDecodeEnvelope,
+    /// Content-free identities of executable hooks, workflow graph semantics, and the exact
+    /// optional environment proposal decoded from the same immutable checkpoint.
+    effective_content:
+        Option<crate::runtime_tunables::effective_content::EffectiveContentIdentities>,
+    /// Content-free command digests quarantined after contradictory physical verifier outcomes.
+    /// Absolute deadlines come from typed rollout receipts, so resume never restarts or silently
+    /// extends the quarantine window.
+    verification_quarantine: std::collections::BTreeMap<String, u64>,
+    /// Lazy replay guard for the typed quarantine receipts in the currently-owned rollout.
+    verification_quarantine_restored: bool,
+    latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
+    last_workspace_checkpoint_turn: Option<u32>,
+    /// Most recent pre-submission workspace state eligible for an operator-authorised verification
+    /// rollback. The append-only journal records the snapshot identity; this handle never rewrites
+    /// conversation history.
+    verification_rollback_point: Option<iteron_record::Snapshot>,
     /// DANGEROUS opt-in (CLI `--dangerously-bypass-permissions`, used by the internal team edition).
     /// When true the capability gate is skipped entirely: every tool auto-approves so the agent
     /// never prompts. Plan mode still hard-denies (read-only explore), and an explicit
@@ -1824,9 +1995,12 @@ pub struct Agent {
     interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Queue-owned interrupt request, for embedders that use SQ without an out-of-band atomic.
     interrupt_requested: bool,
-    /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow runs
-    /// inline. 16 mirrors the workflow concurrency default.
+    /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow waits
+    /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
+    /// One non-refilling child-spawn ceiling for the resident session. Workflow-local RunLimits
+    /// remain a second, narrower guard and never replace this owner.
+    session_spawn_ledger: std::sync::Arc<SessionSpawnLedger>,
     /// Optional frontend event sink. The kernel never renders model content directly.
     ui_tx: Option<tokio::sync::mpsc::UnboundedSender<UiEvent>>,
     /// Optional frontend sink for QuickJS workflow-script progress (ADR-0001 step 1).
@@ -1859,11 +2033,22 @@ pub struct Agent {
     /// `collect`/`cancel` are routed straight to it, so the turn keeps no run bookkeeping of its
     /// own.
     workflow_launcher: Option<std::sync::Arc<dyn crate::workflow::WorkflowLauncher>>,
+    /// Session-owned control plane for lazily connected MCP servers. Registry proxies and
+    /// operator actions share this exact clone-backed owner; neither status nor lifecycle control
+    /// reconstructs a connection from ambient configuration.
+    mcp_runtime: Option<crate::mcp::McpRuntimeControl>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
     effort: iteron_protocol::Effort,
+    /// Event-position provenance for the mutable policy overlay. Values remain owned by the
+    /// ordinary runtime fields; this records only which successful WAL commit (or verified replay)
+    /// made each value effective, so status surfaces cannot confuse genesis with live state.
+    runtime_policy_provenance: runtime_policy_overlay::RuntimePolicyProvenance,
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
     /// into the stable system prefix (REC-INJECT). (Modular memory — R5, ADR-011 seam.)
     pub memory_workspace: Option<std::path::PathBuf>,
+    /// Content-free identity for an eval attempt whose context must not inherit user/project
+    /// memory. Presence activates strict parent-store contamination checks.
+    memory_benchmark_scope: Option<[u8; 32]>,
     /// Pure context selection plus the injected world adapter. The default port is filesystem
     /// backed; tests and the pre-#15 reducer seam may replace it with `iteron_ctx::PortStub`.
     context_strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -1880,6 +2065,9 @@ pub struct Agent {
     collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Narrows retry/concurrency decisions (`core/scheduler`).
     scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
+    /// Trusted composition-root retry bounds. Physical attempts remain kernel-owned so every
+    /// dispatch has its own durable effect intent and terminal.
+    retry_policy: iteron_sched::BackoffPolicy,
     /// Strengthens completion-gate plans (`core/verifier`).
     verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     /// Which already-resolved model route a delegated child may use (`core/model_router`). The
@@ -1897,6 +2085,28 @@ pub struct Agent {
     agent_catalog_pinned: bool,
     /// Immutable policy-bundle projection resolved once at process boot.
     boot_bundle: std::sync::Arc<iteron_agents::BootBundle>,
+    /// The typed implementation checkpoint behind `boot_bundle`. This Arc owns the complete
+    /// nine-slot strategy generation, stable application receipt, and runtime identities used by
+    /// policy evidence. Children clone this exact Arc; no child reconstructs identity from config.
+    compiled_policy_bundle: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
+    /// Run-local owner of durable, content-free evidence for the nine frozen policy slots.
+    /// Lazily restored while this Agent holds the rollout writer, so tests that intentionally use
+    /// the legacy unpinned constructor remain source-compatible while every production run is
+    /// bound to its exact tunables and compiled-bundle identities.
+    policy_evidence: Option<policy_evidence_recorder::PolicyEvidenceRecorder>,
+    /// Cumulative price at the durable start of the current turn. A turn outcome reports only its
+    /// own delta; the run outcome reports the full ledger at session close.
+    policy_turn_cost_baseline: Option<CostState>,
+    /// Durable-counter snapshot at turn start. Token evidence is emitted only when every provider
+    /// attempt since this point has authoritative usage, so stale prior-turn usage is never copied
+    /// into a failed or locally refused turn.
+    policy_turn_counter_baseline: Option<policy_evidence::PolicyTurnCounterBaseline>,
+    /// Latest verifier truth for the current turn, reset only after its policy outcome commits.
+    policy_verifier_outcome: iteron_protocol::PolicyVerifierOutcome,
+    /// One exact version-neutral runtime checkpoint. Fresh resolution projects to V2 once; resume
+    /// retains the recorded V1/V2 identity. Every child clones the same pin and cannot consult
+    /// ambient defaults or silently drift from the root run.
+    tunables_pin: Option<tunables_pin::TunablesPin>,
     /// The resolved memory segment for this run, recalled + recorded ONCE (REC-INJECT). `None`
     /// until `resolve_injection` runs; `Some("")` means "resolved, nothing to inject". Reused from
     /// the RECORD on resume — never re-read from disk mid-run (the live bug the R5 review flagged
@@ -1944,9 +2154,11 @@ pub struct Agent {
     /// A model re-issuing the identical failed edit/command is a notorious spiral (ADR-003 dedup,
     /// SWE-agent's "DO NOT re-run the same failed edit"): we short-circuit an exact repeat with the
     /// prior error instead of re-running it, so the loop is nudged to a different approach.
-    failed_actions: std::collections::HashMap<String, String>,
+    failed_actions: failed_action_cache::FailedActionCache,
     /// Lifecycle hooks (R5), loaded from the USER config only (trust-by-origin). Empty by default.
     pub hooks: Hooks,
+    /// One-shot guard for installing the exact hook catalog named by the tunables checkpoint.
+    hooks_runtime_installed: bool,
     /// Session-scoped, content-free command journal. The main rollout brokers the logical Hook
     /// chain; this sidecar additionally brackets every individual external command with fsync.
     hook_effect_journal: Option<hooks::journal::HookEffectJournal>,
@@ -1968,7 +2180,7 @@ impl Agent {
         &mut self,
         content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
-        self.stage_follow_up_transcript()?;
+        self.stage_follow_up_transcript().await?;
         self.verify_attempts = 0;
         self.run_content(content).await
     }
@@ -2009,8 +2221,39 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
+        let mut outcome = self
+            .run_with_images_mode_inner(
+                task,
+                input_images,
+                allow_orchestration,
+                input_file_evidence,
+            )
+            .await;
+        if let Err(cleanup_error) =
+            self.cleanup_tool_output_spills(tool_output_spill::ToolOutputSpillCleanup::RunEnd)
+        {
+            outcome = Err(cleanup_error);
+        }
+        if let Err(cleanup_error) = self
+            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::RunEnd)
+            .await
+        {
+            outcome = Err(cleanup_error);
+        }
+        self.settle_failed_policy_turn(&outcome)?;
+        outcome
+    }
+
+    async fn run_with_images_mode_inner(
+        &mut self,
+        task: &str,
+        input_images: Vec<iteron_protocol::ImageContent>,
+        allow_orchestration: bool,
+        input_file_evidence: Option<file_submission::InputFileEvidence>,
+    ) -> Result<Outcome, KernelError> {
         self.input_file_evidence = input_file_evidence;
         self.guard_unresolved_effects()?;
+        self.ensure_policy_evidence()?;
         if self.seq_turn == u32::MAX {
             return Err(KernelError::IdentityExhausted("turn"));
         }
@@ -2030,6 +2273,7 @@ impl Agent {
             }
             return Ok(outcome);
         }
+        self.prepare_verification_rollback_point(TurnId(self.seq_turn))?;
         // A positive ceiling is admitted only with an active verified binding and wholly priced
         // historical evidence. Unknown history cannot be repaired by pricing only future turns.
         if self
@@ -2053,15 +2297,32 @@ impl Agent {
                     .unwrap_or_else(Instant::now),
             );
         }
+        // Keep an encrypted Attachment reference alive from SQ admission through the durable user
+        // Message and every provider request spawned by this submission. The adapter hydrates the
+        // provider copy through the same tombstone gate and releases only its exact handles when
+        // this run returns; older file-attachment edges on the run are untouched.
+        let staged_images = private_attachments::InvocationImages::stage(
+            self.rollout.path().parent().ok_or_else(|| {
+                KernelError::ContextResolution("record store resolution failed".into())
+            })?,
+            self.rollout.tenant().clone(),
+            self.rollout.run_id().clone(),
+            TurnId(self.seq_turn),
+            &input_images,
+        )
+        .map_err(|_| {
+            KernelError::ContextResolution("private image attachment storage failed".into())
+        })?;
+        let input_images = staged_images.images();
         let orchestrate = allow_orchestration
             && self.effort.profile().orchestration
                 == iteron_protocol::OrchestrationMode::Orchestrated
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
-            self.run_orchestrated(task, &input_images).await
+            self.run_orchestrated(task, input_images).await
         } else {
-            self.drive_with_images(task, &input_images).await
+            self.drive_with_images(task, input_images).await
         };
         if orchestrate {
             // The guard is scoped to one top-level run. Leaving it set made every later follow-up
@@ -2105,7 +2366,20 @@ impl Agent {
     ///    without a recursive obligation through the parent writer, while `Agent::run` itself also
     ///    stays `Send` for top-level callers.
     async fn run_leaf(&mut self, task: &str) -> Result<Outcome, KernelError> {
+        let mut outcome = self.run_leaf_inner(task).await;
+        if let Err(cleanup_error) = self
+            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::RunEnd)
+            .await
+        {
+            outcome = Err(cleanup_error);
+        }
+        self.settle_failed_policy_turn(&outcome)?;
+        outcome
+    }
+
+    async fn run_leaf_inner(&mut self, task: &str) -> Result<Outcome, KernelError> {
         self.guard_unresolved_effects()?;
+        self.ensure_policy_evidence()?;
         if self.seq_turn == u32::MAX {
             return Err(KernelError::IdentityExhausted("turn"));
         }
@@ -2158,6 +2432,30 @@ impl Agent {
             .await?;
         self.refresh_session_cache_metered();
         outcome
+    }
+
+    fn settle_failed_policy_turn(
+        &mut self,
+        outcome: &Result<Outcome, KernelError>,
+    ) -> Result<(), KernelError> {
+        let Err(error) = outcome else {
+            return Ok(());
+        };
+        // These two errors mean the evidence writer itself is unavailable or inconsistent. A
+        // second append cannot repair either condition and would obscure the original fail-stop
+        // cause. Every other runtime failure receives one durable failed turn outcome here.
+        if matches!(
+            error,
+            KernelError::Record(_) | KernelError::PolicyEvidence(_)
+        ) {
+            return Ok(());
+        }
+        self.append_policy_turn_outcome(
+            TurnId(self.seq_turn),
+            iteron_protocol::PolicyTerminalOutcome::Failed,
+            self.policy_verifier_outcome,
+            Some(policy_evidence::policy_harness_error_code(error)),
+        )
     }
 
     /// Durably admit one operator submission before any provider request derived from it. Both
@@ -2305,7 +2603,7 @@ impl Agent {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
             self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
-            let turn_id = TurnId(self.seq_turn);
+            let mut turn_id = TurnId(self.seq_turn);
             self.observe_session_memory_activation(turn_id, relevance_task);
             let context_observation_started = Instant::now();
             self.lifecycle_event(
@@ -2321,11 +2619,13 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.advertised_tool_specs();
+            let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
             // A declared capability is the route's own documented ceiling, so it is used as
             // declared. 8192 remains the conservative default for an UNKNOWN capability only —
             // clamping the declared value froze every provider at that default (I-02).
-            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+            let request_max_tokens = self
+                .model_max_output_tokens
+                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction
             // actually rewrote the transcript underneath it.
@@ -2376,7 +2676,7 @@ impl Agent {
                     request_max_tokens,
                 )
             {
-                let before = messages.len();
+                let before_messages = messages.clone();
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
                 self.lifecycle_event(
@@ -2387,13 +2687,59 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
-                match self.summarize(&plan.to_summarize, None).await {
+                match self.summarize_compaction(&plan.to_summarize, None).await {
                     Ok(summary) => {
+                        // The summary is a complete physical provider attempt and therefore a
+                        // control safe point. In particular, Drain received while it was in
+                        // flight must win before the optional coverage verifier admits a second
+                        // provider attempt.
+                        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                        if let Some(outcome) =
+                            self.finish_requested_control(TurnId(self.seq_turn))?
+                        {
+                            return Ok(outcome);
+                        }
+                        let covered = if self.compaction.coverage_check {
+                            self.verify_compaction_summary(&plan.to_summarize, &summary)
+                                .await
+                                .unwrap_or(false)
+                        } else {
+                            true
+                        };
+                        let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
+                        if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
+                            self.lifecycle_event(
+                                "context.compaction.failed",
+                                Some(compaction_result_turn),
+                                LifecyclePayload {
+                                    reason_code: Some(if covered {
+                                        "hysteresis_exit_not_reached".into()
+                                    } else {
+                                        "summary_coverage_missing".into()
+                                    }),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            return Err(KernelError::ContextResolution(if covered {
+                                "emergency compaction did not cross the resolved hysteresis exit"
+                                    .into()
+                            } else {
+                                "emergency compaction summary failed the resolved coverage check"
+                                    .into()
+                            }));
+                        }
+                        self.record_compaction(
+                            compaction_result_turn,
+                            &before_messages,
+                            &plan,
+                            &summary,
+                            "overflow_emergency",
+                            self.compaction.coverage_check && covered,
+                        );
                         *messages = CompactionPolicy::rebuild(&plan, summary.clone());
                         // The source file bytes no longer cross the provider boundary once the
                         // containing user message has been replaced by a compacted summary.
                         self.input_file_evidence = None;
-                        self.record_compaction(before, &plan, &summary, messages.len());
                         // The transcript was rewritten, not appended to: drop the cached per-message
                         // estimates and re-account this turn against the compacted history.
                         self.context_estimator.invalidate_transcript();
@@ -2417,6 +2763,15 @@ impl Agent {
             let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
             if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
                 return Ok(outcome);
+            }
+            let post_compaction_turn = TurnId(self.seq_turn);
+            if post_compaction_turn != turn_id {
+                // Internal summary/coverage attempts consume their own bounded turns. The main
+                // model admission that follows must therefore mint effects against the current
+                // turn rather than revisiting the pre-compaction identity.
+                turn_id = post_compaction_turn;
+                agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
+                self.observe_session_memory_activation(turn_id, relevance_task);
             }
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
@@ -2465,6 +2820,9 @@ impl Agent {
                     });
                 }
             }
+            self.context_budget_policy
+                .admit_components(&self.context_component_usage(messages, &context_estimate))
+                .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
 
             let context_gates = [(
                 "context.segment.budget_requested",
@@ -2516,29 +2874,52 @@ impl Agent {
                 },
             );
 
-            let req = TurnRequest {
+            let mut req = TurnRequest {
                 model: self.model.clone(),
                 system: effective_system,
                 messages: messages.clone(),
                 input_images: input_images.to_vec(),
                 tools: tool_specs,
                 max_tokens: request_max_tokens,
-                cache_system: true, // stable prefix cached (ADR-002)
+                // Family 23 is the outer gate and family 158 supplies the exact breakpoint. Keep
+                // the legacy adapter bit consistent with the pinned typed control: Anthropic
+                // deliberately treats `cache_system=true` + `breakpoint=None` as Rolling, so a
+                // hard-coded true here would silently re-enable a disabled cache on the wire.
+                cache_system: self.provider_cache_system_enabled(),
                 thinking_budget: self.effort.thinking_budget(),
                 reasoning_effort: self.effort.reasoning_effort(),
+                controls: self.provider_controls,
             };
             let effort_application = self.provider.effort_application(&req);
 
             // The append is the provider-effect intent. It must be durable before any adapter is
             // entered; failure returns with zero network calls and leaves the in-memory ledger
             // unchanged.
-            let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
+            let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+            let usd_attempt = admission.attempt_guard;
 
             // Open the provider effect BEFORE the mid-stream pure-tool machinery takes its borrow
             // of the registry. That borrow lives across the dispatch, so `&mut self` is unavailable
             // at the call itself; the boundary is therefore opened here and settled after the
             // borrow dies, which is the same intent-execute-terminal order, only spelled out.
-            let provider_refusal = self.provider_dispatch_refusal();
+            let mut provider_refusal = self.provider_dispatch_refusal();
+            let mut provider_for_stream = self.provider.clone();
+            let mut active_provider_route = self.governed_route_id();
+            let mut fallback_index = self
+                .fallback_provider_routes
+                .iter()
+                .position(|route| route.id() == active_provider_route)
+                .map_or(0, |index| index.saturating_add(1));
+            let use_hedge = admission.use_hedge;
+            let mut physical_attempt = if use_hedge { 0 } else { 1 };
+            let mut route_transition_reason: Option<&'static str> = None;
+            let mut provider_route_permit = admission.primary_route_permit;
+            if provider_refusal.is_some() {
+                drop(provider_route_permit.take());
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+            }
             self.lifecycle_event(
                 if provider_refusal.is_some() {
                     "model.route_rejected"
@@ -2554,30 +2935,70 @@ impl Agent {
                 },
             );
             let provider_class = effect_class::EffectClass::Provider;
-            let provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
-            let provider_ticket = match provider_refusal {
+            let mut provider_ordinal = 0usize;
+            let mut provider_ticket = match (&provider_refusal, use_hedge) {
                 // A refusal means nothing was dispatched, so nothing is admitted and no intent is
                 // written. Recording one would invent an effect out of a request that never left.
-                Some(_) => None,
-                None => {
+                (Some(_), _) | (None, true) => None,
+                (None, false) => {
+                    provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    let (objective_score, objective_evidence) =
+                        self.objective_rank_evidence(&active_provider_route);
                     let broker_started = Instant::now();
-                    let ticket = self.open_kernel_effect(
+                    let ticket = match self.open_kernel_effect(
                         turn_id,
                         provider_class,
                         provider_ordinal,
                         Capability::IrreversibleExternal,
                         serde_json::json!({
                             "model": req.model,
+                            "route_id": active_provider_route,
+                            "route_transition": route_transition_reason,
                             "messages": req.messages.len(),
                             "tools": req.tools.len(),
                             "max_tokens": req.max_tokens,
+                            "physical_attempt": physical_attempt,
+                            "route_retry_index": 0,
+                            "route_objective_score_millionths": objective_score,
+                            "route_objective_evidence": objective_evidence,
                         }),
-                    )?;
+                    ) {
+                        Ok(ticket) => ticket,
+                        Err(error) => {
+                            drop(provider_route_permit.take());
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            return Err(error);
+                        }
+                    };
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                     Some(ticket)
                 }
             };
+            if provider_refusal.is_none()
+                && !use_hedge
+                && let Err(error) = self.begin_provider_attempt_after_intent(turn_id)
+            {
+                let ticket = provider_ticket
+                    .take()
+                    .expect("non-hedged provider intent was opened immediately above");
+                let settlement = self.close_provider_intent_without_dispatch(
+                    turn_id,
+                    provider_ordinal,
+                    &active_provider_route,
+                    physical_attempt,
+                    ticket,
+                    "logical provider turn could not become durable before dispatch",
+                );
+                drop(provider_route_permit.take());
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                settlement?;
+                return Err(error);
+            }
             if provider_refusal.is_none() {
                 agent_loop.transition(AgentLoopState::StreamingModel)?;
                 self.observe_memory_provider_exposure(turn_id);
@@ -2601,7 +3022,6 @@ impl Agent {
             }
 
             // ---- the flagship: dispatch PURE tools mid-stream. ----
-            let reg = &self.registry;
             let tool_policy = self.tool_policy.clone();
             let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
@@ -2616,24 +3036,34 @@ impl Agent {
             // vetoes one — silently cost the whole session its concurrent read dispatch.
             let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty()
                 || !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            let pure_overlap_enabled = self.registry.pure_overlap_enabled();
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
             // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
             // inline list, so a thirty-read turn keeps the full concurrency for all thirty rather
             // than running sixteen together and fourteen strictly one at a time with no diagnostic
             // (Little's Law: a concurrency limit is the only honest knob — but it must be the only
             // one, and a hidden serial tail is a second, dishonest one).
-            let gov = iteron_sched::Governor::new(self.scheduled_tool_concurrency());
+            let gov = iteron_sched::Governor::new(self.scheduled_tool_concurrency()?);
             let model_span = PhaseSpan::enter(Phase::Model);
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
-            let mut pure: Vec<(usize, ToolUse, tokio::task::JoinHandle<ToolResult>, Instant)> =
-                Vec::new();
+            let mut pure: Vec<PureToolInFlight> = Vec::new();
             // How many pure calls could not take a permit the instant they were admitted. They are
             // still dispatched concurrently — they wait in the governor's queue — but the count is
             // the honest report that the cap, not the workload, shaped this turn's tool phase.
             let mut queued_pure: usize = 0;
-            let mut deferred: Vec<(usize, ToolUse)> = Vec::new();
+            let mut deferred: Vec<(
+                usize,
+                ToolUse,
+                Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
+            )> = Vec::new();
+            // The provider transport below owns cloned, read-only dispatch state instead of a
+            // borrow of the Agent. That lets this callback synchronously fsync each policy
+            // selection through the Agent-owned rollout before constructing an early pure-tool
+            // future. A failed append is latched and no tool from that or any later callback is
+            // dispatched.
+            let mut tool_policy_record_error: Option<KernelError> = None;
             let mut order: usize = 0;
             let mut tool_admission = effects::ToolCallAdmission::default();
             let mut tool_contract_error = None;
@@ -2658,175 +3088,469 @@ impl Agent {
             let mut observed_rate_limit: Option<iteron_provider::RateLimitSnapshot> = None;
             let model_lifecycle = self.lifecycle_emitter.clone();
             let model_correlation = self.lifecycle_correlation(Some(turn_id));
-
-            let mut on_item = |item: StreamItem| {
-                // Quota is read from the response headers, not produced by the model. Counting it
-                // would make time-to-first-token report the moment the headers landed and turn
-                // every stalled prefill into an apparently instant one (#103, I-64).
-                if let StreamItem::RateLimit(snapshot) = item {
-                    if !first_byte_observed {
-                        first_byte_observed = true;
+            let provider_deadline = self.run_deadline.unwrap_or_else(|| {
+                Instant::now()
+                    .checked_add(Duration::from_secs(self.budget.max_wall_secs))
+                    .unwrap_or_else(Instant::now)
+            });
+            let provider_interrupt = self.interrupt.clone();
+            let provider_drain = self.drain.clone();
+            let mut retry_index = 0u32;
+            let mut retry_jitter = iteron_sched::backoff::Jitter::new();
+            let provider_result = loop {
+                let mut attempt_rate_limit = None;
+                let mut hedged_dispatch = if provider_refusal.is_none() && use_hedge {
+                    Some(
+                        self.execute_hedged_provider_turn(
+                            turn_id,
+                            provider_for_stream.clone(),
+                            &active_provider_route,
+                            &req,
+                            provider_deadline,
+                            route_transition_reason,
+                            retry_index,
+                            physical_attempt,
+                            physical_attempt == 0,
+                            provider_route_permit.take(),
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                if let Some(dispatch) = &hedged_dispatch {
+                    physical_attempt = physical_attempt.saturating_add(dispatch.scheduled_attempts);
+                }
+                let mut monetary_followup_safe = hedged_dispatch
+                    .as_ref()
+                    .is_none_or(|dispatch| dispatch.monetary_followup_safe);
+                let hedged_this_attempt = hedged_dispatch.is_some();
+                let result = {
+                    let mut on_item = |item: StreamItem| {
+                        // Quota is read from the response headers, not produced by the model. Counting it
+                        // would make time-to-first-token report the moment the headers landed and turn
+                        // every stalled prefill into an apparently instant one (#103, I-64).
+                        if let StreamItem::RateLimit(snapshot) = item {
+                            if !first_byte_observed {
+                                first_byte_observed = true;
+                                if let Some(emitter) = &model_lifecycle {
+                                    let _ = emitter.emit(
+                                        "model.first_byte",
+                                        model_correlation.clone(),
+                                        LifecyclePayload {
+                                            duration_us: Some(elapsed_us(stream_start)),
+                                            ..LifecyclePayload::default()
+                                        },
+                                    );
+                                }
+                            }
+                            if let Some(emitter) = &model_lifecycle {
+                                let _ = emitter.emit(
+                                    "model.rate_limit_observed",
+                                    model_correlation.clone(),
+                                    LifecyclePayload::default(),
+                                );
+                            }
+                            observed_rate_limit = Some(snapshot);
+                            attempt_rate_limit = Some(snapshot);
+                            return;
+                        }
+                        if first_item_at.is_none() {
+                            first_item_at = Some(Instant::now());
+                            if let Some(emitter) = &model_lifecycle {
+                                let payload = LifecyclePayload {
+                                    duration_us: Some(elapsed_us(stream_start)),
+                                    ..LifecyclePayload::default()
+                                };
+                                if !first_byte_observed {
+                                    first_byte_observed = true;
+                                    let _ = emitter.emit(
+                                        "model.first_byte",
+                                        model_correlation.clone(),
+                                        payload.clone(),
+                                    );
+                                }
+                                let _ = emitter.emit(
+                                    "model.first_token",
+                                    model_correlation.clone(),
+                                    payload,
+                                );
+                            }
+                        }
+                        stream_items = stream_items.saturating_add(1);
                         if let Some(emitter) = &model_lifecycle {
                             let _ = emitter.emit(
-                                "model.first_byte",
+                                "model.stream_item",
                                 model_correlation.clone(),
                                 LifecyclePayload {
-                                    duration_us: Some(elapsed_us(stream_start)),
+                                    count: Some(1),
                                     ..LifecyclePayload::default()
                                 },
                             );
                         }
-                    }
-                    if let Some(emitter) = &model_lifecycle {
-                        let _ = emitter.emit(
-                            "model.rate_limit_observed",
-                            model_correlation.clone(),
-                            LifecyclePayload::default(),
-                        );
-                    }
-                    observed_rate_limit = Some(snapshot);
-                    return;
-                }
-                if first_item_at.is_none() {
-                    first_item_at = Some(Instant::now());
-                    if let Some(emitter) = &model_lifecycle {
-                        let payload = LifecyclePayload {
-                            duration_us: Some(elapsed_us(stream_start)),
-                            ..LifecyclePayload::default()
-                        };
-                        if !first_byte_observed {
-                            first_byte_observed = true;
-                            let _ = emitter.emit(
-                                "model.first_byte",
-                                model_correlation.clone(),
-                                payload.clone(),
-                            );
+                        match item {
+                            StreamItem::TextDelta(t) => {
+                                streamed_text.push_str(&t);
+                                if let Some(tx) = &ui_tx {
+                                    // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
+                                    // the record already masks the committed Block::Text, but the live UI / /export
+                                    // are the same exfiltration surfaces as tool output, which we scrub here too.
+                                    // The frontend adds a stateful cross-delta scrubber before rendering.
+                                    let _ =
+                                        tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
+                                }
+                            }
+                            StreamItem::ThinkingDelta(t) => {
+                                streamed_thinking.push_str(&t);
+                                if let Some(tx) = &ui_tx {
+                                    let _ = tx
+                                        .send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
+                                }
+                            }
+                            StreamItem::ToolUseComplete(tu) => {
+                                if tool_contract_error.is_some()
+                                    || tool_policy_record_error.is_some()
+                                {
+                                    return;
+                                }
+                                if let Err(error) = tool_admission.admit(&tu) {
+                                    tool_contract_error = Some(error);
+                                    return;
+                                }
+                                if let Some(tx) = &ui_tx {
+                                    // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
+                                    // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
+                                    // record's redaction does not cover).
+                                    let _ = tx.send(UiEvent::ToolStart {
+                                        id: tu.id.clone(),
+                                        name: tu.name.clone(),
+                                        args: scrub_value(&tu.input),
+                                    });
+                                }
+                                let idx = order;
+                                order += 1;
+                                let proposal = strategy_runtime::propose_tool(
+                                    &self.registry,
+                                    tool_policy.as_ref(),
+                                    tu.clone(),
+                                    argument_trust,
+                                );
+                                let evidence = match proposal.as_ref() {
+                                    Ok(proposal) => {
+                                        let action = if proposal.intent.purity == Purity::Pure {
+                                            "pure_candidate"
+                                        } else {
+                                            "effect_candidate"
+                                        };
+                                        policy_evidence::PolicyDecisionDraft::selected(
+                                            policy_evidence::TOOL_POLICY_SLOT,
+                                            &[
+                                                iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate,
+                                                iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate,
+                                            ],
+                                            if action == "pure_candidate" {
+                                                iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate
+                                            } else {
+                                                iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate
+                                            },
+                                            "iteron:tool-policy-features-v1",
+                                            &(
+                                                &tu,
+                                                proposal.intent.purity,
+                                                proposal.intent.argument_trust,
+                                            ),
+                                            &"registry_metadata_and_authority_are_caller_owned",
+                                        )
+                                    }
+                                    Err(_) => policy_evidence::PolicyDecisionDraft::abstained(
+                                        policy_evidence::TOOL_POLICY_SLOT,
+                                        &[
+                                            iteron_protocol::PolicyActionV1::ToolPolicyPureCandidate,
+                                            iteron_protocol::PolicyActionV1::ToolPolicyEffectCandidate,
+                                        ],
+                                        "iteron:tool-policy-features-v1",
+                                        &(&tu, argument_trust),
+                                        &"invalid_or_unknown_tools_are_not_eligible",
+                                    ),
+                                };
+                                let recorded = evidence.and_then(|draft| {
+                                    self.record_completed_policy_decision(
+                                        policy_evidence::TOOL_POLICY_SLOT,
+                                        Some(turn_id),
+                                        draft,
+                                    )
+                                });
+                                if let Err(error) = recorded {
+                                    tool_policy_record_error = Some(error);
+                                    return;
+                                }
+                                let is_pure = proposal
+                                    .as_ref()
+                                    .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
+                                if is_pure && pure_overlap_enabled && !hook_gates_reads {
+                                    let proposal =
+                                        proposal.expect("checked pure tool-policy proposal");
+                                    let tu_ui = proposal.intent.call.clone();
+                                    let intent =
+                                        proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                                    // Spawn now — I/O overlaps the remaining decode. The permit is held for
+                                    // the task's lifetime and released on completion (bounded). At the cap
+                                    // the task still spawns and awaits a permit inside itself: the future
+                                    // is created but not polled until a slot frees, so inflight work stays
+                                    // capped while the WAITING work stays concurrent. The alternative this
+                                    // replaces — an overflow list drained inline during collection — made
+                                    // every call past the cap serial with nothing in the record saying so.
+                                    let fut = self.registry.dispatch_intent(intent);
+                                    let tool_use_id = tu_ui.id.clone();
+                                    let spill_store = self.ordinary_tool_spill_store(&tu_ui.name);
+                                    let interrupt = tool_interrupt.clone();
+                                    let drain = tool_drain.clone();
+                                    let permit = gov.try_acquire();
+                                    if permit.is_none() {
+                                        queued_pure += 1;
+                                    }
+                                    let gov = gov.clone();
+                                    let handle = tokio::spawn(async move {
+                                        let _permit = match permit {
+                                            Some(permit) => permit,
+                                            None => gov.acquire().await,
+                                        };
+                                        let result = match await_tool_or_interrupt(
+                                            fut,
+                                            interrupt.as_deref(),
+                                            Some(drain.as_ref()),
+                                        )
+                                        .await
+                                        {
+                                            Ok(result) => result,
+                                            // Pure tools have no externally visible effect by contract, so
+                                            // dropping one on interrupt is a definite cancelled read rather
+                                            // than an unknown effect settlement.
+                                            Err(()) => ToolResult {
+                                                tool_use_id,
+                                                content:
+                                                    "operator interrupted the read before it completed"
+                                                        .into(),
+                                                is_error: true,
+                                                trust: Trust::Workspace,
+                                                latency_ms: 0,
+                                            },
+                                        };
+                                        let managed = tool_output_spill::manage_result(
+                                            spill_store.as_deref(),
+                                            result,
+                                        );
+                                        (managed, spill_store)
+                                    });
+                                    pure.push((idx, tu_ui, handle, Instant::now()));
+                                } else {
+                                    deferred.push((idx, tu, proposal));
+                                }
+                            }
+                            // Returned above, before the first-token clock; repeated here only because
+                            // the match is exhaustive by design.
+                            StreamItem::RateLimit(_) | StreamItem::TurnComplete { .. } => {}
                         }
-                        let _ =
-                            emitter.emit("model.first_token", model_correlation.clone(), payload);
+                    };
+
+                    // `attempt` means a provider request crossed the dispatch boundary. Local
+                    // context rejection above therefore remains provable zero, while every
+                    // dispatched request without Usage becomes an honest unknown.
+                    if let Some(dispatch) = hedged_dispatch.take() {
+                        for item in dispatch.items {
+                            on_item(item);
+                        }
+                        dispatch.result
+                    } else if provider_refusal.is_some() {
+                        Err(provider_refusal
+                            .take()
+                            .expect("provider refusal is consumed once"))
+                    } else {
+                        provider_route::execute_admitted_provider_turn(
+                            provider_for_stream.clone(),
+                            provider_deadline,
+                            provider_interrupt.clone(),
+                            provider_drain.clone(),
+                            None,
+                            &req,
+                            &mut on_item,
+                        )
+                        .await
                     }
+                };
+                let single_dispatched = provider_ticket.is_some();
+                if let Some(ticket) = provider_ticket.take() {
+                    let accounting = self.route_attempt_accounting(
+                        turn_id,
+                        &active_provider_route,
+                        physical_attempt,
+                        &result,
+                        usd_attempt.projected_at_unix_secs(),
+                    )?;
+                    monetary_followup_safe =
+                        route_attempt_accounting::monetary_followup_safe(&accounting);
+                    let settlement = provider_route::provider_settlement(
+                        turn_id,
+                        provider_ordinal,
+                        &result,
+                        accounting.clone(),
+                    );
+                    let broker_started = Instant::now();
+                    self.settle_kernel_effect(ticket, settlement)?;
+                    self.commit_provider_route_charge(turn_id, &accounting)?;
+                    self.ledger
+                        .record_broker_latency_us(elapsed_us(broker_started));
                 }
-                stream_items = stream_items.saturating_add(1);
-                if let Some(emitter) = &model_lifecycle {
-                    let _ = emitter.emit(
-                        "model.stream_item",
-                        model_correlation.clone(),
+                if single_dispatched && !hedged_this_attempt {
+                    self.observe_governed_route_attempt(
+                        turn_id,
+                        &active_provider_route,
+                        &result,
+                        attempt_rate_limit,
+                    )?;
+                }
+                drop(provider_route_permit.take());
+                route_transition_reason = None;
+                if let Some(error) = tool_policy_record_error.take() {
+                    break Err(error);
+                }
+                let emitted = first_byte_observed || stream_items > 0;
+                if let Some(error) =
+                    provider_route::retryable_pre_stream_provider_error(&result, emitted)
+                    && retry_index.saturating_add(1) < self.retry_policy.max_attempts
+                {
+                    if let Err(error) =
+                        self.admit_followup_after_route_attempt_set(monetary_followup_safe)
+                    {
+                        break Err(error);
+                    }
+                    let jitter_delay = iteron_sched::full_jitter(
+                        &self.retry_policy,
+                        retry_index,
+                        retry_jitter.next01(),
+                    );
+                    let delay = error
+                        .retry_after()
+                        .map(|hint| {
+                            hint.min(Duration::from_millis(self.retry_policy.cap_ms))
+                                .max(jitter_delay)
+                        })
+                        .unwrap_or(jitter_delay);
+                    self.lifecycle_event(
+                        "model.retry_scheduled",
+                        Some(turn_id),
                         LifecyclePayload {
-                            count: Some(1),
+                            count: Some(u64::from(retry_index.saturating_add(1))),
+                            duration_us: Some(u64::try_from(delay.as_micros()).unwrap_or(u64::MAX)),
+                            reason_code: Some("typed_transient_pre_stream_failure".into()),
                             ..LifecyclePayload::default()
                         },
                     );
-                }
-                match item {
-                    StreamItem::TextDelta(t) => {
-                        streamed_text.push_str(&t);
-                        if let Some(tx) = &ui_tx {
-                            // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
-                            // the record already masks the committed Block::Text, but the live UI / /export
-                            // are the same exfiltration surfaces as tool output, which we scrub here too.
-                            // The frontend adds a stateful cross-delta scrubber before rendering.
-                            let _ = tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
-                        }
-                    }
-                    StreamItem::ThinkingDelta(t) => {
-                        streamed_thinking.push_str(&t);
-                        if let Some(tx) = &ui_tx {
-                            let _ = tx.send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
-                        }
-                    }
-                    StreamItem::ToolUseComplete(tu) => {
-                        if tool_contract_error.is_some() {
-                            return;
-                        }
-                        if let Err(error) = tool_admission.admit(&tu) {
-                            tool_contract_error = Some(error);
-                            return;
-                        }
-                        if let Some(tx) = &ui_tx {
-                            // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
-                            // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
-                            // record's redaction does not cover).
-                            let _ = tx.send(UiEvent::ToolStart {
-                                id: tu.id.clone(),
-                                name: tu.name.clone(),
-                                args: scrub_value(&tu.input),
-                            });
-                        }
-                        let idx = order;
-                        order += 1;
-                        let proposal = strategy_runtime::propose_tool(
-                            reg,
-                            tool_policy.as_ref(),
-                            tu.clone(),
-                            argument_trust,
+                    let wait_started = Instant::now();
+                    if let Err(cancelled) = self.wait_provider_retry(delay).await {
+                        self.lifecycle_event(
+                            "model.retry_cancelled",
+                            Some(turn_id),
+                            LifecyclePayload {
+                                count: Some(u64::from(retry_index.saturating_add(1))),
+                                duration_us: Some(elapsed_us(wait_started)),
+                                reason_code: Some("run_cancelled_during_backoff".into()),
+                                ..LifecyclePayload::default()
+                            },
                         );
-                        let is_pure = proposal
-                            .as_ref()
-                            .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                        if is_pure && !hook_gates_reads {
-                            let proposal = proposal.expect("checked pure tool-policy proposal");
-                            let tu_ui = proposal.intent.call.clone();
-                            let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
-                            // Spawn now — I/O overlaps the remaining decode. The permit is held for
-                            // the task's lifetime and released on completion (bounded). At the cap
-                            // the task still spawns and awaits a permit inside itself: the future
-                            // is created but not polled until a slot frees, so inflight work stays
-                            // capped while the WAITING work stays concurrent. The alternative this
-                            // replaces — an overflow list drained inline during collection — made
-                            // every call past the cap serial with nothing in the record saying so.
-                            let fut = reg.dispatch_intent(intent);
-                            let tool_use_id = tu_ui.id.clone();
-                            let interrupt = tool_interrupt.clone();
-                            let drain = tool_drain.clone();
-                            let permit = gov.try_acquire();
-                            if permit.is_none() {
-                                queued_pure += 1;
-                            }
-                            let gov = gov.clone();
-                            let handle = tokio::spawn(async move {
-                                let _permit = match permit {
-                                    Some(permit) => permit,
-                                    None => gov.acquire().await,
-                                };
-                                match await_tool_or_interrupt(
-                                    fut,
-                                    interrupt.as_deref(),
-                                    Some(drain.as_ref()),
-                                )
-                                .await
-                                {
-                                    Ok(result) => result,
-                                    // Pure tools have no externally visible effect by contract, so
-                                    // dropping one on interrupt is a definite cancelled read rather
-                                    // than an unknown effect settlement.
-                                    Err(()) => ToolResult {
-                                        tool_use_id,
-                                        content:
-                                            "operator interrupted the read before it completed"
-                                                .into(),
-                                        is_error: true,
-                                        trust: Trust::Workspace,
-                                        latency_ms: 0,
-                                    },
-                                }
-                            });
-                            pure.push((idx, tu_ui, handle, Instant::now()));
-                        } else {
-                            deferred.push((idx, tu));
-                        }
+                        break Err(cancelled);
                     }
-                    // Returned above, before the first-token clock; repeated here only because
-                    // the match is exhaustive by design.
-                    StreamItem::RateLimit(_) | StreamItem::TurnComplete { .. } => {}
+                    self.ledger.record_provider_retries(
+                        1,
+                        u64::try_from(delay.as_millis().max(1)).unwrap_or(u64::MAX),
+                    );
+                    retry_index = retry_index.saturating_add(1);
+                } else if let Some(error) = result.as_ref().err()
+                    && let Some(failover_class) = self.admitted_failover(error, emitted)
+                    && let Some(index) = provider_governor_state::next_admitted_fallback_index(
+                        &self.fallback_provider_routes,
+                        fallback_index,
+                        &req,
+                    )
+                {
+                    if !monetary_followup_safe {
+                        self.mark_usd_unknown();
+                        break Err(KernelError::UnpricedUsdCeiling);
+                    }
+                    if self.usd_budget_exhausted() {
+                        break Err(KernelError::InferenceBudgetExhausted("max_usd"));
+                    }
+                    fallback_index = index.saturating_add(1);
+                    let next =
+                        self.activate_fallback_provider_route(turn_id, index, failover_class)?;
+                    provider_for_stream = next.provider.clone();
+                    active_provider_route = next.id();
+                    req.model = next.route.model_id;
+                    if let Err(error) = self.admit_followup_after_route_attempt_set(true) {
+                        break Err(error);
+                    }
+                    retry_index = 0;
+                    retry_jitter = iteron_sched::backoff::Jitter::new();
+                    route_transition_reason = Some(failover_class.label());
+                } else {
+                    break result;
                 }
-            };
-
-            // `attempt` means a provider request crossed the dispatch boundary. Local context
-            // rejection above therefore remains provable zero, while every dispatched request
-            // without authoritative Usage becomes an honest unknown.
-            let provider_result = match provider_refusal {
-                Some(refusal) => Err(refusal),
-                None => self.bounded_provider_turn(&req, &mut on_item).await,
+                if !use_hedge {
+                    provider_route_permit = self
+                        .admit_governed_route_attempt(turn_id, &active_provider_route)
+                        .await?;
+                    if let Some(refusal) = self.provider_dispatch_refusal() {
+                        drop(provider_route_permit.take());
+                        if let Some(budget) = &self.usd_budget {
+                            budget.settle_not_dispatched();
+                        }
+                        break Err(refusal);
+                    }
+                    self.reserve_provider_followup_if_needed(&req)?;
+                    physical_attempt = physical_attempt.saturating_add(1);
+                    provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    let (objective_score, objective_evidence) =
+                        self.objective_rank_evidence(&active_provider_route);
+                    let broker_started = Instant::now();
+                    provider_ticket = match self.open_kernel_effect(
+                        turn_id,
+                        provider_class,
+                        provider_ordinal,
+                        Capability::IrreversibleExternal,
+                        serde_json::json!({
+                            "model": req.model,
+                            "route_id": active_provider_route,
+                            "route_transition": route_transition_reason,
+                            "messages": req.messages.len(),
+                            "tools": req.tools.len(),
+                            "max_tokens": req.max_tokens,
+                            "physical_attempt": physical_attempt,
+                            "route_retry_index": retry_index,
+                            "route_objective_score_millionths": objective_score,
+                            "route_objective_evidence": objective_evidence,
+                        }),
+                    ) {
+                        Ok(ticket) => Some(ticket),
+                        Err(error) => {
+                            drop(provider_route_permit.take());
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            break Err(error);
+                        }
+                    };
+                    self.ledger
+                        .record_broker_latency_us(elapsed_us(broker_started));
+                }
+                self.lifecycle_event(
+                    "model.request_sent",
+                    Some(turn_id),
+                    LifecyclePayload {
+                        count: Some(u64::from(retry_index.saturating_add(1))),
+                        reason_code: Some("retry".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
             };
             match &provider_result {
                 Ok(_) => self.lifecycle_event(
@@ -2856,17 +3580,13 @@ impl Agent {
                     LifecyclePayload::default(),
                 );
             }
-            if let Some(ticket) = provider_ticket {
-                let settlement = provider_settlement(turn_id, provider_ordinal, &provider_result);
-                let broker_started = Instant::now();
-                self.settle_kernel_effect(ticket, settlement)?;
-                self.ledger
-                    .record_broker_latency_us(elapsed_us(broker_started));
-            }
             let turn_res = match provider_result {
                 Ok(result) => result,
                 Err(error) => {
-                    self.mark_usd_unknown();
+                    // Physical route terminals already committed exact Known/Unknown cost truth
+                    // before this branch. A proven provider failure (or a proved pre-dispatch
+                    // refusal) must not be reclassified as unknown merely because it is returned
+                    // to the logical turn.
                     // A streaming adapter can fail after emitting a complete pure tool call.
                     // Dropping JoinHandles would detach those reads and let work outlive the
                     // failed turn. Abort *and await* them before crossing the turn boundary.
@@ -2894,7 +3614,9 @@ impl Agent {
                 }
             };
             if let Some(error) = tool_contract_error {
-                self.mark_usd_unknown();
+                // The provider route terminal already committed its exact physical charge. A
+                // malformed tool projection invalidates the semantic turn, not the billing
+                // receipt, so preserve the known monetary state while failing the turn.
                 for (_, _, handle, _) in pure.drain(..) {
                     handle.abort();
                     let _ = handle.await;
@@ -2910,7 +3632,11 @@ impl Agent {
             let mut streamed_tools: Vec<(usize, ToolUse)> = pure
                 .iter()
                 .map(|(index, tool, _, _)| (*index, tool.clone()))
-                .chain(deferred.iter().map(|(index, tool)| (*index, tool.clone())))
+                .chain(
+                    deferred
+                        .iter()
+                        .map(|(index, tool, _)| (*index, tool.clone())),
+                )
                 .collect();
             streamed_tools.sort_by_key(|(index, _)| *index);
             let returned_tools: Vec<ToolUse> = turn_res
@@ -2926,7 +3652,8 @@ impl Agent {
                 .map(|(_, tool)| tool)
                 .ne(returned_tools.iter())
             {
-                self.mark_usd_unknown();
+                // Stream/transcript disagreement is a provider contract failure after an exact
+                // physical terminal. It cannot erase or weaken that already-verified charge.
                 for (_, _, handle, _) in pure.drain(..) {
                     handle.abort();
                     let _ = handle.await;
@@ -3073,7 +3800,7 @@ impl Agent {
                             "model output reached max tokens; continuing".into(),
                         ));
                         self.commit_message(turn_id, messages, continuation)?;
-                        self.advance_turn()?;
+                        self.advance_turn().await?;
                         continue;
                     }
                     StopReason::PauseTurn => {
@@ -3097,7 +3824,7 @@ impl Agent {
                             "provider paused the turn; continuing".into(),
                         ));
                         self.commit_message(turn_id, messages, continuation)?;
-                        self.advance_turn()?;
+                        self.advance_turn().await?;
                         continue;
                     }
                     StopReason::EndTurn => {
@@ -3113,7 +3840,7 @@ impl Agent {
                         }
                         if steered > 0 {
                             agent_loop.transition(AgentLoopState::ApplyingSteer)?;
-                            self.advance_turn()?;
+                            self.advance_turn().await?;
                             continue;
                         }
                         // ---- verification gate (ADR-005): do not trust "done". If a test command
@@ -3121,13 +3848,14 @@ impl Agent {
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
                             agent_loop.transition(AgentLoopState::Verifying)?;
+                            let max_verify_attempts = self.verification_policy.retry.max_attempts;
                             // Defensive guard for re-entry with an already-exhausted Agent. A
                             // configured strong oracle that has not passed must never be bypassed
                             // merely because its attempt counter reached the ceiling.
-                            if self.verify_attempts >= MAX_VERIFY_ATTEMPTS {
+                            if self.verify_attempts >= max_verify_attempts {
                                 self.verification_repair_exhausted(turn_id);
                                 let notice = format!(
-                                    "verify gate: `{cmd}` did not pass within {MAX_VERIFY_ATTEMPTS} attempts; stopping"
+                                    "verify gate: `{cmd}` did not pass within {max_verify_attempts} attempts; stopping"
                                 );
                                 self.emit(
                                     turn_id,
@@ -3140,26 +3868,75 @@ impl Agent {
                                     .finish(turn_id, Outcome::BudgetExhausted("verify_attempts"));
                             }
 
+                            self.checkpoint_before_verification(turn_id)?;
+
                             self.emit(
                                 turn_id,
                                 EventKind::Phase {
                                     phase: Phase::Verify,
                                 },
                             );
-                            let verify_plan = iteron_verify::VerifierStrategy::plan_with(
+                            let verifier_observation =
+                                iteron_verify::VerifierSlotObservation::gating(true);
+                            let verifier_opportunity = self.begin_policy_decision(
+                                policy_evidence::VERIFIER_SLOT,
+                                Some(turn_id),
+                            )?;
+                            let verify_plan = match iteron_verify::VerifierStrategy::plan_with(
                                 self.verifier.as_ref(),
-                                &iteron_verify::VerifierSlotObservation::gating(true),
+                                &verifier_observation,
                                 CapabilitySet::only(Capability::CodeExecuting)
                                     .intersect(self.authority_ceiling),
-                            )
-                            .map_err(|error| {
-                                KernelError::ContextResolution(format!(
-                                    "verifier strategy refused: {error}"
-                                ))
-                            })?
-                            .plan;
+                            ) {
+                                Ok(proposal) => {
+                                    self.append_policy_decision(
+                                        verifier_opportunity,
+                                        policy_evidence::PolicyDecisionDraft::selected(
+                                            policy_evidence::VERIFIER_SLOT,
+                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
+                                            iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan,
+                                            "iteron:verifier-features-v1",
+                                            &(&verifier_observation, proposal.plan),
+                                            &"verification_may_only_strengthen_caller_floors",
+                                        )?,
+                                    )?;
+                                    proposal.plan
+                                }
+                                Err(error) => {
+                                    self.append_policy_decision(
+                                        verifier_opportunity,
+                                        policy_evidence::PolicyDecisionDraft::abstained(
+                                            policy_evidence::VERIFIER_SLOT,
+                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
+                                            "iteron:verifier-features-v1",
+                                            &verifier_observation,
+                                            &"invalid_verifier_plans_fail_closed",
+                                        )?,
+                                    )?;
+                                    return Err(KernelError::ContextResolution(format!(
+                                        "verifier strategy refused: {error}"
+                                    )));
+                                }
+                            };
                             let verify_span = PhaseSpan::enter(Phase::Verify);
-                            let verdict = self.run_verifier_plan(&cmd, verify_plan).await?;
+                            let verdict = self.run_verification_policy(&cmd, verify_plan).await?;
+                            self.policy_verifier_outcome = match verdict.outcome {
+                                iteron_verify::VerificationOutcome::Pass => {
+                                    iteron_protocol::PolicyVerifierOutcome::Passed
+                                }
+                                iteron_verify::VerificationOutcome::TestFailure => {
+                                    iteron_protocol::PolicyVerifierOutcome::TestFailure
+                                }
+                                iteron_verify::VerificationOutcome::TimedOut => {
+                                    iteron_protocol::PolicyVerifierOutcome::TimedOut
+                                }
+                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
+                                    iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
+                                }
+                                iteron_verify::VerificationOutcome::Cancelled => {
+                                    iteron_protocol::PolicyVerifierOutcome::Cancelled
+                                }
+                            };
                             self.ledger.phase_verify(verify_span.elapsed_ms());
                             // Drain deliberately lets the already-admitted oracle reach a verdict,
                             // then checkpoints before any failure/timeout branch can substitute a
@@ -3169,6 +3946,8 @@ impl Agent {
                                 return self.finish_drained(turn_id);
                             }
                             let detail = truncate_tail(&verdict.detail, 3000);
+                            let failure_classification =
+                                iteron_verify::classify_verification_failure(verdict.outcome);
                             match verdict.outcome {
                                 iteron_verify::VerificationOutcome::Pass => {
                                     self.verification_repair_completed(turn_id);
@@ -3183,14 +3962,43 @@ impl Agent {
                                     )));
                                 }
                                 iteron_verify::VerificationOutcome::TestFailure => {
+                                    let failure_class = failure_classification
+                                        .expect(
+                                            "every non-pass oracle outcome has a taxonomy entry",
+                                        )
+                                        .class();
+                                    let recovery =
+                                        iteron_verify::verification_recovery_escalation_policy()
+                                            .decide(
+                                                &self.verification_policy.retry,
+                                                failure_class,
+                                                self.verify_attempts,
+                                            );
+                                    if recovery
+                                        == iteron_verify::VerificationRecoveryAction::StopIneligible
+                                    {
+                                        self.emit(
+                                            turn_id,
+                                            EventKind::Notice {
+                                                text: format!(
+                                                    "verify gate: `{cmd}` test failure is not retry-eligible under the immutable policy; stopping"
+                                                ),
+                                            },
+                                        );
+                                        return self.finish(turn_id, Outcome::HarnessError);
+                                    }
+                                    let rolled_back =
+                                        self.rollback_after_verification_failure().await?;
                                     // Only a real candidate/test failure consumes the bounded
                                     // model-fix allowance. Harness faults must never masquerade as
                                     // three bad candidate attempts.
                                     self.verify_attempts = self.verify_attempts.saturating_add(1);
-                                    if self.verify_attempts >= MAX_VERIFY_ATTEMPTS {
+                                    if recovery
+                                        == iteron_verify::VerificationRecoveryAction::StopExhausted
+                                    {
                                         self.verification_repair_exhausted(turn_id);
                                         let notice = format!(
-                                            "verify gate: `{cmd}` test failure on attempt {} of {MAX_VERIFY_ATTEMPTS}; ceiling reached, stopping",
+                                            "verify gate: `{cmd}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
                                             self.verify_attempts
                                         );
                                         self.emit(
@@ -3206,12 +4014,22 @@ impl Agent {
                                         );
                                     }
 
+                                    debug_assert_eq!(
+                                        recovery,
+                                        iteron_verify::VerificationRecoveryAction::RetryReplan
+                                    );
+
                                     self.verification_repair_started(turn_id);
 
                                     let msg = Message::user_text(format!(
                                         "Verification found a test failure: the harness ran `{cmd}` \
                                          successfully, but the candidate did not pass. Do not claim \
-                                         the task is done. Fix the remaining issues and continue.\n\n{detail}"
+                                         the task is done. Fix the remaining issues and continue.{}\n\n{detail}",
+                                        if rolled_back {
+                                            " The operator-authorised workspace rollback was applied before this repair turn."
+                                        } else {
+                                            ""
+                                        }
                                     ));
                                     self.emit(
                                         turn_id,
@@ -3226,7 +4044,7 @@ impl Agent {
                                         "verify gate: `{cmd}` test failure, continuing"
                                     )));
                                     self.commit_message(turn_id, messages, msg)?;
-                                    self.advance_turn()?;
+                                    self.advance_turn().await?;
                                     continue;
                                 }
                                 iteron_verify::VerificationOutcome::TimedOut => {
@@ -3324,7 +4142,7 @@ impl Agent {
                             return Ok(outcome);
                         }
                         if steered > 0 {
-                            self.advance_turn()?;
+                            self.advance_turn().await?;
                             continue;
                         }
                         return self.finish(turn_id, Outcome::Done);
@@ -3391,16 +4209,27 @@ impl Agent {
                     None => Some(handle.await),
                 };
                 match joined {
-                    Some(Ok(r)) => {
+                    Some(Ok((mut managed, spill_store))) => {
+                        let r = &managed.result;
                         self.commit_admitted_tool_result(
                             ticket,
                             &tu.name,
-                            &r,
+                            r,
                             overlap_ms.min(r.latency_ms),
                         )?;
                         any_error |= r.is_error;
-                        self.ui(tool_end_ui(&tu, &r));
-                        results[idx] = Some(r);
+                        self.ui(tool_end_ui(&tu, r));
+                        if managed.spilled {
+                            // Pure-tool memoization happens inside the registry, before this owner
+                            // sees the result. Invalidate it so the raw oversized value is not kept
+                            // alive after the private spill boundary replaces it.
+                            self.registry.invalidate_pure_cache();
+                        }
+                        tool_output_spill::cleanup_managed_result(
+                            spill_store.as_deref(),
+                            &mut managed,
+                        )?;
+                        results[idx] = Some(managed.result);
                     }
                     Some(Err(_)) | None => {
                         // The spawned pure-tool task panicked or was cancelled. Answer its
@@ -3434,7 +4263,8 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, messages);
+            let batch =
+                self.select_concurrent_deferred_batch(&deferred, argument_trust, messages)?;
             if batch.len() > 1 {
                 let execution = self
                     .run_concurrent_deferred_batch(
@@ -3454,7 +4284,7 @@ impl Agent {
                     return Err(error);
                 }
             }
-            for (idx, tu) in deferred {
+            for (idx, tu, proposal) in deferred {
                 // Already settled by the concurrent group above, terminal and all.
                 if results[idx].is_some() {
                     continue;
@@ -3505,12 +4335,7 @@ impl Agent {
                     any_error = true;
                     continue;
                 }
-                let proposal = match strategy_runtime::propose_tool(
-                    &self.registry,
-                    tool_policy.as_ref(),
-                    tu.clone(),
-                    argument_trust,
-                ) {
+                let proposal = match proposal {
                     Ok(proposal) => proposal,
                     Err(error) => {
                         let r = ToolResult {
@@ -3780,10 +4605,16 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
-                    any_error |= r.is_error;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
+                    let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                    let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    self.commit_admitted_tool_result(ticket, &tu.name, &managed.result, 0)?;
+                    any_error |= managed.result.is_error;
+                    self.ui(tool_end_ui(&tu, &managed.result));
+                    tool_output_spill::cleanup_managed_result(
+                        spill_store.as_deref(),
+                        &mut managed,
+                    )?;
+                    results[idx] = Some(managed.result);
                     continue;
                 }
                 // Intercept the in-turn `Workflow` tool (parallels `dispatch_agent` above): launch a
@@ -3853,10 +4684,16 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_admitted_tool_result(call_ticket, &tu.name, &r, 0)?;
-                    any_error |= r.is_error;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
+                    let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                    let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    self.commit_admitted_tool_result(call_ticket, &tu.name, &managed.result, 0)?;
+                    any_error |= managed.result.is_error;
+                    self.ui(tool_end_ui(&tu, &managed.result));
+                    tool_output_spill::cleanup_managed_result(
+                        spill_store.as_deref(),
+                        &mut managed,
+                    )?;
+                    results[idx] = Some(managed.result);
                     continue;
                 }
                 let tu_ui = tu.clone(); // carry args for tool_end_ui (edit diff / bash exit_code) — this is where edits land
@@ -3886,6 +4723,10 @@ impl Agent {
                     intent: proposal.admit(CapabilitySet::only(base_cap)),
                 };
                 let registry = &self.registry;
+                let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                let spill_store_for_execution = spill_store.clone();
+                let spill_lease = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let spill_lease_from_execution = spill_lease.clone();
                 let interrupt = self.interrupt.clone();
                 let drain = self.drain.clone();
                 self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
@@ -3897,30 +4738,51 @@ impl Agent {
                     |intent| async move {
                         let tool_use_id = intent.call.id.clone();
                         let started = Instant::now();
-                        match await_tool_or_interrupt(
+                        let execution = match await_tool_or_interrupt(
                             registry.run_admitted_intent(intent),
                             interrupt.as_deref(),
                             Some(drain.as_ref()),
                         )
                         .await
                         {
-                            Ok(iteron_tools::ToolExecution::Definite(result)) => {
+                            Ok(execution) => execution,
+                            Err(()) => {
+                                iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
+                                    tool_use_id,
+                                    started.elapsed().as_millis() as u64,
+                                ))
+                            }
+                        };
+                        let managed = tool_output_spill::manage_execution(
+                            spill_store_for_execution.as_deref(),
+                            execution,
+                        );
+                        let (execution, lease) = tool_output_spill::into_execution_parts(managed);
+                        *spill_lease_from_execution
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = lease;
+                        match execution {
+                            iteron_tools::ToolExecution::Definite(result) => {
                                 effects::ToolExecution::Definite(result)
                             }
-                            Ok(iteron_tools::ToolExecution::Unknown(result)) => {
+                            iteron_tools::ToolExecution::Unknown(result) => {
                                 effects::ToolExecution::Unknown(result)
                             }
-                            Err(()) => effects::ToolExecution::Unknown(interrupted_tool_result(
-                                tool_use_id,
-                                started.elapsed().as_millis() as u64,
-                            )),
                         }
                     },
                 )
                 .await
                 {
                     Ok(execution) => execution,
-                    Err(error) => return Err(self.effect_boundary_failed(error)),
+                    Err(error) => {
+                        let mut lease = spill_lease
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        let _ =
+                            tool_output_spill::cleanup_lease(spill_store.as_deref(), &mut lease);
+                        return Err(self.effect_boundary_failed(error));
+                    }
                 };
                 self.tool_lifecycle_event(
                     "tool.call_admitted",
@@ -3934,6 +4796,10 @@ impl Agent {
                     Some(registry_effect_id.clone()),
                     LifecyclePayload::default(),
                 );
+                let mut result_spill_lease = spill_lease
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
                 let r = match execution {
                     effects::ToolExecution::Definite(result) => {
                         self.observe_process_tool_terminal(
@@ -3985,6 +4851,10 @@ impl Agent {
                         );
                         self.ledger.tool(result.latency_ms, 0, true);
                         self.ui(tool_end_ui(&tu_ui, &result));
+                        tool_output_spill::cleanup_lease(
+                            spill_store.as_deref(),
+                            &mut result_spill_lease,
+                        )?;
                         if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                             return Ok(outcome);
                         }
@@ -4009,6 +4879,7 @@ impl Agent {
                     self.brokered_hook(turn_id, HookEvent::PostToolUse, &ctx)
                         .await?;
                 }
+                tool_output_spill::cleanup_lease(spill_store.as_deref(), &mut result_spill_lease)?;
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
@@ -4032,7 +4903,7 @@ impl Agent {
             if let Some(reason) = self.completed_turn_budget_exhaustion() {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason));
             }
-            self.advance_turn()?;
+            self.advance_turn().await?;
         }
     }
 
@@ -4049,11 +4920,15 @@ impl Agent {
     /// subagent/workflow fan-out that settles through its own boundary, or a write to a path
     /// another member already claimed.
     fn select_concurrent_deferred_batch(
-        &self,
-        deferred: &[(usize, ToolUse)],
-        argument_trust: Trust,
+        &mut self,
+        deferred: &[(
+            usize,
+            ToolUse,
+            Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
+        )],
+        _argument_trust: Trust,
         messages: &[Message],
-    ) -> Vec<AutoApprovedCall> {
+    ) -> Result<Vec<AutoApprovedCall>, KernelError> {
         // A hook must speak BEFORE the tool it guards and observe AFTER it. Both are per-call and
         // ordered by construction, so a configured tool hook disables the group outright rather
         // than being reinterpreted for it. (`Stop`/`SessionStart` hooks say nothing about tools and
@@ -4063,13 +4938,13 @@ impl Agent {
             || !self.hooks.is_empty_for_lifecycle("tool.call_proposed")
             || !self.hooks.is_empty_for_lifecycle("tool.call_completed")
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let governing_trust = self.governing_turn_trust(messages);
         let mut batch: Vec<AutoApprovedCall> = Vec::new();
         let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (index, call) in deferred {
+        for (index, call, proposal) in deferred {
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
             if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
@@ -4090,13 +4965,9 @@ impl Agent {
             {
                 break;
             }
-            let Ok(proposal) = strategy_runtime::propose_tool(
-                &self.registry,
-                self.tool_policy.as_ref(),
-                call.clone(),
-                argument_trust,
-            ) else {
-                break;
+            let proposal = match proposal {
+                Ok(proposal) => proposal.clone(),
+                Err(_) => break,
             };
             let Some(base_capability) = proposal.eligible.iter().next() else {
                 break;
@@ -4126,11 +4997,13 @@ impl Agent {
             {
                 break;
             }
-            // Only a DECLARED path can be proven not to collide, so only a declared collision stops
-            // the group. A call that names no path (a bash line, a git observation) claims nothing;
-            // the model emitted these in one message, which is its own assertion that they are
-            // independent, and that assertion is exactly what parallel tool calls mean.
+            // Only a DECLARED path can be proven not to collide. Unknown/empty write sets therefore
+            // remain in the ordered executor; a model emitting calls together is not independent
+            // authority to widen physical side-effect concurrency.
             let declared = declared_write_paths(&call.input);
+            if effecting_tool_admission_policy().declared_set_required && declared.is_empty() {
+                break;
+            }
             if declared.iter().any(|path| claimed.contains(path)) {
                 break;
             }
@@ -4144,7 +5017,7 @@ impl Agent {
                 action_signature,
             });
         }
-        batch
+        Ok(batch)
     }
 
     /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
@@ -4216,6 +5089,7 @@ impl Agent {
                 capability,
                 audit_arguments,
                 workspace: effect_workspace(&self.workspace),
+                provider_route_attempt: None,
             };
             let opened = {
                 let Agent {
@@ -4257,11 +5131,17 @@ impl Agent {
         // structural, never content an executor returned. Dispatching concurrently changes which
         // wrapper opens and settles the boundary; it must not change that guarantee.
         let registry = &self.registry;
+        let spill_owner = self.tool_output_spill.clone();
         let interrupt = self.interrupt.clone();
         let drain = self.drain.clone();
         let executions = futures_util::future::join_all(intents.into_iter().map(|intent| {
             let interrupt = interrupt.clone();
             let drain = drain.clone();
+            let spill_store = if registry.is_mcp_effect(&intent.call.name) {
+                None
+            } else {
+                spill_owner.clone()
+            };
             async move {
                 let provider_tool_use_id = intent.call.id.clone();
                 let _permit = governor.acquire().await;
@@ -4285,21 +5165,23 @@ impl Agent {
                         result.tool_use_id = provider_tool_use_id;
                     }
                 }
-                execution
+                let managed =
+                    tool_output_spill::manage_execution(spill_store.as_deref(), execution);
+                (managed, spill_store)
             }
         }))
         .await;
 
         // Phase three: exactly one terminal per opened intent, in tool order.
         let mut unknown: usize = 0;
-        for ((index, call, action_signature, ticket), execution) in
+        for ((index, call, action_signature, ticket), (execution, spill_store)) in
             pending.into_iter().zip(executions)
         {
             let effect_id = ticket.effect_id().clone();
-            let (settlement, result, definite) = match execution {
-                iteron_tools::ToolExecution::Definite(result) => (
+            let (settlement, mut managed, definite) = match execution {
+                tool_output_spill::ManagedToolExecution::Definite(managed) => (
                     effects::Settlement::Definite(EventKind::ToolDone {
-                        result: result.clone(),
+                        result: managed.result.clone(),
                         effect_id: Some(effect_id.clone()),
                         // The concurrent batch names its tool for the same reason the serial path
                         // does: a completion whose payload is only {effect_id, kind, result} does
@@ -4307,27 +5189,32 @@ impl Agent {
                         // event to recover it from either.
                         tool: Some(call.name.clone()),
                     }),
-                    result,
+                    managed,
                     true,
                 ),
-                iteron_tools::ToolExecution::Unknown(result) => (
+                tool_output_spill::ManagedToolExecution::Unknown(managed) => (
                     effects::Settlement::Unknown(
                         "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
                     ),
-                    result,
+                    managed,
                     false,
                 ),
             };
-            self.settle_kernel_effect(ticket, settlement)?;
+            if let Err(error) = self.settle_kernel_effect(ticket, settlement) {
+                let _ =
+                    tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed);
+                return Err(error);
+            }
+            let result = &managed.result;
             self.observe_process_tool_terminal(
                 turn_id,
                 effect_id.clone(),
                 &call.name,
-                &result,
+                result,
                 definite,
             );
             if !definite {
-                if is_interrupted_tool_result(&result) {
+                if is_interrupted_tool_result(result) {
                     self.tool_lifecycle_event(
                         "tool.call_cancelled",
                         turn_id,
@@ -4346,7 +5233,8 @@ impl Agent {
                 );
                 unknown = unknown.saturating_add(1);
                 self.ledger.tool(result.latency_ms, 0, true);
-                self.ui(tool_end_ui(&call, &result));
+                self.ui(tool_end_ui(&call, result));
+                tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
                 continue;
             }
             self.tool_lifecycle_event(
@@ -4371,8 +5259,9 @@ impl Agent {
                 self.failed_actions
                     .insert(action_signature, result.content.clone());
             }
-            self.ui(tool_end_ui(&call, &result));
-            results[index] = Some(result);
+            self.ui(tool_end_ui(&call, result));
+            tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
+            results[index] = Some(managed.result);
         }
         if unknown > 0 {
             return Err(KernelError::UnknownEffects { count: unknown });
@@ -4380,7 +5269,22 @@ impl Agent {
         Ok(())
     }
 
-    fn advance_turn(&mut self) -> Result<(), KernelError> {
+    async fn advance_turn(&mut self) -> Result<(), KernelError> {
+        let tool_output_cleanup =
+            self.cleanup_tool_output_spills(tool_output_spill::ToolOutputSpillCleanup::TurnEnd);
+        let mcp_cleanup = self
+            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::TurnEnd)
+            .await;
+        tool_output_cleanup?;
+        mcp_cleanup?;
+        let verifier = self.policy_verifier_outcome;
+        self.append_policy_turn_outcome(
+            TurnId(self.seq_turn),
+            iteron_protocol::PolicyTerminalOutcome::Succeeded,
+            verifier,
+            None,
+        )?;
+        self.policy_verifier_outcome = iteron_protocol::PolicyVerifierOutcome::NotRun;
         let next = self
             .seq_turn
             .checked_add(1)
@@ -4492,6 +5396,7 @@ impl Agent {
             capability,
             audit_arguments: ui_approval_arguments(&call.input),
             workspace: effect_workspace(&self.workspace),
+            provider_route_attempt: None,
         };
         let opened = {
             let Agent {
@@ -4574,8 +5479,15 @@ impl Agent {
         match self.requested_control() {
             InboundControl::Drain => self.finish_drained(turn).map(Some),
             InboundControl::Interrupt => {
+                let outcome = self.finish(turn, Outcome::Interrupted)?;
+                // The shared signal remains asserted until the Interrupted terminal is durable.
+                // Clearing it earlier can both lose a failed cancellation and immediately cancel
+                // the ordered follow-up that the frontend dispatches after RunEnded.
                 self.interrupt_requested = false;
-                self.finish(turn, Outcome::Interrupted).map(Some)
+                if let Some(interrupt) = &self.interrupt {
+                    interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(Some(outcome))
             }
             InboundControl::None => Ok(None),
         }
@@ -4716,6 +5628,8 @@ impl Agent {
                 return Err(error.into());
             }
         };
+        self.latest_workspace_checkpoint = Some(snapshot.clone());
+        self.last_workspace_checkpoint_turn = Some(turn.0);
         self.emit_durable(
             turn,
             EventKind::Checkpoint {
@@ -4736,6 +5650,12 @@ impl Agent {
     }
 
     fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
+        if !self.verification_policy.checkpoint.before_drain {
+            return Err(KernelError::ContextResolution(
+                "resolved verification checkpoint policy attempted to disable the mandatory drain recovery point"
+                    .into(),
+            ));
+        }
         self.checkpoint_at_turn_end(turn, true)?;
         let outcome = self.finish(turn, Outcome::Drained)?;
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
@@ -4750,7 +5670,10 @@ impl Agent {
     }
 
     fn finish(&mut self, turn: TurnId, outcome: Outcome) -> Result<Outcome, KernelError> {
-        if outcome != Outcome::Drained {
+        if outcome != Outcome::Drained
+            && self.verification_policy.checkpoint.turn_boundary
+            && self.verification_checkpoint_interval_elapsed(turn)
+        {
             // Ordinary turns already have an authoritative append-only conversation record. A
             // best-effort workspace snapshot can fail on a large, full, or unusual Git worktree;
             // that must not retroactively turn a successfully streamed and recorded answer into a
@@ -4763,6 +5686,35 @@ impl Agent {
                 ));
             }
         }
+        let (policy_terminal, harness_error_code) = match &outcome {
+            Outcome::Done => (iteron_protocol::PolicyTerminalOutcome::Succeeded, None),
+            Outcome::Drained => (
+                iteron_protocol::PolicyTerminalOutcome::Cancelled,
+                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorDrain),
+            ),
+            Outcome::BudgetExhausted(reason) => (
+                iteron_protocol::PolicyTerminalOutcome::BudgetExhausted,
+                Some(policy_evidence::policy_budget_harness_error_code(reason)),
+            ),
+            Outcome::Interrupted => (
+                iteron_protocol::PolicyTerminalOutcome::Interrupted,
+                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorInterrupted),
+            ),
+            Outcome::Stuck => (
+                iteron_protocol::PolicyTerminalOutcome::Failed,
+                Some(iteron_protocol::PolicyHarnessErrorCode::ConsecutiveToolErrors),
+            ),
+            Outcome::HarnessError => (
+                iteron_protocol::PolicyTerminalOutcome::Failed,
+                Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure),
+            ),
+        };
+        self.append_policy_turn_outcome(
+            turn,
+            policy_terminal,
+            self.policy_verifier_outcome,
+            harness_error_code,
+        )?;
         // A frontend may only observe a terminal state that is already durable.  Returning Done
         // after either append failed made recovery disagree with the operator-visible outcome.
         self.emit_durable(turn, EventKind::Phase { phase: Phase::Idle })?;
@@ -4795,7 +5747,15 @@ impl Agent {
             .ok_or(KernelError::IdentityExhausted("approval"))?;
         let id = SubmissionId(self.approval_seq);
         let tool = tool_use.name.as_str();
-        let arguments = ui_approval_arguments(&tool_use.input);
+        let arguments = if tool == "verification_rollback" {
+            ui_verification_rollback_arguments(&tool_use.input).ok_or_else(|| {
+                KernelError::ContextResolution(
+                    "verification rollback approval carried an invalid structural binding".into(),
+                )
+            })?
+        } else {
+            ui_approval_arguments(&tool_use.input)
+        };
         let workspace = strict_utf8_head(
             &iteron_record::redact::scrub(&self.workspace.display().to_string()),
             2_048,

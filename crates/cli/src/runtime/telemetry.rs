@@ -187,6 +187,7 @@ impl TelemetrySink {
         // able to replay the payload at a host the operator never authorised.
         let Ok(client) = iteron_provider::catalog::HttpTransport::client(
             &iteron_provider::catalog::DefaultHttpTransport,
+            iteron_provider::provider_transport_timeout_policy(),
         ) else {
             return TelemetrySendOutcome::Rejected("client_initialization_failed".into());
         };

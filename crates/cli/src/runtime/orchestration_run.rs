@@ -61,8 +61,12 @@ impl Agent {
             return self.drive_admitted(messages, task, input_images).await;
         };
         let tasks = plan.fan_tasks().to_vec();
-        let Some(allocation) = allocate_orchestration(remaining_turns, tasks.len(), remaining_wall)
-        else {
+        let Some(allocation) = allocate_orchestration(
+            remaining_turns,
+            tasks.len(),
+            remaining_wall,
+            self.execution_policy,
+        ) else {
             self.emit(
                 TurnId(self.seq_turn),
                 EventKind::Notice {
@@ -182,7 +186,17 @@ impl Agent {
         };
         let reducing_started = Instant::now();
         self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Reducing)?;
-        let bundle = iteron_agents::reduce(summaries);
+        let expected_coverage = tasks
+            .iter()
+            .map(|task| iteron_agents::CoverageExpectation {
+                idx: task.id,
+                assigned_question: task.objective.clone(),
+            })
+            .collect::<Vec<_>>();
+        let bundle =
+            iteron_agents::reduce_checked(&expected_coverage, summaries).map_err(|error| {
+                KernelError::WorkflowEngine(format!("fan summary coverage refused: {error}"))
+            })?;
         self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Writing)?;
         self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Progress {
             run_id: run_id.to_string(),

@@ -87,6 +87,7 @@ impl McpSupervisor {
                     continue;
                 }
             };
+            client.set_result_policy(self.result_policy);
             if budget.is_exhausted() {
                 client.terminate().await;
                 self.record_failure(generation, LifecycleFailure::Deadline)?;
@@ -105,7 +106,8 @@ impl McpSupervisor {
                 Cancelled,
             }
             let discovery = {
-                let list = client.list_tools_filtered(&self.filter);
+                let list =
+                    client.list_tools_governed(&self.filter, &self.policy, self.host_ceiling);
                 tokio::pin!(list);
                 tokio::select! {
                     biased;

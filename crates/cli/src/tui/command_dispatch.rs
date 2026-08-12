@@ -87,45 +87,7 @@ pub(super) async fn handle_registered_command(
             open_picker(app, session, directory, "theme");
         }
         SlashCommand::Status => {
-            let run = session
-                .rollout_path()
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
-            // Every route row comes from the one resolved view; only the live runtime policy
-            // (effort/mode/cwd) is read off the session.
-            let mut rows: Vec<block::PanelRow> = app
-                .route
-                .rows()
-                .iter()
-                .map(|(key, value)| kv(key, value))
-                .collect();
-            rows.push(kv("effort requested", session.effort().label()));
-            if let Some(application) = app.effort_application {
-                rows.push(kv(
-                    "effort applied",
-                    &effort_application_detail(application),
-                ));
-            } else {
-                rows.push(kv("effort applied", "not observed yet"));
-            }
-            rows.extend([
-                kv("mode", &permission_mode_row_value(session)),
-                kv("cwd", &session.workspace().display().to_string()),
-                kv("session", &session.session_id().to_string()),
-                kv("run", &run),
-            ]);
-            // Before a rejection, not after it: this is the only place the operator can see the
-            // budget shrinking while there is still time to act on it (I-53).
-            rows.push(kv(
-                "provider quota",
-                session
-                    .rate_limit()
-                    .unwrap_or("not published by this route"),
-            ));
-            rows.push(block::PanelRow::Note(session.ledger_summary().to_string()));
-            app.panel("≡", "status", rows);
+            status_command::handle(app, session).await;
         }
         SlashCommand::Cost => {
             app.panel(
@@ -700,6 +662,47 @@ pub(super) async fn handle_registered_command(
                         }
                     }
                 }
+                Some("update") => {
+                    let id = sub.next().unwrap_or("").to_owned();
+                    let text = arg
+                        .strip_prefix("update")
+                        .unwrap_or("")
+                        .trim_start()
+                        .strip_prefix(&id)
+                        .unwrap_or("")
+                        .trim_start()
+                        .to_owned();
+                    if id.is_empty() || text.is_empty() {
+                        app.push(fg(Color::Red), "usage: /memory update <id> <fact>");
+                    } else {
+                        match session
+                            .control(app_server::Control::Memory(
+                                app_server::MemoryControl::Update {
+                                    id: id.clone(),
+                                    text,
+                                },
+                            ))
+                            .await
+                        {
+                            Some(app_server::ControlReply::Memory(
+                                app_server::MemoryControlReply::Updated { old_id, id },
+                            )) => app.push(
+                                fg(Color::Green),
+                                format!("updated {old_id} → {id} — available in this session"),
+                            ),
+                            Some(app_server::ControlReply::Memory(
+                                app_server::MemoryControlReply::Missing { id },
+                            )) => app.push(fg(Color::Red), format!("no memory {id}")),
+                            Some(app_server::ControlReply::Refused(reason)) => {
+                                app.push(fg(Color::Red), reason)
+                            }
+                            _ => app.push(
+                                fg(Color::Red),
+                                "the memory authority is no longer reachable",
+                            ),
+                        }
+                    }
+                }
                 Some("list") | None => {
                     let facts = store.load();
                     if facts.is_empty() {
@@ -746,7 +749,7 @@ pub(super) async fn handle_registered_command(
                 }
                 Some(x) => app.push(
                     fg(Color::Red),
-                    format!("unknown /memory subcommand `{x}` (add|list|forget)"),
+                    format!("unknown /memory subcommand `{x}` (add|update|list|forget)"),
                 ),
             }
         }
@@ -887,6 +890,14 @@ pub(super) async fn handle_registered_command(
                 .iter()
                 .map(|(key, value)| kv(key, value))
                 .collect();
+            rows.push(kv(
+                "harness profile",
+                session.runtime_profile_id().unwrap_or("unrecognized"),
+            ));
+            rows.push(kv(
+                "tunables digest",
+                session.tunables_effective_digest().unwrap_or("not pinned"),
+            ));
             rows.push(kv("effort", session.effort().label()));
             rows.push(kv("mode", &permission_mode_row_value(session)));
             for (key, value) in app.route.limits.rows() {
@@ -898,7 +909,28 @@ pub(super) async fn handle_registered_command(
             app.panel("⚙", "config", rows);
         }
         SlashCommand::Tunables => {
-            open_tunables_picker(app, session, arg);
+            let requested = arg.trim();
+            if requested == "registry" || requested == "load" || requested.starts_with("load ") {
+                open_tunables_picker(app, session, arg);
+                return;
+            }
+            let runtime_policy = match session.control(app_server::Control::OperatorStatus).await {
+                Some(app_server::ControlReply::OperatorStatus(snapshot)) => {
+                    snapshot.runtime.runtime_policy.clone()
+                }
+                Some(app_server::ControlReply::Refused(reason)) => {
+                    app.note(block::NoticeLevel::Err, reason);
+                    return;
+                }
+                _ => {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        "the resident runtime could not provide its current tunables overlay",
+                    );
+                    return;
+                }
+            };
+            open_tunables_picker_with_runtime_policy(app, session, arg, runtime_policy.as_ref());
         }
         SlashCommand::Lab => {
             experiment_lab::handle(app, session, arg);
@@ -955,29 +987,7 @@ pub(super) async fn handle_registered_command(
             app.panel("⚙", &format!("{} tools available", rows.len()), rows);
         }
         SlashCommand::Mcp => {
-            let mcp: Vec<_> = session
-                .registry_tools()
-                .iter()
-                .filter(|tool| tool.name.contains("__"))
-                .collect();
-            if mcp.is_empty() {
-                app.note(
-                    block::NoticeLevel::Info,
-                    "no MCP tools connected (configure servers in ~/.iteron/config.json)",
-                );
-            } else {
-                let rows = mcp
-                    .iter()
-                    .map(|tool| {
-                        item(
-                            "◈",
-                            &tool.name,
-                            &iteron_protocol::text::head(&tool.description, 80),
-                        )
-                    })
-                    .collect();
-                app.panel("◈", "MCP tools", rows);
-            }
+            mcp_command::handle(app, session, arg).await;
         }
         SlashCommand::Hooks => {
             let hooks = iteron_protocol::home::operator()
@@ -1010,6 +1020,7 @@ pub(super) async fn handle_registered_command(
             schedule_slash_export(
                 app,
                 session.workspace(),
+                session.rollout_path(),
                 transcript_effects,
                 requested,
                 collision,
@@ -1056,6 +1067,16 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::Rewind => {
             let path = session.rollout_path().to_path_buf();
+            let _content_owner = match iteron_record::acquire_verified_rollout_owner(&path) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    app.push(
+                        fg(Color::Red),
+                        format!("cannot acquire checkpoint content gate: {error}"),
+                    );
+                    return;
+                }
+            };
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let stem = path
                 .file_stem()

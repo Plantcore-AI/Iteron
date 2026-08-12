@@ -1,4 +1,4 @@
-use super::{ImageInputErrorKind, decode::validate_decodable};
+use super::{ImageInputErrorKind, decode};
 use iteron_protocol::input::ImageMediaType;
 use std::path::Path;
 
@@ -34,25 +34,23 @@ pub(super) fn extension_format(path: &Path) -> Option<SourceFormat> {
 }
 
 pub(super) fn sniff_image(bytes: &[u8]) -> Result<ImageMediaType, ImageInputErrorKind> {
+    let media_type = detect_image(bytes)?;
+    inspect_as(bytes, media_type)?;
+    Ok(media_type)
+}
+
+pub(super) fn detect_image(bytes: &[u8]) -> Result<ImageMediaType, ImageInputErrorKind> {
     const PNG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     if bytes.starts_with(PNG) {
-        validate_png(bytes)?;
-        validate_decodable(bytes, ImageMediaType::Png)?;
         return Ok(ImageMediaType::Png);
     }
     if bytes.len() >= 2 && bytes[..2] == [0xff, 0xd8] {
-        validate_jpeg(bytes)?;
-        validate_decodable(bytes, ImageMediaType::Jpeg)?;
         return Ok(ImageMediaType::Jpeg);
     }
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        validate_gif(bytes)?;
-        validate_decodable(bytes, ImageMediaType::Gif)?;
         return Ok(ImageMediaType::Gif);
     }
     if bytes.starts_with(b"RIFF") {
-        validate_webp(bytes)?;
-        validate_decodable(bytes, ImageMediaType::Webp)?;
         return Ok(ImageMediaType::Webp);
     }
     if (bytes.len() >= 4 && PNG.starts_with(bytes))
@@ -61,6 +59,33 @@ pub(super) fn sniff_image(bytes: &[u8]) -> Result<ImageMediaType, ImageInputErro
         return Err(ImageInputErrorKind::TruncatedImage);
     }
     Err(ImageInputErrorKind::InvalidImage)
+}
+
+pub(super) fn inspect_as(
+    bytes: &[u8],
+    media_type: ImageMediaType,
+) -> Result<(), ImageInputErrorKind> {
+    inspect_as_with_limits(
+        bytes,
+        media_type,
+        decode::MAX_IMAGE_DIMENSION,
+        decode::MAX_ANIMATION_FRAMES,
+    )
+}
+
+pub(super) fn inspect_as_with_limits(
+    bytes: &[u8],
+    media_type: ImageMediaType,
+    max_dimension: u32,
+    max_frames: u32,
+) -> Result<(), ImageInputErrorKind> {
+    match media_type {
+        ImageMediaType::Png => validate_png(bytes)?,
+        ImageMediaType::Jpeg => validate_jpeg(bytes)?,
+        ImageMediaType::Gif => validate_gif(bytes)?,
+        ImageMediaType::Webp => validate_webp(bytes)?,
+    }
+    decode::validate_decodable_with_limits(bytes, media_type, max_dimension, max_frames)
 }
 
 fn validate_png(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {

@@ -6,6 +6,7 @@ use crate::git_harness::{
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::time::Duration;
 
 const FILTER_CONFIG_LIMIT: usize = 64 * 1024;
 pub(crate) const MAX_FILTER_DRIVERS: usize = 128;
@@ -55,6 +56,15 @@ pub(crate) async fn discover_filter_drivers(
     git: &ResolvedGit,
     repository: &RepositoryLayout,
 ) -> Result<Vec<String>, String> {
+    discover_filter_drivers_bounded(git, repository, GIT_TIMEOUT, FILTER_CONFIG_LIMIT).await
+}
+
+pub(crate) async fn discover_filter_drivers_bounded(
+    git: &ResolvedGit,
+    repository: &RepositoryLayout,
+    timeout: Duration,
+    output_max_bytes: usize,
+) -> Result<Vec<String>, String> {
     let operation = [
         "config",
         "--null",
@@ -67,10 +77,10 @@ pub(crate) async fn discover_filter_drivers(
     .map(OsString::from);
     let args = hardened_args(&[], operation);
     let mut command = hardened_git_command(git, repository, &args);
-    let captured =
-        run_command_bounded(&mut command, GIT_TIMEOUT, FILTER_CONFIG_LIMIT, STDERR_LIMIT)
-            .await
-            .map_err(|error| format!("could not inspect Git filter config: {error}"))?;
+    let source_limit = output_max_bytes.min(FILTER_CONFIG_LIMIT);
+    let captured = run_command_bounded(&mut command, timeout, source_limit, STDERR_LIMIT)
+        .await
+        .map_err(|error| format!("could not inspect Git filter config: {error}"))?;
 
     if captured.status.code() == Some(1) && captured.stdout.total == 0 {
         return Ok(Vec::new());
@@ -84,7 +94,7 @@ pub(crate) async fn discover_filter_drivers(
     }
     if captured.stdout.truncated() {
         return Err(format!(
-            "Git filter config exceeded the {FILTER_CONFIG_LIMIT}-byte inspection limit"
+            "Git filter config exceeded the {source_limit}-byte inspection limit"
         ));
     }
     parse_filter_drivers(&captured.stdout.retained_bytes())

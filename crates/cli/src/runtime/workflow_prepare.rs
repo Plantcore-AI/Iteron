@@ -17,7 +17,7 @@ impl Agent {
     /// launch banner, the live card, the interrupt bridge and the join. That is what lets the run be
     /// started by something other than this turn — see [`crate::workflow::WorkflowLauncher`].
     pub(super) fn prepare_workflow(
-        &self,
+        &mut self,
         input: &serde_json::Value,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
         self.prepare_workflow_with_resume(input, None)
@@ -30,7 +30,7 @@ impl Agent {
     /// sidecars. This is the in-process equivalent of `iteron workflow resume <run-id>` used by the
     /// interactive workflow panel.
     pub(crate) fn prepare_workflow_resume(
-        &self,
+        &mut self,
         run_id: &str,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
         if !crate::workflow::valid_run_id(run_id) {
@@ -55,10 +55,20 @@ impl Agent {
     }
 
     pub(super) fn prepare_workflow_with_resume(
-        &self,
+        &mut self,
         input: &serde_json::Value,
         resume_run_id: Option<&str>,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
+        if self.execution_policy.task_priority
+            != Some(iteron_workflow::TaskPrioritySchedulingPolicy::owner())
+        {
+            return Err(
+                "Workflow: pinned task-priority policy differs from the physical ready queue"
+                    .into(),
+            );
+        }
+        self.validate_workflow_graph_identity()
+            .map_err(|error| error.public_summary())?;
         if self.delegation_depth >= MAX_DELEGATION_DEPTH {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
@@ -127,12 +137,15 @@ impl Agent {
             if !class.fans_out() {
                 return Err("Workflow ultracode: localized tasks do not require a fan".into());
             }
+            let fan_breadth = self.execution_policy.fan_breadth.ok_or_else(|| {
+                "Workflow ultracode: pinned fan-breadth policy is inactive".to_owned()
+            })?;
             let requested_leaves = object
                 .get("maxLeaves")
                 .and_then(|value| value.as_u64())
                 .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(iteron_agents::FAN_CAP)
-                .clamp(1, iteron_agents::FAN_CAP);
+                .unwrap_or(fan_breadth)
+                .clamp(1, fan_breadth);
             object.insert("task".into(), serde_json::Value::String(task));
             object.insert(
                 "taskClass".into(),
@@ -193,11 +206,22 @@ impl Agent {
         if remaining_turns == 0 {
             return Err("Workflow: parent turn budget is exhausted".into());
         }
-        let engine_limits = if let Some((class, requested_leaves)) = ultracode_config {
+        let baseline_engine_limits = if let Some((class, requested_leaves)) = ultracode_config {
+            // The planner's fixed host ceiling is part of the pinned, content-addressed agent
+            // catalog (family 76).  Read that exact definition instead of repeating its token,
+            // wall, and tool-error limits here: a duplicate literal would let the child-spawner
+            // drift away from the catalog identity committed at run genesis.
+            let planner_definition = self
+                .agent_catalog
+                .get(iteron_agents::ULTRACODE_PLANNER_NAME)
+                .ok_or_else(|| {
+                    "Workflow ultracode: pinned agent catalog has no planner definition".to_owned()
+                })?;
             let remaining_wall = self
                 .run_time_remaining()
                 .map(|remaining| remaining.as_secs().max(1))
-                .unwrap_or(self.budget.max_wall_secs);
+                .unwrap_or(self.budget.max_wall_secs)
+                .min(self.execution_policy.workflow.max_wall_seconds);
             // Planning is a real first child, so reserve its one model turn before dividing the
             // investigation half. The first slice is therefore always planner; fan slices begin
             // at ordinal one and their sum stays within the admitted aggregate.
@@ -205,6 +229,7 @@ impl Agent {
                 remaining_turns.saturating_sub(1),
                 requested_leaves,
                 remaining_wall,
+                self.execution_policy,
             ) else {
                 return Err(
                     "Workflow ultracode: writer-first reserve leaves no bounded planner + fan"
@@ -213,19 +238,25 @@ impl Agent {
             };
             let fan_tokens = self
                 .remaining_provider_tokens()
-                .map(|remaining| remaining / 2);
+                .map(|remaining| remaining / 2)
+                .map(|tokens| {
+                    self.execution_policy
+                        .workflow
+                        .max_tokens
+                        .map_or(tokens, |ceiling| tokens.min(ceiling))
+                });
             if fan_tokens == Some(0) {
                 return Err(
                     "Workflow ultracode: no provider-token budget remains for the fan".into(),
                 );
             }
-            let planner = Budget {
-                max_turns: 1,
-                max_usd: self.effective_max_usd(),
-                max_tokens: fan_tokens.map(|tokens| tokens.min(4_096)),
-                max_wall_secs: remaining_wall.clamp(1, 60),
-                max_consecutive_tool_errors: 1,
-            };
+            let planner = pinned_ultracode_planner_budget(
+                planner_definition,
+                self.effective_max_usd(),
+                fan_tokens,
+                remaining_wall,
+                self.budget.max_consecutive_tool_errors,
+            )?;
             let fan = Budget {
                 max_turns: allocation.fan_turns,
                 max_usd: self.effective_max_usd(),
@@ -245,8 +276,12 @@ impl Agent {
                 max_leaves: allocation.active_workers,
             });
             iteron_workflow::RunLimits::new(
-                fan_concurrency_permits(allocation.active_workers),
-                allocation.active_workers.saturating_add(1),
+                fan_concurrency_permits(allocation.active_workers)
+                    .min(self.execution_policy.workflow.max_concurrency),
+                allocation
+                    .active_workers
+                    .saturating_add(1)
+                    .min(self.execution_policy.workflow.max_calls),
             )
             .map_err(|error| format!("Workflow: invalid ultracode engine budget: {error}"))?
         } else {
@@ -254,8 +289,18 @@ impl Agent {
             // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
             cx.budget.max_tokens = self
                 .remaining_provider_tokens()
-                .map(|remaining| remaining / 2);
-            let kernel_limits = in_turn_workflow_budget()
+                .map(|remaining| remaining / 2)
+                .map(|tokens| {
+                    self.execution_policy
+                        .workflow
+                        .max_tokens
+                        .map_or(tokens, |ceiling| tokens.min(ceiling))
+                });
+            cx.budget.max_wall_secs = cx
+                .budget
+                .max_wall_secs
+                .min(self.execution_policy.workflow.max_wall_seconds);
+            let kernel_limits = in_turn_workflow_budget(self.execution_policy)
                 .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
             iteron_workflow::RunLimits::new(
                 kernel_limits.max_concurrency(),
@@ -263,14 +308,96 @@ impl Agent {
             )
             .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?
         };
+        let baseline_engine_limits =
+            workflow_spawner::governed_workflow_limits(&cx.budget, baseline_engine_limits)
+                .map_err(|error| format!("Workflow: invalid priced engine budget: {error}"))?;
+        let positive_usd_serialized = cx
+            .usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing());
+        let collaboration_observation = iteron_workflow::CollaborationObservation {
+            version: iteron_workflow::COLLABORATION_SLOT_VERSION,
+            active_workers: baseline_engine_limits.max_agent_calls(),
+            max_concurrency: baseline_engine_limits.max_concurrency(),
+        };
+        let collaboration_opportunity = self
+            .begin_policy_decision(
+                policy_evidence::COLLABORATION_SLOT,
+                Some(TurnId(self.seq_turn)),
+            )
+            .map_err(|error| error.public_summary())?;
+        let selected_concurrency = match iteron_workflow::CollaborationStrategy::select_with(
+            self.collaboration.as_ref(),
+            &collaboration_observation,
+            CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
+        ) {
+            Ok(proposal) => {
+                let selected_action = if proposal.concurrency == 1 {
+                    iteron_protocol::PolicyActionV1::CollaborationSerial
+                } else {
+                    iteron_protocol::PolicyActionV1::CollaborationBoundedWidth
+                };
+                self.append_policy_decision(
+                    collaboration_opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        policy_evidence::COLLABORATION_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::CollaborationBoundedWidth,
+                            iteron_protocol::PolicyActionV1::CollaborationSerial,
+                        ],
+                        selected_action,
+                        "iteron:collaboration-features-v1",
+                        &(
+                            &collaboration_observation,
+                            proposal.concurrency,
+                            positive_usd_serialized,
+                        ),
+                        &if positive_usd_serialized {
+                            "positive_usd_uses_one_provider_lane_so_a_parallel_batch_cannot_consume_the_remaining_ceiling"
+                        } else {
+                            "strategy_may_only_narrow_worker_concurrency"
+                        },
+                    )
+                    .map_err(|error| error.public_summary())?,
+                )
+                .map_err(|error| error.public_summary())?;
+                proposal.concurrency
+            }
+            Err(_) => {
+                self.append_policy_decision(
+                    collaboration_opportunity,
+                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                        policy_evidence::COLLABORATION_SLOT,
+                        &[
+                            iteron_protocol::PolicyActionV1::CollaborationBoundedWidth,
+                            iteron_protocol::PolicyActionV1::CollaborationSerial,
+                        ],
+                        "iteron:collaboration-features-v1",
+                        &collaboration_observation,
+                        &"strategy_refusal_falls_back_to_serial",
+                    )
+                    .map_err(|error| error.public_summary())?,
+                )
+                .map_err(|error| error.public_summary())?;
+                1
+            }
+        };
+        let engine_limits = iteron_workflow::RunLimits::new(
+            selected_concurrency,
+            baseline_engine_limits.max_agent_calls(),
+        )
+        .map_err(|error| format!("Workflow: invalid collaboration budget: {error}"))?;
         let spawner: std::sync::Arc<dyn iteron_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
-        let mut spec = iteron_workflow::RunSpec::new(script.clone())
-            .with_args(args.clone())
-            .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
-            .with_workflows_dir(workflows_dir.clone())
-            .with_limits(engine_limits);
+        let mut spec = apply_workflow_execution_policy(
+            iteron_workflow::RunSpec::new(script.clone())
+                .with_args(args.clone())
+                .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
+                .with_workflows_dir(workflows_dir.clone())
+                .with_limits(engine_limits),
+            self.execution_policy,
+        );
         if resume_run_id.is_some() {
             spec = spec.with_resume_from(iteron_workflow::RunId::new(run_id.clone()));
         }
@@ -506,5 +633,81 @@ impl Agent {
             ));
         }
         Ok(summary)
+    }
+}
+
+/// Intersect the run-local ceilings with the exact built-in planner definition carried by the
+/// pinned agent catalog.  The catalog's execution digest is part of run genesis, so this is an
+/// immutable runtime owner; copying its numeric values into the child spawner would create an
+/// uncommitted second default.
+fn pinned_ultracode_planner_budget(
+    definition: &iteron_agents::AgentDef,
+    max_usd: Option<f64>,
+    max_tokens: Option<u64>,
+    max_wall_secs: u64,
+    max_consecutive_tool_errors: u32,
+) -> Result<Budget, String> {
+    definition.validate().map_err(|reason| {
+        format!("Workflow ultracode: pinned planner definition is invalid: {reason}")
+    })?;
+    let canonical = iteron_agents::AgentDef::ultracode_planner();
+    if definition.execution_digest() != canonical.execution_digest() {
+        return Err(
+            "Workflow ultracode: planner definition differs from the fixed built-in identity"
+                .into(),
+        );
+    }
+    let ceiling = &definition.budget;
+    Ok(Budget {
+        max_turns: ceiling.max_turns,
+        // All descendants debit the parent's one shared USD ledger; the fixed planner definition
+        // deliberately owns no independent dollar allowance.
+        max_usd,
+        max_tokens: match (max_tokens, ceiling.max_tokens) {
+            (Some(parent), Some(child)) => Some(parent.min(child)),
+            (Some(parent), None) => Some(parent),
+            (None, child) => child,
+        },
+        max_wall_secs: max_wall_secs.min(ceiling.max_wall_secs),
+        max_consecutive_tool_errors: max_consecutive_tool_errors
+            .min(ceiling.max_consecutive_tool_errors),
+    })
+}
+
+#[cfg(test)]
+mod planner_budget_tests {
+    use super::*;
+
+    #[test]
+    fn planner_slice_reads_the_pinned_catalog_identity_and_only_narrows_it() {
+        let definition = iteron_agents::AgentDef::ultracode_planner();
+        let exact = pinned_ultracode_planner_budget(
+            &definition,
+            Some(2.0),
+            Some(u64::MAX),
+            u64::MAX,
+            u32::MAX,
+        )
+        .expect("canonical planner definition");
+        assert_eq!(exact.max_turns, definition.budget.max_turns);
+        assert_eq!(exact.max_tokens, definition.budget.max_tokens);
+        assert_eq!(exact.max_wall_secs, definition.budget.max_wall_secs);
+        assert_eq!(
+            exact.max_consecutive_tool_errors,
+            definition.budget.max_consecutive_tool_errors
+        );
+        assert_eq!(exact.max_usd, Some(2.0));
+
+        let narrowed = pinned_ultracode_planner_budget(&definition, None, Some(17), 9, 1)
+            .expect("narrow parent ceilings");
+        assert_eq!(narrowed.max_tokens, Some(17));
+        assert_eq!(narrowed.max_wall_secs, 9);
+        assert_eq!(narrowed.max_consecutive_tool_errors, 1);
+
+        let mut impostor = definition;
+        impostor.budget.max_tokens = Some(1);
+        assert!(
+            pinned_ultracode_planner_budget(&impostor, None, None, u64::MAX, u32::MAX,).is_err()
+        );
     }
 }

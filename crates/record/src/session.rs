@@ -18,6 +18,8 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
+#[path = "session_private_cache.rs"]
+pub(crate) mod private_cache;
 #[path = "tunables.rs"]
 pub mod tunables;
 
@@ -118,6 +120,9 @@ pub struct SessionMeta {
     /// legacy caches are replayed so a resume/list cannot silently drop logical history.
     #[serde(default)]
     pub projection_schema_version: u32,
+    /// Revocation generation against which every content-bearing projection was materialized.
+    #[serde(default)]
+    pub content_revocation_generation: u64,
     pub run_id: RunId,
     pub tenant: TenantId,
     pub cwd: PathBuf,
@@ -431,9 +436,23 @@ fn read_chain_with_limits(
                 computed,
             });
         }
+        // Resolve only after the immutable line hash is verified. A revoked/missing handle is a
+        // terminal read failure for projections, resume, and every fork expansion.
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        crate::content_store::hydrate_event_payload(
+            runs_dir,
+            &TenantId(cl.tenant.clone()),
+            &mut payload,
+        )?;
         // Unknown event kinds deserialize to `EventKind::Unknown` (R5-review Risk 6), so a newer
         // writer's kinds do not fail the scan.
-        let event: Event = serde_json::from_value(cl.payload)?;
+        let event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         genesis_tunables.observe(cl.seq, &event.kind)?;
         prev = cl.hash.clone();
@@ -661,7 +680,18 @@ fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
     {
         return None;
     }
-    let Ok(event) = serde_json::from_value::<Event>(chain.payload) else {
+    let mut payload = chain.payload;
+    let runs_dir = path.parent()?;
+    if crate::content_store::hydrate_event_payload(
+        runs_dir,
+        &TenantId(chain.tenant.clone()),
+        &mut payload,
+    )
+    .is_err()
+    {
+        return None;
+    }
+    let Ok(event) = serde_json::from_value::<Event>(payload) else {
         return None;
     };
     match event.kind {
@@ -788,6 +818,8 @@ fn projection_is_current(runs_dir: &Path, meta: &SessionMeta) -> bool {
         .is_some_and(|mtime| mtime == (meta.updated_at, meta.updated_at_subsec_nanos));
     meta.pricing_schema_version == 2
         && meta.projection_schema_version == 3
+        && crate::content_store::content_revocation_generation(runs_dir, &meta.tenant)
+            .is_ok_and(|generation| generation == meta.content_revocation_generation)
         && meta.record_bytes > 0
         && digest_matches
         && tail_matches
@@ -959,6 +991,9 @@ fn load_session_projection(
         meta: SessionMeta {
             pricing_schema_version: 2,
             projection_schema_version: 3,
+            content_revocation_generation: crate::content_store::content_revocation_generation(
+                runs_dir, &tenant,
+            )?,
             run_id: run.clone(),
             tenant,
             cwd,
@@ -1050,7 +1085,7 @@ fn read_index(runs_dir: &Path, live_runs: usize) -> IndexRead {
                 exact: false,
             };
         }
-        let Ok(meta) = serde_json::from_slice::<SessionMeta>(&line) else {
+        let Ok(meta) = private_cache::read_index_line(runs_dir, &line) else {
             return IndexRead {
                 entries: Vec::new(),
                 physical_lines,
@@ -1066,6 +1101,10 @@ fn read_index(runs_dir: &Path, live_runs: usize) -> IndexRead {
     }
 }
 
+// Legacy plaintext index bytes are still useful as adversarial fixtures: readers must reject or
+// rebuild these pre-private-cache encodings instead of accidentally serving them. Keep the encoder
+// out of production so no caller can create a plaintext session index.
+#[cfg(test)]
 fn encode_index<'a>(
     metas: impl IntoIterator<Item = &'a SessionMeta>,
 ) -> Result<Vec<u8>, RecordError> {
@@ -1100,9 +1139,7 @@ fn rewrite_index_unlocked<'a>(
     runs_dir: &Path,
     metas: impl IntoIterator<Item = &'a SessionMeta>,
 ) -> Result<(), RecordError> {
-    let bytes = encode_index(metas)?;
-    crate::cache_io::atomic_replace(&index_path(runs_dir), &bytes)?;
-    Ok(())
+    private_cache::write_index(runs_dir, &index_path(runs_dir), metas)
 }
 
 /// Merge candidate projections with the latest structurally current index snapshot while holding
@@ -1145,9 +1182,7 @@ fn merge_rewrite_index(
 
 fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
     let path = per_run_meta_path(runs_dir, &projected.run_id)?;
-    let encoded = encode_meta_sidecar(projected)?;
-    crate::cache_io::atomic_replace(&path, &encoded)?;
-    Ok(())
+    private_cache::write_sidecar(runs_dir, &path, projected, false)
 }
 
 /// The metadata for one run: a current cache may directly serve only an honest `Unknown` cost;
@@ -1156,7 +1191,7 @@ fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), Re
 pub fn meta(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
     let cache = per_run_meta_path(runs_dir, run)?;
     if let Ok(bytes) = crate::cache_io::read_session_meta(&cache)
-        && let Ok(m) = serde_json::from_slice::<SessionMeta>(&bytes)
+        && let Ok(m) = private_cache::read_sidecar(runs_dir, &bytes)
         && m.run_id == *run
         && projection_covers_rollout(runs_dir, &m)
     {
@@ -1186,8 +1221,15 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
 
     let mut by_run: HashMap<String, SessionMeta> = HashMap::new();
     let mut indexable: HashMap<String, SessionMeta> = HashMap::new();
+    let index_manifest_missing = !existing.is_empty()
+        && std::fs::symlink_metadata(index_path(runs_dir))
+            .map(|metadata| !metadata.file_type().is_file())
+            .unwrap_or(true);
     let index = read_index(runs_dir, existing.len());
-    let mut needs_compaction = !index.exact;
+    // A missing manifest decodes as an exact empty cache so ordinary first-use remains cheap. If
+    // rollouts do exist, however, it also means revocation/crash invalidated the projection and
+    // this unlocked read must republish the canonical (possibly empty) bounded manifest.
+    let mut needs_compaction = !index.exact || index_manifest_missing;
     // Fast path: a bounded legacy index, last write wins. Entries whose rollout was deleted or
     // whose record cursor is stale are dropped and force a canonical rewrite.
     for m in index.entries {
@@ -1306,12 +1348,11 @@ pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
     // would change — and the surviving writes share ONE directory sync at the end.
     let mut wrote = false;
     for m in &metas {
-        let encoded = encode_meta_sidecar(m)?;
-        if sidecar_is_unchanged(runs_dir, m, &encoded) {
+        if sidecar_is_unchanged(runs_dir, m) {
             continue;
         }
         let path = per_run_meta_path(runs_dir, &m.run_id)?;
-        crate::cache_io::atomic_replace_deferring_dir_sync(&path, &encoded)?;
+        private_cache::write_sidecar(runs_dir, &path, m, true)?;
         wrote = true;
     }
     if wrote {
@@ -1321,28 +1362,15 @@ pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
     Ok(metas.len())
 }
 
-/// The exact bytes a sidecar rewrite would persist, bounded the same way the write path bounds them.
-fn encode_meta_sidecar(projected: &SessionMeta) -> Result<Vec<u8>, RecordError> {
-    let encoded = serde_json::to_vec_pretty(projected)?;
-    if encoded.len() > crate::cache_io::MAX_SESSION_META_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session metadata exceeds the cache byte limit",
-        )
-        .into());
-    }
-    Ok(encoded)
-}
-
-/// True when the persisted sidecar is already byte-identical to `encoded`. The record cursor
-/// (`record_tail_seq` + `record_bytes`) is what moves when a session grows, and it is inside these
-/// bytes; comparing the whole encoding rather than only that cursor means a schema, pricing, or
-/// projection-digest change still forces the rewrite instead of being skipped by a matching tail.
-fn sidecar_is_unchanged(runs_dir: &Path, projected: &SessionMeta, encoded: &[u8]) -> bool {
+/// True when the gated CAS projection is semantically byte-identical to `projected`. The public
+/// sidecar is a handle manifest, so comparing it with serialized private metadata would force
+/// every warm reindex to republish an unchanged projection.
+fn sidecar_is_unchanged(runs_dir: &Path, projected: &SessionMeta) -> bool {
     let Ok(path) = per_run_meta_path(runs_dir, &projected.run_id) else {
         return false;
     };
-    crate::cache_io::read_session_meta(&path).is_ok_and(|bytes| bytes == encoded)
+    crate::cache_io::read_session_meta(&path)
+        .is_ok_and(|bytes| private_cache::sidecar_matches(runs_dir, &bytes, projected))
 }
 
 /// What [`prune`] is allowed to delete. A policy that names nothing deletes nothing: retention is
@@ -1370,6 +1398,8 @@ pub struct PruneReport {
     pub active: Vec<RunId>,
     /// Named by the policy, kept because a retained fork replays through this run's prefix.
     pub ancestors: Vec<RunId>,
+    /// Named by the policy, kept because a production derivative still owns private handles.
+    pub derivatives: Vec<RunId>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1382,6 +1412,8 @@ pub enum DeleteSessionError {
     Active(String),
     #[error("session {run:?} is retained by descendant sessions: {descendants}")]
     HasDescendants { run: String, descendants: String },
+    #[error("session {run:?} is retained by {owners} external private derivative owner(s)")]
+    HasDerivatives { run: String, owners: u32 },
 }
 
 /// Delete exactly one inactive session and its rebuildable projection.
@@ -1423,14 +1455,59 @@ pub fn delete(runs_dir: &Path, tenant: &TenantId, run: &RunId) -> Result<(), Del
         .map_err(RecordError::from)?;
     file.try_lock()
         .map_err(|_| DeleteSessionError::Active(run.0.clone()))?;
-    std::fs::remove_file(&rollout).map_err(RecordError::from)?;
+    let content_release =
+        match crate::content_store::ExactRunContentRelease::prepare(runs_dir, tenant, run) {
+            Ok(guard) => guard,
+            Err(crate::ContentStoreError::RetainedByDerivative { owners, .. }) => {
+                return Err(DeleteSessionError::HasDerivatives {
+                    run: run.0.clone(),
+                    owners,
+                });
+            }
+            Err(crate::ContentStoreError::ActiveWriter { .. }) => {
+                return Err(DeleteSessionError::Active(run.0.clone()));
+            }
+            Err(error) => return Err(RecordError::from(error).into()),
+        };
+    // A sidecar is rebuildable while the journal still exists. Removing it first makes every
+    // crash boundary either fully recoverable from the journal or resumable from the reverse
+    // content-reference graph.
     let sidecar = per_run_meta_path(runs_dir, run)?;
     if let Err(error) = std::fs::remove_file(sidecar)
         && error.kind() != io::ErrorKind::NotFound
     {
         return Err(RecordError::from(error).into());
     }
+    std::fs::remove_file(&rollout).map_err(RecordError::from)?;
+    content_release.commit().map_err(RecordError::from)?;
+    complete_deleted_session_cleanup(runs_dir, run)?;
     drop(file);
+    Ok(())
+}
+
+/// Finish rebuildable projection cleanup after the authoritative journal has been unlinked.
+///
+/// An erasure operation can crash between the journal unlink and sidecar/index cleanup. This
+/// idempotent boundary lets its durable receipt resume without claiming stale projection bytes are
+/// gone. Cleanup always refuses while the journal still exists.
+pub(crate) fn complete_deleted_session_cleanup(
+    runs_dir: &Path,
+    run: &RunId,
+) -> Result<(), RecordError> {
+    let rollout = rollout_path(runs_dir, run)?;
+    if rollout.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "session journal still exists; projection cleanup refused",
+        )
+        .into());
+    }
+    let sidecar = per_run_meta_path(runs_dir, run)?;
+    if let Err(error) = std::fs::remove_file(sidecar)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(RecordError::from(error));
+    }
     merge_rewrite_index(runs_dir, [])?;
     Ok(())
 }
@@ -1453,12 +1530,15 @@ pub fn prune(
     prune_at(runs_dir, tenant, policy, now_secs())
 }
 
-fn prune_at(
+pub(crate) fn prune_at(
     runs_dir: &Path,
     tenant: &TenantId,
     policy: &PrunePolicy,
     now: u64,
 ) -> Result<PruneReport, RecordError> {
+    if !policy.dry_run {
+        crate::content_store::release_private_content_for_absent_runs(runs_dir, tenant)?;
+    }
     let metas = list(runs_dir, tenant);
     let total = metas.len();
     if policy.max_age_secs.is_none() && policy.keep_last.is_none() {
@@ -1518,44 +1598,58 @@ fn prune_at(
         }
         let run = meta.run_id.clone();
         let rollout = rollout_path(runs_dir, &run)?;
-        if !rollout_is_idle(&rollout) {
+        let Some(_journal_lock) = lock_idle_rollout(&rollout) else {
             report.active.push(run);
             continue;
-        }
+        };
+        let content_release =
+            match crate::content_store::ExactRunContentRelease::prepare(runs_dir, tenant, &run) {
+                Ok(guard) => guard,
+                Err(crate::ContentStoreError::RetainedByDerivative { .. }) => {
+                    report.derivatives.push(run);
+                    continue;
+                }
+                Err(crate::ContentStoreError::ActiveWriter { .. }) => {
+                    report.active.push(run);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
         if !policy.dry_run {
-            std::fs::remove_file(&rollout)?;
-            // The sidecar is a rebuildable projection of a record that no longer exists.
+            // The projection goes first. Once the journal is durably absent, the reverse reference
+            // graph is sufficient to finish key shredding after any crash boundary.
             let sidecar = per_run_meta_path(runs_dir, &run)?;
             if let Err(error) = std::fs::remove_file(&sidecar)
                 && error.kind() != io::ErrorKind::NotFound
             {
                 return Err(error.into());
             }
+            std::fs::remove_file(&rollout)?;
+            content_release.commit()?;
         }
         report.removed.push(run);
     }
     report.retained = total.saturating_sub(report.removed.len());
-    if !policy.dry_run && !report.removed.is_empty() {
+    if !policy.dry_run {
         // Drop the deleted runs from the compact index in one atomic rewrite. `merge_rewrite_index`
-        // re-reads which rollouts exist, so an entry whose journal is gone is not carried over.
+        // re-reads which rollouts exist, so an entry whose journal is gone is not carried over. Do
+        // this even when this pass removed nothing: that is the recovery pass after a crash which
+        // unlinked its last selected journal before reaching the index rewrite.
         merge_rewrite_index(runs_dir, [])?;
     }
     Ok(report)
 }
 
-/// True when no other process holds this rollout's exclusive writer lock. A live run is never
-/// garbage; the probe releases the lock immediately and only gates a delete this process is about
-/// to perform, so it is a guard, not a claim of ownership.
-fn rollout_is_idle(path: &Path) -> bool {
+/// Acquire the rollout's exclusive writer lock for the complete prune mutation. A live run is
+/// never garbage, and retaining the descriptor across sidecar plus journal unlink closes the
+/// probe/delete race where a writer could otherwise start between those two operations.
+fn lock_idle_rollout(path: &Path) -> Option<std::fs::File> {
     let Ok(file) = OpenOptions::new().read(true).append(true).open(path) else {
-        return false;
+        return None;
     };
     match file.try_lock() {
-        Ok(()) => {
-            let _ = file.unlock();
-            true
-        }
-        Err(_) => false,
+        Ok(()) => Some(file),
+        Err(_) => None,
     }
 }
 
@@ -1598,8 +1692,8 @@ pub fn fork_with_tunables_snapshot(
     expected: &iteron_protocol::RunGenesisTunablesSnapshot,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
-    let (child, compatibility) =
-        fork_internal(runs_dir, parent, at, tenant, Some((expected, legacy)))?;
+    let expected = ForkTunablesExpectation::V1(expected, legacy);
+    let (child, compatibility) = fork_internal(runs_dir, parent, at, tenant, Some(expected))?;
     Ok((
         child,
         compatibility.expect("checked fork always computes a compatibility result"),
@@ -1615,8 +1709,24 @@ pub fn fork_with_resolved_tunables(
     resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
-    let expected = tunables::snapshot_from_resolved(resolved)?;
-    fork_with_tunables_snapshot(runs_dir, parent, at, tenant, &expected, legacy)
+    let expected = ForkTunablesExpectation::Resolved(resolved, legacy);
+    let (child, compatibility) = fork_internal(runs_dir, parent, at, tenant, Some(expected))?;
+    Ok((
+        child,
+        compatibility.expect("checked fork always computes a compatibility result"),
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum ForkTunablesExpectation<'a> {
+    V1(
+        &'a iteron_protocol::RunGenesisTunablesSnapshot,
+        tunables::LegacyTunablesPolicy,
+    ),
+    Resolved(
+        &'a iteron_tunables::ResolvedTunableSet,
+        tunables::LegacyTunablesPolicy,
+    ),
 }
 
 fn fork_internal(
@@ -1624,10 +1734,7 @@ fn fork_internal(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    expected: Option<(
-        &iteron_protocol::RunGenesisTunablesSnapshot,
-        tunables::LegacyTunablesPolicy,
-    )>,
+    expected: Option<ForkTunablesExpectation<'_>>,
 ) -> Result<(RunId, Option<tunables::TunablesCompatibility>), RecordError> {
     let parent_path = rollout_path(runs_dir, parent)?;
     // Read + verify the parent chain exactly once under the same cumulative budget later used for
@@ -1637,15 +1744,20 @@ fn fork_internal(
     if let Some(first) = parent_lines.first() {
         ensure_tenant(tenant, &first.tenant.0, first.seq.0)?;
     }
-    let parent_snapshot =
-        genesis_tunables_event(&parent_lines).map(|(snapshot, _)| snapshot.clone());
-    let compatibility = if let Some((expected, legacy)) = expected {
+    let parent_snapshot = genesis_tunables_event(&parent_lines).map(|(snapshot, _)| snapshot);
+    let parent_policy_snapshot =
+        genesis_policy_bundle_event(&parent_lines).map(|(snapshot, _)| snapshot);
+    let compatibility = if let Some(expected) = expected {
         let recorded = checked_genesis_tunables(&parent_lines)?;
-        Some(tunables::check_compatibility(
-            recorded.as_ref(),
-            expected,
-            legacy,
-        )?)
+        Some(match expected {
+            ForkTunablesExpectation::V1(expected, legacy) => {
+                let expected = tunables::TunablesCheckpoint::V1(expected.clone());
+                tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)?
+            }
+            ForkTunablesExpectation::Resolved(resolved, legacy) => {
+                tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)?
+            }
+        })
     } else {
         None
     };
@@ -1788,9 +1900,24 @@ fn fork_internal(
     };
     if let Some(snapshot) = parent_snapshot {
         let inherited = tunables::inherited_from(&parent.0, &snapshot);
-        rollout.append_genesis_snapshot(&genesis, snapshot, Some(inherited))?;
+        rollout.append_genesis_checkpoint(&genesis, snapshot, Some(inherited))?;
     } else {
         rollout.append(&genesis)?;
+    }
+    if let Some(snapshot) = parent_policy_snapshot {
+        let inherited_from = Some(iteron_protocol::RunGenesisPolicyBundleInheritance {
+            parent_run: parent.0.clone(),
+            parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
+        });
+        rollout.append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::PolicyBundleSnapshot {
+                version: iteron_protocol::RunGenesisPolicyBundleVersion::V1,
+                snapshot,
+                inherited_from,
+            },
+        })?;
     }
     if let Some(max_microusd) = max_microusd {
         rollout.append(&Event {
@@ -1800,6 +1927,17 @@ fn fork_internal(
                 version: RuntimePolicyEventVersion::V1,
                 source: RuntimePolicySource::Fork,
                 max_microusd,
+            },
+        })?;
+    }
+    if let Some(max_turns) = inherited_policy.turn_ceiling {
+        rollout.append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::TurnCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                source: RuntimePolicySource::Fork,
+                max_turns,
             },
         })?;
     }
@@ -1864,6 +2002,7 @@ pub fn replay_run_timed(runs_dir: &Path, run: &RunId) -> Result<Vec<TimedEvent>,
 
 /// [`load_forked`] with the original tenant/run scope retained for every physical event.
 pub fn load_forked_scoped(runs_dir: &Path, run: &RunId) -> Result<Vec<ScopedEvent>, RecordError> {
+    crate::require_strict_replay_policy()?;
     let mut budget = LogicalReplayBudget::default();
     expand_scoped(runs_dir, run, None, 0, &mut budget)
 }
@@ -1986,6 +2125,7 @@ fn expand_scoped_from(
             )?;
         }
         validate_fork_tunables_inheritance(&lines, &parent, &parent_lines)?;
+        validate_fork_policy_bundle_inheritance(&lines, &parent, &parent_lines)?;
         let pinned_line = parent_lines
             .iter()
             .find(|l| l.seq.0 == *fa)
@@ -2046,7 +2186,7 @@ fn expand_scoped_from(
 fn genesis_tunables_event(
     lines: &[ReadLine],
 ) -> Option<(
-    &iteron_protocol::RunGenesisTunablesSnapshot,
+    tunables::TunablesCheckpoint,
     Option<&iteron_protocol::RunGenesisTunablesInheritance>,
 )> {
     match lines.get(1).map(|line| &line.event.kind) {
@@ -2054,14 +2194,41 @@ fn genesis_tunables_event(
             snapshot,
             inherited_from,
             ..
-        }) => Some((snapshot, inherited_from.as_ref())),
+        }) => Some((
+            tunables::TunablesCheckpoint::V1(snapshot.clone()),
+            inherited_from.as_ref(),
+        )),
+        Some(EventKind::TunablesSnapshotV2 {
+            snapshot,
+            inherited_from,
+            ..
+        }) => Some((
+            tunables::TunablesCheckpoint::V2(snapshot.clone()),
+            inherited_from.as_ref(),
+        )),
+        _ => None,
+    }
+}
+
+fn genesis_policy_bundle_event(
+    lines: &[ReadLine],
+) -> Option<(
+    iteron_protocol::RunGenesisPolicyBundleSnapshot,
+    Option<&iteron_protocol::RunGenesisPolicyBundleInheritance>,
+)> {
+    match lines.get(2).map(|line| &line.event.kind) {
+        Some(EventKind::PolicyBundleSnapshot {
+            snapshot,
+            inherited_from,
+            ..
+        }) => Some((snapshot.clone(), inherited_from.as_ref())),
         _ => None,
     }
 }
 
 fn checked_genesis_tunables(
     lines: &[ReadLine],
-) -> Result<Option<iteron_protocol::RunGenesisTunablesSnapshot>, RecordError> {
+) -> Result<Option<tunables::TunablesCheckpoint>, RecordError> {
     let mut state = tunables::GenesisTunablesState::default();
     for line in lines {
         state.observe(line.seq.0, &line.event.kind)?;
@@ -2086,7 +2253,7 @@ fn validate_fork_tunables_inheritance(
         (Some((child_snapshot, Some(binding))), Some((parent_snapshot, _)))
             if binding.parent_run == parent.0
                 && binding.parent_snapshot_digest_sha256
-                    == parent_snapshot.snapshot_digest_sha256
+                    == parent_snapshot.snapshot_digest_sha256()
                 && child_snapshot == parent_snapshot =>
         {
             Ok(())
@@ -2095,6 +2262,33 @@ fn validate_fork_tunables_inheritance(
             reason: "fork tunables inheritance does not match the actual parent seq-1 snapshot",
         }
         .into()),
+    }
+}
+
+fn validate_fork_policy_bundle_inheritance(
+    child_lines: &[ReadLine],
+    parent: &RunId,
+    parent_lines: &[ReadLine],
+) -> Result<(), RecordError> {
+    match (
+        genesis_policy_bundle_event(child_lines),
+        genesis_policy_bundle_event(parent_lines),
+    ) {
+        (None, None) => Ok(()),
+        (Some((child_snapshot, Some(binding))), Some((parent_snapshot, _)))
+            if binding.parent_run == parent.0
+                && binding.parent_receipt_digest_sha256
+                    == parent_snapshot.receipt_digest_sha256
+                && child_snapshot == parent_snapshot =>
+        {
+            Ok(())
+        }
+        _ => Err(
+            crate::policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
+                "fork policy checkpoint inheritance does not match the parent genesis receipt",
+            )
+            .into(),
+        ),
     }
 }
 
@@ -2245,6 +2439,37 @@ mod tests {
             },
         })
         .unwrap();
+    }
+
+    /// A same-length, in-place forgery of a middle record.
+    ///
+    /// These tests used to rewrite the task text directly in the rollout. Content fields are now
+    /// externalized into the content store, so the line carries a `core-private-ref:` digest
+    /// instead of the prompt, and the old rewrite silently matched nothing and produced a file
+    /// identical to the original. Flipping one hex digit of the message record's own reference is
+    /// the same edit it always meant: same byte length, same middle line, and it still breaks that
+    /// record's hash.
+    fn forge_middle_record(original: &str) -> String {
+        const MARKER: &str = "core-private-ref:v1:text:sha256:";
+        // Occurrence 0 is the `run_start` cwd reference; occurrence 1 is the message record.
+        let offset = original
+            .match_indices(MARKER)
+            .nth(1)
+            .expect("the message record must carry its own content reference")
+            .0
+            + MARKER.len();
+        let mut forged = original.to_owned();
+        forged.replace_range(
+            offset..offset + 1,
+            if original.as_bytes()[offset] == b'0' {
+                "1"
+            } else {
+                "0"
+            },
+        );
+        assert_eq!(forged.len(), original.len());
+        assert_ne!(forged, original);
+        forged
     }
 
     fn complete_one_turn(runs_dir: &Path, run: &RunId, tenant: &TenantId, task: &str) {
@@ -2806,9 +3031,11 @@ mod tests {
 
         let sidecar_path = per_run_meta_path(&dir, &run).unwrap();
         assert!(sidecar_path.is_file());
-        let persisted: SessionMeta =
-            serde_json::from_slice(&crate::cache_io::read_session_meta(&sidecar_path).unwrap())
-                .unwrap();
+        let persisted = private_cache::read_sidecar(
+            &dir,
+            &crate::cache_io::read_session_meta(&sidecar_path).unwrap(),
+        )
+        .unwrap();
         assert_eq!(persisted.cost, CostState::Zero);
         assert!(projection_is_current(&dir, &persisted));
         assert!(!projection_covers_rollout(&dir, &persisted));
@@ -2843,9 +3070,11 @@ mod tests {
 
         let child_sidecar = per_run_meta_path(&dir, &child).unwrap();
         assert!(child_sidecar.is_file());
-        let persisted: SessionMeta =
-            serde_json::from_slice(&crate::cache_io::read_session_meta(&child_sidecar).unwrap())
-                .unwrap();
+        let persisted = private_cache::read_sidecar(
+            &dir,
+            &crate::cache_io::read_session_meta(&child_sidecar).unwrap(),
+        )
+        .unwrap();
         assert_eq!(persisted.parent.as_ref().unwrap().parent_run, parent);
         assert_eq!(persisted.ancestry.len(), 1);
         assert_eq!(persisted.ancestry[0].run_id, parent);
@@ -2873,9 +3102,7 @@ mod tests {
         let original_parent = std::fs::read_to_string(&parent_path).unwrap();
         let original_parent_tail = read_tail_receipt(&parent_path).unwrap();
         let parent_receipt = &persisted.ancestry[0];
-        let corrupted_parent = original_parent.replacen("parent task", "forged task", 1);
-        assert_eq!(corrupted_parent.len(), original_parent.len());
-        assert_ne!(corrupted_parent, original_parent);
+        let corrupted_parent = forge_middle_record(&original_parent);
         std::fs::write(&parent_path, corrupted_parent).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
@@ -2989,7 +3216,8 @@ mod tests {
         let second = fork(&dir, &first, first_tail, &tenant).unwrap();
         complete_one_turn(&dir, &second, &tenant, "nested child task");
 
-        let persisted: SessionMeta = serde_json::from_slice(
+        let persisted = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &second).unwrap())
                 .unwrap(),
         )
@@ -3020,7 +3248,7 @@ mod tests {
             .unwrap();
         let root_path = rollout_path(&dir, &root).unwrap();
         let original_root = std::fs::read_to_string(&root_path).unwrap();
-        let corrupted_root = original_root.replacen("root task", "evil task", 1);
+        let corrupted_root = forge_middle_record(&original_root);
         assert_eq!(corrupted_root.len(), original_root.len());
         std::fs::write(&root_path, corrupted_root).unwrap();
         std::fs::OpenOptions::new()
@@ -3047,28 +3275,38 @@ mod tests {
     #[test]
     fn d9_01_tail_receipt_io_is_independent_of_the_rollout_prefix() {
         let dir = tmpdir("d9-01-tail-receipt-bound");
-        let tenant = TenantId::default();
         let run = RunId("long-tail-receipt".into());
-        {
-            let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        // Content fields are externalized into the content store, so a handful of large payloads
+        // no longer produce a large rollout: each line is a digest marker. Grow the prefix by line
+        // count until it genuinely exceeds the scan window, or this test asserts nothing.
+        let appended = {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
             rollout.append(&genesis_event("/repo/long-tail")).unwrap();
-            for position in 0..40 {
+            let path = rollout_path(&dir, &run).unwrap();
+            let mut appended = 0u64;
+            while std::fs::metadata(&path).unwrap().len() <= (RECEIPT_SCAN_CHUNK_BYTES * 4) as u64 {
                 rollout
                     .append(&Event {
                         seq: Seq::ZERO,
                         turn: TurnId(0),
                         kind: EventKind::Notice {
-                            text: format!("{}-{position}", "x".repeat(4_096)),
+                            text: format!("{}-{appended}", "x".repeat(4_096)),
                         },
                     })
                     .unwrap();
+                appended += 1;
+                assert!(
+                    appended < 100_000,
+                    "the rollout prefix never grew past the scan window"
+                );
             }
-        }
+            appended
+        };
         let path = rollout_path(&dir, &run).unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() > (RECEIPT_SCAN_CHUNK_BYTES * 4) as u64);
         RECEIPT_BYTES_READ.with(|bytes| bytes.set(0));
         let (_, seq, _, _) = read_tail_receipt(&path).unwrap();
-        assert_eq!(seq, 40);
+        assert_eq!(seq, appended);
         assert!(
             RECEIPT_BYTES_READ.with(std::cell::Cell::get) <= RECEIPT_SCAN_CHUNK_BYTES as u64 + 1,
             "tail validation must read at most one fixed chunk for a short final line"
@@ -3107,16 +3345,15 @@ mod tests {
         let tenant = TenantId::default();
         let run = RunId("middle-record-corruption".into());
         mk_run(&dir, &run, &tenant, "/repo/middle-corruption", "truth");
-        let cached: SessionMeta = serde_json::from_slice(
+        let cached = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
         )
         .unwrap();
         let path = rollout_path(&dir, &run).unwrap();
         let original_tail = read_tail_receipt(&path).unwrap();
         let original = std::fs::read_to_string(&path).unwrap();
-        let corrupted = original.replacen("truth", "false", 1);
-        assert_eq!(corrupted.len(), original.len());
-        assert_ne!(corrupted, original);
+        let corrupted = forge_middle_record(&original);
         std::fs::write(&path, corrupted).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
@@ -3233,7 +3470,8 @@ mod tests {
             "K turn-boundary refreshes must pay for only the initialization replay"
         );
 
-        let persisted: SessionMeta = serde_json::from_slice(
+        let persisted = private_cache::read_sidecar(
+            &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
         )
         .unwrap();
@@ -3711,7 +3949,7 @@ mod tests {
         let ids: HashSet<RunId> = scan
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(ids.len(), run_count);
         assert_eq!(list(&dir, &tenant).len(), run_count);
@@ -3920,7 +4158,7 @@ mod tests {
         assert_eq!(reindex(&dir).unwrap(), 1);
         let path = per_run_meta_path(&dir, &run).unwrap();
         let old = std::fs::read(&path).unwrap();
-        let old_meta: SessionMeta = serde_json::from_slice(&old).unwrap();
+        let old_meta = private_cache::read_sidecar(&dir, &old).unwrap();
         assert!(projection_covers_rollout(&dir, &old_meta));
 
         let mut replacement = old_meta.clone();
@@ -3933,7 +4171,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         assert_eq!(std::fs::read(&path).unwrap(), old);
 
-        let after: SessionMeta = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let after = private_cache::read_sidecar(&dir, &std::fs::read(&path).unwrap()).unwrap();
         assert!(projection_covers_rollout(&dir, &after));
         assert_eq!(meta(&dir, &run).unwrap().title, "original title");
         std::fs::remove_dir_all(dir).ok();
@@ -3969,7 +4207,7 @@ mod tests {
         let ids: HashSet<RunId> = scan
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(ids, runs.iter().cloned().collect());
         assert_eq!(list(&dir, &tenant).len(), runs.len());
@@ -4081,7 +4319,7 @@ mod tests {
         let repaired_ids: Vec<RunId> = repaired
             .lines
             .iter()
-            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .map(|line| private_cache::read_index_line(&dir, line).unwrap().run_id)
             .collect();
         assert_eq!(repaired_ids, runs);
         std::fs::remove_dir_all(dir).ok();
@@ -4846,8 +5084,8 @@ mod tests {
                 "a changed session is still reindexed"
             );
         }
-        let refreshed: SessionMeta =
-            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        let refreshed =
+            private_cache::read_sidecar(&dir, &std::fs::read(&sidecar).unwrap()).unwrap();
         assert!(refreshed.turns > 1, "{refreshed:?}");
         std::fs::remove_dir_all(&dir).ok();
     }

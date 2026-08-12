@@ -1,14 +1,14 @@
 use iteron_tunables::{
-    ActivationEvidence, ActivationPredicate, CatalogSnapshot, ConstraintEvidence,
-    ConstraintProjection, ConstraintRelation, ConstraintValue, CrossFieldRule, DeclaredValue,
-    DefaultEvidence, DefaultResolver, EntryOutcome, EvidenceState, EvidenceSubject, ExplainError,
-    ExternalCeiling, FailureCode, FieldDomain, ImplementationStatus, InactiveCause, ProfileValue,
-    REGISTRY_DIGEST_SHA256, REGISTRY_ID, REGISTRY_REVISION, RESOLUTION_SCHEMA_VERSION,
-    RejectionReason, ResolutionInput, ResolutionProfile, ResolutionProvenance, ResolutionReport,
-    ResolutionSource, ResolutionValue, ResolvedEntry, RouteCapabilities, RouteIdentity,
-    RuntimeContext, SCALAR_CATALOGS, ScalarDomain, ShadowedValue, SourceKind, StringFormat,
-    StructuredValueDomain, TunableValue, ValueSchema, explain_entry_json, explain_text, families,
-    resolve, resolve_json,
+    ActivationEvidence, ActivationPredicate, CapabilityRequirement, CatalogSnapshot,
+    ConstraintEvidence, ConstraintProjection, ConstraintRelation, ConstraintValue, CrossFieldRule,
+    DecimalValue, DeclaredValue, DefaultEvidence, DefaultResolver, EntryOutcome, EvidenceState,
+    EvidenceSubject, ExplainError, ExternalCeiling, FailureCode, FieldDomain, ImplementationStatus,
+    InactiveCause, ProfileValue, REGISTRY_DIGEST_SHA256, REGISTRY_ID, REGISTRY_REVISION,
+    RESOLUTION_SCHEMA_VERSION, RejectionReason, ResolutionInput, ResolutionProfile,
+    ResolutionProvenance, ResolutionReport, ResolutionSource, ResolutionValue, ResolvedEntry,
+    RouteCapabilities, RouteIdentity, RuleValue, RuntimeContext, SCALAR_CATALOGS, ScalarDomain,
+    ShadowedValue, SourceKind, StringFormat, StructuredValueDomain, TunableValue, ValueSchema,
+    explain_entry_json, explain_text, families, resolve, resolve_json,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -41,7 +41,7 @@ fn minimal_input() -> ResolutionInput {
         profile: None,
         declared_values: Vec::new(),
         default_evidence: Vec::new(),
-        activation_evidence: Vec::new(),
+        activation_evidence: activation_inventory(false),
         constraint_evidence: Vec::new(),
         runtime: RuntimeContext {
             admitted_routes: vec![RouteCapabilities {
@@ -56,6 +56,85 @@ fn minimal_input() -> ResolutionInput {
                 .collect(),
         },
     }
+}
+
+#[test]
+fn prompt_cache_remains_effective_under_an_exact_capability_clamp() {
+    let run = |capable: bool, include_constraint: bool| {
+        let mut input = minimal_input();
+        let selected = input.runtime.selected_route.clone().unwrap();
+        let route = input
+            .runtime
+            .admitted_routes
+            .iter_mut()
+            .find(|candidate| candidate.route == selected)
+            .unwrap();
+        if !capable {
+            route
+                .capabilities
+                .remove(&CapabilityRequirement::ProviderPromptCache);
+        }
+        if include_constraint {
+            let effective = ResolutionValue::Boolean { value: capable };
+            input.constraint_evidence.push(ConstraintEvidence {
+                family: "prompt_cache".to_owned(),
+                field: "$".to_owned(),
+                ceiling: ExternalCeiling::ProviderCapability,
+                subject: EvidenceSubject::Route { route: selected },
+                evidence_digest_sha256: DIGEST_B.to_owned(),
+                value: ConstraintValue::Domain {
+                    minimum: None,
+                    maximum: None,
+                    allowed_values: Some(BTreeSet::from([effective.clone()])),
+                    required_values: None,
+                    preferred: Some(effective),
+                },
+            });
+        }
+        report_even_when_other_active_families_are_unresolved(input)
+            .entries
+            .into_iter()
+            .find(|entry| entry.family_id == "prompt_cache")
+            .unwrap()
+    };
+
+    for (capable, expected) in [(false, false), (true, true)] {
+        let entry = run(capable, true);
+        assert!(matches!(entry.outcome, EntryOutcome::Effective));
+        assert_eq!(
+            entry.effective,
+            Some(ResolutionValue::Boolean { value: expected })
+        );
+    }
+
+    let missing = run(false, false);
+    assert!(matches!(
+        missing.outcome,
+        EntryOutcome::Unresolved {
+            reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
+                ceiling: ExternalCeiling::ProviderCapability,
+                ..
+            }
+        }
+    ));
+}
+
+fn activation_inventory(active: bool) -> Vec<ActivationEvidence> {
+    families()
+        .iter()
+        .filter_map(|family| match family.activation.predicate {
+            ActivationPredicate::RuntimeDerived { seam } => Some(ActivationEvidence {
+                family: family.id.to_owned(),
+                seam: seam.to_owned(),
+                subject_digest_sha256: DIGEST_A.to_owned(),
+                evidence_digest_sha256: DIGEST_B.to_owned(),
+                active,
+            }),
+            ActivationPredicate::Always
+            | ActivationPredicate::Configured { .. }
+            | ActivationPredicate::Unavailable => None,
+        })
+        .collect()
 }
 
 fn collect_enum_strings(value: TunableValue, values: &mut BTreeSet<String>) {
@@ -87,7 +166,7 @@ fn collect_enum_strings(value: TunableValue, values: &mut BTreeSet<String>) {
 }
 
 fn synthetic_report() -> ResolutionReport {
-    let entries = families()
+    let mut entries = families()
         .iter()
         .map(|family| {
             if matches!(
@@ -142,7 +221,8 @@ fn synthetic_report() -> ResolutionReport {
                 benchmark_relevance: family.benchmark_relevance,
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    repair_report_resolved_set_sum_limits(&mut entries);
     ResolutionReport {
         schema_version: RESOLUTION_SCHEMA_VERSION,
         registry_id: REGISTRY_ID,
@@ -152,6 +232,7 @@ fn synthetic_report() -> ResolutionReport {
         effective_digest_sha256: DIGEST_B.to_owned(),
         resolution_digest_sha256: DIGEST_A.to_owned(),
         profile_digest_sha256: None,
+        fixed_authority_attestations: Vec::new(),
         entries,
     }
 }
@@ -207,12 +288,55 @@ fn sample_value(domain: StructuredValueDomain, ordinal: u16) -> ResolutionValue 
 
 fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
     let mut value = sample_value(schema.domain, ordinal);
+    // The repairs interact, and the order rules are declared in is not a dependency order:
+    // raising a field to satisfy one rule can violate a rule an earlier pass already settled.
+    // One forward pass therefore leaves a sample whose validity depends on declaration order.
+    // Iterate to a fixpoint instead, bounded so an unsatisfiable schema fails loudly here
+    // rather than spinning.
+    let bound = schema.rules.len() + 2;
+    for _ in 0..bound {
+        let before = value.clone();
+        value = apply_sample_rules(value, schema, ordinal);
+        if value == before {
+            return value;
+        }
+    }
+    panic!(
+        "sample repairs for schema `{}` (ordinal {ordinal}) did not converge in {bound} passes",
+        schema.schema_id
+    )
+}
+
+fn sample_truthy(value: &ResolutionValue) -> bool {
+    // Mirrors `required_truthy` in the resolver: this is what a `Requires` rule actually demands.
+    match value {
+        ResolutionValue::Boolean { value } => *value,
+        ResolutionValue::Integer { value } => *value != 0,
+        ResolutionValue::Decimal { value } => value.coefficient != 0,
+        _ => false,
+    }
+}
+
+fn apply_sample_rules(
+    mut value: ResolutionValue,
+    schema: ValueSchema,
+    ordinal: u16,
+) -> ResolutionValue {
     for rule in schema.rules {
         match *rule {
             CrossFieldRule::LessOrEqual { left, right } => {
-                if let (Some(replacement), Some(_)) =
-                    (value_at(&value, left).cloned(), value_at(&value, right))
-                {
+                // Repair only an actual violation. Copying `left` over `right` unconditionally
+                // would undo a `SumLessOrEqual` that already raised `right`, which makes the
+                // generated sample depend on the order the rules happen to be declared in.
+                let violated = match (value_at(&value, left), value_at(&value, right)) {
+                    (
+                        Some(ResolutionValue::Integer { value: left_value }),
+                        Some(ResolutionValue::Integer { value: right_value }),
+                    ) => left_value > right_value,
+                    (Some(_), Some(_)) => true,
+                    _ => false,
+                };
+                if violated && let Some(replacement) = value_at(&value, left).cloned() {
                     replace_at(&mut value, right, replacement);
                 }
             }
@@ -234,9 +358,80 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
                     );
                 }
             }
-            CrossFieldRule::Requires { .. }
-            | CrossFieldRule::MutuallyExclusive { .. }
+            CrossFieldRule::SumEquals { terms, total } => {
+                for (index, term) in terms.iter().enumerate() {
+                    replace_at(
+                        &mut value,
+                        term,
+                        ResolutionValue::Decimal {
+                            value: if index == 0 {
+                                total
+                            } else {
+                                DecimalValue {
+                                    coefficient: 0,
+                                    scale: total.scale,
+                                }
+                            },
+                        },
+                    );
+                }
+            }
+            CrossFieldRule::Requires {
+                if_field,
+                equals,
+                then_field,
+            } => {
+                // Repair only an actual violation, for the same reason `LessOrEqual` does above.
+                // The resolver demands a truthy `then_field` *only* when the trigger matches, and
+                // any truthy value satisfies it. Rewriting to 1 unconditionally clobbered a field
+                // another rule had already raised — and did it even when the trigger did not
+                // match, so an inert rule could still corrupt the sample.
+                let triggered =
+                    value_at(&value, if_field).is_some_and(|actual| *actual == rule_value(equals));
+                let satisfied = value_at(&value, then_field).is_some_and(sample_truthy);
+                if triggered && !satisfied {
+                    let replacement = match value_at(&value, then_field) {
+                        Some(ResolutionValue::Boolean { .. }) => {
+                            ResolutionValue::Boolean { value: true }
+                        }
+                        Some(ResolutionValue::Integer { .. }) => {
+                            ResolutionValue::Integer { value: 1 }
+                        }
+                        Some(ResolutionValue::Decimal { value }) => ResolutionValue::Decimal {
+                            value: DecimalValue {
+                                coefficient: 1,
+                                scale: value.scale,
+                            },
+                        },
+                        _ => continue,
+                    };
+                    replace_at(&mut value, then_field, replacement);
+                }
+            }
+            CrossFieldRule::MutuallyExclusive { .. }
+            | CrossFieldRule::ResolvedSetSumLessOrEqual { .. }
             | CrossFieldRule::ExternalCeiling { .. } => {}
+            CrossFieldRule::MapEntryDomain { key, domain } => {
+                if value_at(&value, key).is_some() {
+                    replace_at(&mut value, key, sample_scalar(domain, u64::from(ordinal)));
+                }
+            }
+            CrossFieldRule::AtLeastOneNonZero { fields } => {
+                let replacement = match value_at(&value, fields[0]) {
+                    Some(ResolutionValue::Integer { .. }) => ResolutionValue::Integer { value: 1 },
+                    _ => ResolutionValue::Decimal {
+                        value: iteron_tunables::DecimalValue {
+                            coefficient: 1,
+                            scale: 0,
+                        },
+                    },
+                };
+                replace_at(&mut value, fields[0], replacement);
+            }
+            CrossFieldRule::Equals {
+                field,
+                value: expected,
+            } => replace_at(&mut value, field, rule_value(expected)),
         }
     }
     value
@@ -247,8 +442,10 @@ fn value_at<'a>(value: &'a ResolutionValue, path: &str) -> Option<&'a Resolution
         return Some(value);
     }
     let (head, tail) = path.split_once('.').unwrap_or((path, ""));
-    let ResolutionValue::Object { fields } = value else {
-        return None;
+    let fields = match value {
+        ResolutionValue::Object { fields } => fields,
+        ResolutionValue::Map { entries } => entries,
+        _ => return None,
     };
     let child = fields.get(head)?;
     if tail.is_empty() {
@@ -264,16 +461,111 @@ fn replace_at(value: &mut ResolutionValue, path: &str, replacement: ResolutionVa
         return;
     }
     let (head, tail) = path.split_once('.').unwrap_or((path, ""));
-    let ResolutionValue::Object { fields } = value else {
-        panic!("sample path `{path}` does not address an object");
+    let fields = match value {
+        ResolutionValue::Object { fields } => fields,
+        ResolutionValue::Map { entries } => entries,
+        _ => panic!("sample path `{path}` does not address an object or map"),
     };
-    let child = fields
-        .get_mut(head)
-        .unwrap_or_else(|| panic!("sample omits `{head}`"));
     if tail.is_empty() {
-        *child = replacement;
+        fields.insert(head.to_owned(), replacement);
     } else {
+        let child = fields
+            .get_mut(head)
+            .unwrap_or_else(|| panic!("sample omits `{head}`"));
         replace_at(child, tail, replacement);
+    }
+}
+
+fn repair_resolved_set_sum_limits(values: &mut [DeclaredValue]) {
+    for family in families() {
+        for rule in family.value_schema.rules {
+            let CrossFieldRule::ResolvedSetSumLessOrEqual { terms, limit, .. } = *rule else {
+                continue;
+            };
+            let sum = terms
+                .iter()
+                .map(|term| {
+                    let value = values
+                        .iter()
+                        .find(|value| value.family == term.family)
+                        .unwrap_or_else(|| panic!("resolved-set term family `{}`", term.family));
+                    match value_at(&value.value, term.path) {
+                        Some(ResolutionValue::Integer { value }) => i128::from(*value),
+                        _ => panic!(
+                            "resolved-set term `{}:{}` is not an integer",
+                            term.family, term.path
+                        ),
+                    }
+                })
+                .try_fold(0i128, i128::checked_add)
+                .expect("fixture resolved-set sum");
+            let owner = values
+                .iter_mut()
+                .find(|value| value.family == limit.family)
+                .unwrap_or_else(|| panic!("resolved-set limit family `{}`", limit.family));
+            replace_at(
+                &mut owner.value,
+                limit.path,
+                ResolutionValue::Integer {
+                    value: i64::try_from(sum).expect("fixture resolved-set sum fits i64"),
+                },
+            );
+        }
+    }
+}
+
+fn repair_report_resolved_set_sum_limits(entries: &mut [ResolvedEntry]) {
+    for family in families() {
+        for rule in family.value_schema.rules {
+            let CrossFieldRule::ResolvedSetSumLessOrEqual { terms, limit, .. } = *rule else {
+                continue;
+            };
+            let sum = terms
+                .iter()
+                .map(|term| {
+                    let entry = entries
+                        .iter()
+                        .find(|entry| entry.family_id == term.family)
+                        .unwrap_or_else(|| panic!("resolved-set term family `{}`", term.family));
+                    match entry
+                        .effective
+                        .as_ref()
+                        .and_then(|value| value_at(value, term.path))
+                    {
+                        Some(ResolutionValue::Integer { value }) => i128::from(*value),
+                        _ => panic!(
+                            "resolved-set term `{}:{}` is not an effective integer",
+                            term.family, term.path
+                        ),
+                    }
+                })
+                .sum::<i128>();
+            let replacement = ResolutionValue::Integer {
+                value: i64::try_from(sum).expect("resolved-set report sum"),
+            };
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry.family_id == limit.family)
+                .unwrap_or_else(|| panic!("resolved-set limit family `{}`", limit.family));
+            for value in [&mut entry.requested, &mut entry.effective] {
+                replace_at(
+                    value.as_mut().expect("resolved-set limit effective value"),
+                    limit.path,
+                    replacement.clone(),
+                );
+            }
+        }
+    }
+}
+
+fn rule_value(value: RuleValue) -> ResolutionValue {
+    match value {
+        RuleValue::Boolean { value } => ResolutionValue::Boolean { value },
+        RuleValue::Integer { value } => ResolutionValue::Integer { value },
+        RuleValue::Decimal { value } => ResolutionValue::Decimal { value },
+        RuleValue::Enum { value } => ResolutionValue::Enum {
+            value: value.to_owned(),
+        },
     }
 }
 
@@ -506,7 +798,7 @@ fn complete_success_input() -> ResolutionInput {
         .flat_map(|family| family.requirements.capabilities.iter().copied())
         .collect();
 
-    let declared_values = families()
+    let mut declared_values = families()
         .iter()
         .filter(|family| family.implementation_status != ImplementationStatus::Missing)
         .map(|family| {
@@ -531,6 +823,16 @@ fn complete_success_input() -> ResolutionInput {
                 "model" => ResolutionValue::Enum {
                     value: route.model_id.clone(),
                 },
+                _ if source.kind == SourceKind::Builtin
+                    && matches!(family.default.resolver, DefaultResolver::Literal) =>
+                {
+                    owned_value(
+                        family
+                            .default
+                            .value
+                            .expect("literal family has one canonical embedded value"),
+                    )
+                }
                 _ => sample_schema(family.value_schema, family.ordinal),
             };
             DeclaredValue {
@@ -541,24 +843,9 @@ fn complete_success_input() -> ResolutionInput {
             }
         })
         .collect::<Vec<_>>();
+    repair_resolved_set_sum_limits(&mut declared_values);
 
-    let activation_evidence = families()
-        .iter()
-        .filter_map(|family| match family.activation.predicate {
-            ActivationPredicate::RuntimeDerived { seam } => Some(seam),
-            ActivationPredicate::Always
-            | ActivationPredicate::Configured { .. }
-            | ActivationPredicate::Unavailable => None,
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|seam| ActivationEvidence {
-            seam: seam.to_owned(),
-            subject_digest_sha256: DIGEST_A.to_owned(),
-            evidence_digest_sha256: DIGEST_B.to_owned(),
-            active: true,
-        })
-        .collect();
+    let activation_evidence = activation_inventory(true);
 
     let constraint_evidence = families()
         .iter()
@@ -711,6 +998,49 @@ fn complete_success_input() -> ResolutionInput {
     }
 }
 
+/// Move a family's external-ceiling attestation onto `value`.
+///
+/// `complete_success_input` attests exactly the declared value of every family; that is what makes
+/// the fixture coherent rather than merely large. A test that changes which value wins for a
+/// family — by forging a candidate, or by dropping the declaration so a default takes over — has
+/// to move the attestation with it. Otherwise it asserts against an operator who never authorized
+/// the value under test, and the resolver rejects on the stale domain long before reaching
+/// whatever the test meant to exercise.
+fn reattest_external_ceiling(input: &mut ResolutionInput, family: &str, value: &ResolutionValue) {
+    for evidence in input
+        .constraint_evidence
+        .iter_mut()
+        .filter(|evidence| evidence.family == family)
+    {
+        let Some(projected) = value_at(value, &evidence.field).cloned() else {
+            continue;
+        };
+        match &mut evidence.value {
+            ConstraintValue::UpperBound { value } | ConstraintValue::Exact { value } => {
+                *value = projected;
+            }
+            ConstraintValue::Domain {
+                minimum,
+                allowed_values,
+                preferred,
+                ..
+            } => {
+                // Replace only the facets this ceiling actually attested, so the shape of the
+                // evidence stays what `complete_success_input` built for that ceiling kind.
+                if minimum.is_some() {
+                    *minimum = Some(projected.clone());
+                }
+                if allowed_values.is_some() {
+                    *allowed_values = Some(BTreeSet::from([projected.clone()]));
+                }
+                if preferred.is_some() {
+                    *preferred = Some(projected);
+                }
+            }
+        }
+    }
+}
+
 fn constraint_subject(ceiling: ExternalCeiling, route: &RouteIdentity) -> EvidenceSubject {
     match ceiling {
         ExternalCeiling::OperatorAuthority => EvidenceSubject::Operator {
@@ -818,65 +1148,417 @@ fn complete_registry_driven_resolution_succeeds_and_explains_all_active_families
 }
 
 #[test]
-fn optional_constrained_fields_need_evidence_only_when_present() {
+fn resolved_context_sum_accepts_exact_boundary_and_rejects_one_token_over() {
+    let boundary = complete_success_input();
+    let accepted = resolve(boundary.clone()).expect("exact context-window boundary must resolve");
+    let rule = families()
+        .iter()
+        .flat_map(|family| family.value_schema.rules)
+        .find_map(|rule| match rule {
+            CrossFieldRule::ResolvedSetSumLessOrEqual { terms, limit, .. } => {
+                Some((*terms, *limit))
+            }
+            _ => None,
+        })
+        .expect("canonical resolved-set context rule");
+    let sum = rule
+        .0
+        .iter()
+        .map(|path| resolved_integer(accepted.report(), *path))
+        .try_fold(0i128, i128::checked_add)
+        .expect("context component sum");
+    assert_eq!(sum, resolved_integer(accepted.report(), rule.1));
+
+    let mut over = boundary;
+    let context = over
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "context_window_override_reserve")
+        .expect("context-window declaration");
+    let Some(ResolutionValue::Integer { value }) =
+        value_at(&context.value, "instruction_budget_tokens").cloned()
+    else {
+        panic!("instruction budget stopped being an integer")
+    };
+    replace_at(
+        &mut context.value,
+        "instruction_budget_tokens",
+        ResolutionValue::Integer { value: value + 1 },
+    );
+    let rejected = resolve(over).expect_err("one-token context over-sum must fail closed");
+    assert_eq!(rejected.code, FailureCode::ActiveResolutionFailed);
+    assert_eq!(
+        rejected
+            .failures
+            .iter()
+            .find(|failure| failure.family_id == "context_window_override_reserve")
+            .map(|failure| failure.reason_code),
+        Some("cross_field_rule_rejected")
+    );
+    let entry = rejected
+        .report
+        .as_ref()
+        .expect("atomic failure report")
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == "context_window_override_reserve")
+        .expect("context-window result");
+    assert!(matches!(
+        entry.outcome,
+        EntryOutcome::Rejected {
+            reason: RejectionReason::CrossFieldRule {
+                detail_code: "resolved_set_sum_exceeds_limit"
+            }
+        }
+    ));
+}
+
+#[test]
+fn enabled_hedging_requires_a_positive_duplicate_bound_and_idempotent_transport() {
+    for (field, invalid) in [
+        ("max_duplicates", ResolutionValue::Integer { value: 0 }),
+        ("idempotent_only", ResolutionValue::Boolean { value: false }),
+    ] {
+        let mut input = complete_success_input();
+        let hedge = input
+            .declared_values
+            .iter_mut()
+            .find(|value| value.family == "hedged_request_policy")
+            .expect("hedge declaration");
+        replace_at(
+            &mut hedge.value,
+            "enabled",
+            ResolutionValue::Boolean { value: true },
+        );
+        replace_at(&mut hedge.value, field, invalid);
+        let rejected = resolve(input).expect_err("unsafe enabled hedge must fail closed");
+        assert_eq!(rejected.code, FailureCode::InvalidInput);
+        assert!(
+            rejected
+                .detail
+                .contains("value for `hedged_request_policy` violates its registry schema"),
+            "field {field} must be governed by the canonical schema, not only the runtime decoder: {}",
+            rejected.detail
+        );
+    }
+}
+
+#[test]
+fn disabled_hedge_policy_does_not_invent_a_provider_hedging_capability() {
     let mut input = complete_success_input();
-    for (family_id, field, value) in [
+    input.runtime.admitted_routes[0]
+        .capabilities
+        .remove(&iteron_tunables::CapabilityRequirement::ProviderHedging);
+    let hedge = input
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "hedged_request_policy")
+        .expect("hedge declaration");
+    replace_at(
+        &mut hedge.value,
+        "enabled",
+        ResolutionValue::Boolean { value: false },
+    );
+
+    let resolved = resolve(input).expect("a disabled policy needs no physical hedge capability");
+    let hedge = resolved
+        .report()
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == "hedged_request_policy")
+        .expect("hedge result");
+    assert!(matches!(hedge.outcome, EntryOutcome::Effective));
+}
+
+#[test]
+fn enabled_hedge_policy_fails_closed_without_provider_hedging_capability() {
+    let mut input = complete_success_input();
+    input.runtime.admitted_routes[0]
+        .capabilities
+        .remove(&iteron_tunables::CapabilityRequirement::ProviderHedging);
+    let hedge = input
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "hedged_request_policy")
+        .expect("hedge declaration");
+    replace_at(
+        &mut hedge.value,
+        "enabled",
+        ResolutionValue::Boolean { value: true },
+    );
+    replace_at(
+        &mut hedge.value,
+        "max_duplicates",
+        ResolutionValue::Integer { value: 1 },
+    );
+    replace_at(
+        &mut hedge.value,
+        "idempotent_only",
+        ResolutionValue::Boolean { value: true },
+    );
+
+    let failure = resolve(input).expect_err("an enabled physical hedge requires attestation");
+    let entry = failure
+        .report
+        .expect("atomic failure report")
+        .entries
+        .into_iter()
+        .find(|entry| entry.family_id == "hedged_request_policy")
+        .expect("hedge result");
+    assert!(matches!(
+        entry.outcome,
+        EntryOutcome::Rejected {
+            reason: RejectionReason::ProviderRequirement {
+                missing_capabilities,
+                ..
+            }
+        } if missing_capabilities == vec![iteron_tunables::CapabilityRequirement::ProviderHedging]
+    ));
+}
+
+#[test]
+fn failover_taxonomy_without_a_fallback_chain_needs_no_failover_capability() {
+    let mut input = complete_success_input();
+    input.runtime.admitted_routes[0]
+        .capabilities
+        .remove(&iteron_tunables::CapabilityRequirement::ProviderFailover);
+    input
+        .declared_values
+        .retain(|value| value.family != "model_fallback_chain");
+
+    let resolved = resolve(input).expect("an inert taxonomy needs no physical failover capability");
+    let taxonomy = resolved
+        .report()
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == "failover_eligible_error_taxonomy")
+        .expect("taxonomy result");
+    assert!(matches!(taxonomy.outcome, EntryOutcome::Effective));
+}
+
+#[test]
+fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
+    for (family, forged) in [
         (
-            "selective_restore_scope",
-            "paths",
-            ResolutionValue::List {
-                items: vec![ResolutionValue::Text {
-                    value: "/fixture/path".to_owned(),
-                }],
+            "effort",
+            ResolutionValue::Enum {
+                value: "high".to_owned(),
             },
         ),
         (
-            "per_agent_memory_scope",
-            "scope_id",
-            ResolutionValue::Text {
-                value: "fixture:scope".to_owned(),
+            "model_fallback_chain",
+            ResolutionValue::List {
+                items: vec![ResolutionValue::Enum {
+                    value: "fixture:fallback".to_owned(),
+                }],
             },
+        ),
+    ] {
+        let mut input = complete_success_input();
+        let candidate = input
+            .declared_values
+            .iter_mut()
+            .find(|candidate| candidate.family == family)
+            .expect("complete fixture declares every active family");
+        candidate.source = SourceKind::Builtin;
+        candidate.value = forged;
+        assert_eq!(
+            resolve(input)
+                .expect_err("Builtin cannot replace an embedded literal")
+                .code,
+            FailureCode::InvalidInput
+        );
+    }
+
+    let mut input = complete_success_input();
+    for (family, exact) in [
+        (
+            "effort",
+            ResolutionValue::Enum {
+                value: "medium".to_owned(),
+            },
+        ),
+        (
+            "model_fallback_chain",
+            ResolutionValue::List { items: Vec::new() },
         ),
     ] {
         let candidate = input
             .declared_values
             .iter_mut()
-            .find(|candidate| candidate.family == family_id)
-            .unwrap();
-        let ResolutionValue::Object { fields } = &mut candidate.value else {
-            panic!("{family_id} stopped being an object")
-        };
-        fields.insert(field.to_owned(), value);
+            .find(|candidate| candidate.family == family)
+            .expect("complete fixture declares every active family");
+        candidate.source = SourceKind::Builtin;
+        candidate.value = exact.clone();
+        reattest_external_ceiling(&mut input, family, &exact);
     }
-    let failure = resolve(input).unwrap_err();
-    let report = failure.report.unwrap();
-    for (family_id, field, ceiling) in [
-        (
-            "selective_restore_scope",
-            "paths",
-            ExternalCeiling::OperatorAuthority,
+    resolve(input).expect("exact embedded literals remain admissible");
+}
+
+#[test]
+fn failover_taxonomy_with_a_fallback_chain_fails_closed_without_capability() {
+    let mut input = complete_success_input();
+    // Strip the capability from every admitted route, not just the selected one. An
+    // `AnyAdmittedRoute` requirement falls back to any other admitted route that still carries
+    // it, and the complete fixture admits two, so clearing only `[0]` leaves the requirement
+    // satisfiable and the taxonomy resolves instead of failing closed.
+    for route in &mut input.runtime.admitted_routes {
+        route
+            .capabilities
+            .remove(&iteron_tunables::CapabilityRequirement::ProviderFailover);
+    }
+    let chain = ResolutionValue::List {
+        items: vec![ResolutionValue::Enum {
+            value: "fixture:value-0".to_owned(),
+        }],
+    };
+    let fallback = input
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "model_fallback_chain")
+        .expect("fallback declaration");
+    fallback.value = chain.clone();
+    reattest_external_ceiling(&mut input, "model_fallback_chain", &chain);
+
+    let failure = resolve(input).expect_err("physical failover requires route attestation");
+    let entry = failure
+        .report
+        .expect("atomic failure report")
+        .entries
+        .into_iter()
+        .find(|entry| entry.family_id == "failover_eligible_error_taxonomy")
+        .expect("taxonomy result");
+    assert!(matches!(
+        entry.outcome,
+        EntryOutcome::Rejected {
+            reason: RejectionReason::ProviderRequirement {
+                missing_capabilities,
+                ..
+            }
+        } if missing_capabilities == vec![iteron_tunables::CapabilityRequirement::ProviderFailover]
+    ));
+}
+
+#[test]
+fn provider_objective_weights_are_normalized_by_the_canonical_schema() {
+    let mut input = complete_success_input();
+    let weights = input
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "route_quality_cost_latency_objective_weights")
+        .expect("objective weights declaration");
+    replace_at(
+        &mut weights.value,
+        "quality",
+        ResolutionValue::Decimal {
+            value: DecimalValue {
+                coefficient: 1,
+                scale: 0,
+            },
+        },
+    );
+    replace_at(
+        &mut weights.value,
+        "cost",
+        ResolutionValue::Decimal {
+            value: DecimalValue {
+                coefficient: 1,
+                scale: 0,
+            },
+        },
+    );
+    let rejected = resolve(input).expect_err("non-normalized objective weights must fail closed");
+    assert_eq!(rejected.code, FailureCode::InvalidInput);
+    assert!(
+        rejected.detail.contains(
+            "value for `route_quality_cost_latency_objective_weights` violates its registry schema"
         ),
-        (
-            "per_agent_memory_scope",
-            "scope_id",
-            ExternalCeiling::TenantScope,
+        "the canonical schema must reject the non-normalized objective before runtime decode: {}",
+        rejected.detail
+    );
+}
+
+fn resolved_integer(report: &ResolutionReport, path: iteron_tunables::ResolvedValuePath) -> i128 {
+    let entry = report
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == path.family)
+        .unwrap_or_else(|| panic!("resolved family `{}`", path.family));
+    match value_at(
+        entry.effective.as_ref().expect("effective value"),
+        path.path,
+    ) {
+        Some(ResolutionValue::Integer { value }) => i128::from(*value),
+        _ => panic!(
+            "resolved path `{}:{}` is not an integer",
+            path.family, path.path
         ),
-    ] {
-        let entry = report
+    }
+}
+
+#[test]
+fn canonical_registry_has_no_ambient_runtime_activation_channel() {
+    assert!(families().iter().all(|family| !matches!(
+        family.activation.predicate,
+        ActivationPredicate::RuntimeDerived { .. }
+    )));
+    let resolved = resolve(complete_success_input()).unwrap();
+    for family in ["retry_backoff_base", "retry_backoff_cap"] {
+        let entry = resolved
+            .report()
             .entries
             .iter()
-            .find(|entry| entry.family_id == family_id)
+            .find(|entry| entry.family_id == family)
             .unwrap();
-        assert!(matches!(
-            &entry.outcome,
-            EntryOutcome::Unresolved {
-                reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
-                    field: actual_field,
-                    ceiling: actual_ceiling,
-                }
-            } if actual_field == field && *actual_ceiling == ceiling
-        ));
+        assert!(matches!(entry.outcome, EntryOutcome::Effective));
     }
+}
+
+#[test]
+fn optional_constrained_fields_need_evidence_only_when_present() {
+    // `per_agent_memory_scope`/`scope_id` is the registry's only other optional externally
+    // constrained field, and it cannot be reached this way: that family binds `Builtin` alone, a
+    // `Builtin` candidate must equal the embedded literal byte for byte, and that literal carries
+    // only `mode` and `inherit_parent`. Adding `scope_id` to it is refused at input validation by
+    // the same invariant `offline_builtin_literal_candidates_cannot_override_registry_bytes`
+    // pins, so resolution never reaches the per-family stage this test is about. Covering the
+    // `TenantScope` ceiling needs a family that can carry the field, not a weaker assertion here.
+    let family_id = "selective_restore_scope";
+    let field = "paths";
+    let mut input = complete_success_input();
+    let candidate = input
+        .declared_values
+        .iter_mut()
+        .find(|candidate| candidate.family == family_id)
+        .unwrap();
+    let ResolutionValue::Object { fields } = &mut candidate.value else {
+        panic!("{family_id} stopped being an object")
+    };
+    fields.insert(
+        field.to_owned(),
+        ResolutionValue::List {
+            items: vec![ResolutionValue::Text {
+                value: "/fixture/path".to_owned(),
+            }],
+        },
+    );
+
+    let failure = resolve(input).unwrap_err();
+    let report = failure.report.unwrap();
+    let entry = report
+        .entries
+        .iter()
+        .find(|entry| entry.family_id == family_id)
+        .unwrap();
+    assert!(matches!(
+        &entry.outcome,
+        EntryOutcome::Unresolved {
+            reason: iteron_tunables::UnresolvedReason::ExternalConstraintMissing {
+                field: actual_field,
+                ceiling: actual_ceiling,
+            }
+        } if actual_field == field && *actual_ceiling == ExternalCeiling::OperatorAuthority
+    ));
 }
 
 #[test]
@@ -1075,14 +1757,6 @@ fn later_provider_degrade_cannot_undo_an_earlier_context_ceiling() {
         _ => family.source.bindings[0].kind,
     };
     let mut input = minimal_input();
-    if let ActivationPredicate::RuntimeDerived { seam } = family.activation.predicate {
-        input.activation_evidence.push(ActivationEvidence {
-            seam: seam.to_owned(),
-            subject_digest_sha256: DIGEST_A.to_owned(),
-            evidence_digest_sha256: DIGEST_B.to_owned(),
-            active: true,
-        });
-    }
     input.declared_values.push(DeclaredValue {
         family: family.id.to_owned(),
         source,
@@ -1171,14 +1845,6 @@ fn later_provider_degrade_cannot_undo_an_earlier_context_ceiling() {
         ),
     ] {
         let mut input = minimal_input();
-        if let ActivationPredicate::RuntimeDerived { seam } = reverse.activation.predicate {
-            input.activation_evidence.push(ActivationEvidence {
-                seam: seam.to_owned(),
-                subject_digest_sha256: DIGEST_A.to_owned(),
-                evidence_digest_sha256: DIGEST_B.to_owned(),
-                active: true,
-            });
-        }
         input.declared_values.push(DeclaredValue {
             family: reverse.id.to_owned(),
             source: reverse_source,
@@ -1463,6 +2129,11 @@ fn resolve_to_explain_distinguishes_literal_and_all_dynamic_fallback_evidence_st
     literal_input
         .default_evidence
         .retain(|evidence| evidence.family != literal.id);
+    // Dropping the declaration hands this family to its embedded literal, so the attestation has
+    // to name that literal rather than the sample value that is no longer in play.
+    if let Some(default) = literal.default.value {
+        reattest_external_ceiling(&mut literal_input, literal.id, &owned_value(default));
+    }
     let literal_result = resolve(literal_input).unwrap();
     let literal_entry = &literal_result.report().entries[usize::from(literal.ordinal - 1)];
     assert!(matches!(
@@ -1596,12 +2267,21 @@ fn selectors_cover_canonical_semantic_and_every_alias_without_ambiguity() {
 }
 
 #[test]
-fn unavailable_158_and_human_json_reason_codes_are_identical() {
+fn unavailable_and_inactive_human_json_reason_codes_are_identical() {
     let mut report = synthetic_report();
-    assert_code_parity(
-        &report,
-        "prompt_cache_ttl_breakpoint_strategy",
-        "unavailable.not_implemented",
+
+    // `EntryOutcome::Unavailable` is structurally valid only on a family the registry declares
+    // `Missing` with an `Unavailable` activation, so it cannot be synthesised onto an implemented
+    // family: the report validator rejects that, correctly. The registry currently declares no
+    // `Missing` family, which makes the outcome unreachable rather than merely unused. Assert that
+    // precondition instead of faking coverage, so restoring a `Missing` family turns this red and
+    // its parity case has to come back with it.
+    assert!(
+        !families()
+            .iter()
+            .any(|family| family.implementation_status
+                == iteron_tunables::ImplementationStatus::Missing),
+        "a Missing family exists again: restore the `unavailable.not_implemented` parity case"
     );
 
     let inactive = families()
@@ -1896,11 +2576,256 @@ fn direct_value_beats_same_binding_profile_and_registry_order_beats_vector_order
         entry.shadowed[0].reason_code,
         "same_source_profile_overridden"
     );
-    assert_eq!(entry.shadowed[1].reason_code, "lower_precedence");
+    assert_eq!(entry.shadowed[1].reason_code, "project_tightening_inert");
     assert_eq!(entry.adjustments.len(), 1);
     assert_eq!(
         entry.adjustments[0].policy_id,
         "iteron://tunables/adjustments/clamp-numeric-v1"
+    );
+}
+
+fn report_even_when_other_active_families_are_unresolved(
+    input: ResolutionInput,
+) -> ResolutionReport {
+    match resolve(input) {
+        Ok(resolved) => resolved.into_report(),
+        Err(failure) => failure
+            .report
+            .expect("valid input carries an atomic failure report"),
+    }
+}
+
+fn upper_bound(
+    family: &str,
+    ceiling: ExternalCeiling,
+    value: ResolutionValue,
+) -> ConstraintEvidence {
+    ConstraintEvidence {
+        family: family.to_owned(),
+        field: "$".to_owned(),
+        ceiling,
+        subject: constraint_subject(ceiling, &minimal_input().runtime.selected_route.unwrap()),
+        evidence_digest_sha256: DIGEST_B.to_owned(),
+        value: ConstraintValue::UpperBound { value },
+    }
+}
+
+#[test]
+fn project_numeric_sources_only_lower_operator_or_canonical_ceilings() {
+    let cases = [
+        (100, 50, 50, SourceKind::ProjectConfig, "project_tightened"),
+        (
+            50,
+            100,
+            50,
+            SourceKind::UserConfig,
+            "project_tightening_inert",
+        ),
+    ];
+    for (operator, project, expected, expected_source, shadow_reason) in cases {
+        let mut input = minimal_input();
+        input.declared_values = vec![
+            DeclaredValue {
+                family: "max_turns".to_owned(),
+                source: SourceKind::UserConfig,
+                evidence_digest_sha256: DIGEST_A.to_owned(),
+                value: ResolutionValue::Integer { value: operator },
+            },
+            DeclaredValue {
+                family: "max_turns".to_owned(),
+                source: SourceKind::ProjectConfig,
+                evidence_digest_sha256: DIGEST_B.to_owned(),
+                value: ResolutionValue::Integer { value: project },
+            },
+        ];
+        input.constraint_evidence.push(upper_bound(
+            "max_turns",
+            ExternalCeiling::ParentTurns,
+            ResolutionValue::Integer { value: 1_000 },
+        ));
+        let report = report_even_when_other_active_families_are_unresolved(input);
+        let entry = &report.entries[4];
+        assert_eq!(
+            entry.requested,
+            Some(ResolutionValue::Integer { value: expected })
+        );
+        assert!(matches!(
+            entry.provenance.as_ref().map(|provenance| &provenance.source),
+            Some(ResolutionSource::Declared { kind, .. }) if *kind == expected_source
+        ));
+        assert_eq!(entry.shadowed.last().unwrap().reason_code, shadow_reason);
+    }
+
+    let mut default_limited = minimal_input();
+    default_limited.declared_values.push(DeclaredValue {
+        family: "max_turns".to_owned(),
+        source: SourceKind::ProjectConfig,
+        evidence_digest_sha256: DIGEST_B.to_owned(),
+        value: ResolutionValue::Integer { value: 900 },
+    });
+    default_limited.constraint_evidence.push(upper_bound(
+        "max_turns",
+        ExternalCeiling::ParentTurns,
+        ResolutionValue::Integer { value: 1_000 },
+    ));
+    let report = report_even_when_other_active_families_are_unresolved(default_limited);
+    let entry = &report.entries[4];
+    assert_eq!(
+        entry.requested,
+        Some(ResolutionValue::Integer { value: 600 })
+    );
+    assert!(matches!(
+        entry
+            .provenance
+            .as_ref()
+            .map(|provenance| &provenance.source),
+        Some(ResolutionSource::Default { .. })
+    ));
+    assert_eq!(
+        entry.shadowed.last().unwrap().reason_code,
+        "project_tightening_inert"
+    );
+}
+
+#[test]
+fn project_can_introduce_optional_cost_ceiling_and_revoke_but_not_grant_code() {
+    let mut cost = minimal_input();
+    cost.declared_values.push(DeclaredValue {
+        family: "max_usd".to_owned(),
+        source: SourceKind::ProjectConfig,
+        evidence_digest_sha256: DIGEST_A.to_owned(),
+        value: ResolutionValue::Decimal {
+            value: iteron_tunables::DecimalValue {
+                coefficient: 125,
+                scale: 2,
+            },
+        },
+    });
+    cost.constraint_evidence.push(upper_bound(
+        "max_usd",
+        ExternalCeiling::ParentCost,
+        ResolutionValue::Decimal {
+            value: iteron_tunables::DecimalValue {
+                coefficient: 2,
+                scale: 0,
+            },
+        },
+    ));
+    let report = report_even_when_other_active_families_are_unresolved(cost);
+    assert_eq!(
+        report.entries[5].requested,
+        Some(ResolutionValue::Decimal {
+            value: iteron_tunables::DecimalValue {
+                coefficient: 125,
+                scale: 2,
+            }
+        })
+    );
+
+    for (project, expected, expected_source) in [
+        (false, false, SourceKind::ProjectConfig),
+        (true, true, SourceKind::Builtin),
+    ] {
+        let mut code = minimal_input();
+        code.declared_values.push(DeclaredValue {
+            family: "allow_code".to_owned(),
+            source: SourceKind::ProjectConfig,
+            evidence_digest_sha256: DIGEST_A.to_owned(),
+            value: ResolutionValue::Boolean { value: project },
+        });
+        code.constraint_evidence.push(ConstraintEvidence {
+            family: "allow_code".to_owned(),
+            field: "$".to_owned(),
+            ceiling: ExternalCeiling::OperatorAuthority,
+            subject: EvidenceSubject::Operator {
+                authority_digest_sha256: DIGEST_A.to_owned(),
+            },
+            evidence_digest_sha256: DIGEST_B.to_owned(),
+            value: ConstraintValue::Domain {
+                minimum: None,
+                maximum: None,
+                allowed_values: Some(BTreeSet::from([
+                    ResolutionValue::Boolean { value: false },
+                    ResolutionValue::Boolean { value: true },
+                ])),
+                required_values: None,
+                preferred: None,
+            },
+        });
+        let report = report_even_when_other_active_families_are_unresolved(code);
+        let entry = &report.entries[8];
+        assert_eq!(
+            entry.requested,
+            Some(ResolutionValue::Boolean { value: expected })
+        );
+        match entry
+            .provenance
+            .as_ref()
+            .map(|provenance| &provenance.source)
+        {
+            Some(ResolutionSource::Declared { kind, .. }) => assert_eq!(*kind, expected_source),
+            Some(ResolutionSource::Default { .. }) => {
+                assert_eq!(expected_source, SourceKind::Builtin)
+            }
+            other => panic!("unexpected allow_code provenance: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn project_model_is_only_a_route_suggestion_below_operator_sources() {
+    let mut input = minimal_input();
+    input.declared_values = vec![
+        DeclaredValue {
+            family: "model".to_owned(),
+            source: SourceKind::UserConfig,
+            evidence_digest_sha256: DIGEST_A.to_owned(),
+            value: ResolutionValue::Enum {
+                value: "glm-5.2".to_owned(),
+            },
+        },
+        DeclaredValue {
+            family: "model".to_owned(),
+            source: SourceKind::ProjectConfig,
+            evidence_digest_sha256: DIGEST_B.to_owned(),
+            value: ResolutionValue::Enum {
+                value: "glm".to_owned(),
+            },
+        },
+    ];
+    input.constraint_evidence.push(ConstraintEvidence {
+        family: "model".to_owned(),
+        field: "$".to_owned(),
+        ceiling: ExternalCeiling::ProviderCapability,
+        subject: EvidenceSubject::Route {
+            route: input.runtime.selected_route.clone().unwrap(),
+        },
+        evidence_digest_sha256: DIGEST_A.to_owned(),
+        value: ConstraintValue::Domain {
+            minimum: None,
+            maximum: None,
+            allowed_values: Some(BTreeSet::from([ResolutionValue::Enum {
+                value: "glm-5.2".to_owned(),
+            }])),
+            required_values: None,
+            preferred: None,
+        },
+    });
+    let report = report_even_when_other_active_families_are_unresolved(input);
+    let entry = &report.entries[1];
+    assert!(matches!(
+        entry
+            .provenance
+            .as_ref()
+            .map(|provenance| &provenance.source),
+        Some(ResolutionSource::Declared {
+            kind: SourceKind::UserConfig,
+            ..
+        })
+    ));
+    assert_eq!(
+        entry.shadowed.last().unwrap().reason_code,
+        "lower_precedence"
     );
 }
 
@@ -1945,21 +2870,15 @@ fn aliases_canonicalize_before_duplicate_detection_and_shadowed_values_still_val
 
 #[test]
 fn activation_default_route_and_constraint_evidence_fail_closed() {
-    let mut activation = minimal_input();
-    let seam = families()
-        .iter()
-        .find_map(|family| match family.activation.predicate {
-            iteron_tunables::ActivationPredicate::RuntimeDerived { seam } => Some(seam),
-            _ => None,
-        })
-        .unwrap();
-    activation.activation_evidence.push(ActivationEvidence {
-        seam: seam.to_owned(),
-        subject_digest_sha256: "not-a-digest".to_owned(),
-        evidence_digest_sha256: DIGEST_A.to_owned(),
+    let mut unknown = minimal_input();
+    unknown.activation_evidence.push(ActivationEvidence {
+        family: "retry_backoff_base".to_owned(),
+        seam: "crates/cli/src/config/retry.rs".to_owned(),
+        subject_digest_sha256: DIGEST_A.to_owned(),
+        evidence_digest_sha256: DIGEST_B.to_owned(),
         active: true,
     });
-    assert_invalid_input(activation);
+    assert_invalid_input(unknown);
 
     let mut default = minimal_input();
     let family = families()
@@ -2024,7 +2943,7 @@ fn activation_default_route_and_constraint_evidence_fail_closed() {
 }
 
 #[test]
-fn empty_utf8_environment_snapshot_value_is_schema_valid() {
+fn empty_environment_snapshot_identity_is_schema_valid() {
     let family = families()
         .iter()
         .find(|family| family.id == "environment_snapshot")
@@ -2042,13 +2961,29 @@ fn empty_utf8_environment_snapshot_value_is_schema_valid() {
         _ => family.source.bindings[0].kind,
     };
     let mut input = minimal_input();
-    let requested = ResolutionValue::Map {
-        entries: [(
-            "fixture:key".to_owned(),
-            ResolutionValue::Text {
-                value: String::new(),
-            },
-        )]
+    let requested = ResolutionValue::Object {
+        fields: [
+            (
+                "present".to_owned(),
+                ResolutionValue::Boolean { value: false },
+            ),
+            (
+                "digest_sha256".to_owned(),
+                ResolutionValue::Text {
+                    value: DIGEST_A.to_owned(),
+                },
+            ),
+            (
+                "canonical_bytes".to_owned(),
+                ResolutionValue::Integer { value: 0 },
+            ),
+            (
+                "trust".to_owned(),
+                ResolutionValue::Enum {
+                    value: "workspace".to_owned(),
+                },
+            ),
+        ]
         .into_iter()
         .collect(),
     };
@@ -2077,10 +3012,23 @@ fn resolve_failure_is_atomic_deterministic_and_still_reports_all_160_families() 
         .report
         .expect("active failure retains the bounded audit report");
     assert_eq!(report.entries.len(), 160);
-    assert!(matches!(
-        report.entries[157].outcome,
-        EntryOutcome::Unavailable
-    ));
+    // `Unavailable` is reported for exactly the families the registry declares `Missing`, and for
+    // no others. Stated as a correspondence rather than as one pinned ordinal, this keeps holding
+    // when families gain or lose a production seam.
+    let unavailable: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.outcome, EntryOutcome::Unavailable))
+        .map(|entry| entry.family_id)
+        .collect();
+    let missing: Vec<_> = families()
+        .iter()
+        .filter(|family| {
+            family.implementation_status == iteron_tunables::ImplementationStatus::Missing
+        })
+        .map(|family| family.id)
+        .collect();
+    assert_eq!(unavailable, missing);
     assert!(
         report
             .entries

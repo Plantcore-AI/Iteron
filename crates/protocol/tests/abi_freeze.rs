@@ -1,4 +1,4 @@
-//! The golden serde-shape snapshot: typed contracts frozen at `PROTOCOL_VERSION` 3.
+//! The golden serde-shape snapshot: typed contracts frozen at `PROTOCOL_VERSION` 4.
 //!
 //! Issue #14 acceptance criterion 7 asks for a CI check that asserts no breaking diff to the
 //! frozen types. This is that check. It serialises a fully populated value of every shape the
@@ -374,6 +374,7 @@ fn effect_proposal() -> EffectProposal {
         admitted: CapabilitySet::only(Capability::ReversibleLocal),
         arguments: json!({ "path": "crates/parser/src/lib.rs" }),
         workspace: "/repo".into(),
+        provider_route_attempt: None,
     }
 }
 
@@ -1348,7 +1349,7 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
         // `governance/schema-compatibility.json`, each of which gained a v2 fixture beside its
         // frozen v1 one. No external peer is pinned to 1 -- the refusal is typed, so one that were
         // would be told, not mis-read.
-        ("PROTOCOL_VERSION", PROTOCOL_VERSION as usize, 3),
+        ("PROTOCOL_VERSION", PROTOCOL_VERSION as usize, 4),
         ("MAX_TASK_TEXT_BYTES", MAX_TASK_TEXT_BYTES, 1_048_576),
         ("MAX_INPUT_SEGMENTS", MAX_INPUT_SEGMENTS, 9),
         ("MAX_INPUT_IMAGES", MAX_INPUT_IMAGES, 8),

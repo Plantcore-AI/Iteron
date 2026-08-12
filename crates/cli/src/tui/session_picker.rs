@@ -274,12 +274,26 @@ pub(super) async fn handle_sessions_command(
                 );
                 return;
             }
-            match iteron_record::delete(
-                &runs,
-                &iteron_protocol::TenantId::default(),
-                &iteron_protocol::RunId(run.to_owned()),
-            ) {
-                Ok(()) => {
+            let operation_id = format!(
+                "session.delete.{}.{}",
+                std::process::id(),
+                crate::erasure_now_unix_ms()
+            );
+            let request = iteron_record::erasure::authorize_local_erasure(&runs).and_then(|authority| {
+                Ok(iteron_protocol::ErasureRequest {
+                    operation_id: iteron_protocol::ErasureOperationId::new(operation_id.clone())?,
+                    authority_id: authority.id().clone(),
+                    requested_at_unix_ms: crate::erasure_now_unix_ms(),
+                    target: iteron_protocol::ErasureTarget::ExactSession {
+                        scope_id: iteron_protocol::ErasureScopeId::new(
+                            iteron_protocol::TenantId::default().0,
+                        )?,
+                        run_id: iteron_protocol::ErasureTargetId::new(run.to_owned())?,
+                    },
+                })
+            });
+            match request.and_then(|request| iteron_record::erasure::execute_erasure(&runs, request)) {
+                Ok(receipt) if receipt.state() == iteron_protocol::ErasureState::Verified => {
                     let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
                     if std::fs::symlink_metadata(&hook_journal).is_ok() {
                         let _ = std::fs::remove_file(hook_journal);
@@ -289,11 +303,21 @@ pub(super) async fn handle_sessions_command(
                         "session.deleted",
                         iteron_protocol::LifecyclePayload {
                             outcome_code: Some("deleted".into()),
+                            reason_code: Some(operation_id),
                             ..iteron_protocol::LifecyclePayload::default()
                         },
                     );
                     app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
                 }
+                Ok(receipt) => app.note(
+                    block::NoticeLevel::Err,
+                    format!(
+                        "session delete refused: operation {} ended {:?} ({:?})",
+                        receipt.request().operation_id,
+                        receipt.state(),
+                        receipt.failure()
+                    ),
+                ),
                 Err(error) => app.note(
                     block::NoticeLevel::Err,
                     format!("session delete refused: {error}"),
@@ -377,10 +401,17 @@ pub(super) async fn create_fresh_session(
         Some(app_server::ControlReply::Adopted {
             adopted,
             snapshot,
+            tunables_checkpoint,
+            compaction_trigger_tokens,
             blocked,
         }) => {
             clear_transcript_for_adoption(app);
-            session.adopt_run(adopted.rollout_path.clone(), (*snapshot).clone());
+            session.adopt_run(
+                adopted.rollout_path.clone(),
+                *tunables_checkpoint,
+                compaction_trigger_tokens,
+                (*snapshot).clone(),
+            );
             app.session_name = "New session".into();
             app.mode = snapshot.mode;
             app.effort = snapshot.effort;

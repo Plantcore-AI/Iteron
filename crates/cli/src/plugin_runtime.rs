@@ -7,6 +7,27 @@ use iteron_marketplace::{
     ActivePlugin, Binding, Contribution, PluginStore, RuntimeScope, Slot, Surface, Wiring,
     compose_governed,
 };
+
+/// Capability token for minting [`crate::config::McpServerOrigin`] plugin provenance. Its fields
+/// and constructor are private to this verified materialization module; config parsing and other
+/// runtime callers can neither deserialize nor synthesize one.
+pub(crate) struct VerifiedMcpPluginOrigin<'a> {
+    plugin: &'a ActivePlugin,
+}
+
+impl<'a> VerifiedMcpPluginOrigin<'a> {
+    fn new(plugin: &'a ActivePlugin) -> Self {
+        Self { plugin }
+    }
+
+    pub(crate) fn plugin_id(&self) -> &str {
+        &self.plugin.manifest.plugin
+    }
+
+    pub(crate) fn version(&self) -> String {
+        self.plugin.manifest.version.to_string()
+    }
+}
 use iteron_protocol::Capability;
 use iteron_protocol::capability_set::CapabilitySet;
 
@@ -104,7 +125,7 @@ impl RuntimePlugins {
             match slot.surface {
                 Surface::Skill => self.skill(slot, binding, plugin),
                 Surface::Agent => self.agent(slot, binding, plugin),
-                Surface::McpServer => self.mcp(slot, binding),
+                Surface::McpServer => self.mcp(slot, binding, plugin),
                 Surface::LanguageServer => self.lsp(slot, binding),
                 Surface::Hook => unreachable!("hook slots are chains"),
             }
@@ -175,15 +196,21 @@ impl RuntimePlugins {
         }
     }
 
-    fn mcp(&mut self, slot: &Slot, binding: &Binding) {
+    fn mcp(&mut self, slot: &Slot, binding: &Binding, plugin: &ActivePlugin) {
         let parsed = serde_json::from_str::<McpServerConfig>(&binding.detail);
         match parsed {
-            Ok(server) if server.name == slot.key => {
+            Ok(mut server) if server.name == slot.key => {
                 let required = match server.transport {
                     McpTransportConfig::Stdio => Capability::CodeExecuting,
                     McpTransportConfig::Http => Capability::IrreversibleExternal,
                 };
                 if binding.capabilities.contains(required) {
+                    // `origin` is serde-skipped and can therefore be minted only here, after the
+                    // package signature, manifest identity, composition winner, and capability
+                    // ceiling have all been verified.
+                    server.origin = crate::config::McpServerOrigin::from_verified_plugin(
+                        VerifiedMcpPluginOrigin::new(plugin),
+                    );
                     self.mcp_servers.push(server);
                 } else {
                     self.note(format!(
@@ -326,6 +353,17 @@ mod tests {
         assert_eq!(runtime.agents.len(), 1);
         assert_eq!(runtime.hooks["PreToolUse"], ["check-tool"]);
         assert_eq!(runtime.mcp_servers[0].name, "docs");
+        assert_eq!(runtime.mcp_servers[0].origin.label(), "plugin");
+        let identity = runtime.mcp_servers[0]
+            .origin
+            .plugin_binding_id("docs")
+            .unwrap()
+            .unwrap();
+        assert!(identity.owns_server("docs"));
+        assert_eq!(
+            crate::config::PluginMcpBindingId::parse(identity.as_str()).unwrap(),
+            identity
+        );
         assert_eq!(runtime.lsp_routes[0].command[0], "custom-rust-lsp");
         assert!(runtime.diagnostics.is_empty(), "{:?}", runtime.diagnostics);
         std::fs::remove_dir_all(root).unwrap();

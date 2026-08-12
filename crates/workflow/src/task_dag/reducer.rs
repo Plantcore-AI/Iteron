@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use super::DagError;
 use super::hash::{config_digest, digest_json, entry_digest};
 use super::types::{
-    BudgetReservation, BudgetUsage, Command, CommandId, Completion, Config, DeliveryState, JoinId,
-    JoinSpec, JoinState, MessageId, Task, TaskId, TaskMessage, TaskSpec, TaskState,
+    Attempt, AttemptCompletion, AttemptId, AttemptState, BudgetReservation, BudgetUsage, Command,
+    CommandId, Completion, Config, DeliveryState, JoinId, JoinSpec, JoinState, MessageId, Task,
+    TaskId, TaskMessage, TaskSpec, TaskState,
 };
 
 const LOG_VERSION: u32 = 1;
@@ -23,6 +24,7 @@ pub struct Snapshot {
     pub sequence: u64,
     pub head_digest: String,
     pub tasks: Vec<Task>,
+    pub attempts: Vec<Attempt>,
     pub messages: Vec<TaskMessage>,
     pub joins: Vec<JoinSpec>,
 }
@@ -57,6 +59,7 @@ pub struct TaskDag {
     sequence: u64,
     head_digest: String,
     pub(super) tasks: BTreeMap<TaskId, Task>,
+    pub(super) attempts: BTreeMap<AttemptId, Attempt>,
     pub(super) messages: BTreeMap<MessageId, TaskMessage>,
     pub(super) joins: BTreeMap<JoinId, JoinSpec>,
     commands: BTreeMap<CommandId, CommandReceipt>,
@@ -73,6 +76,7 @@ impl TaskDag {
             sequence: 0,
             head_digest,
             tasks: BTreeMap::new(),
+            attempts: BTreeMap::new(),
             messages: BTreeMap::new(),
             joins: BTreeMap::new(),
             commands: BTreeMap::new(),
@@ -101,6 +105,10 @@ impl TaskDag {
         self.messages.get(&id)
     }
 
+    pub fn attempt(&self, id: AttemptId) -> Option<&Attempt> {
+        self.attempts.get(&id)
+    }
+
     pub fn remaining_budget(&self, id: TaskId) -> Result<super::types::TaskBudget, DagError> {
         let task = self.tasks.get(&id).ok_or(DagError::UnknownTask(id.0))?;
         task.spec
@@ -117,10 +125,13 @@ impl TaskDag {
     }
 
     pub fn ready_tasks(&self) -> Vec<TaskId> {
-        self.tasks
+        let mut ready = self
+            .tasks
             .iter()
             .filter_map(|(id, task)| matches!(task.state, TaskState::Ready).then_some(*id))
-            .collect()
+            .collect::<Vec<_>>();
+        crate::TaskPrioritySchedulingPolicy::owner().order_ready(&mut ready);
+        ready
     }
 
     pub fn pending_messages(&self, task: TaskId) -> Result<Vec<&TaskMessage>, DagError> {
@@ -172,6 +183,7 @@ impl TaskDag {
             sequence: self.sequence,
             head_digest: self.head_digest.clone(),
             tasks: self.tasks.values().cloned().collect(),
+            attempts: self.attempts.values().cloned().collect(),
             messages: self.messages.values().cloned().collect(),
             joins: self.joins.values().cloned().collect(),
         }
@@ -305,6 +317,53 @@ impl TaskDag {
             Command::CreateTask { spec, .. } => self.apply_create(spec.clone()),
             Command::StartTask { task, .. } => {
                 self.tasks.get_mut(task).expect("validated task").state = TaskState::Running;
+            }
+            Command::RegisterAttempt { attempt, .. } => {
+                self.attempts.insert(
+                    attempt.id,
+                    Attempt {
+                        spec: attempt.clone(),
+                        state: AttemptState::Registered,
+                    },
+                );
+            }
+            Command::StartAttempt { attempt, .. } => {
+                self.attempts
+                    .get_mut(attempt)
+                    .expect("validated attempt")
+                    .state = AttemptState::Running;
+            }
+            Command::CompleteAttempt {
+                attempt,
+                completion,
+                disposition,
+                result_digest,
+                code,
+                detail,
+                ..
+            } => {
+                let state = match completion {
+                    AttemptCompletion::Succeeded => AttemptState::Succeeded {
+                        result_digest: result_digest.clone().expect("validated digest"),
+                        disposition: *disposition,
+                    },
+                    AttemptCompletion::Failed => AttemptState::Failed {
+                        code: code.clone().expect("validated code"),
+                        detail: detail.clone().unwrap_or_default(),
+                        disposition: *disposition,
+                    },
+                    AttemptCompletion::Cancelled => AttemptState::Cancelled {
+                        reason: detail.clone().expect("validated cancellation reason"),
+                        disposition: *disposition,
+                    },
+                    AttemptCompletion::UnknownEffect => AttemptState::UnknownEffect {
+                        reason: detail.clone().expect("validated unknown-effect reason"),
+                    },
+                };
+                self.attempts
+                    .get_mut(attempt)
+                    .expect("validated attempt")
+                    .state = state;
             }
             Command::ChargeBudget { task, delta, .. } => {
                 let target = self.tasks.get_mut(task).expect("validated task");

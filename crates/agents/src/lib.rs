@@ -47,14 +47,15 @@ mod policy;
 mod reduce;
 mod stage;
 
-pub use catalog::{AgentCatalog, LoadError};
+pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
 pub use decompose::{
     Decomposer, FAN_CAP, LEAF_MAX_CHARS, MAX_ROUTER_TASK_BYTES, NormalizedLeaves,
     ROUTER_SLOT_VERSION, RepoSignals, RouterProposal, RouterRoute, RouterSlotDecision,
     RouterSlotError, RouterSlotObservation, RouterStrategy, TaskClass, router_slot,
 };
 pub use def::{
-    AgentDef, READ_ONLY_TOOLS, ToolFilter, ULTRACODE_PLANNER_NAME, subagent_budget,
+    AgentDef, DecompositionProfile, ISOLATED_WRITER_NAME, ISOLATED_WRITER_TOOLS,
+    MIN_SUBAGENT_TURNS, READ_ONLY_TOOLS, ToolFilter, ULTRACODE_PLANNER_NAME, subagent_budget,
     subagent_budget_ceiling,
 };
 pub use planner::{
@@ -62,7 +63,10 @@ pub use planner::{
     PlannerProposal, PlannerStrategy,
 };
 pub use policy::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
-pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
+pub use reduce::{
+    CoverageError, CoverageExpectation, JoinMode, JoinReducePolicy, OrderedBundle, ReduceOrder,
+    Summary, SummaryOutcome, join_reduce_policy, reduce, reduce_checked,
+};
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,
     WorkflowPlan,

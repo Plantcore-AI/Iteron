@@ -1,7 +1,9 @@
 //! Pure/ReadOnly tools: read_file, list_dir, grep. These are the tools the scheduler may
 //! dispatch early (at content_block_stop) because they have no observable effect.
 
-use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
+use crate::{
+    ObservationToolPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root,
+};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::path::Path;
 use tokio::io::AsyncReadExt;
@@ -11,9 +13,15 @@ use walkdir::WalkDir;
 /// old ceiling truncated ordinary source files, and the model's only recovery was to re-issue the
 /// call with an offset — turning one read into three or four and burning the turn budget the run
 /// was actually bounded by. Still a ceiling, because an unbounded read is a context overflow.
-const MAX_READ_OUTPUT_BYTES: usize = 400_000;
-const MAX_READ_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const TRUNCATION_MARKER_RESERVE_BYTES: usize = 256;
+
+/// Which pagination boundary ended a `read_file`. Both resume identically; they differ only in
+/// what the operator can do about it, which is exactly what the marker has to say.
+#[derive(Clone, Copy)]
+enum TruncationCause {
+    Window,
+    OutputBytes,
+}
 const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,26 +161,32 @@ fn positive_integer(input: &serde_json::Value, field: &str) -> Result<Option<u64
         .ok_or_else(|| format!("read_file: `{field}` must be a positive integer (minimum 1)"))
 }
 
-async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<String> {
+async fn read_numbered_file(
+    path: &Path,
+    window: ReadWindow,
+    policy: crate::ReadFilePolicy,
+) -> std::io::Result<String> {
     let file = tokio::fs::File::open(path).await?;
     let metadata = file.metadata().await?;
-    if metadata.len() > MAX_READ_SOURCE_BYTES as u64 {
+    if metadata.len() > policy.source_max_bytes as u64 {
         return Ok(format!(
-            "(oversized file, not shown; read_file source limit is {MAX_READ_SOURCE_BYTES} bytes)"
+            "(oversized file, not shown; read_file source limit is {} bytes)",
+            policy.source_max_bytes
         ));
     }
     let mut bytes = Vec::with_capacity(
         usize::try_from(metadata.len())
-            .unwrap_or(MAX_READ_SOURCE_BYTES)
-            .min(MAX_READ_SOURCE_BYTES)
+            .unwrap_or(policy.source_max_bytes)
+            .min(policy.source_max_bytes)
             .saturating_add(1),
     );
-    file.take(MAX_READ_SOURCE_BYTES.saturating_add(1) as u64)
+    file.take(policy.source_max_bytes.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
         .await?;
-    if bytes.len() > MAX_READ_SOURCE_BYTES {
+    if bytes.len() > policy.source_max_bytes {
         return Ok(format!(
-            "(oversized file, not shown; read_file source limit is {MAX_READ_SOURCE_BYTES} bytes)"
+            "(oversized file, not shown; read_file source limit is {} bytes)",
+            policy.source_max_bytes
         ));
     }
     let text = match EditableText::parse(&bytes) {
@@ -198,15 +212,25 @@ async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<
             continue;
         }
 
+        // Policy and caller windows are pagination boundaries, not silent EOF. Check before
+        // rendering the next available line so the marker can name the exact resume offset. If
+        // the file ended exactly at the boundary this branch is never reached and no false
+        // truncation marker is emitted.
+        if emitted >= policy.max_lines as u64 || window.limit.is_some_and(|limit| emitted >= limit)
+        {
+            truncated_before = Some((absolute_line, TruncationCause::Window));
+            break;
+        }
+
         let numbered = format!("{absolute_line:>6}\t{line}");
         let separator_bytes = usize::from(!output.is_empty());
         if output
             .len()
             .saturating_add(separator_bytes)
             .saturating_add(numbered.len())
-            > MAX_READ_OUTPUT_BYTES - TRUNCATION_MARKER_RESERVE_BYTES
+            > policy.output_max_bytes - TRUNCATION_MARKER_RESERVE_BYTES
         {
-            truncated_before = Some(absolute_line);
+            truncated_before = Some((absolute_line, TruncationCause::OutputBytes));
             break;
         }
         if separator_bytes > 0 {
@@ -214,15 +238,22 @@ async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<
         }
         output.push_str(&numbered);
         emitted += 1;
-        if window.limit.is_some_and(|limit| emitted >= limit) {
-            break;
-        }
     }
 
-    if let Some(next_line) = truncated_before {
+    if let Some((next_line, cause)) = truncated_before {
+        // Name the boundary that actually stopped the read. Both are pagination boundaries and
+        // both resume the same way, but reporting a caller's own `limit` as a byte cap tells the
+        // operator the file is larger than their window in a way they cannot act on, and hides
+        // the one case where raising `limit` would not help.
+        let reason = match cause {
+            TruncationCause::Window => "the requested line window ended here".to_owned(),
+            TruncationCause::OutputBytes => format!(
+                "read_file output is capped at {} bytes",
+                policy.output_max_bytes
+            ),
+        };
         let marker = format!(
-            "… (truncated before line {next_line}; read_file output is capped at \
-             {MAX_READ_OUTPUT_BYTES} bytes; continue with offset={next_line})"
+            "… (truncated before line {next_line}; {reason}; continue with offset={next_line})"
         );
         if marker.len() >= TRUNCATION_MARKER_RESERVE_BYTES {
             return Err(std::io::Error::other(
@@ -233,7 +264,7 @@ async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<
             output.push('\n');
         }
         output.push_str(&marker);
-        debug_assert!(output.len() <= MAX_READ_OUTPUT_BYTES);
+        debug_assert!(output.len() <= policy.output_max_bytes);
     }
 
     if output.is_empty() {
@@ -249,9 +280,32 @@ async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<
     }
 }
 
+/// Append a truncation marker without letting the marker itself violate the pinned byte ceiling.
+/// Data lines at the tail are discarded if necessary; the marker is more important because it
+/// makes the loss explicit and tells the caller why traversal stopped.
+fn append_bounded_marker(lines: &mut Vec<String>, cap: usize, marker: String) {
+    debug_assert!(marker.len() <= cap);
+    while !lines.is_empty()
+        && lines
+            .iter()
+            .map(String::len)
+            .sum::<usize>()
+            .saturating_add(lines.len())
+            .saturating_add(marker.len())
+            > cap
+    {
+        lines.pop();
+    }
+    if marker.len() <= cap {
+        lines.push(marker);
+    }
+    debug_assert!(lines.join("\n").len() <= cap);
+}
+
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     register_outline(r)?;
     crate::grep_tool::register(r)?;
+    let read_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "read_file".into(),
@@ -260,9 +314,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                  workspace root or an absolute host path. Returns absolute 1-based line numbers so \
                  edits can reference exact text. `offset` is the optional 1-based first line \
                  (default 1); `limit` is the optional number of lines. Output is capped at \
-                 {MAX_READ_OUTPUT_BYTES} bytes and source reads at 8 MiB; binary, \
-                 unsupported-encoding, and oversized files are not injected. Truncation reports \
-                 the next offset to read."
+                 {} bytes by the canonical default; the effective source/output ceilings are \
+                 pinned in the run checkpoint. Binary, unsupported-encoding, and oversized files \
+                 are not injected. Truncation reports the next offset to read.",
+                ObservationToolPolicy::default().read_file.output_max_bytes,
             ),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -279,10 +334,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     "limit":{
                         "type":"integer",
                         "minimum":1,
-                        "description":format!(
-                            "optional maximum number of lines to return; the \
-                             {MAX_READ_OUTPUT_BYTES}-byte output cap still applies"
-                        )
+                        "description":"optional maximum number of lines to return; the pinned runtime output-byte cap still applies"
                     }
                 },
                 "required":["path"]
@@ -290,9 +342,13 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy = read_policy.get().copied();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy else {
+                    return err_result(id, "read_file: runtime policy was not installed".into());
+                };
                 let path = call
                     .input
                     .get("path")
@@ -304,7 +360,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 };
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
-                    Ok(p) => match read_numbered_file(&p, window).await {
+                    Ok(p) => match read_numbered_file(&p, window, policy.read_file).await {
                         Ok(content) => ok_result(id, content),
                         Err(e) => err_result(id, format!("read {path}: {e}")),
                     },
@@ -313,6 +369,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
     )?;
 
+    let list_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "list_dir".into(),
@@ -328,26 +385,53 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy = list_policy.get().copied();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy else {
+                    return err_result(id, "list_dir: runtime policy was not installed".into());
+                };
                 let rel = call.input.get("path").and_then(|x| x.as_str()).unwrap_or(".");
                 match resolve_in_root(&root, rel) {
                     Err(e) => err_result(id, e),
                     Ok(base) => {
                         let mut out = Vec::new();
+                        let mut output_bytes = 0usize;
+                        let mut emitted_entries = 0usize;
                         for entry in WalkDir::new(&base)
-                            .max_depth(6)
+                            .max_depth(policy.list_dir.max_depth)
                             .into_iter()
                             .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
                             .flatten()
                         {
                             if entry.file_type().is_file() {
-                                out.push(crate::display_path(&root, entry.path()));
-                            }
-                            if out.len() > 400 {
-                                out.push("… (truncated at 400 entries; narrow the path)".into());
-                                break;
+                                if emitted_entries >= policy.list_dir.max_entries {
+                                    append_bounded_marker(
+                                        &mut out,
+                                        policy.list_dir.output_max_bytes,
+                                        format!(
+                                            "… (truncated at {} entries; narrow the path)",
+                                            policy.list_dir.max_entries
+                                        ),
+                                    );
+                                    break;
+                                }
+                                let line = crate::display_path(&root, entry.path());
+                                let framed = line.len().saturating_add(usize::from(!out.is_empty()));
+                                if output_bytes.saturating_add(framed)
+                                    > policy.list_dir.output_max_bytes
+                                {
+                                    append_bounded_marker(
+                                        &mut out,
+                                        policy.list_dir.output_max_bytes,
+                                        "… (truncated at the pinned output-byte ceiling)".into(),
+                                    );
+                                    break;
+                                }
+                                output_bytes = output_bytes.saturating_add(framed);
+                                out.push(line);
+                                emitted_entries = emitted_entries.saturating_add(1);
                             }
                         }
                         ok_result(id, out.join("\n"))
@@ -357,6 +441,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
     )?;
 
+    let glob_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "glob".into(),
@@ -372,15 +457,21 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy = glob_policy.get().copied();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy else {
+                    return err_result(id, "glob: runtime policy was not installed".into());
+                };
                 let Some(pattern) = call.input.get("pattern").and_then(|x| x.as_str()) else {
                     return err_result(id, "glob: a `pattern` is required".into());
                 };
                 let mut out = Vec::new();
+                let mut output_bytes = 0usize;
+                let mut emitted_results = 0usize;
                 for entry in WalkDir::new(&root)
-                    .max_depth(20)
+                    .max_depth(policy.glob.max_depth)
                     .into_iter()
                     .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
                     .flatten()
@@ -390,12 +481,30 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     {
                         let rel = p.to_string_lossy().replace('\\', "/");
                         if glob_match(pattern, &rel) {
+                            if emitted_results >= policy.glob.max_results {
+                                append_bounded_marker(
+                                    &mut out,
+                                    policy.glob.output_max_bytes,
+                                    format!(
+                                        "… (truncated at {} matches; narrow the pattern)",
+                                        policy.glob.max_results
+                                    ),
+                                );
+                                break;
+                            }
+                            let framed = rel.len().saturating_add(usize::from(!out.is_empty()));
+                            if output_bytes.saturating_add(framed) > policy.glob.output_max_bytes {
+                                append_bounded_marker(
+                                    &mut out,
+                                    policy.glob.output_max_bytes,
+                                    "… (truncated at the pinned output-byte ceiling)".into(),
+                                );
+                                break;
+                            }
+                            output_bytes = output_bytes.saturating_add(framed);
                             out.push(rel);
+                            emitted_results = emitted_results.saturating_add(1);
                         }
-                    }
-                    if out.len() > 400 {
-                        out.push("… (truncated at 400 matches; narrow the pattern)".into());
-                        break;
                     }
                 }
                 if out.is_empty() {
@@ -451,6 +560,7 @@ fn wild_seg(pat: &str, s: &str) -> bool {
 /// Agentless: the skeleton beats whole-file localization by +5.3pp at 7.5x less cost. This is
 /// the map the agent should read FIRST on an unfamiliar repo, before materializing any file.
 pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
+    let repo_map_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "repo_map".into(),
@@ -472,16 +582,26 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy = repo_map_policy.get().copied();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy else {
+                    return err_result(id, "repo_map: runtime policy was not installed".into());
+                };
                 // Budget the map so it never dominates the window (late materialization).
                 let query = call
                     .input
                     .get("query")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let map = iteron_ctx::repo_outline_for_task(&root, 6_000, query);
+                let map = iteron_ctx::repo_outline_for_task_with_limits(
+                    &root,
+                    policy.repo_map.max_files,
+                    policy.repo_map.max_depth,
+                    policy.repo_map.max_tokens,
+                    query,
+                );
                 ok_result(id, map)
             })
         },

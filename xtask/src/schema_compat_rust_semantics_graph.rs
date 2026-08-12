@@ -104,18 +104,31 @@ impl ProtocolGraph {
         Ok(graph)
     }
 
-    pub(super) fn imports(&self) -> BTreeMap<String, BTreeSet<String>> {
-        self.files
-            .iter()
-            .map(|(path, file)| (path.clone(), import_fingerprints(file)))
-            .collect()
+    pub(super) fn imports_reaching(
+        &self,
+        path: &str,
+        referenced: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>> {
+        let file = self
+            .files
+            .get(path)
+            .with_context(|| format!("protocol graph lacks module '{path}'"))?;
+        Ok(import_bindings(file)
+            .into_iter()
+            .filter(|binding| binding.reaches(referenced))
+            .map(|binding| binding.fingerprint)
+            .collect())
     }
 
-    pub(super) fn modules(&self) -> BTreeMap<String, Vec<String>> {
-        self.files
-            .iter()
-            .map(|(path, file)| (path.clone(), module_fingerprints(file)))
-            .collect()
+    pub(super) fn module_fingerprints(&self, path: &str) -> Result<BTreeSet<String>> {
+        let file = self
+            .files
+            .get(path)
+            .with_context(|| format!("protocol graph lacks module '{path}'"))?;
+        Ok(module_bindings(file)
+            .into_iter()
+            .map(|binding| binding.fingerprint)
+            .collect())
     }
 
     pub(super) fn item(&self, type_name: &str) -> Result<&syn::Item> {
@@ -390,17 +403,6 @@ fn semantic_extern_crate(item: &syn::ItemExternCrate) -> String {
     item.into_token_stream().to_string()
 }
 
-pub(super) fn import_fingerprints(file: &syn::File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Use(item) => Some(semantic_use(item)),
-            syn::Item::ExternCrate(item) => Some(semantic_extern_crate(item)),
-            _ => None,
-        })
-        .collect()
-}
-
 fn module_fingerprint(module: &syn::ItemMod) -> String {
     let mut module = module.clone();
     module.attrs.retain(|attribute| !is_doc(attribute));
@@ -408,16 +410,6 @@ fn module_fingerprint(module: &syn::ItemMod) -> String {
         module.content = Some((brace, Vec::new()));
     }
     module.into_token_stream().to_string()
-}
-
-pub(super) fn module_fingerprints(file: &syn::File) -> Vec<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Mod(module) => Some(module_fingerprint(module)),
-            _ => None,
-        })
-        .collect()
 }
 
 /// A file-scope binding: the fingerprint that must not drift, and the names it puts in scope.
@@ -520,13 +512,15 @@ pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
         .collect()
 }
 
-/// Doc attributes do not affect scope. Every other declaration attribute is treated as potentially
-/// active because `macro_use` and conditional forms can introduce names that are not the declared
-/// module/crate/import name.
+/// Doc and plain `cfg` attributes do not make a binding's name unknowable. `cfg` can remove the
+/// declared name in one build, but it cannot introduce a different name; a frozen item which names
+/// that binding still retains the complete declaration fingerprint (including the predicate).
+/// Every other declaration attribute stays conservative because `macro_use`, `cfg_attr`, and
+/// procedural attributes can introduce names that are not the declared module/crate/import name.
 fn binding_attributes_are_inert(attributes: &[syn::Attribute]) -> bool {
     attributes
         .iter()
-        .all(|attribute| attribute.path().is_ident("doc"))
+        .all(|attribute| attribute.path().is_ident("doc") || attribute.path().is_ident("cfg"))
 }
 
 /// Every identifier-shaped run of characters in a fingerprint.

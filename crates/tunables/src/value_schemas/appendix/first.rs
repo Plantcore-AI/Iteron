@@ -32,7 +32,11 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         crate::FieldDomain::Scalar {
             domain: decimal_domain!(0, 0, 1, 0, 6, "weight")
         },
-        []
+        [sum_equals_decimal_rule!(
+            ["quality", "cost", "latency"],
+            1,
+            0
+        )]
     ),
     object_schema!(
         "provider_health_circuit_breaker_state_policy",
@@ -61,6 +65,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         ],
         [
             requires_bool_rule!("enabled", true, "max_duplicates"),
+            requires_bool_rule!("enabled", true, "idempotent_only"),
             external_rule!("delay_milliseconds", ParentWall),
             external_rule!("max_duplicates", ParentCost)
         ]
@@ -77,7 +82,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     scalar_schema!(
         "response_verbosity",
         Enum,
-        finite_enum_domain!("concise", "balanced", "detailed"),
+        finite_enum_domain!("model_default", "concise", "balanced", "detailed"),
         [
             external_rule!("$", ProviderCapability),
             external_domain_rule!("$", ParentTokens)
@@ -130,12 +135,55 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 "verification_reserve_tokens",
                 true,
                 int_domain!(0, 1_000_000, "tokens")
+            ),
+            scalar_field!(
+                "instruction_budget_tokens",
+                true,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "task_context_budget_tokens",
+                true,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "memory_budget_tokens",
+                true,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "attachment_budget_tokens",
+                true,
+                int_domain!(0, 10_000_000, "tokens")
+            ),
+            scalar_field!(
+                "tool_schema_budget_tokens",
+                true,
+                int_domain!(0, 10_000_000, "tokens")
             )
         ],
         [
             sum_rule!(
                 ["output_reserve_tokens", "verification_reserve_tokens"],
                 "model_window_tokens"
+            ),
+            resolved_set_sum_rule!(
+                "iteron://tunables/resolved-set-rules/context-window-components-v1",
+                [
+                    "context_window_override_reserve" => "output_reserve_tokens",
+                    "context_window_override_reserve" => "verification_reserve_tokens",
+                    "context_window_override_reserve" => "instruction_budget_tokens",
+                    "context_window_override_reserve" => "task_context_budget_tokens",
+                    "context_window_override_reserve" => "memory_budget_tokens",
+                    "context_window_override_reserve" => "attachment_budget_tokens",
+                    "context_window_override_reserve" => "tool_schema_budget_tokens",
+                    "system_prefix_budget" => "$",
+                    "conversation_history_budget" => "$",
+                    "tool_result_history_budget" => "$",
+                    "multimodal_token_budget" => "$",
+                    "lsp_result_context_budget" => "$"
+                ],
+                "context_window_override_reserve" => "model_window_tokens"
             ),
             external_rule!("model_window_tokens", ProviderCapability)
         ]
@@ -205,7 +253,11 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         crate::FieldDomain::Scalar {
             domain: decimal_domain!(0, 0, 1, 0, 6, "weight")
         },
-        []
+        [
+            at_least_one_non_zero_rule!(["lexical", "structural", "vector", "reranker"]),
+            equals_decimal_rule!("vector", 0, 0),
+            equals_decimal_rule!("reranker", 0, 0)
+        ]
     ),
     scalar_schema!(
         "retrieval_recency_decay",
@@ -231,7 +283,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     scalar_schema!(
         "concurrent_background_job_cap",
         Count,
-        int_domain!(0, 1024, "jobs"),
+        int_domain!(0, 16, "jobs"),
         [external_rule!("$", ProcessBudget)]
     ),
     scalar_schema!(

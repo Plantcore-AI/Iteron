@@ -10,6 +10,7 @@ iteron-protocol = { path = "../protocol" }
 iteron-sandbox = { path = "../sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }

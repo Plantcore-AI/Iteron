@@ -1,6 +1,18 @@
 use super::*;
 
 pub(super) fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
+    open_tunables_picker_with_runtime_policy(app, session, argument, session.runtime_policy());
+}
+
+/// Open the runtime view with the overlay returned by the authoritative control round-trip that
+/// immediately precedes `/tunables`. The frontend's terminal-event cache can lag a live USD or
+/// budget transition even though the resident owner has already committed it.
+pub(super) fn open_tunables_picker_with_runtime_policy(
+    app: &mut App,
+    session: &Session,
+    argument: &str,
+    runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
+) {
     if app.running || app.pending.is_some() {
         app.note(
             block::NoticeLevel::Warn,
@@ -26,9 +38,28 @@ pub(super) fn open_tunables_picker(app: &mut App, session: &Session, argument: &
                 return;
             }
         }
+    } else if argument == "registry" {
+        (tunables_view::registry_catalog(), String::new())
     } else {
+        let Some(checkpoint) = session.tunables_checkpoint() else {
+            app.note(
+                block::NoticeLevel::Err,
+                "runtime tunables are not pinned for this session",
+            );
+            return;
+        };
+        let catalog = match tunables_view::checkpoint_catalog(checkpoint, runtime_policy) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("runtime tunables unavailable: {error}"),
+                );
+                return;
+            }
+        };
         (
-            tunables_view::registry_catalog(),
+            catalog,
             argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
         )
     };
@@ -236,6 +267,7 @@ pub(super) fn export_transcript(
 pub(super) fn schedule_transcript_viewer_effect(
     app: &mut App,
     workspace: &Path,
+    rollout_path: &Path,
     supervisor: &mut transcript_effect::Supervisor,
     effect: transcript_viewer::Effect,
 ) {
@@ -280,6 +312,7 @@ pub(super) fn schedule_transcript_viewer_effect(
             };
             transcript_effect::Request::Export {
                 workspace: workspace.to_path_buf(),
+                rollout_path: rollout_path.to_path_buf(),
                 blocks: app.transcript.clone(),
                 selected_ids: ids,
                 requested: requested.into(),
@@ -312,6 +345,7 @@ pub(super) fn open_transcript_viewer(
 pub(super) fn schedule_slash_export(
     app: &mut App,
     workspace: &Path,
+    rollout_path: &Path,
     supervisor: &mut transcript_effect::Supervisor,
     requested: &str,
     collision: transcript_export::CollisionPolicy,
@@ -325,6 +359,7 @@ pub(super) fn schedule_slash_export(
     }
     let request = transcript_effect::Request::Export {
         workspace: workspace.to_path_buf(),
+        rollout_path: rollout_path.to_path_buf(),
         blocks: app.transcript.clone(),
         selected_ids: None,
         requested: requested.into(),

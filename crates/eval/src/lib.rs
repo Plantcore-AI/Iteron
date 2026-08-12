@@ -15,6 +15,7 @@ pub mod measurement;
 pub mod pareto;
 pub mod process;
 pub mod provisioner;
+pub mod record_projection;
 pub mod reference_harness;
 pub mod report;
 pub mod runner;
@@ -51,6 +52,9 @@ pub use measurement::{
 pub use pareto::{ParetoError, ParetoPoint, ParetoReport, pareto_frontier};
 pub use provisioner::{
     Provisioner, ProvisioningBackend, TestCommandReceipt, TestSet, TestSetReceipt,
+};
+pub use record_projection::{
+    RecordPolicyProjectionError, RecordPolicyRunProjector, RecordedPolicyRunSpec,
 };
 pub use reference_harness::{
     CandidateOutput, CapturedHarnessCandidate, ReferenceHarnessAdapter, ReferenceHarnessError,

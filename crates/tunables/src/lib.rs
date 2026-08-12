@@ -15,6 +15,7 @@
 //! - metadata never silently turns an invariant or operator ceiling into an adaptive choice.
 
 mod benchmark_metadata;
+mod binding_metadata;
 mod canonical;
 mod families;
 mod metadata;
@@ -27,6 +28,9 @@ mod resolution_metadata;
 mod resolution_prepare;
 mod resolution_types;
 mod resolution_value;
+mod resolved_set_rules;
+mod runtime_binding;
+mod runtime_requirements;
 mod schema_catalog;
 mod semantic_keys;
 mod strategy_slots;
@@ -44,41 +48,55 @@ pub use resolution_explain::{ExplainError, explain_entry_json, explain_text};
 pub use resolution_types::{
     ActivationEvidence, Adjustment, AdjustmentKind, CatalogSnapshot, ConstraintEvidence,
     ConstraintValue, DeclaredValue, DefaultEvidence, EntryOutcome, EntryState, EvidenceState,
-    EvidenceSubject, FailureCode, FamilyFailure, InactiveCause, ProfileValue,
-    RESOLUTION_INPUT_MAX_BYTES, RESOLUTION_SCHEMA_VERSION, RejectionReason,
+    EvidenceSubject, FailureCode, FamilyFailure, FixedAuthorityAttestation, InactiveCause,
+    ProfileValue, RESOLUTION_INPUT_MAX_BYTES, RESOLUTION_SCHEMA_VERSION, RejectionReason,
     ResolutionFailureReport, ResolutionInput, ResolutionProfile, ResolutionProvenance,
     ResolutionReport, ResolutionSource, ResolutionValue, ResolvedEntry, ResolvedTunableSet,
     RouteCapabilities, RouteIdentity, RuntimeContext, ShadowedValue, UnresolvedReason,
+};
+#[cfg(feature = "test-fixtures")]
+pub use runtime_binding::with_synthetic_fixed_authority_attestations_for_test;
+pub use runtime_binding::{
+    EffectiveValueError, RuntimeAuthoritySet, RuntimeOwnerReceipt, RuntimeProfile,
+    RuntimeResolutionBuilder, RuntimeResolutionError, fixed_authority_value_digest_sha256,
+    runtime_catalog_snapshot, runtime_profile_digest,
+};
+pub use runtime_requirements::{
+    RuntimeActivationRequirement, RuntimeConstraintRequirement, RuntimeDefaultObservation,
+    canonical_embedded_default, canonical_family, runtime_activation_requirements,
+    runtime_constraint_requirements, runtime_default_observations,
 };
 pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
 pub use types::{
     ActivationPredicate, ActivationSpec, AuthorityClass, BenchmarkCausalPath, BenchmarkRelevance,
     CapabilityRequirement, CausalPath, ConstraintProjection, ConstraintRelation,
     ConstraintViolation, CoreStrategySlot, CrossFieldRule, DecimalValue, DefaultKind,
-    DefaultResolver, DefaultSpec, DefaultValueRequirement, Domain, ExternalCeiling, Family,
-    FieldDomain, ImplementationStatus, InactiveReason, OptimizationClass, OptimizationSpec,
-    ProviderRequirement, RelevanceLevel, RequirementSpec, RiskClass, RuleValue, ScalarDomain,
-    SchemaField, SearchPhase, SourceBinding, SourceKind, SourceSpec, SourceTrust, StringFormat,
-    StructuredValueDomain, TunableValue, TunableValueField, ValueKind, ValueSchema,
+    DefaultResolver, DefaultSpec, DefaultValueRequirement, Domain, EvidenceProjectionId,
+    ExternalCeiling, Family, FieldDomain, FixedAuthorityId, ImplementationStatus, InactiveReason,
+    OptimizationClass, OptimizationSpec, ProductionOwnerId, ProductionOwnerSymbolId,
+    ProviderRequirement, RelevanceLevel, RequirementSpec, ResolvedValuePath, RiskClass, RuleValue,
+    RuntimeBindingSpec, RuntimeGetterId, ScalarDomain, SchemaField, SearchPhase, SourceBinding,
+    SourceKind, SourceMergePolicy, SourceSpec, SourceTrust, StringFormat, StructuredValueDomain,
+    TunableValue, TunableValueField, ValueKind, ValueSchema,
 };
 pub use validate::{RegistryError, validate_registry};
 
 /// Registry DTO schema. A breaking field or semantic change requires a new version.
-pub const REGISTRY_SCHEMA_VERSION: u16 = 3;
+pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 /// Schema version carried by every semantic family entry.
-pub const FAMILY_SCHEMA_VERSION: u16 = 2;
+pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v3.
-pub const REGISTRY_REVISION: u16 = 4;
+/// Revision of the family set under schema v4.
+pub const REGISTRY_REVISION: u16 = 16;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
-pub const CANONICALIZATION: &str = "iteron-tunables-json-v3";
+pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 /// Canonical byte encoding used for each entry's semantic digest.
-pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
+pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 4; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 16; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "8a1621cf1e51d9936ccbdceefe3f35ab6fdd9c580a2d4bcce3b1dfa3769fc48c";
+    "4f79c8296326a2b1b84ccf3bbea61a3f30095cc5b634c4ae0371efc9b0b51b55";

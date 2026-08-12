@@ -117,17 +117,18 @@ impl Agent {
         }
         let previous = self.budget.max_turns;
         if max_turns != previous {
-            let used = self.ledger.provider_attempts;
-            self.emit_durable(
-                TurnId(self.seq_turn),
-                EventKind::Notice {
-                    text: format!(
-                        "operator set the session turn ceiling: {previous} -> {max_turns} ({used} \
-                         provider attempts already charged)"
-                    ),
-                },
-            )?;
+            let kind = EventKind::TurnCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                source: RuntimePolicySource::Operator,
+                max_turns,
+            };
+            let sequence = self.emit_durable_seq(TurnId(self.seq_turn), kind.clone())?;
             self.budget.max_turns = max_turns;
+            self.observe_runtime_policy_commit(
+                &kind,
+                sequence,
+                RuntimePolicyObservation::LiveCommit,
+            );
         }
         Ok(self.turn_budget())
     }

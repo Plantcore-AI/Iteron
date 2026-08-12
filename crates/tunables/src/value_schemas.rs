@@ -6,6 +6,12 @@ macro_rules! schema_id {
     };
 }
 
+macro_rules! schema_id_v3 {
+    ($id:literal) => {
+        concat!("iteron://tunables/families/", $id, "/value-v3")
+    };
+}
+
 macro_rules! catalog_id {
     ($id:literal) => {
         concat!("iteron://tunables/catalogs/", $id, "-v1")
@@ -267,6 +273,40 @@ macro_rules! sum_rule {
     };
 }
 
+macro_rules! sum_equals_decimal_rule {
+    ([$($term:literal),+ $(,)?], $coefficient:expr, $scale:expr) => {
+        crate::CrossFieldRule::SumEquals {
+            terms: &[$($term),+],
+            total: crate::DecimalValue {
+                coefficient: $coefficient,
+                scale: $scale,
+            },
+        }
+    };
+}
+
+macro_rules! resolved_set_sum_rule {
+    (
+        $rule_id:literal,
+        [$($family:literal => $path:literal),+ $(,)?],
+        $limit_family:literal => $limit_path:literal
+    ) => {
+        crate::CrossFieldRule::ResolvedSetSumLessOrEqual {
+            rule_id: $rule_id,
+            terms: &[
+                $(crate::ResolvedValuePath {
+                    family: $family,
+                    path: $path,
+                }),+
+            ],
+            limit: crate::ResolvedValuePath {
+                family: $limit_family,
+                path: $limit_path,
+            },
+        }
+    };
+}
+
 macro_rules! requires_bool_rule {
     ($if_field:literal, $value:expr, $then_field:literal) => {
         crate::CrossFieldRule::Requires {
@@ -277,9 +317,41 @@ macro_rules! requires_bool_rule {
     };
 }
 
+macro_rules! map_entry_domain_rule {
+    ($key:literal, $domain:expr) => {
+        crate::CrossFieldRule::MapEntryDomain {
+            key: $key,
+            domain: $domain,
+        }
+    };
+}
+
+macro_rules! at_least_one_non_zero_rule {
+    ([$($field:literal),+ $(,)?]) => {
+        crate::CrossFieldRule::AtLeastOneNonZero {
+            fields: &[$($field),+],
+        }
+    };
+}
+
+macro_rules! equals_decimal_rule {
+    ($field:literal, $coefficient:expr, $scale:expr) => {
+        crate::CrossFieldRule::Equals {
+            field: $field,
+            value: crate::RuleValue::Decimal {
+                value: crate::DecimalValue {
+                    coefficient: $coefficient,
+                    scale: $scale,
+                },
+            },
+        }
+    };
+}
+
 macro_rules! scalar_schema {
     ($id:literal, $kind:ident, $domain:expr, [$($rule:expr),* $(,)?]) => {
         crate::ValueSchema {
+            version: 1,
             schema_id: schema_id!($id),
             kind: crate::ValueKind::$kind,
             domain: crate::StructuredValueDomain::Scalar { domain: $domain },
@@ -291,6 +363,7 @@ macro_rules! scalar_schema {
 macro_rules! list_schema {
     ($id:literal, $min:expr, $max:expr, $unique:expr, $item:expr, [$($rule:expr),* $(,)?]) => {
         crate::ValueSchema {
+            version: 1,
             schema_id: schema_id!($id),
             kind: crate::ValueKind::List,
             domain: crate::StructuredValueDomain::List {
@@ -307,6 +380,7 @@ macro_rules! list_schema {
 macro_rules! map_schema {
     ($id:literal, $min:expr, $max:expr, $key:expr, $value:expr, [$($rule:expr),* $(,)?]) => {
         crate::ValueSchema {
+            version: 1,
             schema_id: schema_id!($id),
             kind: crate::ValueKind::Map,
             domain: crate::StructuredValueDomain::Map {
@@ -323,7 +397,23 @@ macro_rules! map_schema {
 macro_rules! object_schema {
     ($id:literal, [$($field:expr),+ $(,)?], [$($rule:expr),* $(,)?]) => {
         crate::ValueSchema {
+            version: 1,
             schema_id: schema_id!($id),
+            kind: crate::ValueKind::Policy,
+            domain: crate::StructuredValueDomain::Object {
+                fields: &[$($field),+],
+                additional_fields: false,
+            },
+            rules: &[$($rule),*],
+        }
+    };
+}
+
+macro_rules! object_schema_v3 {
+    ($id:literal, [$($field:expr),+ $(,)?], [$($rule:expr),* $(,)?]) => {
+        crate::ValueSchema {
+            version: 3,
+            schema_id: schema_id_v3!($id),
             kind: crate::ValueKind::Policy,
             domain: crate::StructuredValueDomain::Object {
                 fields: &[$($field),+],
@@ -337,6 +427,7 @@ macro_rules! object_schema {
 macro_rules! catalog_schema {
     ($id:literal, $max:expr, [$($field:expr),+ $(,)?], [$($rule:expr),* $(,)?]) => {
         crate::ValueSchema {
+            version: 1,
             schema_id: schema_id!($id),
             kind: crate::ValueKind::Catalog,
             domain: crate::StructuredValueDomain::Catalog {

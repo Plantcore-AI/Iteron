@@ -171,6 +171,9 @@ mod tests {
             context: ContextEstimate {
                 system_tokens: total / 4,
                 tool_tokens: total / 4,
+                conversation_tokens: total / 2,
+                tool_result_tokens: 0,
+                lsp_result_tokens: 0,
                 transcript_tokens: total / 2,
                 framing_tokens: 0,
                 total_tokens: total,
@@ -268,6 +271,7 @@ mod tests {
         iteron_record::SessionMeta {
             pricing_schema_version: 2,
             projection_schema_version: 1,
+            content_revocation_generation: 0,
             run_id: iteron_protocol::RunId(run_id.into()),
             tenant: iteron_protocol::TenantId::default(),
             cwd: std::path::PathBuf::from("/tmp/project"),
@@ -430,7 +434,10 @@ mod tests {
         let (submissions, _submitted) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(submissions);
 
-        open_tunables_picker(&mut app, &session, "route_selection");
+        open_tunables_picker(&mut app, &session, "registry");
+        for ch in "route_selection".chars() {
+            app.picker_key(KeyCode::Char(ch));
+        }
         let picker = app.picker.as_ref().expect("tunables picker opens");
         assert_eq!(picker.items.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
         assert_eq!(picker.query, "route_selection");
@@ -451,6 +458,61 @@ mod tests {
         assert!(l1.contains("not supplied (no frozen request loaded)"));
         assert!(l1.contains("SWE-bench Pro"));
         assert!(l1.contains("does not edit config"));
+    }
+
+    #[test]
+    fn adopting_a_run_replaces_every_run_local_fact_used_by_tunables_and_context_surfaces() {
+        let mut app = App::new();
+        let (submissions, _submitted) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(submissions);
+        let resolved_a = iteron_record::resolved_fixture::resolved();
+        let checkpoint_a = iteron_record::TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&resolved_a).unwrap(),
+        );
+        session.facts.tunables_checkpoint = Some(checkpoint_a.clone());
+        session.facts.rollout_path = "run-a.jsonl".into();
+        session.facts.compaction_trigger_tokens = 111;
+
+        let mut input_b = iteron_record::resolved_fixture::input();
+        input_b.profile.as_mut().unwrap().profile_id =
+            iteron_tunables::RuntimeProfile::Research.id().to_owned();
+        let resolved_b = iteron_tunables::resolve(input_b).unwrap();
+        let resolved_b =
+            iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved_b)
+                .unwrap();
+        let checkpoint_b = iteron_record::TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&resolved_b).unwrap(),
+        );
+        assert_ne!(
+            checkpoint_a.snapshot_digest_sha256(),
+            checkpoint_b.snapshot_digest_sha256()
+        );
+
+        session.adopt_run(
+            "run-b.jsonl".into(),
+            checkpoint_b.clone(),
+            222,
+            session.state.clone(),
+        );
+        assert_eq!(session.rollout_path(), std::path::Path::new("run-b.jsonl"));
+        assert_eq!(session.tunables_checkpoint(), Some(&checkpoint_b));
+        assert_eq!(
+            session.tunables_effective_digest(),
+            Some(checkpoint_b.effective_digest_sha256())
+        );
+        assert_eq!(
+            session.runtime_profile_id(),
+            Some(iteron_tunables::RuntimeProfile::Research.id())
+        );
+        assert_eq!(session.compaction_trigger_tokens(), 222);
+
+        open_tunables_picker(&mut app, &session, "");
+        let rendered = render_text(&mut app, 140, 30);
+        assert!(rendered.contains("tunables · runtime · immutable genesis"));
+        assert!(
+            rendered.contains("profile=iteron:research"),
+            "adopted runtime profile was absent from the tunables surface:\n{rendered}"
+        );
     }
 
     /// UX-3 frontend surface: `/side` splits into exactly three requests, and only a bare
@@ -1666,6 +1728,54 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         buffer_text(&terminal)
     }
 
+    #[test]
+    fn mcp_status_panel_renders_live_server_lifecycle_evidence() {
+        let mut app = App::new();
+        mcp_command::render_reply(
+            &mut app,
+            app_server::McpControlReply {
+                servers: vec![crate::mcp::McpServerHealth {
+                    name: "docs".into(),
+                    origin: "plugin",
+                    plugin_identity: Some("plugin:docs-pack:1.2.3:mcp:docs".into()),
+                    transport: "stdio",
+                    phase: "ready".into(),
+                    generation: Some(7),
+                    reconnect_attempts: 1,
+                    reconnect_limit: 4,
+                    retry_after_ms: None,
+                    retained_tools: 12,
+                    catalog_current: true,
+                    busy: false,
+                    negotiated_protocol_version: Some("2025-03-26".into()),
+                    last_failure: Some("transport".into()),
+                }],
+                notice: None,
+            },
+        );
+
+        let screen = render_text(&mut app, 120, 20);
+        let normalized = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        for expected in [
+            "1 session-owned MCP servers",
+            "docs",
+            "plugin:docs-pack:1.2.3:mcp:docs",
+            "stdio",
+            "ready",
+            "generation 7",
+            "protocol 2025-03-26",
+            "reconnect 1/4",
+            "last failure retained (details withheld)",
+            "12 retained",
+        ] {
+            assert!(
+                normalized.contains(expected),
+                "missing {expected:?}: {screen}"
+            );
+        }
+        assert!(!normalized.contains("last failure transport"));
+    }
+
     const PRODUCT_SIZES: [(u16, u16); 4] = [(40, 12), (80, 24), (120, 32), (200, 40)];
 
     #[test]
@@ -2297,6 +2407,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(command.contains("enter queues after this turn"));
 
         app.editor.clear();
+        app.editor.insert_str("/mcp cancel docs");
+        let immediate = render_text(&mut app, 80, 16);
+        assert!(immediate.contains("/mcp cancel docs"));
+        assert!(immediate.contains("enter runs this control now"));
+
+        app.editor.clear();
         app.editor.insert_str("also inspect the tests");
         let prose = render_text(&mut app, 80, 16);
         assert!(prose.contains("also inspect the tests"));
@@ -2318,6 +2434,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(
             input_destination(true, false, "  /model"),
             InputDestination::AfterTurn
+        );
+        assert_eq!(
+            input_destination(true, false, "  /mcp cancel docs"),
+            InputDestination::ImmediateCommand
+        );
+        assert_eq!(
+            input_destination(true, true, "/mcp stop docs"),
+            InputDestination::ImmediateCommand,
+            "MCP control remains reachable while the turn is already interrupting"
         );
         assert_eq!(
             input_destination(true, false, "!cargo test"),
@@ -2964,8 +3089,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(summary.clone()),
         };
@@ -3122,8 +3249,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(summary),
         };
@@ -3171,8 +3300,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
                 outcome: iteron_protocol::Outcome::Interrupted,
@@ -3229,8 +3360,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
                 outcome: iteron_protocol::Outcome::BudgetExhausted("max_turns"),
@@ -4960,10 +5093,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     #[test]
     fn file_tag_chip_and_payload_submit_and_clear_on_the_runtime_receipt() {
-        let root = std::env::temp_dir().join(format!(
-            "core-tui-file-tag-submit-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("core-tui-file-tag-submit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("notes.md"), "exact file body").unwrap();
@@ -5908,6 +6039,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.last_context = Some(ContextEstimate {
             system_tokens: 1,
             tool_tokens: 2,
+            conversation_tokens: 3,
+            tool_result_tokens: 0,
+            lsp_result_tokens: 0,
             transcript_tokens: 3,
             framing_tokens: 4,
             total_tokens: 10,
@@ -5928,8 +6062,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
             permission_rules: PermissionRules::new(),
+            runtime_policy: None,
             ledger_summary: String::new(),
             rate_limit: None,
+            mcp_health: Vec::new(),
         };
 
         clear_last_turn_telemetry_from(&mut app, &state);
@@ -6290,13 +6426,8 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
     assert!(bytes.starts_with(iteron_statusline::title_stack_push().as_bytes()));
     assert!(bytes.windows(4).any(|window| window == b"]2;I"));
     assert!(
-        replace_terminal_title_to(
-            &mut bytes,
-            capabilities,
-            "Iteron · session name",
-            &active,
-        )
-        .unwrap()
+        replace_terminal_title_to(&mut bytes, capabilities, "Iteron · session name", &active,)
+            .unwrap()
     );
     let push = iteron_statusline::title_stack_push().as_bytes();
     assert_eq!(

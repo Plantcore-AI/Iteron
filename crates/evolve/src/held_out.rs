@@ -12,6 +12,9 @@
 //! bounds come from the eval lane, while point estimates, pairing, hard-constraint counters, and
 //! overlap are recomputed here from the paired rows and governed identities.
 
+use crate::private_derivatives::{
+    EvolutionDerivativeKind, EvolutionPrivateContent, EvolutionPrivateContentError,
+};
 use crate::{
     BaseModelId, ContractError, EvaluationSuite, GovernedTrainingDataset, HeldOutEvaluation,
     HeldOutEvidenceBridge, IndependentEvaluator, Interval, MAX_EVALUATION_TASKS,
@@ -21,6 +24,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 pub const HELD_OUT_REPORT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_HELD_OUT_REPORT_TASKS: usize = MAX_EVALUATION_TASKS;
@@ -198,11 +202,28 @@ pub enum HeldOutEvidenceRegistration {
 #[derive(Debug, Default, Clone)]
 pub struct HeldOutEvidenceStore {
     entries: BTreeMap<(String, BaseModelId), SignedHeldOutEvaluation>,
+    evaluator_inputs: BTreeMap<(String, BaseModelId), String>,
+    private_content: Option<EvolutionPrivateContent>,
 }
 
 impl HeldOutEvidenceStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn open_record_backed(
+        manifest_root: &Path,
+        content_runs_dir: &Path,
+        tenant_id: iteron_protocol::TenantId,
+    ) -> Result<Self, EvolutionPrivateContentError> {
+        Ok(Self {
+            private_content: Some(EvolutionPrivateContent::open(
+                manifest_root,
+                content_runs_dir,
+                tenant_id,
+            )?),
+            ..Self::default()
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -240,6 +261,36 @@ impl HeldOutEvidenceStore {
             (None, None) => {}
             _ => return Err(HeldOutBridgeError::TrainingDatasetMismatch),
         }
+
+        // The evaluator consumes only the hydrated, source-bound report. Candidate and dataset
+        // revocation therefore closes both future evidence lookup and any replay of this input.
+        let evaluator_input_digest = if let Some(private) = &self.private_content {
+            let mut sources =
+                vec![private.source(EvolutionDerivativeKind::Candidate, &candidate.digest)?];
+            if let Some(dataset_digest) = &verified.training_dataset_digest {
+                sources.push(private.source(EvolutionDerivativeKind::Dataset, dataset_digest)?);
+            }
+            let bytes =
+                serde_json::to_vec(&report).map_err(HeldOutBridgeError::InvalidReportJson)?;
+            if bytes.len() > MAX_HELD_OUT_REPORT_JSON_BYTES {
+                return Err(HeldOutBridgeError::ReportTooLarge {
+                    max: MAX_HELD_OUT_REPORT_JSON_BYTES,
+                    actual: bytes.len(),
+                });
+            }
+            let digest = crate::verifier_crypto::sha256_hex(&bytes);
+            private.store(
+                EvolutionDerivativeKind::EvaluatorInput,
+                &digest,
+                &bytes,
+                &sources,
+            )?;
+            let hydrated = private.read(EvolutionDerivativeKind::EvaluatorInput, &digest)?;
+            report = HeldOutEvalReport::from_json(&hydrated)?;
+            Some(digest)
+        } else {
+            None
+        };
 
         let expected_tasks: BTreeMap<_, _> = suite
             .tasks()
@@ -306,7 +357,9 @@ impl HeldOutEvidenceStore {
         let key = (candidate.digest.clone(), verified.base_model.clone());
 
         if let Some(existing) = self.entries.get(&key) {
-            return if existing == &signed {
+            return if existing == &signed
+                && self.evaluator_inputs.get(&key) == evaluator_input_digest.as_ref()
+            {
                 Ok(HeldOutEvidenceRegistration::AlreadyPresent)
             } else {
                 Err(HeldOutBridgeError::ConflictingEvidence)
@@ -316,6 +369,9 @@ impl HeldOutEvidenceStore {
             return Err(HeldOutBridgeError::EvidenceLimit {
                 max: MAX_HELD_OUT_EVIDENCE_RECORDS,
             });
+        }
+        if let Some(digest) = evaluator_input_digest {
+            self.evaluator_inputs.insert(key.clone(), digest);
         }
         self.entries.insert(key, signed);
         Ok(HeldOutEvidenceRegistration::Stored)
@@ -343,10 +399,26 @@ impl HeldOutEvidenceBridge for HeldOutEvidenceStore {
                 "held-out evidence lookup requires an admissible base model",
             ));
         }
-        Ok(self
-            .entries
-            .get(&(policy_digest.to_owned(), base_model.clone()))
-            .cloned())
+        let key = (policy_digest.to_owned(), base_model.clone());
+        let Some(evidence) = self.entries.get(&key) else {
+            return Ok(None);
+        };
+        if let Some(private) = &self.private_content {
+            let digest =
+                self.evaluator_inputs
+                    .get(&key)
+                    .ok_or(ContractError::PrivateContentUnavailable(
+                        "evaluator input manifest is missing",
+                    ))?;
+            private
+                .read(EvolutionDerivativeKind::EvaluatorInput, digest)
+                .map_err(|_| {
+                    ContractError::PrivateContentUnavailable(
+                        "evaluator input was revoked or failed validation",
+                    )
+                })?;
+        }
+        Ok(Some(evidence.clone()))
     }
 }
 
@@ -377,6 +449,8 @@ fn sum_hard_constraint(
 pub enum HeldOutBridgeError {
     #[error("held-out report JSON is invalid: {0}")]
     InvalidReportJson(#[source] serde_json::Error),
+    #[error("private evaluator input storage failed: {0}")]
+    PrivateContent(#[from] EvolutionPrivateContentError),
     #[error("held-out report JSON is {actual} bytes; limit is {max}")]
     ReportTooLarge { max: usize, actual: usize },
     #[error("held-out report schema {0} is not supported")]

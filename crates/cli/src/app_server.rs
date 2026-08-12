@@ -50,11 +50,22 @@
 //!   reported. Everything else, and `Done` above all, is delivered even if that means waiting for
 //!   the reader.
 
+#[path = "app_server/backpressure.rs"]
+mod backpressure;
 mod control;
+mod mcp_control;
+mod operator_status;
+
+pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
 
 use self::control::{apply_control, apply_immediate_control, is_immediate_control, snapshot_of};
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
+use self::mcp_control::apply_mcp_control;
+use self::operator_status::OperatorStatusSources;
+pub(crate) use self::operator_status::{
+    LanguageServerStatus, OperatorStatusSnapshot, WorkflowHealth,
+};
 use crate::runtime::{Agent, UiEvent};
 use iteron_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
@@ -75,6 +86,7 @@ pub(crate) const SQ_CAPACITY: usize = 256;
 /// data slot, but can never prevent an interrupt, force-cancel, drain, steer, or approval receipt
 /// from reaching the resident actor.
 const SQ_PRIORITY_CAPACITY: usize = 16;
+#[cfg(test)]
 const SQ_DATA_CAPACITY: usize = SQ_CAPACITY - SQ_PRIORITY_CAPACITY;
 
 /// Conservative heap charge for the envelope, enum/segment storage, channel node and allocator
@@ -158,11 +170,18 @@ pub(crate) struct SessionSnapshot {
     /// The capability rules in force. Dynamic: `/permissions` changes them, and the frontend
     /// renders them, so they cannot be a session-invariant fact.
     pub(crate) permission_rules: iteron_protocol::PermissionRules,
+    /// Ordered live runtime-policy overlay joined to the durable transition that made each value
+    /// effective. `None` is reserved for an unsealed legacy/test agent and must never be rendered
+    /// as though the immutable genesis values were still live.
+    pub(crate) runtime_policy: Option<crate::runtime::RuntimePolicyOverlaySnapshot>,
     /// The ledger line the status panel prints.
     pub(crate) ledger_summary: String,
     /// One line of provider quota, read from the response headers of the last request. `None`
     /// when the route publishes none — a row of dashes reads like an exhausted budget (I-53).
     pub(crate) rate_limit: Option<String>,
+    /// Non-blocking projections from the exact session-owned MCP supervisors. A busy server is
+    /// reported as busy rather than blocking the App Server snapshot path behind external I/O.
+    pub(crate) mcp_health: Vec<crate::mcp::McpServerHealth>,
 }
 
 /// The EQ payload.
@@ -246,6 +265,8 @@ impl ServerEvent {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    /// `/status` — one content-free snapshot from the exact runtime-owned authorities.
+    OperatorStatus,
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -274,16 +295,34 @@ pub(crate) enum Control {
     /// Operator memory mutations run in the resident runtime so canonical Gate Hooks and durable
     /// effect evidence execute before the filesystem mutation.
     Memory(MemoryControl),
+    /// `/mcp` addresses the exact lazy supervisors captured by this session. These controls are
+    /// immediate even mid-turn: cancellation and stop must be able to release a blocked MCP call.
+    Mcp(McpControl),
+}
+
+pub(crate) enum McpControl {
+    Status,
+    Cancel { server: String },
+    Restart { server: String },
+    Stop { server: String },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpControlReply {
+    pub(crate) servers: Vec<crate::mcp::McpServerHealth>,
+    pub(crate) notice: Option<String>,
 }
 
 pub(crate) enum MemoryControl {
     Add(String),
+    Update { id: String, text: String },
     Delete(String),
 }
 
 #[derive(Debug)]
 pub(crate) enum MemoryControlReply {
     Added { id: String },
+    Updated { old_id: String, id: String },
     Deleted { id: String },
     Missing { id: String },
 }
@@ -373,6 +412,8 @@ pub(crate) struct ModelSelection {
 pub(crate) enum ControlReply {
     /// The current runtime state. Answers `Snapshot` and every successful mutation.
     State(Box<SessionSnapshot>),
+    /// `/status` — runtime policy identity plus live bounded owner health.
+    OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.
     Refused(String),
     /// `/compact` finished.
@@ -403,6 +444,13 @@ pub(crate) enum ControlReply {
     Adopted {
         adopted: Box<crate::runtime::AdoptedRun>,
         snapshot: Box<SessionSnapshot>,
+        /// Exact immutable tunables identity of the run now owned by the resident runtime. This
+        /// is dynamic run state: keeping the attach-time checkpoint after an in-process resume
+        /// would make `/tunables` and `/config` describe the run that was left.
+        tunables_checkpoint: Box<iteron_record::TunablesCheckpoint>,
+        /// Run-local compaction trigger decoded from the same checkpoint. The frontend's context
+        /// surface reads this value directly, so it must move with an adopted run as one reply.
+        compaction_trigger_tokens: usize,
         blocked: Option<String>,
     },
     /// `/workflows` inventory or action result.
@@ -411,6 +459,8 @@ pub(crate) enum ControlReply {
     Jobs(serde_json::Value),
     /// `/memory add|forget` mutation result from the resident authority owner.
     Memory(MemoryControlReply),
+    /// `/mcp` inventory or lifecycle action result.
+    Mcp(Box<McpControlReply>),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -646,6 +696,7 @@ impl AppServerClient {
         )
     }
 
+    #[cfg(test)]
     fn connect_weighted(
         server_version: u32,
         submissions: mpsc::Sender<QueuedSubmission>,
@@ -653,14 +704,32 @@ impl AppServerClient {
         budget: Arc<Semaphore>,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
+        Self::connect_weighted_with_policy(
+            server_version,
+            submissions,
+            priority_submissions,
+            budget,
+            lifecycle,
+            AppServerQueuePolicy::owner(),
+        )
+    }
+
+    fn connect_weighted_with_policy(
+        server_version: u32,
+        submissions: mpsc::Sender<QueuedSubmission>,
+        priority_submissions: mpsc::Sender<QueuedSubmission>,
+        budget: Arc<Semaphore>,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        queue_policy: AppServerQueuePolicy,
+    ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
             SubmissionSender::Weighted {
                 sender: submissions,
                 priority_sender: priority_submissions,
                 budget,
-                data_slots: Arc::new(Semaphore::new(SQ_DATA_CAPACITY)),
-                priority_slots: Arc::new(Semaphore::new(SQ_PRIORITY_CAPACITY)),
+                data_slots: Arc::new(Semaphore::new(queue_policy.data_entries())),
+                priority_slots: Arc::new(Semaphore::new(queue_policy.priority_entries())),
             },
             lifecycle,
         )
@@ -905,6 +974,9 @@ pub(crate) struct SessionFacts {
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
     /// executable state while the resident runtime continues using its pinned catalog.
     pub(crate) agent_catalog: Arc<iteron_agents::AgentCatalog>,
+    /// Exact immutable runtime checkpoint. Production composition always supplies V2; Option is
+    /// retained only for narrow wire tests that construct an unbound Agent.
+    pub(crate) tunables_checkpoint: Option<iteron_record::TunablesCheckpoint>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -942,7 +1014,8 @@ pub(crate) fn attach(
     interactive_approvals: bool,
     lossless_events: bool,
 ) -> Result<Attached, ProtocolVersionError> {
-    let (handle, ends) = wire_with_policy(lossless_events)?;
+    let queue_policy = agent.app_server_queue_policy();
+    let (handle, ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
 
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
@@ -973,6 +1046,7 @@ pub(crate) fn attach(
             .collect(),
         dependency_skill_dirs: agent.dependency_skill_dirs().to_vec(),
         agent_catalog: agent.agent_catalog_snapshot(),
+        tunables_checkpoint: agent.tunables_checkpoint().ok().cloned(),
     };
     let initial_state = snapshot_of(&mut agent);
     if let Some(telemetry) = handle.lifecycle_otel.clone() {
@@ -1018,15 +1092,27 @@ pub(crate) struct EventPublisher {
     session_id: Option<SessionId>,
     run_id: Option<RunId>,
     workflow_phases: std::collections::BTreeMap<String, String>,
+    queue_policy: AppServerQueuePolicy,
+    pending_cosmetic: Option<ServerEvent>,
 }
 
 const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
 
 impl EventPublisher {
+    #[cfg(test)]
     fn new(
         events: mpsc::Sender<EventEnvelope>,
         lossless: bool,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+    ) -> Self {
+        Self::new_with_policy(events, lossless, lifecycle, AppServerQueuePolicy::owner())
+    }
+
+    fn new_with_policy(
+        events: mpsc::Sender<EventEnvelope>,
+        lossless: bool,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        queue_policy: AppServerQueuePolicy,
     ) -> Self {
         Self {
             events,
@@ -1038,6 +1124,8 @@ impl EventPublisher {
             session_id: None,
             run_id: None,
             workflow_phases: std::collections::BTreeMap::new(),
+            queue_policy,
+            pending_cosmetic: None,
         }
     }
 
@@ -1219,16 +1307,21 @@ impl EventPublisher {
     }
 
     async fn send(&mut self, event: ServerEvent) -> Result<(), ()> {
+        let reject_authoritative = !self.lossless
+            && event.is_authoritative()
+            && self.queue_policy.authoritative_overflow() == AuthoritativeOverflow::Reject;
         let seq = self.next_seq;
         self.next_seq = self.next_seq.checked_add(1).ok_or(())?;
-        self.events
-            .send(EventEnvelope {
-                seq,
-                protocol_version: PROTOCOL_VERSION,
-                event,
-            })
-            .await
-            .map_err(|_| ())
+        let envelope = EventEnvelope {
+            seq,
+            protocol_version: PROTOCOL_VERSION,
+            event,
+        };
+        if reject_authoritative {
+            self.events.try_send(envelope).map_err(|_| ())
+        } else {
+            self.events.send(envelope).await.map_err(|_| ())
+        }
     }
 
     /// Publish one event, applying the bounded-queue policy.
@@ -1239,8 +1332,33 @@ impl EventPublisher {
     pub(crate) async fn publish(&mut self, event: ServerEvent) -> Result<(), ()> {
         let authoritative = event.is_authoritative();
         if !self.lossless && !authoritative && self.events.capacity() == 0 {
+            match self.queue_policy.cosmetic_overflow() {
+                CosmeticOverflow::Drop => self.dropped += 1,
+                CosmeticOverflow::Coalesce => {
+                    if self.pending_cosmetic.replace(event).is_some() {
+                        self.dropped += 1;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !self.lossless
+            && !authoritative
+            && self.pending_cosmetic.is_some()
+            && self.events.capacity() <= 1
+        {
+            self.pending_cosmetic = Some(event);
             self.dropped += 1;
             return Ok(());
+        }
+        if self.pending_cosmetic.is_some() && (authoritative || self.events.capacity() > 1) {
+            if self.dropped > 0 {
+                let dropped = std::mem::take(&mut self.dropped);
+                self.send(ServerEvent::Lagged { dropped }).await?;
+            }
+            if let Some(pending) = self.pending_cosmetic.take() {
+                self.send(pending).await?;
+            }
         }
         // Report the gap immediately before the event that follows it. A cosmetic event only gets
         // to report when there is spare room — reporting a drop must never itself block the stream.
@@ -1288,13 +1406,22 @@ pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionErr
     wire_with_policy(false)
 }
 
+#[cfg(test)]
 fn wire_with_policy(
     lossless_events: bool,
 ) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
-    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
-    let (priority_sq_tx, priority_sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
-    let sq_budget = Arc::new(Semaphore::new(SQ_BYTE_CAPACITY));
-    let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(EQ_CAPACITY);
+    wire_with_queue_policy(lossless_events, AppServerQueuePolicy::owner())
+}
+
+fn wire_with_queue_policy(
+    lossless_events: bool,
+    queue_policy: AppServerQueuePolicy,
+) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
+    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(queue_policy.data_entries());
+    let (priority_sq_tx, priority_sq_rx) =
+        mpsc::channel::<QueuedSubmission>(queue_policy.priority_entries());
+    let sq_budget = Arc::new(Semaphore::new(queue_policy.submission_bytes()));
+    let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(queue_policy.event_entries());
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
@@ -1304,20 +1431,21 @@ fn wire_with_policy(
         "queue.capacity_resolved",
         iteron_obs::lifecycle::LifecycleCorrelation::default(),
         LifecyclePayload {
-            count: Some(u64::try_from(SQ_CAPACITY).unwrap_or(u64::MAX)),
-            magnitude: Some(u64::try_from(SQ_BYTE_CAPACITY).unwrap_or(u64::MAX)),
+            count: Some(u64::try_from(queue_policy.submission_entries()).unwrap_or(u64::MAX)),
+            magnitude: Some(u64::try_from(queue_policy.submission_bytes()).unwrap_or(u64::MAX)),
             ..LifecyclePayload::default()
         },
     );
     let lifecycle_otel =
         iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
-    let client = AppServerClient::connect_weighted(
+    let client = AppServerClient::connect_weighted_with_policy(
         advertised_version(),
         sq_tx,
         priority_sq_tx,
         sq_budget,
         lifecycle_emitter.clone(),
+        queue_policy,
     )?;
     Ok((
         AppServerHandle {
@@ -1332,7 +1460,12 @@ fn wire_with_policy(
             submissions: sq_rx,
             priority_submissions: priority_sq_rx,
             control: control_rx,
-            events: EventPublisher::new(eq_tx, lossless_events, lifecycle_emitter),
+            events: EventPublisher::new_with_policy(
+                eq_tx,
+                lossless_events,
+                lifecycle_emitter,
+                queue_policy,
+            ),
             hook_health,
         },
     ))
@@ -1501,6 +1634,19 @@ impl AppServer {
         // Clone the job control port before a turn borrows `&mut agent`. It owns no second job
         // table: every operation reaches the supervisor captured by this registry's process tools.
         let processes = agent.registry.process_control();
+        // MCP cancellation/restart/stop must remain reachable while the turn is blocked in an MCP
+        // request. This clone addresses the same session-owned actors as the registry proxies.
+        let mcp_runtime = agent.mcp_runtime_control();
+        // The same ownership rule applies to language servers: drain/exit must address the exact
+        // bounded pool that served this session, never reconstruct a best-effort client list.
+        let language_servers = agent.registry.lsp_control();
+        let mut operator_status = OperatorStatusSources::capture(
+            &agent,
+            processes.clone(),
+            language_servers.clone(),
+            mcp_runtime.clone(),
+            workflows.clone(),
+        );
         let hook_cancel = agent.interrupt_handle();
         let drain_signal = agent.drain_handle();
 
@@ -1565,6 +1711,7 @@ impl AppServer {
                     iteron_tools::ProcessLifecycleKind::Exited => "exited",
                     iteron_tools::ProcessLifecycleKind::Stopped => "stopped",
                     iteron_tools::ProcessLifecycleKind::TimedOut => "timed_out",
+                    iteron_tools::ProcessLifecycleKind::IdleStalled => "idle_stalled",
                     iteron_tools::ProcessLifecycleKind::OutputLimitExceeded => "output_limit",
                     iteron_tools::ProcessLifecycleKind::IoFailed => "io_failed",
                     iteron_tools::ProcessLifecycleKind::CleanupUnknown => "cleanup_unknown",
@@ -1583,6 +1730,7 @@ impl AppServer {
                     ],
                     iteron_tools::ProcessLifecycleKind::Stopped
                     | iteron_tools::ProcessLifecycleKind::TimedOut
+                    | iteron_tools::ProcessLifecycleKind::IdleStalled
                     | iteron_tools::ProcessLifecycleKind::OutputLimitExceeded
                     | iteron_tools::ProcessLifecycleKind::IoFailed => &[
                         "process.term_sent",
@@ -1724,7 +1872,20 @@ impl AppServer {
                     }
                     request = control.recv() => {
                         match request {
-                            Some(request) => { apply_control(&mut agent, &workflows, processes.as_ref(), &mut side, &mut started, &mut events, request).await; continue }
+                            Some(request) => {
+                                apply_control(
+                                    &mut agent,
+                                    &workflows,
+                                    processes.as_ref(),
+                                    &operator_status,
+                                    &mut side,
+                                    &mut started,
+                                    &mut events,
+                                    request,
+                                ).await;
+                                operator_status.refresh_runtime(&agent);
+                                continue
+                            }
                             None => break,
                         }
                     }
@@ -2023,6 +2184,8 @@ impl AppServer {
                                 apply_immediate_control(
                                     &workflows,
                                     processes.as_ref(),
+                                    mcp_runtime.as_ref(),
+                                    &operator_status,
                                     &events,
                                     request,
                                 ).await;
@@ -2247,6 +2410,17 @@ impl AppServer {
                                                 _ => {}
                                             }
                                         } else if let Some(kind) = kind {
+                                            // The ordered SQ receipt is the typed cancellation
+                                            // authority, but the kernel cannot drain that queue
+                                            // while it is awaiting provider I/O. Raise the exact
+                                            // session-owned signal only after the receipt reaches
+                                            // the kernel queue so headless clients get the same
+                                            // bounded wake-up as the TUI's eager keyboard path.
+                                            if matches!(kind, KernelSubmissionKind::Interrupt)
+                                                && let Some(interrupt) = &hook_cancel
+                                            {
+                                                interrupt.store(true, Ordering::SeqCst);
+                                            }
                                             match kind {
                                                 KernelSubmissionKind::Steer => events.record_lifecycle(
                                                     "steer.admitted",
@@ -2326,6 +2500,7 @@ impl AppServer {
                     &mut agent,
                     &workflows,
                     processes.as_ref(),
+                    &operator_status,
                     &mut side,
                     &mut started,
                     &mut events,
@@ -2333,6 +2508,7 @@ impl AppServer {
                 )
                 .await;
             }
+            operator_status.refresh_runtime(&agent);
 
             let mut snapshot = snapshot_of(&mut agent);
             settle_kernel_submissions_at_turn_end(
@@ -2349,13 +2525,25 @@ impl AppServer {
                     true
                 }
             });
-            let (outcome, error) = match completion {
+            let (outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
                     let error = error.public_summary();
                     (Outcome::HarnessError, Some(error))
                 }
             };
+            let drain_cleanup_failures = if matches!(outcome, Outcome::Drained) {
+                clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await
+            } else {
+                Vec::new()
+            };
+            if !drain_cleanup_failures.is_empty() {
+                let detail = drain_cleanup_failures.join("; ");
+                error = Some(match error {
+                    Some(existing) => format!("{existing}; {detail}"),
+                    None => detail,
+                });
+            }
             if matches!(outcome, Outcome::Drained) {
                 expire_pending_turns(&mut events, &mut pending_turns, "drain_settled").await;
                 expire_queued_after_drain(&mut events, &mut submissions, &mut priority_submissions)
@@ -2401,7 +2589,13 @@ impl AppServer {
                         "drain.settled",
                         Some(live_turn_id),
                         drain_submission_id,
-                        LifecyclePayload::default(),
+                        LifecyclePayload {
+                            count: (!drain_cleanup_failures.is_empty())
+                                .then_some(drain_cleanup_failures.len() as u64),
+                            reason_code: (!drain_cleanup_failures.is_empty())
+                                .then(|| "owned_tool_cleanup_unknown".into()),
+                            ..LifecyclePayload::default()
+                        },
                     );
                     turn_lifecycle
                         .transition(TurnLifecycleState::Cancelling)
@@ -2485,6 +2679,15 @@ impl AppServer {
                 .await
                 .is_err()
             {
+                events.record_lifecycle(
+                    "session.failed",
+                    Some(live_turn_id),
+                    turn_submission_id,
+                    LifecyclePayload {
+                        reason_code: Some("terminal_event_delivery_closed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
                 break;
             }
         }
@@ -2506,9 +2709,64 @@ impl AppServer {
             .transition(SessionLifecycleState::Stopping)
             .unwrap_or(SessionLifecycleState::Stopping);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
-        let report = workflows
+        let mut report = workflows
             .shutdown(&mut settled_rx, crate::workflow::SHUTDOWN_GRACE)
             .await;
+        report
+            .lines
+            .extend(clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await);
+        if let Some(mut side) = side.take()
+            && let Err(error) = side.finalize_policy_run()
+        {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("side_policy_run_terminal_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report.lines.push(error.public_summary());
+        }
+        if let Err(error) = agent.finalize_policy_run() {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("policy_run_terminal_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report.lines.push(error.public_summary());
+        }
+        if agent.has_memory_benchmark_scope() {
+            events.record_lifecycle(
+                "memory.benchmark.scope_destroyed",
+                None,
+                None,
+                LifecyclePayload::default(),
+            );
+        }
+        if agent
+            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::SessionEnd)
+            .await
+            .is_err()
+        {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("mcp_private_spill_cleanup_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report
+                .lines
+                .push("private MCP spill cleanup failed at session end".into());
+        }
         session_lifecycle = session_lifecycle
             .transition(SessionLifecycleState::Stopped)
             .expect("a stopping session publishes one terminal");
@@ -2524,6 +2782,41 @@ impl AppServer {
         }
         report
     }
+}
+
+/// Settle every persistent tool owner captured from this session's registry.
+///
+/// Success is intentionally silent. Returned lines are bounded, content-free failure summaries
+/// suitable for the terminal shutdown report; process commands and LSP workspace paths never
+/// cross this seam.
+async fn clean_session_owned_tools(
+    processes: Option<&iteron_tools::ProcessControl>,
+    language_servers: Option<&iteron_tools::LspControl>,
+) -> Vec<String> {
+    let mut failures = Vec::with_capacity(2);
+    if let Some(processes) = processes
+        && let Err(error) = processes.clean().await
+    {
+        failures.push(if error.unknown {
+            "persistent process cleanup outcome is unknown".to_owned()
+        } else {
+            "persistent process cleanup failed before full reconciliation".to_owned()
+        });
+    }
+    if let Some(language_servers) = language_servers {
+        let unconfirmed = language_servers
+            .clean()
+            .await
+            .into_iter()
+            .filter(|(_, confirmed)| !confirmed)
+            .count();
+        if unconfirmed > 0 {
+            failures.push(format!(
+                "{unconfirmed} language-server cleanup outcome(s) are unknown"
+            ));
+        }
+    }
+    failures
 }
 
 fn outcome_name(outcome: &Outcome) -> &'static str {
@@ -3097,6 +3390,113 @@ mod tests {
         SqEnvelope::with_version(PROTOCOL_VERSION, op)
     }
 
+    #[test]
+    fn immutable_queue_policy_changes_the_actual_wire_capacities() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 3,
+            1_000_000,
+            7,
+            CosmeticOverflow::Drop,
+            AuthoritativeOverflow::Reject,
+        )
+        .unwrap();
+        let (handle, ends) = wire_with_queue_policy(false, policy).expect("wire");
+
+        assert_eq!(ends.submissions.max_capacity(), 3);
+        assert_eq!(
+            ends.priority_submissions.max_capacity(),
+            SQ_PRIORITY_CAPACITY
+        );
+        assert_eq!(handle.events.max_capacity(), 7);
+        assert_eq!(ends.events.queue_policy, policy);
+        match &handle.client.submissions {
+            SubmissionSender::Weighted { budget, .. } => {
+                assert_eq!(budget.available_permits(), 1_000_000)
+            }
+            SubmissionSender::Bare(_) => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn immutable_overflow_policy_coalesces_cosmetic_and_rejects_authoritative() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 1,
+            1_000_000,
+            1,
+            CosmeticOverflow::Coalesce,
+            AuthoritativeOverflow::Wait,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut publisher = EventPublisher::new_with_policy(
+            tx,
+            false,
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+            policy,
+        );
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("second".into())))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("third".into())))
+            .await
+            .unwrap();
+        let flush = tokio::spawn(async move {
+            publisher
+                .publish(ServerEvent::Notice("authoritative".into()))
+                .await
+        });
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "first")
+        );
+        assert!(matches!(
+            rx.recv().await.unwrap().event,
+            ServerEvent::Lagged { dropped: 1 }
+        ));
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "third")
+        );
+        assert!(
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Notice(text) if text == "authoritative")
+        );
+        flush.await.unwrap().unwrap();
+
+        let reject = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 1,
+            1_000_000,
+            1,
+            CosmeticOverflow::Drop,
+            AuthoritativeOverflow::Reject,
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut publisher = EventPublisher::new_with_policy(
+            tx,
+            false,
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+            reject,
+        );
+        publisher
+            .publish(ServerEvent::Notice("first".into()))
+            .await
+            .unwrap();
+        assert!(
+            publisher
+                .publish(ServerEvent::Notice("refused".into()))
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn a_settled_background_run_returns_one_task_notification_without_polling() {
         let (eq_tx, mut eq_rx) = mpsc::channel(4);
@@ -3212,8 +3612,10 @@ mod tests {
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
             permission_rules: iteron_protocol::PermissionRules::new(),
+            runtime_policy: None,
             ledger_summary: String::new(),
             rate_limit: None,
+            mcp_health: Vec::new(),
         })
     }
 
@@ -3781,6 +4183,289 @@ mod tests {
         }
     }
 
+    fn pin_test_tunables(agent: &mut Agent, orchestrated: bool, provider_id: &str, model_id: &str) {
+        const FIXED_ARTIFACT_FAMILIES: &[&str] = &[
+            "hooks_map",
+            "operator_prompt_stream",
+            "instruction_bundle",
+            "memory_corpus",
+            "skill_catalog",
+            "provider_model_capability_catalog",
+            "mcp_topology_tool_catalog",
+            "mcp_transport_selection",
+            "oauth_auth_lifecycle_policy",
+            "web_search_backend_catalog",
+        ];
+        let mut input = iteron_record::resolved_fixture::input();
+        input
+            .declared_values
+            .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+        input
+            .constraint_evidence
+            .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+
+        let context_window = iteron_tunables::ResolutionValue::Integer { value: 120_000 };
+        let window = input
+            .declared_values
+            .iter_mut()
+            .find(|value| value.family == "context_window_override_reserve")
+            .expect("context-window fixture value");
+        let iteron_tunables::ResolutionValue::Object { fields } = &mut window.value else {
+            panic!("context-window fixture stopped being an object")
+        };
+        fields.insert("model_window_tokens".into(), context_window.clone());
+        fields.insert(
+            "tool_schema_budget_tokens".into(),
+            iteron_tunables::ResolutionValue::Integer { value: 20_000 },
+        );
+        let ceiling = input
+            .constraint_evidence
+            .iter_mut()
+            .find(|evidence| {
+                evidence.family == "context_window_override_reserve"
+                    && evidence.field == "model_window_tokens"
+                    && evidence.ceiling == iteron_tunables::ExternalCeiling::ProviderCapability
+            })
+            .expect("context-window provider ceiling");
+        ceiling.value = iteron_tunables::ConstraintValue::Domain {
+            minimum: None,
+            maximum: None,
+            allowed_values: Some(
+                [context_window.clone()]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+            required_values: None,
+            preferred: Some(context_window),
+        };
+
+        let graph = iteron_workflow::workflow_graph_runtime_identity();
+        let workflow_graph = iteron_tunables::ResolutionValue::CatalogRef {
+            catalog_id: "iteron://tunables/catalogs/workflow_graph-v1".into(),
+            digest_sha256: graph.digest_sha256,
+            entry_count: u64::try_from(graph.entry_count).unwrap(),
+            canonical_bytes: u64::try_from(graph.canonical_bytes).unwrap(),
+        };
+        let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(None);
+        let environment_value = iteron_tunables::ResolutionValue::Object {
+            fields: [
+                (
+                    "present".into(),
+                    iteron_tunables::ResolutionValue::Boolean {
+                        value: environment.present,
+                    },
+                ),
+                (
+                    "digest_sha256".into(),
+                    iteron_tunables::ResolutionValue::Text {
+                        value: environment.digest_sha256,
+                    },
+                ),
+                (
+                    "canonical_bytes".into(),
+                    iteron_tunables::ResolutionValue::Integer {
+                        value: i64::try_from(environment.canonical_bytes).unwrap(),
+                    },
+                ),
+                (
+                    "trust".into(),
+                    iteron_tunables::ResolutionValue::Enum {
+                        value: "trusted".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let live_catalog = agent.agent_catalog_snapshot();
+        let catalog = live_catalog.runtime_identity();
+        let agent_catalog = iteron_tunables::ResolutionValue::CatalogRef {
+            catalog_id: "iteron://tunables/catalogs/agent_catalog-v1".into(),
+            digest_sha256: catalog.digest_sha256,
+            entry_count: u64::try_from(catalog.entry_count).unwrap(),
+            canonical_bytes: u64::try_from(catalog.canonical_bytes).unwrap(),
+        };
+        for (family, value) in [
+            ("workflow_graph", workflow_graph),
+            ("environment_snapshot", environment_value),
+            ("agent_catalog", agent_catalog),
+        ] {
+            input
+                .declared_values
+                .iter_mut()
+                .find(|candidate| candidate.family == family)
+                .unwrap_or_else(|| panic!("resolved fixture omitted {family}"))
+                .value = value.clone();
+            for evidence in input
+                .constraint_evidence
+                .iter_mut()
+                .filter(|evidence| evidence.family == family)
+            {
+                if let iteron_tunables::ConstraintValue::Domain { allowed_values, .. } =
+                    &mut evidence.value
+                {
+                    *allowed_values = Some([value.clone()].into_iter().collect());
+                }
+            }
+        }
+        let admitted_role_routes =
+            crate::runtime_tunables::execution_policy::admitted_role_model_routes(
+                live_catalog.as_ref(),
+                provider_id,
+                model_id,
+            )
+            .expect("the live test catalog must resolve role-specific routes");
+        let selected_route = format!("{provider_id}:{model_id}");
+        let role_specific_models = iteron_tunables::ResolutionValue::Map {
+            entries: admitted_role_routes
+                .iter()
+                .map(|(role, route)| {
+                    (
+                        role.clone(),
+                        iteron_tunables::ResolutionValue::Enum {
+                            value: route.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        for (catalog_id, values) in [
+            (
+                "iteron://tunables/catalogs/agent-roles-v1",
+                live_catalog
+                    .defs()
+                    .iter()
+                    .map(|definition| definition.name.clone())
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+            (
+                "iteron://tunables/catalogs/model-routes-v1",
+                admitted_role_routes
+                    .values()
+                    .cloned()
+                    .chain(std::iter::once(selected_route.clone()))
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+        ] {
+            let snapshot = iteron_tunables::runtime_catalog_snapshot(catalog_id, values)
+                .expect("test catalog owner must publish bounded route values");
+            *input
+                .runtime
+                .catalogs
+                .iter_mut()
+                .find(|catalog| catalog.catalog_id == catalog_id)
+                .unwrap_or_else(|| panic!("resolved fixture omitted {catalog_id}")) = snapshot;
+        }
+        for (family, value) in [
+            ("role_specific_model_map", role_specific_models.clone()),
+            (
+                "per_agent_model",
+                iteron_tunables::ResolutionValue::Enum {
+                    value: selected_route.clone(),
+                },
+            ),
+        ] {
+            input
+                .declared_values
+                .iter_mut()
+                .find(|declared| declared.family == family)
+                .unwrap_or_else(|| panic!("resolved fixture omitted {family}"))
+                .value = value;
+        }
+        for evidence in &mut input.constraint_evidence {
+            match evidence.family.as_str() {
+                "role_specific_model_map" => {
+                    let iteron_tunables::ConstraintValue::Domain { allowed_values, .. } =
+                        &mut evidence.value
+                    else {
+                        panic!("role-specific model ceiling stopped being a domain")
+                    };
+                    *allowed_values = Some([role_specific_models.clone()].into_iter().collect());
+                }
+                "per_agent_model" => {
+                    let iteron_tunables::ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } = &mut evidence.value
+                    else {
+                        panic!("per-agent model ceiling stopped being a domain")
+                    };
+                    let selected = iteron_tunables::ResolutionValue::Enum {
+                        value: selected_route.clone(),
+                    };
+                    *allowed_values = Some([selected.clone()].into_iter().collect());
+                    if evidence.ceiling == iteron_tunables::ExternalCeiling::ProviderCapability {
+                        *preferred = Some(selected);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if orchestrated {
+            let route_topology = iteron_tunables::ResolutionValue::Enum {
+                value: "orchestrated".into(),
+            };
+            input
+                .declared_values
+                .iter_mut()
+                .find(|declared| declared.family == "route_topology")
+                .expect("route-topology fixture value")
+                .value = route_topology.clone();
+            for evidence in input
+                .constraint_evidence
+                .iter_mut()
+                .filter(|evidence| evidence.family == "route_topology")
+            {
+                match &mut evidence.value {
+                    iteron_tunables::ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } => {
+                        *allowed_values = Some([route_topology.clone()].into_iter().collect());
+                        if preferred.is_some() {
+                            *preferred = Some(route_topology.clone());
+                        }
+                    }
+                    iteron_tunables::ConstraintValue::Exact { value } => {
+                        *value = route_topology.clone();
+                    }
+                    iteron_tunables::ConstraintValue::UpperBound { .. } => {
+                        panic!("route topology cannot have an upper-bound constraint")
+                    }
+                }
+            }
+        }
+        let resolved = iteron_tunables::resolve(input)
+            .expect("the production-compatible app-server fixture must resolve");
+        let resolved =
+            iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
+                .expect("the resolver-only fixture must bind every effective fixed authority");
+        agent
+            .pin_resolved_tunables(Arc::new(resolved))
+            .expect("the canonical resolved fixture must install before app-server execution");
+        let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(
+            agent.tunables_checkpoint().unwrap(),
+            None,
+        )
+        .expect("the canonical checkpoint must have an executable runtime projection")
+        .core;
+        agent.model_context_window = effective.model_context_window;
+        agent.model_max_output_tokens = effective.request_output_cap;
+        if orchestrated {
+            agent
+                .set_provider_controls(effective.provider_governor.controls)
+                .expect("the fixture provider must attest the checkpoint-derived controls");
+            agent
+                .install_provider_governor(
+                    effective.provider_governor.policy,
+                    [format!("{provider_id}:{model_id}")],
+                )
+                .expect("the fixture must install one provider-governor owner before execution");
+        }
+    }
+
     fn agent_in(workspace: &std::path::Path) -> Agent {
         let rollout = iteron_record::Rollout::open(
             &workspace.join(".iteron/runs"),
@@ -3803,6 +4488,7 @@ mod tests {
             },
         );
         agent.workspace = workspace.to_path_buf();
+        pin_test_tunables(&mut agent, false, "provider-a", "m");
         agent
     }
 
@@ -3817,6 +4503,79 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn session_snapshot_exposes_the_exact_ordered_runtime_policy_overlay() {
+        let workspace = temp_workspace("runtime-policy-overlay");
+        let mut agent = agent_in(&workspace);
+        agent
+            .configure_initial_runtime_policy(
+                iteron_protocol::Effort::Low,
+                iteron_protocol::PermissionMode::Default,
+                iteron_protocol::PermissionRules::new(),
+            )
+            .unwrap();
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        let stale_frontend_snapshot = control::snapshot_of(&mut agent);
+        let live_operator_sources = agent.operator_status_sources();
+        agent
+            .transition_effort(
+                iteron_protocol::Effort::High,
+                iteron_protocol::RuntimePolicySource::Operator,
+            )
+            .unwrap();
+        agent.set_turn_ceiling(17).unwrap();
+        let mut rules = iteron_protocol::PermissionRules::new();
+        rules
+            .try_set_cap(
+                iteron_protocol::Capability::CodeExecuting,
+                iteron_protocol::Verdict::Deny,
+            )
+            .unwrap();
+        agent
+            .transition_permission_policy(
+                iteron_protocol::PermissionMode::Plan,
+                rules,
+                iteron_protocol::RuntimePolicySource::Operator,
+            )
+            .unwrap();
+
+        let snapshot = control::snapshot_of(&mut agent);
+        let overlay = snapshot
+            .runtime_policy
+            .expect("sealed production state has a complete overlay");
+        assert_eq!(snapshot.effort, overlay.effort.value);
+        assert_eq!(snapshot.mode, overlay.permission_mode.value);
+        assert_eq!(overlay.max_turns.value, 17);
+        assert_eq!(overlay.permission_rule_count, 1);
+        assert_eq!(
+            overlay.effort.observed_via,
+            crate::runtime::RuntimePolicyObservation::LiveCommit
+        );
+        assert!(
+            overlay.effort.sequence < overlay.max_turns.sequence
+                && overlay.max_turns.sequence < overlay.permission_mode.sequence,
+            "the overlay must preserve durable transition order"
+        );
+        let stale_overlay = stale_frontend_snapshot
+            .runtime_policy
+            .expect("genesis overlay");
+        assert_eq!(stale_overlay.effort.value, iteron_protocol::Effort::Low);
+        assert_eq!(stale_overlay.max_turns.value, 4);
+        let live_overlay = live_operator_sources
+            .snapshot()
+            .runtime_policy
+            .expect("captured operator source advances without the frontend cache");
+        assert_eq!(live_overlay.effort.value, iteron_protocol::Effort::High);
+        assert_eq!(live_overlay.max_turns.value, 17);
+        assert_eq!(
+            live_overlay.permission_mode.value,
+            iteron_protocol::PermissionMode::Plan
+        );
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     /// UX-3 control plane: the side conversation is SERVER state. Every request answers, an
@@ -3924,6 +4683,11 @@ mod tests {
             }
         )));
         assert!(is_immediate_control(&Control::Job(JobControl::Inventory)));
+        assert!(is_immediate_control(&Control::OperatorStatus));
+        assert!(is_immediate_control(&Control::Mcp(McpControl::Status)));
+        assert!(is_immediate_control(&Control::Mcp(McpControl::Cancel {
+            server: "docs".into(),
+        })));
 
         let (settled_tx, _settled_rx) = tokio::sync::mpsc::unbounded_channel();
         let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);
@@ -4069,6 +4833,7 @@ mod tests {
             },
         );
         agent.workspace = workspace.clone();
+        pin_test_tunables(&mut agent, true, "provider-a", "model-a");
         agent
             .configure_initial_runtime_policy(
                 iteron_protocol::Effort::Ultracode,

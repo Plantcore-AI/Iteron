@@ -7,29 +7,35 @@ use crate::resolution_types::{
     ResolutionSource, ResolutionValue, ResolvedEntry, ResolvedTunableSet, ShadowedValue,
     UnresolvedReason,
 };
-use crate::{
-    ActivationPredicate, DefaultResolver, Family, ImplementationStatus, SourceBinding, families,
-};
+use crate::{ActivationPredicate, DefaultResolver, Family, ImplementationStatus, families};
 use std::collections::BTreeMap;
 
 #[path = "resolution_route.rs"]
 mod route;
+#[path = "resolution/source_merge.rs"]
+mod source_merge;
+use source_merge::{Selected, select_explicit};
 
 #[allow(
     clippy::result_large_err,
     reason = "the public contract returns the complete atomic failure report by value"
 )]
 pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
-    let prepared = crate::resolution_prepare::prepare(input).map_err(|_| invalid_input())?;
-    let entries = families()
+    let prepared = crate::resolution_prepare::prepare(input).map_err(invalid_input)?;
+    let mut entries = families()
         .iter()
         .map(|family| resolve_family(family, &prepared))
         .collect::<Vec<_>>();
     if entries.len() != crate::EXPECTED_FAMILY_COUNT {
-        return Err(invalid_input());
+        return Err(invalid_input(format!(
+            "resolved {} entries, registry declares {}",
+            entries.len(),
+            crate::EXPECTED_FAMILY_COUNT
+        )));
     }
+    crate::resolved_set_rules::enforce(&mut entries).map_err(invalid_input)?;
     let effective_digest_sha256 =
-        crate::resolution_digest::effective_digest(&entries).map_err(|_| invalid_input())?;
+        crate::resolution_digest::effective_digest(&entries).map_err(invalid_input)?;
     let mut report = ResolutionReport {
         schema_version: RESOLUTION_SCHEMA_VERSION,
         registry_id: crate::REGISTRY_ID,
@@ -39,10 +45,11 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
         effective_digest_sha256,
         resolution_digest_sha256: String::new(),
         profile_digest_sha256: prepared.profile_digest_sha256.clone(),
+        fixed_authority_attestations: Vec::new(),
         entries,
     };
     report.resolution_digest_sha256 =
-        crate::resolution_digest::resolution_digest(&report).map_err(|_| invalid_input())?;
+        crate::resolution_digest::resolution_digest(&report).map_err(invalid_input)?;
 
     let failures = report
         .entries
@@ -68,9 +75,13 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
 )]
 pub fn resolve_json(bytes: &[u8]) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
     if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
-        return Err(invalid_input());
+        return Err(invalid_input(format!(
+            "resolution input is {} bytes, the bound is {RESOLUTION_INPUT_MAX_BYTES}",
+            bytes.len()
+        )));
     }
-    let input = serde_json::from_slice(bytes).map_err(|_| invalid_input())?;
+    let input = serde_json::from_slice(bytes)
+        .map_err(|error| invalid_input(format!("resolution input is not valid JSON: {error}")))?;
     resolve(input)
 }
 
@@ -87,23 +98,10 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
         );
     }
 
-    let (explicit, shadowed) = select_explicit(family, prepared);
-    if let Some(selected) = explicit.as_ref()
-        && let Some(outcome) =
-            route::provider_gate(family, prepared, &selected.value, selected.explicit)
-    {
-        return entry(
-            family,
-            Some(selected.value.clone()),
-            None,
-            Some(selected.provenance.clone()),
-            outcome,
-            Vec::new(),
-            shadowed,
-        );
-    }
+    let explicit = select_explicit(family, prepared);
     if let Some(cause) = activation_cause(family, prepared) {
-        let (requested, provenance) = explicit
+        let (selected, shadowed) = explicit.without_default();
+        let (requested, provenance) = selected
             .map(|selected| (Some(selected.value), Some(selected.provenance)))
             .unwrap_or((None, None));
         return entry(
@@ -117,34 +115,38 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
         );
     }
 
-    if explicit.is_none()
+    if !explicit.has_value()
         && let Some(outcome) = route::default_availability(family, prepared)
     {
-        return entry(family, None, None, None, outcome, Vec::new(), shadowed);
+        return entry(
+            family,
+            None,
+            None,
+            None,
+            outcome,
+            Vec::new(),
+            explicit.shadowed,
+        );
     }
 
-    let selected = match explicit {
-        Some(selected) => selected,
-        None => match select_default(family, prepared) {
-            Ok(selected) => selected,
-            Err(reason) => {
-                return entry(
-                    family,
-                    None,
-                    None,
-                    None,
-                    EntryOutcome::Unresolved { reason },
-                    Vec::new(),
-                    shadowed,
-                );
-            }
-        },
+    let (selected, shadowed) = match explicit.with_default(family, prepared) {
+        Ok(selected) => selected,
+        Err((reason, shadowed)) => {
+            return entry(
+                family,
+                None,
+                None,
+                None,
+                EntryOutcome::Unresolved { reason },
+                Vec::new(),
+                shadowed,
+            );
+        }
     };
     let requested = selected.value.clone();
     let provenance = selected.provenance.clone();
-    if !selected.explicit
-        && let Some(outcome) =
-            route::provider_gate(family, prepared, &selected.value, selected.explicit)
+    if let Some(outcome) =
+        route::provider_gate(family, prepared, &selected.value, selected.explicit)
     {
         return entry(
             family,
@@ -185,91 +187,6 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
             Vec::new(),
             shadowed,
         ),
-    }
-}
-
-struct Selected {
-    value: ResolutionValue,
-    provenance: ResolutionProvenance,
-    explicit: bool,
-}
-
-fn select_explicit(
-    family: &Family,
-    prepared: &PreparedInput,
-) -> (Option<Selected>, Vec<ShadowedValue>) {
-    let mut winner = None;
-    let mut shadowed = Vec::new();
-    for binding in family.source.bindings {
-        let direct = prepared
-            .input
-            .declared_values
-            .iter()
-            .find(|value| value.family == family.id && value.source == binding.kind)
-            .map(|value| Selected {
-                value: value.value.clone(),
-                provenance: declared_provenance(binding, value.evidence_digest_sha256.clone()),
-                explicit: true,
-            });
-        let profile = prepared
-            .input
-            .profile
-            .as_ref()
-            .zip(prepared.profile_digest_sha256.as_ref())
-            .and_then(|(profile, profile_digest)| {
-                profile
-                    .values
-                    .iter()
-                    .find(|value| {
-                        value.family == family.id && value.as_declared_source == binding.kind
-                    })
-                    .map(|value| Selected {
-                        value: value.value.clone(),
-                        provenance: ResolutionProvenance {
-                            source: ResolutionSource::Profile {
-                                kind: binding.kind,
-                                trust: binding.trust,
-                                declared_locator: binding.locator,
-                                profile_digest_sha256: profile_digest.clone(),
-                            },
-                        },
-                        explicit: true,
-                    })
-            });
-
-        match (&winner, direct, profile) {
-            (None, Some(direct), Some(profile)) => {
-                shadowed.push(shadow(profile, "same_source_profile_overridden"));
-                winner = Some(direct);
-            }
-            (None, Some(direct), None) => winner = Some(direct),
-            (None, None, Some(profile)) => winner = Some(profile),
-            (Some(_), direct, profile) => {
-                shadowed.extend(direct.map(|value| shadow(value, "lower_precedence")));
-                shadowed.extend(profile.map(|value| shadow(value, "lower_precedence")));
-            }
-            (None, None, None) => {}
-        }
-    }
-    (winner, shadowed)
-}
-
-fn declared_provenance(binding: &SourceBinding, digest: String) -> ResolutionProvenance {
-    ResolutionProvenance {
-        source: ResolutionSource::Declared {
-            kind: binding.kind,
-            trust: binding.trust,
-            declared_locator: binding.locator,
-            evidence_digest_sha256: digest,
-        },
-    }
-}
-
-fn shadow(selected: Selected, reason_code: &'static str) -> ShadowedValue {
-    ShadowedValue {
-        value: selected.value,
-        provenance: selected.provenance,
-        reason_code,
     }
 }
 
@@ -383,7 +300,7 @@ fn activation_cause(family: &Family, prepared: &PreparedInput) -> Option<Inactiv
             .input
             .activation_evidence
             .iter()
-            .find(|evidence| evidence.seam == seam)
+            .find(|evidence| evidence.family == family.id && evidence.seam == seam)
         {
             None => Some(InactiveCause::RuntimeSeamMissing { seam }),
             Some(evidence) if !evidence.active => Some(InactiveCause::RuntimeSeamInactive { seam }),
@@ -452,11 +369,13 @@ fn family_failure(entry: &ResolvedEntry) -> Option<FamilyFailure> {
     })
 }
 
-fn invalid_input() -> ResolutionFailureReport {
+/// A fail-closed validation that reports nothing is undebuggable: every caller below already holds
+/// the reason, so it is carried into `detail` rather than collapsed into one fixed sentence.
+fn invalid_input(detail: impl Into<String>) -> ResolutionFailureReport {
     ResolutionFailureReport {
         schema_version: RESOLUTION_SCHEMA_VERSION,
         code: FailureCode::InvalidInput,
-        detail: "resolution input failed closed validation".into(),
+        detail: detail.into(),
         failures: Vec::new(),
         report: None,
     }

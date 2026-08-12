@@ -10,7 +10,10 @@ pub(super) use super::fixtures::{read_bounded, validate_repo_path};
 pub(super) const CONTRACT_PATH: &str = "governance/schema-compatibility.json";
 pub(super) const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 pub(super) const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
-const MAX_SURFACES: usize = 128;
+// The source-complete durable ABI closure currently contains 130 top-level and dynamically
+// discovered named surfaces. Keep bounded headroom for additive typed records; the whole contract
+// remains separately capped at 1 MiB and every surface, fixture, field, and shim has its own cap.
+const MAX_SURFACES: usize = 160;
 const MAX_FIELDS: usize = 256;
 const MAX_FIXTURES: usize = 64;
 const MAX_SHIMS: usize = 64;

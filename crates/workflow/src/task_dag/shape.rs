@@ -56,9 +56,53 @@ impl TaskDag {
                 }
                 Ok(())
             }
+            Command::RegisterAttempt { attempt, .. } => {
+                if attempt.input_digest.len() > 64 {
+                    return Err(DagError::Invalid(
+                        "attempt input digest is over its byte limit",
+                    ));
+                }
+                if attempt
+                    .prior_evidence_digest
+                    .as_ref()
+                    .is_some_and(|value| value.len() > 64)
+                {
+                    return Err(DagError::Invalid(
+                        "attempt predecessor evidence digest is over its byte limit",
+                    ));
+                }
+                Ok(())
+            }
             Command::StartTask { .. }
+            | Command::StartAttempt { .. }
             | Command::ChargeBudget { .. }
             | Command::AcknowledgeMessage { .. } => Ok(()),
+            Command::CompleteAttempt {
+                result_digest,
+                code,
+                detail,
+                ..
+            } => {
+                if result_digest.as_ref().is_some_and(|value| value.len() > 64) {
+                    return Err(DagError::Invalid(
+                        "attempt result digest is over its byte limit",
+                    ));
+                }
+                if code.as_ref().is_some_and(|value| value.len() > 128) {
+                    return Err(DagError::Invalid(
+                        "attempt completion code is over its byte limit",
+                    ));
+                }
+                if detail
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_REASON_BYTES)
+                {
+                    return Err(DagError::Invalid(
+                        "attempt completion detail is over its byte limit",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }

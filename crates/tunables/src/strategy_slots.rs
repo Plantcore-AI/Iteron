@@ -190,3 +190,7 @@ const STRATEGY_SLOTS: [&[Slot]; crate::EXPECTED_FAMILY_COUNT] = [
 pub(crate) const fn strategy_slots(ordinal: u16) -> &'static [Slot] {
     STRATEGY_SLOTS[ordinal as usize - 1]
 }
+
+pub(crate) const fn primary_strategy_slot(ordinal: u16) -> Slot {
+    STRATEGY_SLOTS[ordinal as usize - 1][0]
+}

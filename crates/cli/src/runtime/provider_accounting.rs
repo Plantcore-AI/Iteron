@@ -49,6 +49,15 @@ pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
 }
 
 impl Agent {
+    fn close_usd_if_physical_charge_is_unproved(&self, turn: TurnId) {
+        let physical_charge_known = self.usd_budget.as_ref().is_some_and(|budget| {
+            budget.has_known_provider_charge_for(self.rollout.tenant(), self.rollout.run_id(), turn)
+        });
+        if !physical_charge_known {
+            self.mark_usd_unknown();
+        }
+    }
+
     /// Commit authoritative usage and its optional signed monetary projection before updating the
     /// in-memory ledger. The pricing strategy is pure and injected; this code performs no price
     /// lookup, filesystem read, network request, or extra provider call.
@@ -92,7 +101,9 @@ impl Agent {
                 stream_items: stream.stream_items,
             },
         ) {
-            self.mark_usd_unknown();
+            // The per-route terminal and exact charge are already durable/load-bearing. Losing
+            // this logical turn projection is a record failure, not uncertainty about billing.
+            self.close_usd_if_physical_charge_is_unproved(turn);
             return Err(error);
         }
         if unpriceable_cache_creation {
@@ -104,7 +115,7 @@ impl Agent {
                     text: UNPRICEABLE_CACHE_CREATION_NOTICE.into(),
                 },
             ) {
-                self.mark_usd_unknown();
+                self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(error);
             }
             self.ui(UiEvent::Notice(UNPRICEABLE_CACHE_CREATION_NOTICE.into()));
@@ -113,9 +124,7 @@ impl Agent {
         let projection = match projection.transpose() {
             Ok(projection) => projection,
             Err(error) => {
-                if let Some(budget) = &self.usd_budget {
-                    budget.mark_unknown();
-                }
+                self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(error.into());
             }
         };
@@ -126,17 +135,17 @@ impl Agent {
                     projection: projection.clone(),
                 },
             ) {
-                self.mark_usd_unknown();
+                self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(error);
             }
             let Some(port) = &self.pricing_port else {
-                self.mark_usd_unknown();
+                self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(KernelError::PricingLedger(
                     "signed projection lost its pricing authority",
                 ));
             };
             let Some(rate_card) = &self.pricing else {
-                self.mark_usd_unknown();
+                self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(KernelError::PricingLedger(
                     "signed projection lost its bound rate card",
                 ));
@@ -150,21 +159,19 @@ impl Agent {
             ) {
                 Ok(()) => {}
                 Err(ProjectionAdmissionError::Pricing(error)) => {
-                    self.mark_usd_unknown();
+                    self.close_usd_if_physical_charge_is_unproved(turn);
                     return Err(error.into());
                 }
                 Err(ProjectionAdmissionError::Ledger(reason)) => {
-                    self.mark_usd_unknown();
+                    self.close_usd_if_physical_charge_is_unproved(turn);
                     return Err(KernelError::PricingLedger(reason));
                 }
             }
-            if let Some(budget) = &self.usd_budget {
-                budget.record_projection(projection.amount_microusd);
-            }
-        } else if let Some(budget) = &self.usd_budget
-            && budget.requires_pricing()
-        {
-            budget.mark_unknown();
+            // The logical projection remains the operator-facing turn/accounting evidence, but
+            // the shared hard ceiling was already charged by the physical route terminal before
+            // this point. Charging the winner here would count it twice after retry/fallback.
+        } else {
+            self.close_usd_if_physical_charge_is_unproved(turn);
         }
         Ok(())
     }
@@ -239,20 +246,28 @@ impl Agent {
             } else {
                 RuntimePolicySource::Startup
             };
-            self.emit_durable(
-                TurnId(self.seq_turn),
-                EventKind::UsdCeilingChanged {
-                    version: RuntimePolicyEventVersion::V1,
-                    source,
-                    max_microusd: target,
-                },
-            )?;
+            let kind = EventKind::UsdCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                source,
+                max_microusd: target,
+            };
+            let sequence = self.emit_durable_seq(TurnId(self.seq_turn), kind.clone())?;
             self.usd_budget_persisted_microusd = Some(target);
+            self.observe_runtime_policy_commit(
+                &kind,
+                sequence,
+                RuntimePolicyObservation::LiveCommit,
+            );
         }
+        let created = self.usd_budget.is_none();
         if let Some(shared) = &self.usd_budget {
             shared.tighten_microusd(target);
         } else {
             self.usd_budget = Some(std::sync::Arc::new(SharedUsdBudget::from_microusd(target)));
+        }
+        if created {
+            let scoped = replay_scoped_rollout(self.rollout.path())?;
+            self.restore_usd_budget_from_route_receipts(&scoped)?;
         }
         self.budget.max_usd = self.effective_max_usd();
         Ok(())

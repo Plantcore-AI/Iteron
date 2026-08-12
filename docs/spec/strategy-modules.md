@@ -151,7 +151,7 @@ pub struct ResolvedBundle { pub bundle_id: String, pub digest: String, pub polic
 | `core/model_router` | `crates/provider/src/catalog.rs` `ModelRouterStrategy` |
 | `core/collaboration` | `crates/workflow/src/collaboration.rs` `CollaborationStrategy` |
 
-九者由 `crates/cli/src/runtime/agent_config.rs` 构造成 `Arc<dyn StrategySlot>` 装进 Agent，由子代理继承；每个域都经 `decide_narrowed` 调用。绑定与身份由同一文件的 conformance 测试钉死，其中一条把 §5.4 的收窄契约**在这九条生产实现上**而非仅在测试替身上验证。
+九者由 `crates/cli/src/bundle_adapter/strategies.rs` 的 `CompiledSlots` 持成 `Arc<dyn StrategySlot>`，经 `crates/cli/src/runtime/agent_config.rs` 进入 Agent 并由子代理继承；每个域都经 `decide_narrowed` 调用。绑定与身份由 `crates/cli/src/bundle_adapter/strategies.rs` 的两条 conformance 测试钉死，其中一条把 §5.4 的收窄契约**在这九条生产实现上**而非仅在测试替身上验证。
 
 **仍然只是目标契约的部分：** `crates/evolve/src/lib.rs` 的九个构造器铸造的仍是**身份**而非实现；一条槽被外部 policy bundle **替换**掉的完整链路（晋升、签名、回滚）属 §6，尚未打通。因此本节的端口语义是已交付的，晋升语义不是。
 

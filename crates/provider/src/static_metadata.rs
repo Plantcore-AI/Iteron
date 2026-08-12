@@ -77,6 +77,10 @@ pub struct StaticModelCapabilities {
     pub tool_calling: Option<bool>,
     pub semantic_effort: Option<bool>,
     pub image_input: Option<bool>,
+    /// Optional normalized routing evidence. It is part of the content-stamped snapshot and is
+    /// never synthesized for a route whose source does not publish or calibrate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_objectives: Option<crate::RouteObjectiveScores>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,6 +489,9 @@ impl StaticProviderMetadata {
             )?;
             if capability.context_window_tokens == Some(0)
                 || capability.max_output_tokens == Some(0)
+                || capability
+                    .routing_objectives
+                    .is_some_and(|scores| scores.validate().is_err())
                 || matches!(
                     (capability.context_window_tokens, capability.max_output_tokens),
                     (Some(context), Some(output)) if u64::from(output) > context
@@ -545,6 +552,9 @@ impl StaticProviderMetadata {
                 )?;
                 if capability.context_window_tokens == Some(0)
                     || capability.max_output_tokens == Some(0)
+                    || capability
+                        .routing_objectives
+                        .is_some_and(|scores| scores.validate().is_err())
                     || matches!(
                         (capability.context_window_tokens, capability.max_output_tokens),
                         (Some(context), Some(output)) if u64::from(output) > context

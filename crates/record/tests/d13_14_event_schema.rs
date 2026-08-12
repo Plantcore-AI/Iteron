@@ -1,10 +1,14 @@
 use iteron_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
-    ImageContent, Message, Op, PermissionRules, PricingRoute, ProviderState, RateCard,
-    RunGenesisTunableEntry, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
-    SignedRateCard, TokenRateCard, ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent,
-    WorkflowMetrics, WorkflowTaskEvidence,
+    ImageContent, Message, Op, PermissionRules, PolicyDecisionEvidence, PolicyOutcomeEvidence,
+    PolicyRuntimeIdentity, PricingRoute, ProviderRouteAttemptAccounting,
+    ProviderRouteAttemptIdentity, ProviderState, RateCard, RunGenesisFixedAuthorityBindingV2,
+    RunGenesisPolicyBundleInheritance, RunGenesisPolicyBundleSnapshot, RunGenesisPolicySlotBinding,
+    RunGenesisTunableEntry, RunGenesisTunableEntryV2, RunGenesisTunablesInheritance,
+    RunGenesisTunablesSnapshot, RunGenesisTunablesSnapshotV2, SignedRateCard, TokenRateCard,
+    ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent, WorkflowMetrics,
+    WorkflowTaskEvidence,
 };
 use iteron_record::replay;
 use serde::de::DeserializeOwned;
@@ -21,7 +25,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 33] = [
+const WRITABLE_EVENT_TAGS: [&str; 40] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -38,7 +42,11 @@ const WRITABLE_EVENT_TAGS: [&str; 33] = [
     "model_selected",
     "notice",
     "phase",
+    "policy_decision",
+    "policy_bundle_snapshot",
+    "policy_outcome",
     "policy_changed",
+    "provider_governor_decision",
     "rate_card_bound",
     "run_start",
     "subagent_finished",
@@ -50,9 +58,12 @@ const WRITABLE_EVENT_TAGS: [&str; 33] = [
     "tool_done",
     "tool_ready",
     "tunables_snapshot",
+    "tunables_snapshot_v2",
+    "turn_ceiling_changed",
     "turn_end",
     "turn_start",
     "usd_ceiling_changed",
+    "verification_policy",
     "workflow",
     "workflow_v2",
 ];
@@ -79,7 +90,7 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 25] = [
+const NAMED_SURFACE_IDS: [&str; 36] = [
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
@@ -90,13 +101,24 @@ const NAMED_SURFACE_IDS: [&str; 25] = [
     "record.named.image-content",
     "record.named.message",
     "record.named.permission-rules",
+    "record.named.policy-decision-evidence",
+    "record.named.policy-outcome-evidence",
+    "record.named.policy-runtime-identity",
     "record.named.pricing-route",
     "record.named.provenance",
+    "record.named.provider-route-attempt-accounting",
+    "record.named.provider-route-attempt-identity",
     "record.named.provider-state",
     "record.named.rate-card",
+    "record.named.run-genesis-fixed-authority-binding-v2",
+    "record.named.run-genesis-policy-bundle-inheritance",
+    "record.named.run-genesis-policy-bundle-snapshot",
+    "record.named.run-genesis-policy-slot-binding",
     "record.named.run-genesis-tunable-entry",
+    "record.named.run-genesis-tunable-entry-v2",
     "record.named.run-genesis-tunables-inheritance",
     "record.named.run-genesis-tunables-snapshot",
+    "record.named.run-genesis-tunables-snapshot-v2",
     "record.named.signed-rate-card",
     "record.named.token-rate-card",
     "record.named.tool-result",
@@ -576,14 +598,47 @@ fn assert_named_surface_corpus(
                 typed_named_fixture_wires::<TokenRateCard>(root, surface)
             }
             "record.named.rate-card" => typed_named_fixture_wires::<RateCard>(root, surface),
+            "record.named.policy-decision-evidence" => {
+                typed_named_fixture_wires::<PolicyDecisionEvidence>(root, surface)
+            }
+            "record.named.policy-outcome-evidence" => {
+                typed_named_fixture_wires::<PolicyOutcomeEvidence>(root, surface)
+            }
+            "record.named.policy-runtime-identity" => {
+                typed_named_fixture_wires::<PolicyRuntimeIdentity>(root, surface)
+            }
+            "record.named.run-genesis-policy-bundle-inheritance" => {
+                typed_named_fixture_wires::<RunGenesisPolicyBundleInheritance>(root, surface)
+            }
+            "record.named.run-genesis-policy-bundle-snapshot" => {
+                typed_named_fixture_wires::<RunGenesisPolicyBundleSnapshot>(root, surface)
+            }
+            "record.named.run-genesis-policy-slot-binding" => {
+                typed_named_fixture_wires::<RunGenesisPolicySlotBinding>(root, surface)
+            }
             "record.named.run-genesis-tunable-entry" => {
                 typed_named_fixture_wires::<RunGenesisTunableEntry>(root, surface)
+            }
+            "record.named.run-genesis-tunable-entry-v2" => {
+                typed_named_fixture_wires::<RunGenesisTunableEntryV2>(root, surface)
+            }
+            "record.named.run-genesis-fixed-authority-binding-v2" => {
+                typed_named_fixture_wires::<RunGenesisFixedAuthorityBindingV2>(root, surface)
+            }
+            "record.named.provider-route-attempt-identity" => {
+                typed_named_fixture_wires::<ProviderRouteAttemptIdentity>(root, surface)
+            }
+            "record.named.provider-route-attempt-accounting" => {
+                typed_named_fixture_wires::<ProviderRouteAttemptAccounting>(root, surface)
             }
             "record.named.run-genesis-tunables-inheritance" => {
                 typed_named_fixture_wires::<RunGenesisTunablesInheritance>(root, surface)
             }
             "record.named.run-genesis-tunables-snapshot" => {
                 typed_named_fixture_wires::<RunGenesisTunablesSnapshot>(root, surface)
+            }
+            "record.named.run-genesis-tunables-snapshot-v2" => {
+                typed_named_fixture_wires::<RunGenesisTunablesSnapshotV2>(root, surface)
             }
             "record.named.signed-rate-card" => {
                 typed_named_fixture_wires::<SignedRateCard>(root, surface)
@@ -784,6 +839,9 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
     Some(match kind {
         EventKind::Phase { phase: _ } => "phase",
         EventKind::TurnStart => "turn_start",
+        EventKind::ProviderGovernorDecision { decision: _ } => "provider_governor_decision",
+        EventKind::PolicyDecision { evidence: _ } => "policy_decision",
+        EventKind::PolicyOutcome { evidence: _ } => "policy_outcome",
         EventKind::Message { message: _ } => "message",
         EventKind::Compaction { messages: _ } => "compaction",
         EventKind::Text { delta: _ } => "text",
@@ -804,11 +862,13 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             capability: _,
             arguments: _,
             workspace: _,
+            provider_route_attempt: _,
         } => "effect_intent",
         EventKind::EffectUnknown {
             id: _,
             tool: _,
             reason: _,
+            ..
         } => "effect_unknown",
         EventKind::EffectDone { id: _, tool: _, .. } => "effect_done",
         EventKind::ArtifactProduced { artifact: _ } => "artifact_produced",
@@ -844,6 +904,8 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             max_usd: _,
         } => "run_start",
         EventKind::TunablesSnapshot { .. } => "tunables_snapshot",
+        EventKind::TunablesSnapshotV2 { .. } => "tunables_snapshot_v2",
+        EventKind::PolicyBundleSnapshot { .. } => "policy_bundle_snapshot",
         EventKind::ModelSelected {
             provider_id: _,
             model_id: _,
@@ -857,6 +919,11 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             source: _,
             max_microusd: _,
         } => "usd_ceiling_changed",
+        EventKind::TurnCeilingChanged {
+            version: _,
+            source: _,
+            max_turns: _,
+        } => "turn_ceiling_changed",
         EventKind::EffortChanged {
             version: _,
             source: _,
@@ -907,6 +974,10 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             workflow_id: _,
             event: _,
         } => "workflow_v2",
+        EventKind::VerificationPolicy {
+            version: _,
+            event: _,
+        } => "verification_policy",
         EventKind::Done { outcome: _ } => "done",
         EventKind::Unknown => return None,
     })
@@ -1240,6 +1311,30 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                             &artifact.provenance,
                         );
                     }
+                    EventKind::EffectIntent {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    } => record_named(
+                        &mut named_wires,
+                        "record.named.provider-route-attempt-identity",
+                        attempt,
+                    ),
+                    EventKind::EffectUnknown {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    }
+                    | EventKind::EffectDone {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    }
+                    | EventKind::EffectFailed {
+                        provider_route_attempt: Some(attempt),
+                        ..
+                    } => record_named(
+                        &mut named_wires,
+                        "record.named.provider-route-attempt-accounting",
+                        attempt,
+                    ),
                     EventKind::ToolReady { tool, .. } => {
                         record_named(&mut named_wires, "record.named.tool-use", tool);
                     }
@@ -1278,6 +1373,85 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                             record_named(
                                 &mut named_wires,
                                 "record.named.run-genesis-tunables-inheritance",
+                                inherited_from,
+                            );
+                        }
+                    }
+                    EventKind::TunablesSnapshotV2 {
+                        snapshot,
+                        inherited_from,
+                        ..
+                    } => {
+                        record_named(
+                            &mut named_wires,
+                            "record.named.run-genesis-tunables-snapshot-v2",
+                            snapshot,
+                        );
+                        for entry in &snapshot.entries {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-tunable-entry-v2",
+                                entry,
+                            );
+                            if let Some(binding) = &entry.fixed_authority_binding {
+                                record_named(
+                                    &mut named_wires,
+                                    "record.named.run-genesis-fixed-authority-binding-v2",
+                                    binding,
+                                );
+                            }
+                        }
+                        if let Some(inherited_from) = inherited_from {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-tunables-inheritance",
+                                inherited_from,
+                            );
+                        }
+                    }
+                    EventKind::PolicyDecision { evidence } => {
+                        record_named(
+                            &mut named_wires,
+                            "record.named.policy-decision-evidence",
+                            evidence,
+                        );
+                        record_named(
+                            &mut named_wires,
+                            "record.named.policy-runtime-identity",
+                            &evidence.policy,
+                        );
+                    }
+                    EventKind::PolicyOutcome { evidence } => record_named(
+                        &mut named_wires,
+                        "record.named.policy-outcome-evidence",
+                        evidence,
+                    ),
+                    EventKind::PolicyBundleSnapshot {
+                        snapshot,
+                        inherited_from,
+                        ..
+                    } => {
+                        record_named(
+                            &mut named_wires,
+                            "record.named.run-genesis-policy-bundle-snapshot",
+                            snapshot,
+                        );
+                        for binding in &snapshot.slots {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-policy-slot-binding",
+                                binding,
+                            );
+                            record_named(
+                                &mut named_wires,
+                                "record.named.policy-runtime-identity",
+                                &binding.policy,
+                            );
+                        }
+                        if let Some(inherited_from) = inherited_from {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-policy-bundle-inheritance",
                                 inherited_from,
                             );
                         }
@@ -1401,9 +1575,18 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
     }
 
     assert_eq!(writable_tags, expected(&WRITABLE_EVENT_TAGS));
-    assert_eq!(
-        kind_wires, envelope_kind_wires,
-        "every typed event-kind fixture must occur in the typed envelope corpus, and vice versa"
+    // Name the offending wires. Comparing the two sets whole reports a difference of one entry as
+    // two several-thousand-character dumps, and the reader still has to diff them by eye.
+    let kind_only = kind_wires
+        .difference(&envelope_kind_wires)
+        .collect::<Vec<_>>();
+    let envelope_only = envelope_kind_wires
+        .difference(&kind_wires)
+        .collect::<Vec<_>>();
+    assert!(
+        kind_only.is_empty() && envelope_only.is_empty(),
+        "every typed event-kind fixture must occur in the typed envelope corpus, and vice versa; \
+         only in the event-kind corpus: {kind_only:#?}; only in the envelope corpus: {envelope_only:#?}"
     );
     for envelope in envelope_wires {
         assert!(

@@ -32,7 +32,13 @@ fn editing_only_registry(root: &Path) -> Registry {
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
         confine_execution: Default::default(),
+        egress_allow_policy: Default::default(),
+        observation_tool_policy: Default::default(),
+        process_launch_policy: Default::default(),
+        workspace_boundary: false,
         process_control: None,
+        lsp_control: None,
+        deferred_tool_catalog: None,
     };
     crate::edit::register(&mut registry).unwrap();
     register(&mut registry).unwrap();

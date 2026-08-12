@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 mod schema;
 pub use schema::*;
 
+mod binding;
+pub use binding::*;
+
 /// One coarse subsystem owning a semantic tuning decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,11 +146,34 @@ pub enum SourceKind {
     Registry,
 }
 
+/// How a source participates in resolution after its value has been authenticated and validated.
+///
+/// This is deliberately metadata, not frontend convention. In particular, repository-owned
+/// configuration is never an ordinary override: it may suggest a route when the operator did not
+/// select one, narrow a ceiling/grant, or contribute bounded repository-scoped content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceMergePolicy {
+    /// First value in registry precedence order wins.
+    Override,
+    /// Used only when no operator-owned source selected a route.
+    RouteSuggestion,
+    /// Numeric minimum: a repository value may introduce or lower, never raise, a ceiling.
+    TightenMaximum,
+    /// Boolean intersection: a repository `false` may revoke, while `true` never grants.
+    TightenBooleanGrant,
+    /// Set intersection for allow-lists; it can remove members but cannot add authority.
+    IntersectAllowSet,
+    /// Bounded repository content scoped to the current repository, not operator authority.
+    RepositoryScoped,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SourceBinding {
     pub kind: SourceKind,
     pub trust: SourceTrust,
     pub locator: &'static str,
+    pub merge: SourceMergePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -386,4 +412,7 @@ pub struct Family {
     pub optimization: OptimizationSpec,
     pub risk_class: RiskClass,
     pub authority_class: AuthorityClass,
+    /// Closed, machine-checkable path from the production owner through the effective getter (or
+    /// fixed authority) to durable run-genesis evidence.
+    pub runtime_binding: RuntimeBindingSpec,
 }

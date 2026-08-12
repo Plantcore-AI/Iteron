@@ -235,13 +235,27 @@ pub(super) fn apply_default_rules(
                     return Err("typed default violates a sum-limit rule");
                 }
             }
+            CrossFieldRule::SumEquals { terms, total } => {
+                let values = terms
+                    .iter()
+                    .map(|term| {
+                        field_value(value, term)
+                            .and_then(decimal_value)
+                            .ok_or("sum-equals default rule is not numeric")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if fixed_sum(&values, total).is_none_or(|equal| !equal) {
+                    return Err("typed default violates a sum-equals rule");
+                }
+            }
             CrossFieldRule::Requires {
                 if_field,
                 equals,
                 then_field,
             } => {
                 if field_value(value, if_field).is_some_and(|value| rule_value_eq(value, equals))
-                    && field_value(value, then_field).is_none()
+                    && field_value(value, then_field)
+                        .is_none_or(|required| !required_truthy(required))
                 {
                     return Err("typed default violates a requires rule");
                 }
@@ -256,6 +270,34 @@ pub(super) fn apply_default_rules(
                     return Err("typed default violates a mutually-exclusive rule");
                 }
             }
+            CrossFieldRule::MapEntryDomain { key, domain } => {
+                if let Some(value) = field_value(value, key) {
+                    validate_scalar_value(value, domain)
+                        .map_err(|_| "typed default violates a map-entry domain rule")?;
+                }
+            }
+            CrossFieldRule::AtLeastOneNonZero { fields } => {
+                let mut any_non_zero = false;
+                for field in fields {
+                    if let Some(value) = field_value(value, field) {
+                        any_non_zero |= numeric_non_zero(value)
+                            .ok_or("non-zero default rule is not numeric")?;
+                    }
+                }
+                if !any_non_zero {
+                    return Err("typed default violates an at-least-one-non-zero rule");
+                }
+            }
+            CrossFieldRule::Equals {
+                field,
+                value: expected,
+            } => {
+                if field_value(value, field).is_some_and(|actual| !rule_value_eq(actual, expected))
+                {
+                    return Err("typed default violates an equals rule");
+                }
+            }
+            CrossFieldRule::ResolvedSetSumLessOrEqual { .. } => {}
             CrossFieldRule::ExternalCeiling { .. } => {}
         }
     }
@@ -269,6 +311,7 @@ fn field_value(value: TunableValue, path: &str) -> Option<TunableValue> {
     let (head, tail) = path.split_once('.').unwrap_or((path, ""));
     let fields: &[TunableValueField] = match value {
         TunableValue::Object { fields } => fields,
+        TunableValue::Map { entries } => entries,
         _ => return None,
     };
     let value = fields.iter().find(|field| field.name == head)?.value;
@@ -283,6 +326,51 @@ fn integer(value: TunableValue) -> Option<i128> {
     match value {
         TunableValue::Integer { value } => Some(i128::from(value)),
         _ => None,
+    }
+}
+
+fn decimal_value(value: TunableValue) -> Option<DecimalValue> {
+    match value {
+        TunableValue::Integer { value } => Some(DecimalValue {
+            coefficient: value,
+            scale: 0,
+        }),
+        TunableValue::Decimal { value } => Some(value),
+        _ => None,
+    }
+}
+
+fn fixed_sum(values: &[DecimalValue], total: DecimalValue) -> Option<bool> {
+    let scale = values
+        .iter()
+        .map(|value| value.scale)
+        .chain([total.scale])
+        .max()?;
+    let scaled = |value: DecimalValue| {
+        i128::from(value.coefficient)
+            .checked_mul(10i128.checked_pow(u32::from(scale - value.scale))?)
+    };
+    let sum = values
+        .iter()
+        .copied()
+        .try_fold(0i128, |sum, value| sum.checked_add(scaled(value)?))?;
+    Some(sum == scaled(total)?)
+}
+
+fn numeric_non_zero(value: TunableValue) -> Option<bool> {
+    match value {
+        TunableValue::Integer { value } => Some(value != 0),
+        TunableValue::Decimal { value } => Some(value.coefficient != 0),
+        _ => None,
+    }
+}
+
+fn required_truthy(value: TunableValue) -> bool {
+    match value {
+        TunableValue::Boolean { value } => value,
+        TunableValue::Integer { value } => value != 0,
+        TunableValue::Decimal { value } => value.coefficient != 0,
+        _ => false,
     }
 }
 
@@ -314,6 +402,9 @@ fn rule_value_eq(value: TunableValue, expected: RuleValue) -> bool {
         }
         (TunableValue::Integer { value }, RuleValue::Integer { value: expected }) => {
             value == expected
+        }
+        (TunableValue::Decimal { value }, RuleValue::Decimal { value: expected }) => {
+            decimal_cmp(value, expected).is_some_and(|ordering| ordering.is_eq())
         }
         (TunableValue::Enum { value }, RuleValue::Enum { value: expected }) => value == expected,
         _ => false,

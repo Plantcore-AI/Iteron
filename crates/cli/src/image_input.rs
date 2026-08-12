@@ -30,14 +30,75 @@ mod decode;
 mod heic;
 #[path = "image_input/parse.rs"]
 mod parse;
+#[path = "image_input/routing.rs"]
+mod routing;
 #[path = "image_input/sniff.rs"]
 mod sniff;
 #[path = "image_input/types.rs"]
 mod types;
 
 pub use parse::{parse_explicit_image_path, parse_image_mentions};
+pub(crate) use routing::{BinaryMediaInspectionPolicy, UnknownMimePolicy};
 use sniff::{SourceFormat, extension_format, sniff_image};
 pub use types::{ImageInputError, ImageInputErrorKind, SafeDisplayName};
+
+/// Exact fixed decode/admission owner sampled by tunables composition. Keeping this query beside
+/// the loader prevents the registry projection from copying literals that can drift away from the
+/// limits which actually reject bytes and decoder work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct MultimodalDecodeEnvelope {
+    pub max_images: usize,
+    pub per_image_raw_bytes: usize,
+    pub aggregate_raw_bytes: usize,
+    pub max_dimension: u32,
+    pub max_frames: u32,
+}
+
+impl MultimodalDecodeEnvelope {
+    pub(crate) fn try_new(
+        max_images: usize,
+        per_image_raw_bytes: usize,
+        aggregate_raw_bytes: usize,
+        max_dimension: u32,
+        max_frames: u32,
+    ) -> Result<Self, &'static str> {
+        if max_images > MAX_INPUT_IMAGES {
+            return Err("multimodal image count exceeds the protocol envelope");
+        }
+        if per_image_raw_bytes == 0
+            || per_image_raw_bytes > MAX_IMAGE_FILE_BYTES
+            || aggregate_raw_bytes == 0
+            || aggregate_raw_bytes > MAX_TOTAL_IMAGE_FILE_BYTES
+            || per_image_raw_bytes > aggregate_raw_bytes
+        {
+            return Err("multimodal raw-byte limits exceed the protocol envelope");
+        }
+        if max_dimension == 0
+            || max_dimension > decode::MAX_IMAGE_DIMENSION
+            || max_frames == 0
+            || max_frames > decode::MAX_ANIMATION_FRAMES
+        {
+            return Err("multimodal decode work exceeds the fixed safety envelope");
+        }
+        Ok(Self {
+            max_images,
+            per_image_raw_bytes,
+            aggregate_raw_bytes,
+            max_dimension,
+            max_frames,
+        })
+    }
+}
+
+pub(crate) const fn multimodal_decode_envelope() -> MultimodalDecodeEnvelope {
+    MultimodalDecodeEnvelope {
+        max_images: MAX_INPUT_IMAGES,
+        per_image_raw_bytes: MAX_IMAGE_FILE_BYTES,
+        aggregate_raw_bytes: MAX_TOTAL_IMAGE_FILE_BYTES,
+        max_dimension: decode::MAX_IMAGE_DIMENSION,
+        max_frames: decode::MAX_ANIMATION_FRAMES,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLoadLimits {
@@ -151,6 +212,7 @@ impl fmt::Debug for ImageAttachment {
 #[derive(Clone)]
 pub struct ImageAttachments {
     limits: ImageLoadLimits,
+    routing: BinaryMediaInspectionPolicy,
     items: Vec<ImageAttachment>,
     file_bytes: usize,
     encoded_bytes: usize,
@@ -163,8 +225,16 @@ pub struct ImageAttachments {
 
 impl ImageAttachments {
     pub fn new(limits: ImageLoadLimits) -> Self {
+        Self::new_with_routing(limits, BinaryMediaInspectionPolicy::owner())
+    }
+
+    pub(crate) fn new_with_routing(
+        limits: ImageLoadLimits,
+        routing: BinaryMediaInspectionPolicy,
+    ) -> Self {
         Self {
             limits,
+            routing,
             items: Vec::new(),
             file_bytes: 0,
             encoded_bytes: 0,
@@ -353,8 +423,10 @@ impl ImageAttachments {
         expected: Option<ImageMediaType>,
         bytes: &[u8],
     ) -> Result<&ImageAttachment, ImageInputError> {
-        let actual =
-            sniff_image(bytes).map_err(|kind| ImageInputError::named(kind, name.clone()))?;
+        let actual = self
+            .routing
+            .inspect_raw(bytes)
+            .map_err(|kind| ImageInputError::named(kind, name.clone()))?;
         if expected.is_some_and(|expected| actual != expected) {
             return Err(ImageInputError::named(
                 ImageInputErrorKind::ExtensionMismatch,
@@ -415,6 +487,7 @@ impl fmt::Debug for ImageAttachments {
         formatter
             .debug_struct("ImageAttachments")
             .field("limits", &self.limits)
+            .field("routing", &self.routing)
             .field("items", &self.items)
             .field("file_bytes", &self.file_bytes)
             .field("encoded_bytes", &self.encoded_bytes)

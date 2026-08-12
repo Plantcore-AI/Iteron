@@ -37,6 +37,20 @@ impl OperationBudget {
         Ok(phase.min(self.remaining()?))
     }
 
+    /// Derive a nested budget without ever extending the owning public operation.
+    pub(super) fn nested(self, maximum: Duration) -> Result<Self, McpError> {
+        let nested =
+            Instant::now()
+                .checked_add(maximum)
+                .ok_or(McpError::InvalidLaunchConfiguration {
+                    field: "nested_operation_deadline",
+                    limit: super::MAX_MCP_OPERATION_DEADLINE_MS as usize,
+                })?;
+        Ok(Self {
+            deadline: self.deadline.min(nested),
+        })
+    }
+
     pub(super) fn is_exhausted(self) -> bool {
         Instant::now() >= self.deadline
     }
@@ -66,5 +80,26 @@ mod tests {
         );
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(budget.remaining().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nested_budget_never_extends_parent() {
+        let parent = OperationBudget::start(Duration::from_secs(3)).unwrap();
+        assert!(
+            parent
+                .nested(Duration::from_secs(60))
+                .unwrap()
+                .remaining()
+                .unwrap()
+                <= Duration::from_secs(3)
+        );
+        assert!(
+            parent
+                .nested(Duration::from_secs(1))
+                .unwrap()
+                .remaining()
+                .unwrap()
+                <= Duration::from_secs(1)
+        );
     }
 }

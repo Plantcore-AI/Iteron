@@ -95,6 +95,12 @@ advertised only by an interactive frontend that installs an operator decision ha
 other noninteractive paths fail closed. OAuth refresh rotates the retained refresh token and
 explicit revocation clears the active bearer credential.
 
+Configured servers are session-owned and lazy: startup registers bounded proxy tools but does not
+spawn a stdio process or contact an HTTP endpoint. The first search/resource/prompt request opens
+the server under the session's pinned reconnect, deadline, and result-retention policy. Use `/mcp`
+for live per-server phase/generation/catalog status, or `/mcp cancel|restart|stop <server>` to act on
+that exact session owner. Restart clears the retained catalog and reconnects on the next request.
+
 Discovered MCP tools are currently classified as `irreversible_external` because
 they can reach external systems outside the local sandbox. Every call therefore
 requires approval; `--allow-code` and `yolo` do not auto-approve it.

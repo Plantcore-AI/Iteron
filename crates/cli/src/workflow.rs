@@ -6,20 +6,25 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(test)]
 use async_trait::async_trait;
+#[cfg(test)]
 use iteron_protocol::{Effort, Message};
+#[cfg(test)]
 use iteron_provider::{Provider, StreamItem, TurnRequest};
 use iteron_workflow::events::{
     PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, WorkflowState, fmt_count,
     fmt_duration, truncate_preview,
 };
-use iteron_workflow::{
-    AgentCall, AgentOutcome, AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine,
-};
+#[cfg(test)]
+use iteron_workflow::{AgentCall, AgentOutcome};
+use iteron_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};
 use serde::{Deserialize, Serialize};
 
 mod live;
+mod policy_checkpoint;
 mod projection;
+mod tunables_checkpoint;
 
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -28,27 +33,35 @@ use live::{
     LiveAction, LiveOutcome, live_key_action, live_lines, live_loop, new_run_card, plain_lines,
 };
 pub use live::{run_live, watch_live};
+pub(crate) use policy_checkpoint::{
+    load as load_policy_checkpoint, persist as persist_policy_checkpoint,
+};
 use projection::UI_LABEL_MAX;
 pub use projection::{
     KernelActivityKind, WorkflowRunTerminal, WorkflowRunUiEvent, ui_safe_label, ui_safe_progress,
 };
+pub(crate) use tunables_checkpoint::{
+    load as load_tunables_checkpoint, persist as persist_tunables_checkpoint,
+};
 
 /// The system prompt every workflow sub-agent runs under. Kept terse: a workflow `agent()` call is a
 /// bounded, single-shot query, not a full coding session.
+#[cfg(test)]
 const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Iteron workflow. Answer the \
 given task directly and concisely in plain text. Do not ask clarifying questions; produce exactly \
 the requested output and nothing else.";
 
-/// OPT-IN FALLBACK SPAWNER: one real provider completion per `agent()` call.
+/// Test-only single-completion spawner: one provider completion per `agent()` call.
 ///
 /// This is NOT the default. `iteron workflow run|resume|watch` builds a
 /// [`crate::runtime::KernelSpawner`] — an owned child `Agent` with a read-only `Registry`, its own
-/// child `Rollout`, and the parent's inherited route/pricing. This single-turn spawner is reached
-/// only through `ITERON_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
-/// tools and no child `Agent` loop: it isolates provider behavior from harness behavior. The trait
-/// boundary is the same for both, so nothing above this line depends on which one is installed.
+/// child `Rollout`, and the parent's inherited route/pricing/governor. Production no longer exposes
+/// a switch to this single-turn spawner because it has no child kernel effect journal. It remains a
+/// focused workflow-engine fixture for isolating provider behavior from harness behavior. The trait
+/// boundary is the same for both, so tests above this line do not depend on which one is installed.
 /// This fallback supports only the built-in `generic` agent and the exact model resolved by the
 /// composition root; it cannot reinterpret an agent definition or resolve another route.
+#[cfg(test)]
 pub struct ProviderSpawner {
     provider: Arc<dyn Provider>,
     model: String,
@@ -56,6 +69,7 @@ pub struct ProviderSpawner {
     default_effort: Effort,
 }
 
+#[cfg(test)]
 impl ProviderSpawner {
     pub fn new(provider: Arc<dyn Provider>, model: String) -> Self {
         ProviderSpawner {
@@ -72,6 +86,7 @@ impl ProviderSpawner {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl AgentSpawner for ProviderSpawner {
     async fn spawn(&self, call: AgentCall) -> AgentOutcome {
@@ -106,6 +121,7 @@ impl AgentSpawner for ProviderSpawner {
             cache_system: false,
             thinking_budget: effort.thinking_budget(),
             reasoning_effort: effort.reasoning_effort(),
+            controls: Default::default(),
         };
         // No mid-stream overlap needed here: we only want the final text.
         let mut on_item = |_item: StreamItem| {};
@@ -1993,7 +2009,11 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             .await
             .expect("provider failure settles as null");
         assert_eq!(report.value, serde_json::Value::Null);
-        assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.turns.load(Ordering::SeqCst),
+            2,
+            "the workflow's bounded retry policy gives the failed logical agent one retry"
+        );
         assert_safe_refusal_surfaces(&workflows_dir, "fallback-error", &sink, 1, secret);
         let _ = std::fs::remove_dir_all(workflows_dir);
     }
@@ -3098,8 +3118,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         assert!(!summary.contains("KILLED"), "{summary}");
         assert_eq!(
             spawner.calls.load(Ordering::SeqCst),
-            3,
-            "every declared agent is still dispatched after one of them fails"
+            4,
+            "all three declared agents run and the failed agent receives its one bounded retry"
         );
         for survivor in ["alpha-result", "gamma-result"] {
             assert!(

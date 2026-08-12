@@ -7,8 +7,8 @@
 
 use crate::sse::StreamItem;
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult, UsageReport,
+    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
+    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
 use futures_util::StreamExt;
 use iteron_protocol::{
@@ -19,8 +19,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const DEFAULT_ROOT: &str = "https://api.openai.com/v1";
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const ERROR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
@@ -43,7 +41,7 @@ pub struct OpenAiResponses {
     root: ApiRoot,
     route_scope: String,
     error_profile: ErrorProfile,
-    client: reqwest::Client,
+    client: crate::catalog::RuntimeHttpClient,
 }
 
 impl OpenAiResponses {
@@ -53,7 +51,8 @@ impl OpenAiResponses {
     }
 
     pub fn with_root(key: String, root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, root, &crate::catalog::DefaultHttpTransport)
+        let client = crate::catalog::RuntimeHttpClient::default_reconfigurable()?;
+        Self::with_client(key, root, client)
     }
 
     /// Build against an exact API root, obtaining the HTTP client from an injected
@@ -64,7 +63,15 @@ impl OpenAiResponses {
         root: ApiRoot,
         transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
-        let client = transport.client()?;
+        let client = crate::catalog::RuntimeHttpClient::fixed(transport)?;
+        Self::with_client(key, root, client)
+    }
+
+    fn with_client(
+        key: String,
+        root: ApiRoot,
+        client: crate::catalog::RuntimeHttpClient,
+    ) -> Result<Self, ProviderError> {
         Ok(Self {
             key,
             route_scope: direct_route_scope(),
@@ -155,6 +162,19 @@ fn request_body(
         responses_reasoning_effort(error_profile, &request.model, request.reasoning_effort)
     {
         body["reasoning"] = serde_json::json!({"effort": effort.label(), "summary": "auto"});
+    }
+    match request.controls.service_tier {
+        ServiceTier::ProviderDefault => {}
+        ServiceTier::Auto => body["service_tier"] = serde_json::json!("auto"),
+        ServiceTier::Standard => body["service_tier"] = serde_json::json!("default"),
+        ServiceTier::Flex => body["service_tier"] = serde_json::json!("flex"),
+        ServiceTier::Priority => body["service_tier"] = serde_json::json!("priority"),
+    }
+    match request.controls.verbosity {
+        ResponseVerbosity::ModelDefault => {}
+        ResponseVerbosity::Concise => body["text"] = serde_json::json!({"verbosity": "low"}),
+        ResponseVerbosity::Balanced => body["text"] = serde_json::json!({"verbosity": "medium"}),
+        ResponseVerbosity::Detailed => body["text"] = serde_json::json!({"verbosity": "high"}),
     }
     Ok(body)
 }
@@ -1364,6 +1384,25 @@ impl Provider for OpenAiResponses {
         self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT
     }
 
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT {
+            capabilities.service_tiers.extend([
+                ServiceTier::Auto,
+                ServiceTier::Standard,
+                ServiceTier::Flex,
+                ServiceTier::Priority,
+            ]);
+            capabilities.verbosity.extend([
+                ResponseVerbosity::Concise,
+                ResponseVerbosity::Balanced,
+                ResponseVerbosity::Detailed,
+            ]);
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         responses_effort_application(self.error_profile, &request.model, request.reasoning_effort)
     }
@@ -1373,11 +1412,18 @@ impl Provider for OpenAiResponses {
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
-        let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
+        let transport = request.controls.transport;
+        let deadline = Instant::now()
+            .checked_add(transport.request_total)
+            .ok_or_else(|| {
+                ProviderError::Configuration(
+                    "provider request total deadline exceeds the platform clock range".into(),
+                )
+            })?;
+        let client = self.client.client(transport)?;
         let endpoint = self.root.endpoint("responses")?;
         let body = self.body(request)?;
-        let request = self
-            .client
+        let request = client
             .post(endpoint)
             .bearer_auth(&self.key)
             .header("content-type", "application/json")
@@ -1421,7 +1467,7 @@ impl Provider for OpenAiResponses {
                     "Responses stream exceeded total deadline".into(),
                 ));
             }
-            let wait = remaining.min(STREAM_IDLE_TIMEOUT);
+            let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
                 .map_err(|_| {
@@ -1430,7 +1476,7 @@ impl Provider for OpenAiResponses {
                     } else {
                         ProviderError::Http(format!(
                             "Responses stream stalled: no bytes for {}s",
-                            STREAM_IDLE_TIMEOUT.as_secs()
+                            transport.stream_idle.as_secs()
                         ))
                     }
                 })?;
@@ -1551,6 +1597,7 @@ mod tests {
             cache_system: true,
             thinking_budget: 9_000,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         }
     }
 

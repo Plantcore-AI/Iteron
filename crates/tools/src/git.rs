@@ -10,25 +10,24 @@
 //! supervised with bounded output, a deadline, and process-group teardown. Linked worktrees and
 //! submodule worktrees use an external git-dir through a `.git` file and currently fail closed.
 
-use crate::git_filters::discover_filter_drivers;
+use crate::git_filters::discover_filter_drivers_bounded;
 #[cfg(test)]
 use crate::git_filters::{MAX_FILTER_DRIVERS, parse_filter_drivers};
-use crate::git_harness::{
-    GIT_TIMEOUT, STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
-    resolve_repository_layout, run_command_bounded,
-};
 #[cfg(test)]
 use crate::git_harness::{NULL_DEVICE, ResolvedGit, shell_script_command};
-use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
+use crate::git_harness::{
+    STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
+    resolve_repository_layout, run_command_bounded,
+};
+use crate::{GitPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 #[cfg(test)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 #[cfg(test)]
-use std::{io, process::Stdio, time::Duration};
-
-const STDOUT_LIMIT: usize = 40_000;
+use std::{io, process::Stdio};
 
 fn git_diff_args(
     stat: bool,
@@ -68,6 +67,7 @@ async fn run_git_diff_inner(
     stat: bool,
     requested_path: Option<&str>,
     cached: bool,
+    policy: GitPolicy,
 ) -> Result<String, String> {
     let root = root
         .canonicalize()
@@ -94,12 +94,20 @@ async fn run_git_diff_inner(
     let repository = resolve_repository_layout(&root)?;
     let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &root)
         .map_err(|error| format!("could not resolve trusted Git: {error}"))?;
-    let filter_drivers = discover_filter_drivers(&git, &repository).await?;
+    let timeout = Duration::from_secs(policy.timeout_seconds);
+    let filter_drivers =
+        discover_filter_drivers_bounded(&git, &repository, timeout, policy.output_max_bytes)
+            .await?;
     let args = git_diff_args(stat, relative_path.as_deref(), cached, &filter_drivers);
     let mut command = hardened_git_command(&git, &repository, &args);
-    let captured = run_command_bounded(&mut command, GIT_TIMEOUT, STDOUT_LIMIT, STDERR_LIMIT)
-        .await
-        .map_err(|error| format!("could not run bounded Git diff: {error}"))?;
+    let captured = run_command_bounded(
+        &mut command,
+        timeout,
+        policy.output_max_bytes,
+        policy.output_max_bytes.min(STDERR_LIMIT),
+    )
+    .await
+    .map_err(|error| format!("could not run bounded Git diff: {error}"))?;
 
     if !captured.status.success() {
         let stderr = captured.stderr.render("Git stderr");
@@ -122,15 +130,31 @@ pub(crate) async fn run_git_diff(
     stat: bool,
     requested_path: Option<&str>,
 ) -> Result<String, String> {
+    run_git_diff_with_policy(
+        root,
+        stat,
+        requested_path,
+        crate::ObservationToolPolicy::default().git,
+    )
+    .await
+}
+
+async fn run_git_diff_with_policy(
+    root: &Path,
+    stat: bool,
+    requested_path: Option<&str>,
+    policy: GitPolicy,
+) -> Result<String, String> {
     // The filter-config inspection and diff share one end-to-end deadline. Dropping either active
     // command invokes `ProcessGroupGuard`, so outer timeout/caller cancellation tears down the
     // whole Unix process group rather than leaking a repository-triggered descendant.
+    let timeout = Duration::from_secs(policy.timeout_seconds);
     tokio::time::timeout(
-        GIT_TIMEOUT,
-        run_git_diff_inner(root, stat, requested_path, false),
+        timeout,
+        run_git_diff_inner(root, stat, requested_path, false, policy),
     )
     .await
-    .map_err(|_| format!("Git diff exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
+    .map_err(|_| format!("Git diff exceeded {} seconds", policy.timeout_seconds))?
 }
 
 pub(crate) async fn run_git_index_diff(
@@ -138,21 +162,25 @@ pub(crate) async fn run_git_index_diff(
     stat: bool,
     requested_path: Option<&str>,
 ) -> Result<String, String> {
+    let policy = crate::ObservationToolPolicy::default().git;
+    let timeout = Duration::from_secs(policy.timeout_seconds);
     tokio::time::timeout(
-        GIT_TIMEOUT,
-        run_git_diff_inner(root, stat, requested_path, true),
+        timeout,
+        run_git_diff_inner(root, stat, requested_path, true, policy),
     )
     .await
-    .map_err(|_| format!("Git index diff exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
+    .map_err(|_| format!("Git index diff exceeded {} seconds", policy.timeout_seconds))?
 }
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
+    let policy_cell = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "git_diff".into(),
             description: "Show uncommitted changes in the working tree (git diff). Optional \
                           `stat` for a summary, or `path` to limit to one file/dir. Runs a fixed, \
-                          bounded, hook/filter-disabled Git command after the model turn; dirty \
+                          hook/filter-disabled Git command under the pinned runtime timeout and \
+                          output ceiling after the model turn; dirty \
                           submodule worktrees are intentionally not descended into."
                 .into(),
             input_schema: serde_json::json!({
@@ -165,9 +193,17 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,
             capability: Capability::ReadOnly,
         },
-        |call, root| {
+        move |call, root| {
+            let policy_cell = policy_cell.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                let Some(policy) = policy_cell.get().copied().map(|p| p.git) else {
+                    return err_result(
+                        id,
+                        "git_diff refused: immutable observation-tool policy was not installed"
+                            .to_owned(),
+                    );
+                };
                 let stat = call
                     .input
                     .get("stat")
@@ -178,7 +214,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .get("path")
                     .and_then(|value| value.as_str())
                     .map(str::to_owned);
-                match run_git_diff(&root, stat, path.as_deref()).await {
+                match run_git_diff_with_policy(&root, stat, path.as_deref(), policy).await {
                     Ok(output) => ok_result(id, output),
                     Err(error) => err_result(id, error),
                 }
@@ -598,7 +634,7 @@ mod tests {
         let vulnerable = run_command_bounded(
             &mut raw_command,
             Duration::from_secs(5),
-            STDOUT_LIMIT,
+            crate::ObservationToolPolicy::default().git.output_max_bytes,
             STDERR_LIMIT,
         )
         .await
@@ -840,6 +876,20 @@ mod tests {
         // repository can diff. That refusal is structural, not a confinement policy.
         let temp = TestDir::new("path-escape");
         let registry = Registry::read_only(&temp.0).unwrap();
+        let unpinned = registry
+            .run(ToolUse {
+                id: "git-unpinned".into(),
+                name: "git_diff".into(),
+                input: serde_json::json!({"path":"../outside"}),
+            })
+            .await;
+        assert!(unpinned.is_error);
+        assert!(unpinned.content.contains("policy was not installed"));
+        let mut policy = crate::ObservationToolPolicy::default();
+        policy.git.timeout_seconds = 19;
+        policy.git.output_max_bytes = 8 * 1024;
+        registry.install_observation_tool_policy(policy).unwrap();
+        assert!(registry.install_observation_tool_policy(policy).is_err());
         let result = registry
             .run(ToolUse {
                 id: "git-path-escape".into(),

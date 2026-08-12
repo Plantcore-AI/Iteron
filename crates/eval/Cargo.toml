@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 iteron-evolve = { path = "../evolve" }
+iteron-protocol = { path = "../protocol" }
+iteron-record = { path = "../record" }
 iteron-sandbox = { path = "../sandbox" }
 iteron-tunables = { path = "../tunables" }
 iteron-verify = { path = "../verify" }

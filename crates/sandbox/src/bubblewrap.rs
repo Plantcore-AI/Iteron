@@ -122,7 +122,7 @@ impl Bubblewrap {
         // (ANTHROPIC_API_KEY, *_TOKEN, AWS_*, …). The egress-off network denial is the real
         // containment; this restores venvs/PATH/HOME so real build/test commands run
         // (live-e2e review: env_clear + HOME=/tmp broke Python user site-packages).
-        crate::confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
+        crate::apply_confinement_environment(&mut cmd, conf);
         cmd.env("TERM", "dumb")
             .env("PAGER", "cat")
             .env("MANPAGER", "cat")
@@ -194,6 +194,19 @@ pub(crate) fn bwrap_args_for_persistent(conf: &Confinement, command: &str) -> Ve
     )
 }
 
+/// Build the namespace used by a long-lived child that owns a real controlling terminal.
+/// Unlike the pipe mode, `/dev/tty` must remain the namespace terminal device.
+pub(crate) fn bwrap_args_for_persistent_pty(conf: &Confinement, command: &str) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home.as_deref(),
+        WorkspaceSource::Path(&conf.workspace),
+        SessionMode::PersistentPty,
+    )
+}
+
 fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) -> Vec<String> {
     bwrap_args_with_home_and_source(
         conf,
@@ -230,6 +243,7 @@ enum WorkspaceSource<'a> {
 enum SessionMode {
     OneShot,
     Persistent,
+    PersistentPty,
 }
 
 fn bwrap_args_with_home_and_source(

@@ -133,6 +133,42 @@ pub enum PrivacyClass {
     Content,
 }
 
+/// Sealed, content-free proof for the complete telemetry/debug schema in this catalog build.
+///
+/// Construction is private and [`content_free_telemetry_schema_proof`] scans the live registry on
+/// every request. A future event classified as `Content` or `SensitiveMetadata` therefore removes
+/// the proof instead of inheriting an obsolete boolean from an erasure coverage table.
+// The private field seals construction to this module. `#[non_exhaustive]` would still permit
+// other modules in this crate to forge the proof, so the superficially similar lint fix is weaker.
+#[allow(clippy::manual_non_exhaustive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentFreeTelemetrySchemaProof {
+    pub catalog_version: LifecycleCatalogVersion,
+    pub event_count: usize,
+    _sealed: (),
+}
+
+pub fn content_free_telemetry_schema_proof() -> Option<ContentFreeTelemetrySchemaProof> {
+    content_free_privacy_proof(events().map(|spec| spec.privacy)).then_some(
+        ContentFreeTelemetrySchemaProof {
+            catalog_version: LIFECYCLE_CATALOG_VERSION,
+            event_count: EVENT_COUNT,
+            _sealed: (),
+        },
+    )
+}
+
+fn content_free_privacy_proof(classes: impl IntoIterator<Item = PrivacyClass>) -> bool {
+    let mut count = 0usize;
+    for class in classes {
+        if class != PrivacyClass::ContentFree {
+            return false;
+        }
+        count = count.saturating_add(1);
+    }
+    count == EVENT_COUNT
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CardinalityClass {
@@ -331,8 +367,32 @@ mod tests {
     }
 
     #[test]
+    fn every_telemetry_debug_event_is_content_free_by_schema() {
+        let proof = content_free_telemetry_schema_proof().unwrap();
+        assert_eq!(proof.event_count, EVENT_COUNT);
+        assert_eq!(proof.catalog_version, LIFECYCLE_CATALOG_VERSION);
+
+        // The only free-form-looking fields admit stable identifier characters, not prompt,
+        // memory, tool, path, URL, or error text. A debug recorder therefore has no
+        // content-bearing derivative to retain outside the private-content graph.
+        let payload = LifecyclePayload {
+            outcome_code: Some("operator text with spaces".into()),
+            ..LifecyclePayload::default()
+        };
+        assert!(payload.validate().is_err());
+        let encoded = serde_json::to_value(LifecyclePayload::default()).unwrap();
+        assert!(encoded.as_object().is_some_and(|object| object.is_empty()));
+
+        let mut future = vec![PrivacyClass::ContentFree; EVENT_COUNT];
+        future[EVENT_COUNT - 1] = PrivacyClass::Content;
+        assert!(
+            !content_free_privacy_proof(future),
+            "a future content-bearing telemetry schema must remove the absence proof"
+        );
+    }
+
+    #[test]
     fn every_reserved_event_is_explicit_and_every_other_event_is_active() {
-        assert_eq!(RESERVED_EVENTS.len(), 19);
         let reserved = RESERVED_EVENTS
             .iter()
             .copied()

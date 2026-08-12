@@ -58,11 +58,144 @@ fn assert_detail_bound(detail: &Detail) {
     }
 }
 
+fn checkpoint_entry(ordinal: u16, id: &str) -> iteron_protocol::RunGenesisTunableEntryV2 {
+    let family = iteron_tunables::families()
+        .iter()
+        .find(|family| family.ordinal == ordinal && family.id == id)
+        .expect("canonical family");
+    iteron_protocol::RunGenesisTunableEntryV2 {
+        ordinal,
+        family_id: id.into(),
+        semantic_key: family.semantic_key.into(),
+        state: iteron_protocol::RunGenesisTunableState::Effective,
+        effective_value: Some(serde_json::json!("genesis")),
+        provenance: Some(serde_json::json!({"source": "fixture"})),
+        profile_applied: false,
+        ceiling_adjustments: Vec::new(),
+        inactive_reason: None,
+        fixed_authority_binding: None,
+    }
+}
+
+fn runtime_policy_overlay(
+    observed_via: crate::runtime::RuntimePolicyObservation,
+) -> crate::runtime::RuntimePolicyOverlaySnapshot {
+    crate::runtime::RuntimePolicyOverlaySnapshot {
+        sequence: 19,
+        effort: crate::runtime::RuntimePolicyValue {
+            value: iteron_protocol::Effort::XHigh,
+            source: iteron_protocol::RuntimePolicySource::Operator,
+            sequence: 16,
+            observed_via,
+        },
+        permission_mode: crate::runtime::RuntimePolicyValue {
+            value: iteron_protocol::PermissionMode::AcceptEdits,
+            source: iteron_protocol::RuntimePolicySource::ApprovalRemember,
+            sequence: 17,
+            observed_via,
+        },
+        permission_rule_count: 4,
+        permission_rules_digest_sha256: "a".repeat(64),
+        max_turns: crate::runtime::RuntimePolicyValue {
+            value: 23,
+            source: iteron_protocol::RuntimePolicySource::Harness,
+            sequence: 18,
+            observed_via,
+        },
+        max_usd_microusd: Some(crate::runtime::RuntimePolicyValue {
+            value: 2_500_001,
+            source: iteron_protocol::RuntimePolicySource::Operator,
+            sequence: 19,
+            observed_via,
+        }),
+    }
+}
+
+#[test]
+fn runtime_projection_separates_immutable_genesis_from_live_and_replayed_policy() {
+    let live = runtime_policy_overlay(crate::runtime::RuntimePolicyObservation::LiveCommit);
+    let cases = [
+        (4, "effort", "xhigh", "source=operator · seq=16"),
+        (5, "max_turns", "23", "source=harness · seq=18"),
+        (6, "max_usd", "$2.500001", "source=operator · seq=19"),
+        (
+            10,
+            "permission_mode",
+            "acceptEdits",
+            "source=approval-remember · seq=17",
+        ),
+        (
+            11,
+            "permission_rules",
+            "4 rules · digest aaaaaaaaaaaa",
+            "source=approval-remember · seq=17",
+        ),
+    ];
+    for (ordinal, family, expected_value, expected_provenance) in cases {
+        let current = current_runtime_projection(&checkpoint_entry(ordinal, family), Some(&live));
+        assert_eq!(current.value, expected_value);
+        assert!(
+            current.provenance.contains(expected_provenance),
+            "{}: {}",
+            family,
+            current.provenance
+        );
+        assert!(current.provenance.contains("observed=live-commit"));
+    }
+
+    let replayed = runtime_policy_overlay(crate::runtime::RuntimePolicyObservation::ResumeReplay);
+    let effort = current_runtime_projection(&checkpoint_entry(4, "effort"), Some(&replayed));
+    assert!(effort.provenance.contains("observed=resume-replay"));
+
+    let legacy = current_runtime_projection(&checkpoint_entry(4, "effort"), None);
+    assert!(legacy.value.contains("unavailable"));
+    assert!(
+        legacy
+            .provenance
+            .contains("genesis is not claimed as current")
+    );
+
+    let immutable = current_runtime_projection(
+        &checkpoint_entry(7, "max_tokens"),
+        Some(&runtime_policy_overlay(
+            crate::runtime::RuntimePolicyObservation::LiveCommit,
+        )),
+    );
+    assert_eq!(
+        immutable.value,
+        "same as genesis · immutable after run genesis"
+    );
+}
+
+/// A request that is *valid* but resolves nothing.
+///
+/// Input validation requires activation evidence for every runtime-derived family, so an empty
+/// `activation_evidence` is rejected before resolution runs at all. This test is about what the
+/// view shows for an *active resolution* failure, so the evidence is complete while the declared
+/// values stay empty.
 fn minimal_request() -> String {
+    let activation: Vec<_> = iteron_tunables::families()
+        .iter()
+        .filter_map(|family| match family.activation.predicate {
+            iteron_tunables::ActivationPredicate::RuntimeDerived { seam } => {
+                Some(serde_json::json!({
+                    "family": family.id,
+                    "seam": seam,
+                    "subject_digest_sha256": "a".repeat(64),
+                    "evidence_digest_sha256": "b".repeat(64),
+                    "active": true,
+                }))
+            }
+            _ => None,
+        })
+        .collect();
     format!(
-        r#"{{"schema_version":1,"registry_id":"iteron-tunables","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":[],"constraint_evidence":[],"runtime":{{}}}}"#,
+        r#"{{"schema_version":{},"registry_id":"{}","registry_revision":{},"registry_digest":"{}","declared_values":[],"default_evidence":[],"activation_evidence":{},"constraint_evidence":[],"runtime":{{}}}}"#,
+        iteron_tunables::RESOLUTION_SCHEMA_VERSION,
+        iteron_tunables::REGISTRY_ID,
         iteron_tunables::REGISTRY_REVISION,
         iteron_tunables::REGISTRY_DIGEST_SHA256,
+        serde_json::to_string(&activation).unwrap(),
     )
 }
 
@@ -89,6 +222,7 @@ fn catalog_exposes_all_families_and_all_truthful_detail_fields() {
             "requested",
             "effective",
             "adjustments",
+            "runtime binding",
             "default",
             "declared sources",
             "constraints",

@@ -47,6 +47,22 @@ fn edit_call(id: &str, path: &str, old: &str, new: &str) -> ToolUse {
     }
 }
 
+fn read_only_registry(root: &std::path::Path) -> Registry {
+    let registry = Registry::read_only(root).unwrap();
+    registry
+        .install_observation_tool_policy(ObservationToolPolicy::default())
+        .unwrap();
+    registry
+}
+
+fn coding_registry(root: &std::path::Path) -> Registry {
+    let registry = Registry::coding_agent(root).unwrap();
+    registry
+        .install_observation_tool_policy(ObservationToolPolicy::default())
+        .unwrap();
+    registry
+}
+
 #[test]
 fn glob_matches_segments_and_globstar() {
     assert!(glob_match("*.rs", "main.rs"));
@@ -66,12 +82,106 @@ fn glob_matches_segments_and_globstar() {
 }
 
 #[tokio::test]
+async fn observation_policy_is_fail_closed_pinned_and_one_shot() {
+    let root = TestRoot::new("pinned-policy");
+    std::fs::write(root.0.join("small.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    let registry = Registry::read_only(&root.0).unwrap();
+
+    let rejected = registry
+        .dispatch(read_call(
+            "uninstalled",
+            serde_json::json!({"path":"small.txt"}),
+        ))
+        .await;
+    assert!(rejected.is_error);
+    assert!(
+        rejected
+            .content
+            .contains("runtime policy was not installed")
+    );
+
+    let mut pinned = ObservationToolPolicy::default();
+    pinned.read_file.max_lines = 1;
+    registry.install_observation_tool_policy(pinned).unwrap();
+    let bounded = registry
+        .dispatch(read_call(
+            "installed",
+            serde_json::json!({"path":"small.txt"}),
+        ))
+        .await;
+    assert!(!bounded.is_error, "{}", bounded.content);
+    assert!(bounded.content.starts_with("     1\talpha\n"));
+    assert!(bounded.content.contains("truncated before line 2"));
+    assert!(bounded.content.contains("continue with offset=2"));
+
+    assert_eq!(
+        registry
+            .install_observation_tool_policy(ObservationToolPolicy::default())
+            .unwrap_err(),
+        crate::ObservationToolPolicyError::AlreadyInstalled
+    );
+}
+
+#[tokio::test]
+async fn traversal_count_markers_require_observing_the_item_past_the_ceiling() {
+    let root = TestRoot::new("traversal-count-boundary");
+    for (directory, files) in [("exact", 2), ("over", 3)] {
+        std::fs::create_dir(root.0.join(directory)).unwrap();
+        for index in 0..files {
+            std::fs::write(root.0.join(directory).join(format!("{index}.txt")), "x").unwrap();
+        }
+    }
+    let registry = Registry::read_only(&root.0).unwrap();
+    let mut pinned = ObservationToolPolicy::default();
+    pinned.list_dir.max_entries = 2;
+    pinned.list_dir.output_max_bytes = 256;
+    pinned.glob.max_results = 2;
+    pinned.glob.output_max_bytes = 256;
+    registry.install_observation_tool_policy(pinned).unwrap();
+
+    for (tool, exact_input, over_input) in [
+        (
+            "list_dir",
+            serde_json::json!({"path":"exact"}),
+            serde_json::json!({"path":"over"}),
+        ),
+        (
+            "glob",
+            serde_json::json!({"pattern":"exact/*.txt"}),
+            serde_json::json!({"pattern":"over/*.txt"}),
+        ),
+    ] {
+        let exact = registry
+            .dispatch(ToolUse {
+                id: format!("{tool}-exact"),
+                name: tool.into(),
+                input: exact_input,
+            })
+            .await;
+        assert!(!exact.is_error, "{}", exact.content);
+        assert!(!exact.content.contains("truncated"), "{}", exact.content);
+        assert!(exact.content.len() <= 256);
+
+        let over = registry
+            .dispatch(ToolUse {
+                id: format!("{tool}-over"),
+                name: tool.into(),
+                input: over_input,
+            })
+            .await;
+        assert!(!over.is_error, "{}", over.content);
+        assert!(over.content.contains("truncated at 2"), "{}", over.content);
+        assert!(over.content.len() <= 256);
+    }
+}
+
+#[tokio::test]
 async fn d3_06_g1_reads_exact_middle_range_with_absolute_line_numbers() {
     let root = TestRoot::new("middle-range");
     let fixture = large_fixture(8_000);
     assert!(fixture.len() >= 100_000, "fixture must be at least 100 KB");
     std::fs::write(root.0.join("large.txt"), fixture).unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = read_only_registry(&root.0);
 
     let result = registry
         .dispatch(read_call(
@@ -80,9 +190,13 @@ async fn d3_06_g1_reads_exact_middle_range_with_absolute_line_numbers() {
         ))
         .await;
     assert!(!result.is_error, "{}", result.content);
+    // The caller's `limit` is a pagination boundary, not EOF: the marker names the resume offset
+    // so a partial read cannot be mistaken for the end of the file. It also has to name the right
+    // boundary — this read stopped on the requested window, not on the output byte cap.
     assert_eq!(
         result.content,
-        "  3999\tpayload-03999\n  4000\tpayload-04000\n  4001\tpayload-04001\n  4002\tpayload-04002"
+        "  3999\tpayload-03999\n  4000\tpayload-04000\n  4001\tpayload-04001\n  4002\tpayload-04002\n\
+         … (truncated before line 4003; the requested line window ended here; continue with offset=4003)"
     );
 }
 
@@ -92,7 +206,7 @@ async fn d3_06_g2_ranged_read_anchor_round_trips_through_edit() {
     let fixture = large_fixture(8_000);
     assert!(fixture.len() > 40_000);
     std::fs::write(root.0.join("large.txt"), fixture).unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
     let read = read_call(
         "before",
         serde_json::json!({"path":"large.txt","offset":5000,"limit":3}),
@@ -131,13 +245,13 @@ async fn d3_06_g2_ranged_read_anchor_round_trips_through_edit() {
 async fn d3_06_g3_huge_range_has_explicit_byte_bound_and_resume_marker() {
     let root = TestRoot::new("bounded-range");
     // Sized from the cap rather than a literal: each numbered line costs ~21 bytes, so this is
-    // comfortably past MAX_READ_OUTPUT_BYTES and stays past it if the cap is raised again.
+    // comfortably past the canonical output ceiling and stays past it if the default is raised.
     std::fs::write(
         root.0.join("large.txt"),
-        large_fixture(MAX_READ_OUTPUT_BYTES / 16),
+        large_fixture(ObservationToolPolicy::default().read_file.output_max_bytes / 16),
     )
     .unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = read_only_registry(&root.0);
 
     let result = registry
         .dispatch(read_call(
@@ -146,7 +260,7 @@ async fn d3_06_g3_huge_range_has_explicit_byte_bound_and_resume_marker() {
         ))
         .await;
     assert!(!result.is_error, "{}", result.content);
-    assert!(result.content.len() <= MAX_READ_OUTPUT_BYTES);
+    assert!(result.content.len() <= ObservationToolPolicy::default().read_file.output_max_bytes);
     assert!(result.content.contains("… (truncated before line "));
     assert!(result.content.contains("continue with offset="));
 }
@@ -155,7 +269,7 @@ async fn d3_06_g3_huge_range_has_explicit_byte_bound_and_resume_marker() {
 async fn d3_06_g4_small_whole_file_and_schema_remain_explicit() {
     let root = TestRoot::new("small-regression");
     std::fs::write(root.0.join("small.txt"), "alpha\nbeta\n").unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = read_only_registry(&root.0);
 
     let result = registry
         .dispatch(read_call("small", serde_json::json!({"path":"small.txt"})))
@@ -199,7 +313,7 @@ async fn traversal_tools_report_outside_paths_instead_of_dropping_or_failing_on_
     let outside = TestRoot::new("traversal-outside-target");
     std::fs::write(root.0.join("inside.txt"), "needle inside\n").unwrap();
     std::fs::write(outside.0.join("outside.txt"), "needle outside\n").unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = read_only_registry(&root.0);
     let outside_dir = outside.0.canonicalize().unwrap();
 
     let listed = registry
@@ -262,7 +376,7 @@ async fn d3_16_g1_read_file_addresses_the_host_not_only_the_workspace() {
     // both a relative and an absolute path resolve, and neither `..` nor an outside root refuses.
     let root = TestRoot::new("read-containment");
     std::fs::write(root.0.join("inside.txt"), "inside\n").unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    let registry = read_only_registry(&root.0);
 
     let inside = registry
         .dispatch(read_call(
@@ -304,7 +418,7 @@ async fn d3_07_g1_crlf_edit_changes_one_line_without_eol_conversion() {
     let root = TestRoot::new("crlf-fidelity");
     let path = root.0.join("windows.txt");
     std::fs::write(&path, b"alpha\r\nbeta\r\ngamma\r\n").unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
 
     let result = registry
         .run(edit_call("crlf", "windows.txt", "beta", "BETA"))
@@ -329,7 +443,7 @@ async fn d3_07_g2_edit_preserves_bom_presence_and_absence() {
     let without_bom = root.0.join("without-bom.txt");
     std::fs::write(&with_bom, b"\xef\xbb\xbfalpha\nbeta\n").unwrap();
     std::fs::write(&without_bom, b"alpha\nbeta\n").unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
 
     for (id, path) in [("with", "with-bom.txt"), ("without", "without-bom.txt")] {
         let result = registry.run(edit_call(id, path, "beta", "BETA")).await;
@@ -352,8 +466,10 @@ async fn d3_07_g3_binary_and_oversized_reads_return_bounded_notices() {
     )
     .unwrap();
     let oversized = std::fs::File::create(root.0.join("oversized.txt")).unwrap();
-    oversized.set_len(MAX_READ_SOURCE_BYTES as u64 + 1).unwrap();
-    let registry = Registry::read_only(&root.0).unwrap();
+    oversized
+        .set_len(ObservationToolPolicy::default().read_file.source_max_bytes as u64 + 1)
+        .unwrap();
+    let registry = read_only_registry(&root.0);
 
     let binary = registry
         .dispatch(read_call("binary", serde_json::json!({"path":"image.png"})))
@@ -371,7 +487,14 @@ async fn d3_07_g3_binary_and_oversized_reads_return_bounded_notices() {
         .await;
     assert!(!large.is_error, "{}", large.content);
     assert!(large.content.contains("oversized file, not shown"));
-    assert!(large.content.contains(&MAX_READ_SOURCE_BYTES.to_string()));
+    assert!(
+        large.content.contains(
+            &ObservationToolPolicy::default()
+                .read_file
+                .source_max_bytes
+                .to_string()
+        )
+    );
     assert!(large.content.len() < 256);
 }
 
@@ -382,7 +505,7 @@ async fn d3_07_g4_lf_and_trailing_newline_state_round_trip_exactly() {
     let no_trailing = root.0.join("no-trailing.txt");
     std::fs::write(&trailing, b"alpha\nbeta\n").unwrap();
     std::fs::write(&no_trailing, b"alpha\nbeta").unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
 
     for (id, path) in [("trailing", "trailing.txt"), ("no", "no-trailing.txt")] {
         let result = registry.run(edit_call(id, path, "beta", "BETA")).await;
@@ -400,7 +523,7 @@ async fn d3_07_edit_keeps_trailing_newline_state_when_replacement_disagrees() {
     let no_trailing = root.0.join("no-trailing.txt");
     std::fs::write(&trailing, b"alpha\nbeta\n").unwrap();
     std::fs::write(&no_trailing, b"alpha\nbeta").unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
 
     let remove = registry
         .run(edit_call("remove", "trailing.txt", "beta\n", "BETA"))
@@ -420,7 +543,7 @@ async fn d3_07_acceptance_edit_preserves_crlf_and_bom() {
     let root = TestRoot::new("crlf-edit-fidelity");
     let path = root.0.join("windows.txt");
     std::fs::write(&path, b"\xef\xbb\xbfalpha\r\nbeta\r\ngamma\r\n").unwrap();
-    let registry = Registry::coding_agent(&root.0).unwrap();
+    let registry = coding_registry(&root.0);
 
     let result = registry
         .run(edit_call(

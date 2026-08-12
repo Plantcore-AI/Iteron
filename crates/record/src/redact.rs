@@ -42,6 +42,7 @@ pub fn redact_event(event: &Event) -> Event {
             capability,
             arguments,
             workspace,
+            provider_route_attempt,
         } => EventKind::EffectIntent {
             // Correlation identifiers are structural. Changing one side but not ToolDone would
             // manufacture a dangling effect during recovery, so a structural id is kept verbatim
@@ -52,11 +53,18 @@ pub fn redact_event(event: &Event) -> Event {
             capability: *capability,
             arguments: scrub_json(arguments),
             workspace: scrub(workspace),
+            provider_route_attempt: provider_route_attempt.clone(),
         },
-        EventKind::EffectUnknown { id, tool, reason } => EventKind::EffectUnknown {
+        EventKind::EffectUnknown {
+            id,
+            tool,
+            reason,
+            provider_route_attempt,
+        } => EventKind::EffectUnknown {
             id: id.clone(),
             tool: scrub(tool),
             reason: scrub(reason),
+            provider_route_attempt: provider_route_attempt.clone(),
         },
         // `duration_ms` is a boundary-measured integer, not executor-authored text, so there is
         // nothing in it to scrub and dropping it would destroy the only timing the record holds
@@ -65,10 +73,12 @@ pub fn redact_event(event: &Event) -> Event {
             id,
             tool,
             duration_ms,
+            provider_route_attempt,
         } => EventKind::EffectDone {
             id: id.clone(),
             tool: scrub(tool),
             duration_ms: *duration_ms,
+            provider_route_attempt: provider_route_attempt.clone(),
         },
         // A failure reason is executor-authored free text (a spawn error, a provider message), so
         // it is exactly the shape that carries a leaked token into the long-retained record.
@@ -77,11 +87,13 @@ pub fn redact_event(event: &Event) -> Event {
             tool,
             reason,
             duration_ms,
+            provider_route_attempt,
         } => EventKind::EffectFailed {
             id: id.clone(),
             tool: scrub(tool),
             reason: scrub(reason),
             duration_ms: *duration_ms,
+            provider_route_attempt: provider_route_attempt.clone(),
         },
         EventKind::Message { message } => EventKind::Message {
             message: redact_message(message),
@@ -186,6 +198,45 @@ pub fn redact_event(event: &Event) -> Event {
             version: *version,
             snapshot: snapshot.clone(),
             inherited_from: inherited_from.clone(),
+        },
+        // V2 values are configuration-plane projections, not interaction content. The record
+        // boundary rejects any credential-shaped nested string before this point; mutating a
+        // field here would break both the effective commitment and the checkpoint self-digest.
+        EventKind::TunablesSnapshotV2 {
+            version,
+            snapshot,
+            inherited_from,
+        } => EventKind::TunablesSnapshotV2 {
+            version: *version,
+            snapshot: snapshot.clone(),
+            inherited_from: inherited_from.clone(),
+        },
+        // The compiler receipt is a closed, content-free collection of bounded machine ids and
+        // digests. Mutating it here would break its canonical receipt digest and resume identity.
+        EventKind::PolicyBundleSnapshot {
+            version,
+            snapshot,
+            inherited_from,
+        } => EventKind::PolicyBundleSnapshot {
+            version: *version,
+            snapshot: snapshot.clone(),
+            inherited_from: inherited_from.clone(),
+        },
+        // Policy evidence has a closed content-free schema and passes its bounded machine-id and
+        // digest validator before redaction. Altering an identity here would break the outcome
+        // join, so preserve the validated payload byte-for-byte.
+        EventKind::PolicyDecision { evidence } => EventKind::PolicyDecision {
+            evidence: evidence.clone(),
+        },
+        EventKind::PolicyOutcome { evidence } => EventKind::PolicyOutcome {
+            evidence: evidence.clone(),
+        },
+        // Verification receipts contain only closed enums, bounded counters, content digests, and
+        // an expiry sampled at the durable policy boundary. Preserve them exactly so replay can
+        // restore quarantine and recompute the reduction decision without prose parsing.
+        EventKind::VerificationPolicy { version, event } => EventKind::VerificationPolicy {
+            version: *version,
+            event: event.clone(),
         },
         EventKind::ModelSelected {
             provider_id,
@@ -314,9 +365,11 @@ pub fn redact_event(event: &Event) -> Event {
         // durable-record boundary decides how its fields are handled.
         kind @ (EventKind::Phase { .. }
         | EventKind::TurnStart
+        | EventKind::ProviderGovernorDecision { .. }
         | EventKind::TurnEnd { .. }
         | EventKind::SubmissionRejected { .. }
         | EventKind::UsdCeilingChanged { .. }
+        | EventKind::TurnCeilingChanged { .. }
         | EventKind::EffortChanged { .. }
         | EventKind::PolicyChanged { .. }
         | EventKind::Checkpoint { .. }
@@ -925,6 +978,7 @@ mod tests {
                 capability: Capability::ReversibleLocal,
                 arguments: serde_json::json!({}),
                 workspace: "/repo".into(),
+                provider_route_attempt: None,
             },
         });
         let done = redact_event(&Event {
@@ -1154,6 +1208,7 @@ AbCdEf12\
                 34567890AbCdEf1234567890"
                 }),
                 workspace: "/repo".into(),
+                provider_route_attempt: None,
             },
         };
         match redact_event(&intent).kind {

@@ -29,6 +29,7 @@
 //!   operator-authored (trusted), so this is the operator's responsibility.
 
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::time::Duration;
@@ -40,6 +41,9 @@ pub(crate) mod journal;
 const HOOK_CAPTURE_HEAD_BYTES: usize = 32 * 1024;
 const HOOK_CAPTURE_TAIL_BYTES: usize = 32 * 1024;
 const HOOK_READ_CHUNK_BYTES: usize = 8 * 1024;
+const MAX_HOOKS_PER_EVENT: usize = 128;
+pub(crate) const MAX_HOOK_CATALOG_ENTRIES: usize = 256;
+const MAX_HOOK_COMMAND_BYTES: usize = 4_096;
 
 /// A lifecycle event a hook can bind to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,11 +78,29 @@ struct HooksFile {
 }
 
 /// The loaded hooks (from the user config only) plus a per-hook timeout.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Self {
+            by_event: BTreeMap::new(),
+            timeout_secs: 30,
+            sensitive_env_names: Vec::new(),
+        }
+    }
+}
+
+/// Content-free identity of the exact executable hook map installed in one runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HookCatalogIdentity {
+    pub digest_sha256: String,
+    pub entry_count: usize,
+    pub canonical_bytes: usize,
 }
 
 /// What a `PreToolUse` hook decided.
@@ -116,7 +138,7 @@ impl Hooks {
         let by_event = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<HooksFile>(&s).ok())
-            .map(|f| f.hooks)
+            .map(|f| bounded_hook_map(f.hooks))
             .unwrap_or_default();
         Hooks {
             by_event,
@@ -143,11 +165,14 @@ impl Hooks {
         if !legacy.contains(&event) && !iteron_protocol::lifecycle::is_registered(event) {
             return Err("unknown lifecycle event");
         }
-        if command.is_empty() || command.len() > 4096 || command.chars().any(char::is_control) {
+        if !valid_hook_command(&command) {
             return Err("command must be visible text of 1..=4096 bytes");
         }
+        if self.command_count() >= MAX_HOOK_CATALOG_ENTRIES {
+            return Err("hook catalog exceeds 256 commands");
+        }
         let commands = self.by_event.entry(event.to_owned()).or_default();
-        if commands.len() >= 128 {
+        if commands.len() >= MAX_HOOKS_PER_EVENT {
             return Err("hook chain exceeds 128 commands");
         }
         commands.push(command);
@@ -164,6 +189,45 @@ impl Hooks {
 
     pub fn is_empty(&self) -> bool {
         self.by_event.values().all(|v| v.is_empty())
+    }
+
+    /// Hash exact behavior without returning command text or credential-shaped environment names.
+    pub(crate) fn catalog_identity(&self) -> HookCatalogIdentity {
+        let mut digest = Sha256::new();
+        digest.update(b"iteron-hook-catalog-v1");
+        digest.update(self.timeout_secs.to_be_bytes());
+        let mut canonical_bytes = std::mem::size_of::<u64>();
+        for (event, commands) in &self.by_event {
+            digest_part(&mut digest, event.as_bytes());
+            canonical_bytes = canonical_bytes
+                .saturating_add(std::mem::size_of::<u64>())
+                .saturating_add(event.len());
+            for command in commands {
+                digest_part(&mut digest, command.as_bytes());
+                canonical_bytes = canonical_bytes
+                    .saturating_add(std::mem::size_of::<u64>())
+                    .saturating_add(command.len());
+            }
+        }
+        for name in &self.sensitive_env_names {
+            digest_part(&mut digest, name.as_bytes());
+            canonical_bytes = canonical_bytes
+                .saturating_add(std::mem::size_of::<u64>())
+                .saturating_add(name.len());
+        }
+        HookCatalogIdentity {
+            digest_sha256: digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            entry_count: self.command_count(),
+            canonical_bytes,
+        }
+    }
+
+    fn command_count(&self) -> usize {
+        self.by_event.values().map(Vec::len).sum()
     }
 
     /// True when no command is bound to this exact lifecycle event.
@@ -460,6 +524,70 @@ impl Hooks {
 
     pub(crate) fn is_empty_for_lifecycle(&self, event_id: &str) -> bool {
         self.by_event.get(event_id).is_none_or(Vec::is_empty)
+    }
+}
+
+fn bounded_hook_map(input: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+    let mut output = BTreeMap::new();
+    let mut total = 0_usize;
+    for (event, commands) in input {
+        if !valid_hook_event(&event) || total >= MAX_HOOK_CATALOG_ENTRIES {
+            continue;
+        }
+        let admitted = commands
+            .into_iter()
+            .filter(|command| valid_hook_command(command))
+            .take(MAX_HOOKS_PER_EVENT.min(MAX_HOOK_CATALOG_ENTRIES - total))
+            .collect::<Vec<_>>();
+        total = total.saturating_add(admitted.len());
+        if !admitted.is_empty() {
+            output.insert(event, admitted);
+        }
+    }
+    output
+}
+
+fn valid_hook_event(event: &str) -> bool {
+    matches!(
+        event,
+        "PreToolUse" | "PostToolUse" | "Stop" | "UserPromptSubmit" | "SessionStart"
+    ) || iteron_protocol::lifecycle::is_registered(event)
+}
+
+fn valid_hook_command(command: &str) -> bool {
+    !command.is_empty()
+        && command.len() <= MAX_HOOK_COMMAND_BYTES
+        && !command.chars().any(char::is_control)
+}
+
+fn digest_part(digest: &mut Sha256, bytes: &[u8]) {
+    digest.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(bytes);
+}
+
+impl super::Agent {
+    /// Install exactly the hook catalog named by the immutable tunables checkpoint.
+    pub(crate) fn install_hooks(&mut self, hooks: Hooks) -> Result<(), super::KernelError> {
+        if self.hooks_runtime_installed {
+            return Err(super::KernelError::ExecutionPolicy(
+                "hook runtime was already installed".into(),
+            ));
+        }
+        let expected = self
+            .effective_content
+            .as_ref()
+            .ok_or(super::KernelError::TunablesNotResolved)?
+            .hooks
+            .as_ref();
+        let actual = (!hooks.is_empty()).then(|| hooks.catalog_identity());
+        if expected != actual.as_ref() {
+            return Err(super::KernelError::ExecutionPolicy(
+                "installed hooks differ from the immutable hooks_map identity".into(),
+            ));
+        }
+        self.hooks = hooks;
+        self.hooks_runtime_installed = true;
+        Ok(())
     }
 }
 
@@ -943,6 +1071,75 @@ mod tests {
         let home = tmp("empty");
         assert!(Hooks::load_user(&home).is_empty());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn hook_catalog_identity_is_exact_deterministic_and_content_free() {
+        let home = tmp("catalog-identity");
+        std::fs::write(
+            home.join(".iteron").join("config.json"),
+            serde_json::json!({
+                "hooks": {
+                    "Stop": ["printf stop"],
+                    "PreToolUse": ["printf pre"]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = Hooks::load_user(&home);
+        hooks.set_sensitive_env_names(vec!["SECRET_B".into(), "SECRET_A".into()]);
+        let first = hooks.catalog_identity();
+        assert_eq!(first, hooks.catalog_identity());
+        assert_eq!(first.entry_count, 2);
+        assert_eq!(first.digest_sha256.len(), 64);
+
+        let changed_home = tmp("catalog-identity-changed");
+        std::fs::write(
+            changed_home.join(".iteron").join("config.json"),
+            serde_json::json!({
+                "hooks": {
+                    "Stop": ["printf changed"],
+                    "PreToolUse": ["printf pre"]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut changed = Hooks::load_user(&changed_home);
+        changed.set_sensitive_env_names(vec!["SECRET_A".into(), "SECRET_B".into()]);
+        assert_ne!(
+            first.digest_sha256,
+            changed.catalog_identity().digest_sha256
+        );
+        let debug = format!("{first:?}");
+        assert!(!debug.contains("printf"));
+        assert!(!debug.contains("SECRET"));
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(changed_home);
+    }
+
+    #[test]
+    fn user_hook_catalog_is_bounded_per_event_and_in_total() {
+        let home = tmp("catalog-bounds");
+        let hooks = (0..MAX_HOOK_CATALOG_ENTRIES + 20)
+            .map(|ordinal| format!("printf {ordinal}"))
+            .collect::<Vec<_>>();
+        std::fs::write(
+            home.join(".iteron").join("config.json"),
+            serde_json::json!({
+                "hooks": {
+                    "PreToolUse": hooks,
+                    "UnknownEvent": ["printf never-admitted"]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = Hooks::load_user(&home);
+        assert_eq!(loaded.command_count(), MAX_HOOKS_PER_EVENT);
+        assert!(!loaded.by_event.contains_key("UnknownEvent"));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[tokio::test]

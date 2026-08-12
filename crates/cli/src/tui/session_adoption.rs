@@ -363,12 +363,20 @@ pub(super) async fn adopt_session(
             },
         )))
         .await;
-    let (adopted, state, blocked) = match reply {
+    let (adopted, state, tunables_checkpoint, compaction_trigger_tokens, blocked) = match reply {
         Some(app_server::ControlReply::Adopted {
             adopted,
             snapshot,
+            tunables_checkpoint,
+            compaction_trigger_tokens,
             blocked,
-        }) => (adopted, snapshot, blocked),
+        }) => (
+            adopted,
+            snapshot,
+            tunables_checkpoint,
+            compaction_trigger_tokens,
+            blocked,
+        ),
         Some(app_server::ControlReply::Refused(reason)) => {
             app.note(block::NoticeLevel::Err, reason);
             // The documented restart still works, so the operator keeps a way through.
@@ -402,7 +410,12 @@ pub(super) async fn adopt_session(
         app.push_block(kind);
     }
 
-    session.adopt_run(adopted.rollout_path.clone(), (*state).clone());
+    session.adopt_run(
+        adopted.rollout_path.clone(),
+        *tunables_checkpoint,
+        compaction_trigger_tokens,
+        (*state).clone(),
+    );
     app.session_name = session_display_name(&adopted.rollout_path);
     app.mode = state.mode;
     app.effort = state.effort;

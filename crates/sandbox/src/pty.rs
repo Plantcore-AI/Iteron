@@ -1,9 +1,9 @@
 //! Kernel pseudo-terminal allocation for confined child processes.
 //!
-//! [`crate::spawn_confined_process`] deliberately wires a persistent child to bounded pipes
-//! (`persistent.rs`), which is why the process tools advertise `TERM=dumb` and refuse resize. This
-//! module owns the missing half: a real kernel pty pair, its window size, and the exact child-side
-//! step that turns the slave into a *controlling* terminal.
+//! [`crate::spawn_confined_process`] deliberately wires protocol-style children to bounded pipes,
+//! while [`crate::spawn_confined_pty_process`] combines this transport with a platform confinement
+//! backend for interactive process tools. This module owns the kernel pty pair, its window size,
+//! and the exact child-side step that turns the slave into a *controlling* terminal.
 //!
 //! It is deliberately transport-only. Allocating a pty grants no confinement by itself, so nothing
 //! here spawns a process or relaxes a sandbox decision; a caller still has to obtain a child
@@ -144,6 +144,13 @@ impl PtyPair {
         &self.master
     }
 
+    /// Duplicate the master for independently owned async read, write, and resize capabilities.
+    pub fn try_clone_master(&self) -> io::Result<File> {
+        let clone = self.master.try_clone()?;
+        set_close_on_exec(clone.as_raw_fd())?;
+        Ok(clone)
+    }
+
     /// The parent's copy of the slave end.
     pub fn slave(&self) -> &File {
         &self.slave
@@ -250,6 +257,15 @@ pub unsafe fn make_controlling_terminal(slave: RawFd) -> io::Result<()> {
         // The third argument is the "steal from another session" flag; 0 refuses to steal, so this
         // can only ever claim a terminal that no other session controls.
         if libc::ioctl(slave, libc::TIOCSCTTY as _, 0) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Darwin does not reliably make the new session's process group foreground merely by
+        // acquiring the controlling terminal. Without this explicit binding TIOCSWINSZ succeeds
+        // but the kernel has no foreground group to receive SIGWINCH (and job-control reads can
+        // stop unexpectedly). Linux already establishes the same relation; repeating it is
+        // idempotent and keeps the child-side contract portable.
+        let process_group = libc::getpgrp();
+        if process_group < 0 || libc::tcsetpgrp(slave, process_group) < 0 {
             return Err(io::Error::last_os_error());
         }
         for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {

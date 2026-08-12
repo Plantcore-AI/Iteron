@@ -19,8 +19,32 @@
 //! GDPR crypto-shred (ADR-008 §1) — the interface is present, the blob store is a TODO.
 
 pub mod checkpoint;
+pub mod content_store;
+pub mod erasure;
+pub mod policy_bundle;
 pub mod redact;
 pub mod session;
+
+// Public type identities remain available at the crate root without importing new names into the
+// scope that owns the frozen `replay`/`Rollout::append` authorities. Executable entry points live
+// under their owning modules, which also makes erasure and private-content authority explicit at
+// call sites.
+pub type ContentReferenceSurface = content_store::ContentReferenceSurface;
+pub type ContentStoreError = content_store::ContentStoreError;
+pub type PrivateContentClass = content_store::PrivateContentClass;
+pub type PrivateContentDerivativeStore = content_store::PrivateContentDerivativeStore;
+pub type PrivateContentHandle = content_store::PrivateContentHandle;
+pub type PrivateContentNamespace = content_store::PrivateContentNamespace;
+pub type PrivateContentOwnerLease = content_store::PrivateContentOwnerLease;
+pub type PrivateContentRetention = content_store::PrivateContentRetention;
+pub type PrivateContentSource = content_store::PrivateContentSource;
+pub const MAX_PRIVATE_CONTENT_BYTES: usize = content_store::MAX_PRIVATE_CONTENT_BYTES;
+pub const MAX_PRIVATE_CONTENT_PREVIEW_BYTES: usize =
+    content_store::MAX_PRIVATE_CONTENT_PREVIEW_BYTES;
+pub type ErasureError = erasure::ErasureError;
+pub type LocalErasureAuthority = erasure::LocalErasureAuthority;
+pub const MAX_ERASURE_RECEIPTS: usize = erasure::MAX_ERASURE_RECEIPTS;
+pub type PolicyBundleCheckpointError = policy_bundle::PolicyBundleCheckpointError;
 
 mod cache_io;
 
@@ -34,10 +58,19 @@ pub use session::{
     replay_run_timed,
 };
 
+/// A registry-driven resolved tunable set for other crates' tests. Feature-gated, never in a
+/// release build; it resolves the compiled registry rather than inventing a snapshot.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod resolved_fixture {
+    pub use crate::session::tunables::resolved_fixture::*;
+}
+
 /// Explicit policy for admitting records created before immutable tunables snapshots.
 pub type LegacyTunablesPolicy = session::tunables::LegacyTunablesPolicy;
 /// Result of comparing a record's immutable genesis identity with the current resolved set.
 pub type TunablesCompatibility = session::tunables::TunablesCompatibility;
+/// Version-neutral immutable checkpoint read from physical sequence one.
+pub type TunablesCheckpoint = session::tunables::TunablesCheckpoint;
 /// Typed fail-closed snapshot/placement/compatibility error.
 pub type TunablesSnapshotError = session::tunables::TunablesSnapshotError;
 
@@ -48,11 +81,32 @@ pub fn snapshot_from_resolved(
     session::tunables::snapshot_from_resolved(resolved)
 }
 
+/// Project an atomically accepted resolver result into the reconstructable V2 checkpoint.
+pub fn snapshot_v2_from_resolved(
+    resolved: &iteron_tunables::ResolvedTunableSet,
+) -> Result<iteron_protocol::RunGenesisTunablesSnapshotV2, TunablesSnapshotError> {
+    session::tunables::snapshot_v2_from_resolved(resolved)
+}
+
 /// Validate bounds, state invariants, and the recomputed canonical self-digest.
 pub fn validate_tunables_snapshot(
     snapshot: &iteron_protocol::RunGenesisTunablesSnapshot,
 ) -> Result<(), TunablesSnapshotError> {
     session::tunables::validate_tunables_snapshot(snapshot)
+}
+
+/// Validate V2 bounds, content-free projections, effective commitment, and self-digest.
+pub fn validate_tunables_snapshot_v2(
+    snapshot: &iteron_protocol::RunGenesisTunablesSnapshotV2,
+) -> Result<(), TunablesSnapshotError> {
+    session::tunables::validate_tunables_snapshot_v2(snapshot)
+}
+
+/// Project the unique physical-seq-1 checkpoint without consulting machine defaults.
+pub fn tunables_checkpoint_from_events(
+    events: &[Event],
+) -> Result<Option<TunablesCheckpoint>, TunablesSnapshotError> {
+    session::tunables::checkpoint_from_events(events)
 }
 
 /// Checked fork convenience retained at the crate root.
@@ -93,6 +147,66 @@ pub(crate) const MAX_RECORD_LINE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_ROLLOUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_ROLLOUT_EVENTS: usize = 100_000;
 pub(crate) const MAX_ROLLOUT_PHYSICAL_LINES: usize = MAX_ROLLOUT_EVENTS + 1_024;
+
+/// Closed owner for the replay checks that every record reader and effect-journal fold enforces.
+///
+/// This is deliberately a process invariant rather than a caller option: a checkpoint can attest
+/// the policy identity, but it cannot disable any of the checks or make a weaker reader legal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayDivergenceDetectionPolicy {
+    verify_hash_chain: bool,
+    verify_identity_scope: bool,
+    verify_effect_terminals: bool,
+    fail_closed: bool,
+}
+
+impl ReplayDivergenceDetectionPolicy {
+    pub const fn owner() -> Self {
+        Self {
+            verify_hash_chain: true,
+            verify_identity_scope: true,
+            verify_effect_terminals: true,
+            fail_closed: true,
+        }
+    }
+
+    pub const fn verify_hash_chain(self) -> bool {
+        self.verify_hash_chain
+    }
+
+    pub const fn verify_identity_scope(self) -> bool {
+        self.verify_identity_scope
+    }
+
+    pub const fn verify_effect_terminals(self) -> bool {
+        self.verify_effect_terminals
+    }
+
+    pub const fn fail_closed(self) -> bool {
+        self.fail_closed
+    }
+}
+
+/// The physical replay entry points call this before reading any journal bytes. Keeping the gate
+/// beside the owner prevents the fixed-authority receipt from becoming an unattached constant.
+pub fn replay_divergence_detection_policy() -> ReplayDivergenceDetectionPolicy {
+    ReplayDivergenceDetectionPolicy::owner()
+}
+
+pub(crate) fn require_strict_replay_policy() -> Result<(), RecordError> {
+    let policy = replay_divergence_detection_policy();
+    if policy.verify_hash_chain()
+        && policy.verify_identity_scope()
+        && policy.verify_effect_terminals()
+        && policy.fail_closed()
+    {
+        Ok(())
+    } else {
+        Err(RecordError::InvalidEventSchema {
+            reason: "record replay policy must keep chain, identity, and effect-terminal checks fail-closed",
+        })
+    }
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -294,6 +408,10 @@ pub enum RecordError {
     },
     #[error(transparent)]
     TunablesSnapshot(#[from] TunablesSnapshotError),
+    #[error(transparent)]
+    PolicyBundleCheckpoint(#[from] policy_bundle::PolicyBundleCheckpointError),
+    #[error(transparent)]
+    PrivateContent(#[from] content_store::ContentStoreError),
 }
 
 /// One line of the rollout. `prev` chains to the previous line's `hash`; `hash` covers
@@ -471,6 +589,66 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
     if let EventKind::TunablesSnapshot { snapshot, .. } = &event.kind {
         validate_tunables_snapshot(snapshot)?;
     }
+    if let EventKind::TunablesSnapshotV2 { snapshot, .. } = &event.kind {
+        session::tunables::validate_tunables_snapshot_v2(snapshot)?;
+    }
+    if let EventKind::PolicyBundleSnapshot { snapshot, .. } = &event.kind {
+        policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
+    }
+    match &event.kind {
+        EventKind::PolicyDecision { evidence } => evidence.validate().map_err(|_| {
+            RecordError::InvalidEventSchema {
+                reason: "policy decision evidence is invalid or outside its content-free bounds",
+            }
+        })?,
+        EventKind::PolicyOutcome { evidence } => {
+            evidence
+                .validate()
+                .map_err(|_| RecordError::InvalidEventSchema {
+                    reason: "policy outcome evidence is invalid or outside its content-free bounds",
+                })?
+        }
+        EventKind::VerificationPolicy { event, .. } => event.validate().map_err(|_| {
+            RecordError::InvalidEventSchema {
+                reason: "verification policy receipt is invalid or outside its content-free bounds",
+            }
+        })?,
+        EventKind::EffectIntent {
+            provider_route_attempt: Some(identity),
+            ..
+        } => {
+            identity
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_route_identifier(&identity.route_id) != identity.route_id {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "provider route attempt route_id must be credential-free",
+                });
+            }
+        }
+        EventKind::EffectDone {
+            provider_route_attempt: Some(accounting),
+            ..
+        }
+        | EventKind::EffectFailed {
+            provider_route_attempt: Some(accounting),
+            ..
+        }
+        | EventKind::EffectUnknown {
+            provider_route_attempt: Some(accounting),
+            ..
+        } => {
+            accounting
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_route_identifier(&accounting.route_id) != accounting.route_id {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "provider route attempt route_id must be credential-free",
+                });
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -492,22 +670,59 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
 /// `validate_event_bounds`. Records already on disk predate the rule and must stay replayable;
 /// rejecting them at read time would destroy exactly the evidence the audit was built from.
 fn validate_terminal_identity(kind: &EventKind) -> Result<(), &'static str> {
-    let EventKind::ToolDone {
-        result,
-        effect_id,
-        tool,
-    } = kind
-    else {
-        return Ok(());
-    };
-    if !tool.iter().any(|name| !name.is_empty()) {
-        return Err("a tool_done must name the tool that produced it");
-    }
-    if effect_id.is_none() && !result.is_error {
-        return Err(
-            "a successful tool_done must carry the effect id of its admission event; only a call \
-             that failed or was refused before dispatch may omit it",
-        );
+    match kind {
+        EventKind::ToolDone {
+            result,
+            effect_id,
+            tool,
+        } => {
+            if !tool.iter().any(|name| !name.is_empty()) {
+                return Err("a tool_done must name the tool that produced it");
+            }
+            if effect_id.is_none() && !result.is_error {
+                return Err(
+                    "a successful tool_done must carry the effect id of its admission event; only a call \
+                     that failed or was refused before dispatch may omit it",
+                );
+            }
+        }
+        EventKind::EffectIntent {
+            tool,
+            provider_route_attempt,
+            ..
+        } => {
+            if tool == "provider" && provider_route_attempt.is_none() {
+                return Err(
+                    "a new provider effect intent must carry its pre-dispatch route identity",
+                );
+            }
+            if tool != "provider" && provider_route_attempt.is_some() {
+                return Err("a non-provider effect intent cannot carry a provider route identity");
+            }
+        }
+        EventKind::EffectDone {
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectFailed {
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectUnknown {
+            tool,
+            provider_route_attempt,
+            ..
+        } => {
+            if tool == "provider" && provider_route_attempt.is_none() {
+                return Err("a new provider terminal must carry route-attempt accounting");
+            }
+            if tool != "provider" && provider_route_attempt.is_some() {
+                return Err("a non-provider terminal cannot carry provider route accounting");
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -799,6 +1014,15 @@ pub struct Rollout {
 }
 
 impl Rollout {
+    /// Monotonic time elapsed since this writer descriptor opened.
+    ///
+    /// Evidence constructed immediately before [`Self::append`] uses this clock so its payload
+    /// and the enclosing chain line share one segment origin. A reopened writer deliberately
+    /// starts a new segment; callers must never compare offsets across descriptors as wall time.
+    pub fn segment_elapsed_us(&self) -> u64 {
+        u64::try_from(self.opened_at.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
     /// True only before the first durable event has been appended. Frontends use this narrow
     /// predicate to configure a fresh agent's genesis policy; runtime policy changes must use the
     /// kernel's write-ahead transition APIs instead.
@@ -840,14 +1064,7 @@ impl Rollout {
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
         let rollout = Self::open_existing(dir, run, tenant)?;
-        // `open_existing` already performed the mandatory bounded tail scan while acquiring the
-        // writer lock. Its schema-frozen return shape cannot expose a new genesis projection, so
-        // compare through one bounded replay under that same lock rather than duplicating the
-        // durability scanner and letting the two implementations drift.
-        let events = replay(rollout.path())?;
-        let recorded = session::tunables::snapshot_from_events(&events)?;
-        let compatibility =
-            session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+        let compatibility = rollout.validate_tunables_snapshot(expected, legacy)?;
         Ok((rollout, compatibility))
     }
 
@@ -859,8 +1076,50 @@ impl Rollout {
         resolved: &iteron_tunables::ResolvedTunableSet,
         legacy: LegacyTunablesPolicy,
     ) -> Result<(Self, TunablesCompatibility), RecordError> {
-        let expected = snapshot_from_resolved(resolved)?;
-        Self::open_existing_with_tunables_snapshot(dir, run, tenant, &expected, legacy)
+        let rollout = Self::open_existing(dir, run, tenant)?;
+        let compatibility = rollout.validate_resolved_tunables(resolved, legacy)?;
+        Ok((rollout, compatibility))
+    }
+
+    /// Validate the immutable tunables identity while retaining this already-held writer lock.
+    /// Composition roots use this after route resolution when they acquired the lock earlier to
+    /// prevent resume state from changing underneath provider/model selection.
+    pub fn validate_tunables_snapshot(
+        &self,
+        expected: &iteron_protocol::RunGenesisTunablesSnapshot,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<TunablesCompatibility, RecordError> {
+        let events = replay(self.path())?;
+        let recorded = session::tunables::checkpoint_from_events(&events)?;
+        let expected = TunablesCheckpoint::V1(expected.clone());
+        session::tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)
+            .map_err(RecordError::from)
+    }
+
+    /// Resolver-typed convenience for [`Self::validate_tunables_snapshot`].
+    pub fn validate_resolved_tunables(
+        &self,
+        resolved: &iteron_tunables::ResolvedTunableSet,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<TunablesCompatibility, RecordError> {
+        let events = replay(self.path())?;
+        let recorded = session::tunables::checkpoint_from_events(&events)?;
+        session::tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)
+            .map_err(RecordError::from)
+    }
+
+    /// Read and validate this rollout's immutable checkpoint while retaining the writer lock.
+    pub fn tunables_checkpoint(&self) -> Result<Option<TunablesCheckpoint>, RecordError> {
+        let events = replay(self.path())?;
+        session::tunables::checkpoint_from_events(&events).map_err(RecordError::from)
+    }
+
+    /// Read the exact physical run-genesis policy receipt while retaining this writer lock.
+    pub fn policy_bundle_checkpoint(
+        &self,
+    ) -> Result<Option<iteron_protocol::RunGenesisPolicyBundleSnapshot>, RecordError> {
+        let events = replay(self.path())?;
+        policy_bundle::policy_bundle_checkpoint_from_events(&events).map_err(RecordError::from)
     }
 
     /// Durably append a fresh root `RunStart` and its immutable resolved-set companion without an
@@ -886,14 +1145,51 @@ impl Rollout {
             }
             .into());
         }
-        let snapshot = snapshot_from_resolved(resolved)?;
-        self.append_genesis_snapshot(run_start, snapshot, None)
+        let snapshot = snapshot_v2_from_resolved(resolved)?;
+        self.append_genesis_checkpoint(run_start, TunablesCheckpoint::V2(snapshot), None)
     }
 
+    /// Durably append a child `RunStart` and the same resolved V2 checkpoint, bound to its parent.
+    pub fn append_child_genesis_with_tunables(
+        &mut self,
+        run_start: &Event,
+        parent_run: &RunId,
+        resolved: &iteron_tunables::ResolvedTunableSet,
+    ) -> Result<(Seq, Seq), RecordError> {
+        if !matches!(
+            &run_start.kind,
+            EventKind::RunStart {
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                ..
+            }
+        ) {
+            return Err(TunablesSnapshotError::GenesisOrder {
+                reason: "spawned child tunables genesis requires an independent root run_start",
+            }
+            .into());
+        }
+        crate::validate_run_id(parent_run)?;
+        let checkpoint = TunablesCheckpoint::V2(snapshot_v2_from_resolved(resolved)?);
+        let inherited = session::tunables::inherited_from(&parent_run.0, &checkpoint);
+        self.append_genesis_checkpoint(run_start, checkpoint, Some(inherited))
+    }
+
+    #[cfg(test)]
     pub(crate) fn append_genesis_snapshot(
         &mut self,
         run_start: &Event,
         snapshot: iteron_protocol::RunGenesisTunablesSnapshot,
+        inherited_from: Option<iteron_protocol::RunGenesisTunablesInheritance>,
+    ) -> Result<(Seq, Seq), RecordError> {
+        self.append_genesis_checkpoint(run_start, TunablesCheckpoint::V1(snapshot), inherited_from)
+    }
+
+    pub(crate) fn append_genesis_checkpoint(
+        &mut self,
+        run_start: &Event,
+        checkpoint: TunablesCheckpoint,
         inherited_from: Option<iteron_protocol::RunGenesisTunablesInheritance>,
     ) -> Result<(Seq, Seq), RecordError> {
         if !self.is_empty() || !matches!(&run_start.kind, EventKind::RunStart { .. }) {
@@ -902,16 +1198,29 @@ impl Rollout {
             }
             .into());
         }
-        validate_tunables_snapshot(&snapshot)?;
+        let kind = match checkpoint {
+            TunablesCheckpoint::V1(snapshot) => {
+                validate_tunables_snapshot(&snapshot)?;
+                EventKind::TunablesSnapshot {
+                    version: iteron_protocol::RunGenesisTunablesVersion::V1,
+                    snapshot,
+                    inherited_from,
+                }
+            }
+            TunablesCheckpoint::V2(snapshot) => {
+                validate_tunables_snapshot_v2(&snapshot)?;
+                EventKind::TunablesSnapshotV2 {
+                    version: iteron_protocol::RunGenesisTunablesVersionV2::V2,
+                    snapshot,
+                    inherited_from,
+                }
+            }
+        };
         let snapshot_event = Event {
             // `append` owns the authoritative physical sequence and stamps this placeholder.
             seq: Seq::ZERO,
             turn: run_start.turn,
-            kind: EventKind::TunablesSnapshot {
-                version: iteron_protocol::RunGenesisTunablesVersion::V1,
-                snapshot,
-                inherited_from,
-            },
+            kind,
         };
         let mut genesis = session::tunables::GenesisTunablesState::default();
         genesis.observe(0, &run_start.kind)?;
@@ -957,6 +1266,12 @@ impl Rollout {
                     return Err(error);
                 }
             };
+        if seq != Seq::ZERO {
+            // Opening a writer is also the resume admission boundary. Hash-valid marker strings
+            // are not sufficient: every private handle must still resolve under the tenant's
+            // current revocation generation before this process may continue the run.
+            replay(&path)?;
+        }
         let durable_bytes = file.metadata()?.len();
         Ok(Rollout {
             path,
@@ -1086,6 +1401,12 @@ impl Rollout {
                 max: MAX_ROLLOUT_PHYSICAL_LINES,
             });
         }
+        if matches!(&event.kind, EventKind::PolicyBundleSnapshot { .. }) && self.seq != Seq(2) {
+            return Err(policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
+                "policy checkpoint must be physical sequence two",
+            )
+            .into());
+        }
         event
             .kind
             .validate_compatibility_tag()
@@ -1103,7 +1424,20 @@ impl Rollout {
         // rollouts written before this fix remain correct.
         event.seq = self.seq;
         let event = &event;
-        let payload = serde_json::to_value(event)?;
+        let mut payload = serde_json::to_value(event)?;
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::externalize_event_payload(
+            runs_dir,
+            &self.tenant,
+            &self.run,
+            self.seq,
+            &mut payload,
+        )?;
         let seq = self.seq;
         let hash = hash_line(&self.last_hash, seq.0, &payload);
         let cl = ChainLine {
@@ -1273,6 +1607,7 @@ pub struct TimedEvent {
 /// because every existing caller wants the event stream alone and should not be made to thread a
 /// timing concern it does not use.
 pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
+    require_strict_replay_policy()?;
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();
     let mut expected_seq = 0u64;
@@ -1311,16 +1646,26 @@ pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
         prev = cl.hash;
         expected_seq = expected_seq.saturating_add(1);
         let ts_us = cl.ts_us;
-        let mut event: Event = serde_json::from_value(cl.payload)?;
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::hydrate_event_payload(runs_dir, &TenantId(cl.tenant.clone()), &mut payload)?;
+        let mut event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         event.seq = Seq(cl.seq);
         events.push(TimedEvent { ts_us, event });
         Ok(())
     })?;
+    guard_replay_lineage(path, tenant.as_ref())?;
     Ok(events)
 }
 
 pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
+    require_strict_replay_policy()?;
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();
     let mut expected_seq = 0u64;
@@ -1367,13 +1712,120 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
         // deserialized event's seq with it. Without this, every replay consumer (`--fork`, `/fork`,
         // `/rewind`) saw seq 0 and branched at genesis, silently discarding the entire parent
         // transcript (review CRITICAL/HIGH). Handles legacy rollouts (payload seq 0) too.
-        let mut event: Event = serde_json::from_value(cl.payload)?;
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::hydrate_event_payload(runs_dir, &TenantId(cl.tenant.clone()), &mut payload)?;
+        let mut event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         event.seq = Seq(cl.seq);
         events.push(event);
         Ok(())
     })?;
+    guard_replay_lineage(path, tenant.as_ref())?;
     Ok(events)
+}
+
+fn rollout_identity_from_file(path: &Path) -> Result<(TenantId, RunId), RecordError> {
+    let run = RunId(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(RecordError::InvalidRunId {
+                reason: "rollout filename is not valid UTF-8",
+            })?
+            .to_owned(),
+    );
+    validate_run_id(&run)?;
+    let mut tenant = None;
+    visit_record_lines(path, |line| {
+        if tenant.is_none() && !line.trim().is_empty() {
+            let chain: ChainLine = serde_json::from_str(line)?;
+            tenant = Some(TenantId(chain.tenant));
+        }
+        Ok(())
+    })?;
+    let tenant = tenant.ok_or_else(|| {
+        RecordError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "rollout has no durable tenant identity",
+        ))
+    })?;
+    Ok((tenant, run))
+}
+
+/// Shared owner gate held across a non-record consumer of one verified rollout derivative.
+/// Content revocation needs the corresponding exclusive owner lock, so it cannot tombstone a
+/// checkpoint between replay validation and a Git inventory/restore that consumes the snapshot.
+pub struct VerifiedRolloutOwner {
+    tenant: TenantId,
+    run: RunId,
+    _lease: PrivateContentOwnerLease,
+}
+
+impl VerifiedRolloutOwner {
+    pub fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+
+    pub fn run(&self) -> &RunId {
+        &self.run
+    }
+}
+
+/// Acquire the owner read gate first, then verify the complete journal and every derivative
+/// lineage while revocation is excluded. Keep the returned value alive through the final external
+/// read; dropping it is the handoff point at which a waiting revoke may proceed.
+pub fn acquire_verified_rollout_owner(path: &Path) -> Result<VerifiedRolloutOwner, RecordError> {
+    let (tenant, run) = rollout_identity_from_file(path)?;
+    let lease = content_store::acquire_private_content_owner(
+        path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?,
+        &tenant,
+        &run,
+    )?;
+    let _ = replay(path)?;
+    Ok(VerifiedRolloutOwner {
+        tenant,
+        run,
+        _lease: lease,
+    })
+}
+
+/// Return tenant/run only after the ordinary replay gates pass. Callers which perform a later
+/// content read must use [`acquire_verified_rollout_owner`] and hold its lease across that read.
+pub fn verified_rollout_identity(path: &Path) -> Result<(TenantId, RunId), RecordError> {
+    let owner = acquire_verified_rollout_owner(path)?;
+    Ok((owner.tenant.clone(), owner.run.clone()))
+}
+
+fn guard_replay_lineage(path: &Path, tenant: Option<&TenantId>) -> Result<(), RecordError> {
+    let Some(tenant) = tenant else {
+        return Ok(());
+    };
+    let runs_dir = path.parent().ok_or_else(|| {
+        RecordError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "rollout path has no runs directory",
+        ))
+    })?;
+    let run = RunId(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(RecordError::InvalidRunId {
+                reason: "rollout filename is not valid UTF-8",
+            })?
+            .to_owned(),
+    );
+    content_store::guard_private_content_for_run(runs_dir, tenant, &run)?;
+    Ok(())
 }
 
 /// Hash-verified replay plus an exact immutable tunables compatibility check.
@@ -1387,9 +1839,10 @@ pub fn replay_with_tunables_snapshot(
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
     let events = replay(path)?;
-    let recorded = session::tunables::snapshot_from_events(&events)?;
+    let recorded = session::tunables::checkpoint_from_events(&events)?;
+    let expected = TunablesCheckpoint::V1(expected.clone());
     let compatibility =
-        session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+        session::tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)?;
     Ok((events, compatibility))
 }
 
@@ -1399,8 +1852,11 @@ pub fn replay_with_resolved_tunables(
     resolved: &iteron_tunables::ResolvedTunableSet,
     legacy: LegacyTunablesPolicy,
 ) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
-    let expected = snapshot_from_resolved(resolved)?;
-    replay_with_tunables_snapshot(path, &expected, legacy)
+    let events = replay(path)?;
+    let recorded = session::tunables::checkpoint_from_events(&events)?;
+    let compatibility =
+        session::tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)?;
+    Ok((events, compatibility))
 }
 
 #[cfg(test)]
@@ -2035,6 +2491,116 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    #[test]
+    fn append_enforces_provider_attempt_identity_parity_at_the_mint_boundary() {
+        use iteron_protocol::{
+            ProviderRouteAttemptAccounting, ProviderRouteAttemptAccountingVersion,
+            ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
+            ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason,
+        };
+
+        let dir = test_dir("provider-attempt-mint-parity");
+        let mut rollout = Rollout::open(
+            &dir,
+            &RunId("provider-attempt-mint-parity".into()),
+            TenantId::default(),
+        )
+        .unwrap();
+        let identity = ProviderRouteAttemptIdentity {
+            version: ProviderRouteAttemptAccountingVersion::V1,
+            route_id: format!("sha256:{}", "a".repeat(64)),
+            physical_attempt: 1,
+            max_cost_reservation_microusd: None,
+        };
+        let accounting = ProviderRouteAttemptAccounting {
+            version: identity.version,
+            route_id: identity.route_id.clone(),
+            physical_attempt: identity.physical_attempt,
+            max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+            usage: ProviderRouteUsageTruth::Unknown {
+                reason: ProviderRouteUsageUnknownReason::OutcomeUnobservable,
+            },
+            cost: ProviderRouteCostTruth::Unknown {
+                reason: ProviderRouteCostUnknownReason::OutcomeUnobservable,
+            },
+        };
+        let effect_id = iteron_protocol::EffectId("fx1-pv-00000001-0000".into());
+
+        let invalid = [
+            EventKind::EffectIntent {
+                id: effect_id.clone(),
+                tool_use_id: "hx1-pv-00000001-0000".into(),
+                tool: "provider".into(),
+                capability: iteron_protocol::Capability::IrreversibleExternal,
+                arguments: serde_json::json!({}),
+                workspace: "/repo".into(),
+                provider_route_attempt: None,
+            },
+            EventKind::EffectIntent {
+                id: effect_id.clone(),
+                tool_use_id: "hx1-cp-00000001-0000".into(),
+                tool: "checkpoint".into(),
+                capability: iteron_protocol::Capability::ReversibleLocal,
+                arguments: serde_json::json!({}),
+                workspace: "/repo".into(),
+                provider_route_attempt: Some(identity.clone()),
+            },
+            EventKind::EffectUnknown {
+                id: effect_id.clone(),
+                tool: "provider".into(),
+                reason: "crash".into(),
+                provider_route_attempt: None,
+            },
+            EventKind::EffectUnknown {
+                id: effect_id.clone(),
+                tool: "checkpoint".into(),
+                reason: "crash".into(),
+                provider_route_attempt: Some(accounting.clone()),
+            },
+        ];
+        for kind in invalid {
+            assert!(matches!(
+                rollout.append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(1),
+                    kind,
+                }),
+                Err(RecordError::InvalidEventSchema { .. })
+            ));
+            assert_eq!(rollout.next_sequence(), Seq::ZERO);
+        }
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::EffectIntent {
+                    id: effect_id.clone(),
+                    tool_use_id: "hx1-pv-00000001-0000".into(),
+                    tool: "provider".into(),
+                    capability: iteron_protocol::Capability::IrreversibleExternal,
+                    arguments: serde_json::json!({}),
+                    workspace: "/repo".into(),
+                    provider_route_attempt: Some(identity),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::EffectUnknown {
+                    id: effect_id,
+                    tool: "provider".into(),
+                    reason: "crash".into(),
+                    provider_route_attempt: Some(accounting),
+                },
+            })
+            .unwrap();
+        assert_eq!(rollout.next_sequence(), Seq(2));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The gate is write-only. Every rollout the audit read is full of anonymous terminals, and a
     /// read-time rule would turn the evidence into an unreplayable file.
     #[test]
@@ -2521,15 +3087,42 @@ ant-api03-SuperSecretTokenValue12345 in config";
             .unwrap();
         }
         let path = dir.join("t5.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
+        // Content fields are externalized into the content store, so the rollout line holds a
+        // digest marker rather than the text. Reading only the `.jsonl` would therefore report
+        // success while the plaintext sat in a sibling file: check every byte the run wrote, and
+        // check the mask on the hydrated event that replay actually reconstructs.
+        assert_no_plaintext_under(&dir, "SuperSecretTokenValue");
+        let replayed = replay(&path).unwrap();
+        assert_eq!(replayed.len(), 1);
+        let EventKind::Message { message } = &replayed[0].kind else {
+            panic!("expected the appended message event back");
+        };
+        let Block::ToolResult(result) = &message.content[0] else {
+            panic!("expected the appended tool result back");
+        };
         assert!(
-            !raw.contains("SuperSecretTokenValue"),
-            "the secret must not be in the durable record"
+            result.content.contains("[REDACTED"),
+            "the secret must be masked, got {}",
+            result.content
         );
-        assert!(raw.contains("[REDACTED"), "the secret must be masked");
-        // and the chain still verifies (replay works over the redacted content)
-        assert_eq!(replay(&path).unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every byte the run wrote, not just the rollout line. Externalized content lives beside the
+    /// `.jsonl`, so a needle search restricted to that one file proves nothing about secrecy.
+    fn assert_no_plaintext_under(dir: &std::path::Path, needle: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                assert_no_plaintext_under(&path, needle);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                assert!(
+                    !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                    "`{needle}` leaked as plaintext into {}",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2551,12 +3144,7 @@ ant-api03-SuperSecretTokenValue12345 in config";
         }
 
         let path = dir.join("notice-redact.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !raw.contains(secret),
-            "notice leaked into the durable record"
-        );
-        assert!(raw.contains("[REDACTED"), "notice secret must be masked");
+        assert_no_plaintext_under(&dir, secret);
         let replayed = replay(&path).unwrap();
         assert!(matches!(
             &replayed[0].kind,

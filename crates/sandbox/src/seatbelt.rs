@@ -255,6 +255,36 @@ pub fn profile(conf: &Confinement) -> Result<String, SandboxError> {
     profile_for_home(conf, &home)
 }
 
+/// Extend the ordinary deny-by-default profile with ioctl authority for one freshly allocated PTY
+/// slave. Full-screen and job-control programs query terminal discipline through `file-ioctl`;
+/// granting that operation globally would also expose unrelated devices, so the capability is
+/// restricted to the exact `/dev/ttys*` vnode owned by the caller's PTY pair.
+#[cfg(target_os = "macos")]
+pub(crate) fn profile_with_terminal(
+    conf: &Confinement,
+    terminal: &Path,
+) -> Result<String, SandboxError> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let is_pty_slave = terminal.parent() == Some(Path::new("/dev"))
+        && terminal
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ttys"))
+        && std::fs::symlink_metadata(terminal)
+            .map(|metadata| metadata.file_type().is_char_device())
+            .unwrap_or(false);
+    if !is_pty_slave {
+        return Err(SandboxError::Profile(
+            "terminal ioctl capability must name one live /dev/ttys* character device".into(),
+        ));
+    }
+    let mut rendered = profile(conf)?;
+    let terminal = sbpl_path(terminal, "pty slave")?;
+    rendered.push_str(&format!("(allow file-ioctl (literal \"{terminal}\"))\n"));
+    Ok(rendered)
+}
+
 /// The profile fragments that depend only on the operator's HOME. Building them canonicalizes
 /// close to ninety paths, measured at about 7.5ms over a bare shell, and the strictly serial
 /// effecting-tool loop paid that on every single shell and git call. HOME does not change inside a
@@ -486,7 +516,7 @@ impl Sandbox for Seatbelt {
         // secret-shaped var (ANTHROPIC_API_KEY, *_TOKEN, AWS_*, …). The egress-off network denial
         // is the real containment; this restores venvs/PATH/HOME so real build/test commands run
         // (live-e2e review: env_clear + HOME=/tmp broke Python user site-packages).
-        crate::confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
+        crate::apply_confinement_environment(&mut cmd, conf);
         cmd.env("TERM", "dumb")
             .env("TMPDIR", &conf.scratch)
             .env("TMP", &conf.scratch)
@@ -518,7 +548,7 @@ impl Sandbox for Seatbelt {
     }
 }
 
-fn prepare_private_scratch(path: &Path) -> Result<(), SandboxError> {
+pub(crate) fn prepare_private_scratch(path: &Path) -> Result<(), SandboxError> {
     if !path.is_absolute() {
         return Err(SandboxError::Profile(
             "private scratch path must be absolute".into(),
@@ -563,7 +593,7 @@ fn cleanup_private_scratch(path: &Path) {
     }
 }
 
-struct ScratchCleanup(PathBuf);
+pub(crate) struct ScratchCleanup(pub(crate) PathBuf);
 
 impl Drop for ScratchCleanup {
     fn drop(&mut self) {

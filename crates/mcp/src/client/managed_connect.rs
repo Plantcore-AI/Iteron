@@ -21,6 +21,21 @@ pub(super) async fn connect(
     sensitive_env_names: &[String],
     cancellation: Option<&crate::supervisor::McpCancellation>,
 ) -> Result<McpClient, McpError> {
+    let startup_milliseconds =
+        u64::try_from(handshake_timeout.as_millis()).map_err(|_| McpError::InvalidEndpoint {
+            field: "startup_deadline",
+            limit: crate::MAX_MCP_DEADLINE_MILLISECONDS as usize,
+        })?;
+    let tool_call_milliseconds =
+        u64::try_from(request_timeout.as_millis()).map_err(|_| McpError::InvalidEndpoint {
+            field: "tool_deadline",
+            limit: crate::MAX_MCP_DEADLINE_MILLISECONDS as usize,
+        })?;
+    let deadlines = crate::McpTransportDeadlines::new(startup_milliseconds, tool_call_milliseconds)
+        .map_err(|_| McpError::InvalidEndpoint {
+            field: "deadline",
+            limit: crate::MAX_MCP_DEADLINE_MILLISECONDS as usize,
+        })?;
     // Reject ambiguous namespaces before granting process authority. Server namespaces cannot
     // contain `_`, so the first `__` in a registered name is an unambiguous separator.
     validate_server_name(name)?;
@@ -59,6 +74,9 @@ pub(super) async fn connect(
         calls: Mutex::new(()),
         next_id: std::sync::atomic::AtomicU64::new(1),
         request_timeout,
+        deadlines,
+        result_policy: crate::McpResultPolicy::default(),
+        spill_store: crate::result_policy::McpSpillStore::create()?,
         negotiated_protocol_version: None,
         capabilities: crate::McpServerCapabilities::default(),
         server_name: name.to_string(),

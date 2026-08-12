@@ -38,6 +38,14 @@ pub struct AgentCatalog {
     errors_truncated: bool,
 }
 
+/// Content-free identity of the exact executable agent-definition set admitted by this process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCatalogRuntimeIdentity {
+    pub digest_sha256: String,
+    pub entry_count: usize,
+    pub canonical_bytes: usize,
+}
+
 /// Path components that mark a dependency/vendor tree; a `.iteron/agents` dir under any of these is
 /// third-party and its definitions are stripped (ADR-007). Covers the common ecosystems so a cloned
 /// dependency cannot inject an agent definition into context.
@@ -60,7 +68,10 @@ const MAX_SCAN_DIRS: usize = 4096;
 const MAX_SCAN_ENTRIES: usize = 65_536;
 const MAX_AGENT_FILES_PER_DIR: usize = 1_024;
 const MAX_AGENT_SOURCE_BYTES: usize = 256 * 1024;
-const MAX_CATALOG_SOURCES: usize = 4_096;
+// The governed catalog schema admits 4,096 entries total. Three built-ins are always present, so
+// filesystem/plugin sources get the remaining slots and can never make the live owner exceed the
+// identity recorded in the immutable checkpoint.
+const MAX_CATALOG_SOURCES: usize = 4_096 - 3;
 const MAX_LOAD_ERRORS: usize = 4_096;
 
 impl AgentCatalog {
@@ -143,6 +154,7 @@ impl AgentCatalog {
         };
         cat.defs.push(AgentDef::generic());
         cat.defs.push(AgentDef::ultracode_planner());
+        cat.defs.push(AgentDef::isolated_writer());
 
         // User definitions: read directly (do not scan the whole home tree). Trusted.
         if let Some(user) = user {
@@ -170,7 +182,11 @@ impl AgentCatalog {
     /// A catalog with only the built-ins (no filesystem access) — for tests and headless runs.
     pub fn builtin_only() -> Self {
         AgentCatalog {
-            defs: vec![AgentDef::generic(), AgentDef::ultracode_planner()],
+            defs: vec![
+                AgentDef::generic(),
+                AgentDef::ultracode_planner(),
+                AgentDef::isolated_writer(),
+            ],
             errors: Vec::new(),
             sources_seen: 0,
             source_limit_reported: false,
@@ -199,14 +215,27 @@ impl AgentCatalog {
     /// not change the semantics of a successfully selected definition. Definitions remain in the
     /// stable, collision-resolved discovery order.
     pub fn execution_digest(&self) -> String {
+        format!("sha256:{}", self.runtime_identity().digest_sha256)
+    }
+
+    pub fn runtime_identity(&self) -> AgentCatalogRuntimeIdentity {
+        const DOMAIN: &[u8] = b"core-agent-catalog-v1";
         let mut digest = Sha256::new();
-        digest.update(b"core-agent-catalog-v1");
+        digest.update(DOMAIN);
+        let mut canonical_bytes = DOMAIN.len();
         for def in &self.defs {
             let part = def.execution_digest();
             digest.update((part.len() as u64).to_be_bytes());
             digest.update(part.as_bytes());
+            canonical_bytes = canonical_bytes
+                .saturating_add(std::mem::size_of::<u64>())
+                .saturating_add(part.len());
         }
-        format!("sha256:{:x}", digest.finalize())
+        AgentCatalogRuntimeIdentity {
+            digest_sha256: format!("{:x}", digest.finalize()),
+            entry_count: self.defs.len(),
+            canonical_bytes,
+        }
     }
 
     fn record_error(&mut self, error: LoadError) {
@@ -537,7 +566,41 @@ mod tests {
             .expect("dynamic workflow planner is pinned beside the investigator");
         assert!(planner.tools.narrow().is_empty());
         assert_eq!(planner.budget.max_turns, 1);
-        assert_eq!(cat.defs().len(), 2);
+        // Name the built-ins rather than counting them: a bare count says nothing about which
+        // agent arrived, and the isolated writer is the one the workspace-boundary registry admits.
+        let names: Vec<_> = cat.defs().iter().map(|def| def.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "generic",
+                crate::ULTRACODE_PLANNER_NAME,
+                crate::ISOLATED_WRITER_NAME
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_identity_commits_to_the_exact_executable_catalog() {
+        let baseline = AgentCatalog::builtin_only();
+        let identity = baseline.runtime_identity();
+        assert_eq!(identity.entry_count, baseline.defs().len());
+        assert!(identity.canonical_bytes > 0);
+        assert_eq!(
+            baseline.execution_digest(),
+            format!("sha256:{}", identity.digest_sha256)
+        );
+
+        let user = scratch("identity-user");
+        let repo = scratch("identity-repo");
+        write_def(
+            &repo.join(".iteron/agents"),
+            "reviewer.md",
+            "---\nname: reviewer\ndescription: review\n---\nReview one file.\n",
+        );
+        let changed = AgentCatalog::discover(&user, &repo).runtime_identity();
+        assert_ne!(identity, changed);
+        std::fs::remove_dir_all(user).ok();
+        std::fs::remove_dir_all(repo).ok();
     }
 
     #[test]
@@ -670,7 +733,17 @@ mod tests {
             .collect();
         assert_eq!(names1, names2, "sorted discovery => reproducible order");
         // Built-ins first, then sorted workspace definitions.
-        assert_eq!(names1, vec!["generic", "ultracode-planner", "a", "b", "c"]);
+        assert_eq!(
+            names1,
+            vec![
+                "generic",
+                "ultracode-planner",
+                "isolated-writer",
+                "a",
+                "b",
+                "c"
+            ]
+        );
         std::fs::remove_dir_all(&user).ok();
         std::fs::remove_dir_all(&repo).ok();
     }

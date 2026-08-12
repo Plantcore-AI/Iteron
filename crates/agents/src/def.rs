@@ -35,6 +35,28 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "git_log",
     "read_memory",
     "use_skill",
+    "tool_search",
+];
+
+/// Exact tool vocabulary of the harness-authored isolated writer. Execution and arbitrary
+/// external effects are deliberately absent: the worker edits only through registry-mediated
+/// file transactions, while the host runs verification and merges its patch after the child
+/// terminal. A discovered definition can never widen itself into this set.
+pub const ISOLATED_WRITER_TOOLS: &[&str] = &[
+    "read_file",
+    "list_dir",
+    "glob",
+    "grep",
+    "repo_map",
+    "git_diff",
+    "git_status",
+    "git_log",
+    "read_memory",
+    "use_skill",
+    "tool_search",
+    "edit",
+    "apply_patch",
+    "write_file",
 ];
 
 /// Tool names that write, execute, or dispatch — refused if an `Allow` list names one, because a
@@ -61,7 +83,8 @@ const WRITE_EXEC_DISPATCH: &[&str] = &[
 /// maintaining a second prompt with a smaller, drifting tool inventory.
 pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation subagent. Explore the \
     repository with read_file, list_dir, glob, grep, repo_map, git_diff, git_status, git_log, \
-    read_memory, and use_skill to answer the question. You cannot edit files or run code. When \
+    read_memory, use_skill, and tool_search to answer the question. You cannot edit files or run \
+    code. When \
     done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
     file:line references for anything you claim.";
 
@@ -70,11 +93,46 @@ pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation suba
 /// harness still normalizes, narrows, and caps those leaves before the workflow may fan out.
 pub const ULTRACODE_PLANNER_NAME: &str = "ultracode-planner";
 
+/// Exact non-trainable owner for the built-in planner's model envelope. The agent definition
+/// consumes these ceilings directly; runtime tunables attest this same typed value rather than
+/// copying the planner's old 4096/low/zero literals into a second owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecompositionProfile {
+    pub max_output_tokens: u64,
+    pub effort: iteron_protocol::Effort,
+    pub thinking_tokens: u32,
+    pub max_wall_secs: u64,
+    pub max_turns: u32,
+}
+
+impl DecompositionProfile {
+    pub const fn owner() -> Self {
+        Self {
+            max_output_tokens: 4_096,
+            effort: iteron_protocol::Effort::Low,
+            thinking_tokens: 0,
+            max_wall_secs: 60,
+            max_turns: 1,
+        }
+    }
+}
+
+/// Harness-reserved writer identity. The catalog installs this definition before reading any
+/// filesystem source, so repository/user definitions cannot shadow its authority contract.
+pub const ISOLATED_WRITER_NAME: &str = "isolated-writer";
+
 const ULTRACODE_PLANNER_SYSTEM: &str = "You plan a READ-ONLY repository investigation. Return \
     mutually distinct, non-overlapping, self-contained assignments. Every line must name a \
     concrete search scope and the evidence expected from that worker. Cover different causal \
     surfaces rather than paraphrasing the task. Do not inspect the repository, propose edits, ask \
     questions, add a preamble, or add a conclusion. Output exactly one assignment per line.";
+
+const ISOLATED_WRITER_SYSTEM: &str = "You are the single isolated writer for one bounded task. \
+    Work only inside the worktree supplied as your workspace. Read the current files, make the \
+    smallest complete change with edit, apply_patch, or write_file, and finish with a concise \
+    report of what changed. You cannot execute commands, access the parent workspace, dispatch \
+    agents, or merge your own work. The host independently verifies your worktree and is the only \
+    authority that may merge its patch.";
 
 /// How an agent's `tools` frontmatter narrows the read-only registry. Tools can only **narrow**
 /// (ADR-001): `All` is the whole read-only set, `Allow` intersects it, `Deny` subtracts from it.
@@ -157,6 +215,11 @@ pub fn subagent_budget_ceiling() -> Budget {
     }
 }
 
+/// Minimum provider turns for an admitted investigator. The allocator and the checkpointed
+/// `worker_min_turns` family read this same constant, so resume cannot reconstruct a different
+/// worker floor from a copied literal.
+pub const MIN_SUBAGENT_TURNS: u32 = 2;
+
 /// Allocate one direct-investigator budget while reserving about half of the remaining turns for
 /// the single writer (rebalanced from two thirds: the writer still keeps the dominant share, but a
 /// bounded-concurrent fan no longer needs to starve investigators down a serial chain). This is the
@@ -175,7 +238,7 @@ pub fn subagent_budget(
     let child_turns = remaining_turns
         .saturating_sub(writer_reserve)
         .min(ceiling.max_turns);
-    if child_turns < 2
+    if child_turns < MIN_SUBAGENT_TURNS
         || remaining_wall_secs < 3
         || remaining_tokens.is_some_and(|tokens| tokens < 2)
     {
@@ -213,6 +276,7 @@ impl AgentDef {
     /// The built-in dynamic-workflow planner. It is visible to the engine's pinned catalog but has
     /// no tools and exactly one provider turn, so planning cannot quietly become a second explorer.
     pub fn ultracode_planner() -> AgentDef {
+        let profile = DecompositionProfile::owner();
         AgentDef {
             name: ULTRACODE_PLANNER_NAME.into(),
             description: "Internal one-turn planner for the built-in Ultracode workflow.".into(),
@@ -220,14 +284,42 @@ impl AgentDef {
             tools: ToolFilter::Allow(Vec::new()),
             model: None,
             budget: Budget {
-                max_turns: 1,
+                max_turns: profile.max_turns,
                 max_usd: None,
-                max_tokens: Some(4_096),
-                max_wall_secs: 60,
+                max_tokens: Some(profile.max_output_tokens),
+                max_wall_secs: profile.max_wall_secs,
                 max_consecutive_tool_errors: 1,
             },
             trust: Trust::Trusted,
         }
+    }
+
+    /// The only write-capable catalog definition. Its authority is not encoded in frontmatter:
+    /// the production spawner recognizes the exact execution digest of this built-in and rejects
+    /// every merely name-compatible definition.
+    pub fn isolated_writer() -> AgentDef {
+        AgentDef {
+            name: ISOLATED_WRITER_NAME.into(),
+            description: "Single isolated writer: edits a disposable Git worktree; the host \
+                verifies and serially merges the resulting patch. Cannot execute commands, reach \
+                the parent workspace, dispatch agents, or merge itself."
+                .into(),
+            // `ToolFilter` remains the discovered-agent read-only language. The spawner admits the
+            // exact fixed writer vocabulary only after this built-in digest matches.
+            tools: ToolFilter::All,
+            system: ISOLATED_WRITER_SYSTEM.into(),
+            model: None,
+            budget: subagent_budget_ceiling(),
+            trust: Trust::Trusted,
+        }
+    }
+
+    /// True only for the complete harness-authored writer semantics, never for a caller-controlled
+    /// name. Keeping the comparison here makes authority admission independent of catalog origin
+    /// bookkeeping and catches accidental edits to any execution-relevant field.
+    pub fn is_isolated_writer(&self) -> bool {
+        self.name == ISOLATED_WRITER_NAME
+            && self.execution_digest() == Self::isolated_writer().execution_digest()
     }
 
     /// Content identity for every execution-relevant field of this immutable definition.
@@ -782,6 +874,7 @@ mod tests {
                 "git_log",
                 "read_memory",
                 "use_skill",
+                "tool_search",
             ]
         );
         assert_eq!(

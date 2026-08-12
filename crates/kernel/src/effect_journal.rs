@@ -9,7 +9,7 @@
 //! module rather than a longer one.
 
 use crate::effect_class::EffectClass;
-use iteron_protocol::{EffectId, Event, EventKind, TurnId};
+use iteron_protocol::{EffectId, Event, EventKind, ProviderRouteAttemptIdentity, TurnId};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,10 +17,13 @@ pub struct PendingEffect {
     pub turn: TurnId,
     pub id: EffectId,
     pub tool: String,
+    pub provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum EffectJournalError {
+    #[error("record replay policy does not require fail-closed effect-terminal verification")]
+    ReplayPolicyDisabled,
     #[error("effect journal contains a duplicate intent identity")]
     DuplicateIntent,
     #[error("effect journal contains a terminal result without its intent")]
@@ -48,6 +51,7 @@ struct Entry {
     id: EffectId,
     tool: String,
     legacy_tool_use_id: Option<String>,
+    provider_route_attempt: Option<ProviderRouteAttemptIdentity>,
     state: State,
 }
 
@@ -60,6 +64,10 @@ pub struct EffectJournal {
 
 impl EffectJournal {
     pub fn replay(events: &[Event]) -> Result<Self, EffectJournalError> {
+        let replay_policy = iteron_record::replay_divergence_detection_policy();
+        if !replay_policy.verify_effect_terminals() || !replay_policy.fail_closed() {
+            return Err(EffectJournalError::ReplayPolicyDisabled);
+        }
         let mut journal = Self::default();
         for event in events {
             journal.apply(event)?;
@@ -73,6 +81,7 @@ impl EffectJournal {
                 id,
                 tool_use_id,
                 tool,
+                provider_route_attempt,
                 ..
             } => {
                 let key = (event.turn.0, id.0.clone());
@@ -86,6 +95,7 @@ impl EffectJournal {
                         id: id.clone(),
                         tool: tool.clone(),
                         legacy_tool_use_id: tool_use_id.is_empty().then(|| id.0.clone()),
+                        provider_route_attempt: provider_route_attempt.clone(),
                         state: State::Pending,
                     },
                 );
@@ -163,6 +173,7 @@ impl EffectJournal {
                 turn: entry.turn,
                 id: entry.id.clone(),
                 tool: entry.tool.clone(),
+                provider_route_attempt: entry.provider_route_attempt.clone(),
             })
             .collect()
     }

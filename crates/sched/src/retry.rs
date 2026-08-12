@@ -346,6 +346,7 @@ mod tests {
                 cache_system: false,
                 thinking_budget: 0,
                 reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+                controls: Default::default(),
             };
 
             assert!(provider.turn(&request, &mut |_| {}).await.is_err());
@@ -433,6 +434,7 @@ mod tests {
                     cache_system: false,
                     thinking_budget: 0,
                     reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+                    controls: Default::default(),
                 };
                 provider.turn(&request, &mut |_| {}).await
             }));
@@ -492,6 +494,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         let r = rp.turn(&req, &mut |_| {}).await;
         assert!(r.is_ok(), "a run must survive 3 consecutive 429s");
@@ -533,6 +536,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
 
@@ -579,6 +583,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
         assert_eq!(rp.accounting(), RetryAccounting::default());
@@ -609,6 +614,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(
             rp.turn(&req, &mut |_| {}).await.is_err(),
@@ -644,6 +650,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_err());
     }
@@ -719,6 +726,7 @@ mod tests {
                 cache_system: false,
                 thinking_budget: 0,
                 reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+                controls: Default::default(),
             };
             assert!(provider.turn(&request, &mut |_| {}).await.is_err());
             assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -791,6 +799,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
         assert_eq!(
@@ -869,6 +878,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
     }
@@ -891,6 +901,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         let mut items = Vec::new();
         let result = rp.turn(&req, &mut |item| items.push(item)).await;
@@ -954,6 +965,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         assert!(provider.turn(&request, &mut |_| {}).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);

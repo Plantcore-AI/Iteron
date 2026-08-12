@@ -6,10 +6,36 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{fs, path::PathBuf};
 
 use async_trait::async_trait;
 use iteron_workflow::events::{NullSink, ProgressEvent, ProgressSink};
-use iteron_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunLimits, RunSpec, WorkflowEngine};
+use iteron_workflow::{
+    AgentCall, AgentExecutionClass, AgentOutcome, AgentSpawner, EarlyStopQuorumPolicy, RunId,
+    RunLimits, RunSpec, SpeculativeSiblingPolicy, TaskFailureAction, TaskRetryPolicy,
+    WorkflowEngine,
+};
+
+fn scratch(label: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "iteron-workflow-h07-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn dag_commands(root: &std::path::Path, run: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(root.join(run).join("task-dag.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| line.get("entry")?.get("command").cloned())
+        .collect()
+}
 
 struct MockSpawner {
     delay_ms: u64,
@@ -17,6 +43,27 @@ struct MockSpawner {
 
 struct SelectiveFailureSpawner {
     failed_prompts: BTreeSet<String>,
+}
+
+struct SequencedSpawner {
+    calls: Arc<AtomicUsize>,
+    first_fails: bool,
+}
+
+#[async_trait]
+impl AgentSpawner for SequencedSpawner {
+    async fn spawn(&self, _call: AgentCall) -> AgentOutcome {
+        let ordinal = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.first_fails && ordinal == 0 {
+            return AgentOutcome::null("first assignee failed");
+        }
+        if ordinal == 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        AgentOutcome::text(format!("winner-{ordinal}"), 1)
+    }
 }
 
 #[async_trait]
@@ -64,9 +111,14 @@ async fn two_agent_parallel_runs_and_preserves_declaration_order() {
     let spawner = Arc::new(MockSpawner { delay_ms: 120 });
     let sink = Arc::new(VecSink::default());
 
-    let value = WorkflowEngine::run(SCRIPT, serde_json::Value::Null, spawner, sink.clone())
-        .await
-        .expect("workflow runs");
+    let value = WorkflowEngine::execute(
+        RunSpec::new(SCRIPT).with_workflows_dir(scratch("parallel-order")),
+        spawner,
+        sink.clone(),
+    )
+    .await
+    .expect("workflow runs")
+    .value;
 
     assert_eq!(value, serde_json::json!(["result:A", "result:B"]));
 
@@ -89,6 +141,197 @@ async fn two_agent_parallel_runs_and_preserves_declaration_order() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quorum_parallel_cancels_pending_siblings_without_stopping_the_run() {
+    let spawner = Arc::new(MockSpawner { delay_ms: 250 });
+    let script = r#"return await parallelQuorum([
+  () => agent('A'), () => agent('B'), () => agent('C'),
+]);"#;
+    let spec = RunSpec::new(script)
+        .with_workflows_dir(scratch("early-stop"))
+        .with_limits(RunLimits::new(1, 3).unwrap())
+        .with_early_stop_quorum(EarlyStopQuorumPolicy::new(1, 0, false).unwrap());
+    let started = std::time::Instant::now();
+    let report = WorkflowEngine::execute(spec, spawner, Arc::new(NullSink))
+        .await
+        .expect("quorum fan settles");
+
+    assert!(
+        !report.stopped,
+        "sibling cancellation is not run cancellation"
+    );
+    assert!(started.elapsed() < Duration::from_millis(700));
+    assert_eq!(report.value, serde_json::json!(["result:A", null, null]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_speculation_selects_a_positive_terminal_and_cleans_losers() {
+    let root = scratch("speculative-receipt");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let spawner = Arc::new(SequencedSpawner {
+        calls: calls.clone(),
+        first_fails: false,
+    });
+    let spec = RunSpec::new(r#"return await agent('inspect', { speculativeSiblings: 1 });"#)
+        .with_run_id(RunId::new("speculative-receipt"))
+        .with_workflows_dir(root.clone())
+        .with_limits(RunLimits::new(2, 2).unwrap())
+        .with_speculative_siblings(
+            SpeculativeSiblingPolicy::new(1, Duration::from_secs(1)).unwrap(),
+        )
+        .with_task_retry(TaskRetryPolicy::new(1, TaskFailureAction::Stop, true).unwrap());
+    let report = WorkflowEngine::execute(spec, spawner, Arc::new(NullSink))
+        .await
+        .expect("speculative call settles");
+    assert_eq!(report.value, serde_json::json!("winner-1"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let commands = dag_commands(&root, "speculative-receipt");
+    let selected_at = commands
+        .iter()
+        .position(|command| {
+            command["command"] == "send_message"
+                && command["message"]["payload"]
+                    .as_str()
+                    .is_some_and(|payload| {
+                        payload.starts_with("speculative_winner:attempt=")
+                            && payload.contains(":result_sha256=")
+                    })
+        })
+        .expect("winner selection is durable before sibling cancellation");
+    let loser_terminal_at = commands
+        .iter()
+        .position(|command| {
+            command["command"] == "complete_attempt" && command["disposition"] == "loser"
+        })
+        .expect("losing sibling has its own durable terminal");
+    assert!(selected_at < loser_terminal_at);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn definite_negative_task_is_reassigned_with_a_finite_attempt_ceiling() {
+    let root = scratch("reassign-lineage");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let spawner = Arc::new(SequencedSpawner {
+        calls: calls.clone(),
+        first_fails: true,
+    });
+    let spec = RunSpec::new(r#"return await agent('inspect');"#)
+        .with_run_id(RunId::new("reassign-lineage"))
+        .with_workflows_dir(root.clone())
+        .with_task_retry(TaskRetryPolicy::new(2, TaskFailureAction::Reassign, true).unwrap());
+    let report = WorkflowEngine::execute(spec, spawner, Arc::new(NullSink))
+        .await
+        .expect("reassigned task settles");
+    assert_eq!(report.value, serde_json::json!("winner-1"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let attempts = dag_commands(&root, "reassign-lineage")
+        .into_iter()
+        .filter(|command| command["command"] == "register_attempt")
+        .collect::<Vec<_>>();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0]["attempt"]["lineage_version"], 1);
+    assert_eq!(attempts[0]["attempt"]["assignment"], "initial");
+    assert_eq!(attempts[1]["attempt"]["assignment"], "reassigned");
+    assert_eq!(attempts[1]["attempt"]["retry_of"], 1);
+    assert_eq!(attempts[1]["attempt"]["retry_cause"], "negative_terminal");
+    assert_eq!(
+        attempts[1]["attempt"]["prior_evidence_digest"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_dependency_and_assignment_message_are_durable_production_edges() {
+    let root = scratch("dependency-message");
+    let script = r#"
+const first = await agent('A');
+const second = await agent('B', { dependsOn: [1] });
+return [first, second];
+"#;
+    let spec = RunSpec::new(script)
+        .with_run_id(RunId::new("dependency-message"))
+        .with_workflows_dir(root.clone());
+    let report = WorkflowEngine::execute(
+        spec,
+        Arc::new(MockSpawner { delay_ms: 0 }),
+        Arc::new(NullSink),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.value, serde_json::json!(["result:A", "result:B"]));
+
+    let commands = dag_commands(&root, "dependency-message");
+    let creates = commands
+        .iter()
+        .filter(|command| command["command"] == "create_task")
+        .collect::<Vec<_>>();
+    assert_eq!(creates.len(), 2);
+    assert_eq!(creates[0]["spec"]["declaration_index"], 1);
+    assert_eq!(creates[1]["spec"]["declaration_index"], 2);
+    assert_eq!(creates[1]["spec"]["dependencies"], serde_json::json!([1]));
+    let assignments = commands
+        .iter()
+        .filter(|command| command["command"] == "send_message")
+        .collect::<Vec<_>>();
+    assert_eq!(assignments.len(), 2);
+    assert!(assignments.iter().all(|command| {
+        command["message"]["payload"]
+            .as_str()
+            .is_some_and(|payload| payload.starts_with("input_sha256:") && payload.len() == 77)
+    }));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command["command"] == "acknowledge_message")
+            .count(),
+        2
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+struct WriterClassSpawner {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentSpawner for WriterClassSpawner {
+    fn execution_class(&self, _call: &AgentCall) -> AgentExecutionClass {
+        AgentExecutionClass::IsolatedWriter
+    }
+
+    async fn spawn(&self, _call: AgentCall) -> AgentOutcome {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        AgentOutcome::text("must not run", 0)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn speculative_group_refuses_writer_authority_before_physical_dispatch() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let spec = RunSpec::new(r#"return await agent('write', { speculativeSiblings: 1 });"#)
+        .with_workflows_dir(scratch("writer-refusal"))
+        .with_limits(RunLimits::new(2, 2).unwrap())
+        .with_speculative_siblings(
+            SpeculativeSiblingPolicy::new(1, Duration::from_secs(1)).unwrap(),
+        );
+    let report = WorkflowEngine::execute(
+        spec,
+        Arc::new(WriterClassSpawner {
+            calls: calls.clone(),
+        }),
+        Arc::new(NullSink),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.value, serde_json::Value::Null);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn report_counts_one_all_and_no_agent_failures() {
     let cases = [
         (Vec::<&str>::new(), 0usize),
@@ -103,7 +346,10 @@ async fn report_counts_one_all_and_no_agent_failures() {
         let spawner = Arc::new(SelectiveFailureSpawner {
             failed_prompts: failed.into_iter().map(str::to_owned).collect(),
         });
-        let report = WorkflowEngine::execute(RunSpec::new(script), spawner, Arc::new(NullSink))
+        let spec = RunSpec::new(script)
+            .with_workflows_dir(scratch("failure-accounting"))
+            .with_task_retry(TaskRetryPolicy::new(1, TaskFailureAction::Stop, true).unwrap());
+        let report = WorkflowEngine::execute(spec, spawner, Arc::new(NullSink))
             .await
             .expect("agent failures settle the fan-out");
 
@@ -134,9 +380,14 @@ const r = await parallel([
 return r;
 "#;
 
-    let value = WorkflowEngine::run(script, serde_json::Value::Null, spawner, sink)
-        .await
-        .expect("workflow runs");
+    let value = WorkflowEngine::execute(
+        RunSpec::new(script).with_workflows_dir(scratch("null-degrade")),
+        spawner,
+        sink,
+    )
+    .await
+    .expect("workflow runs")
+    .value;
 
     assert_eq!(value, serde_json::json!(["result:ok", null]));
 }
@@ -157,9 +408,14 @@ return {
 };
 "#;
 
-    let value = WorkflowEngine::run(script, serde_json::Value::Null, spawner, sink)
-        .await
-        .expect("workflow runs");
+    let value = WorkflowEngine::execute(
+        RunSpec::new(script).with_workflows_dir(scratch("determinism")),
+        spawner,
+        sink,
+    )
+    .await
+    .expect("workflow runs")
+    .value;
 
     assert_eq!(value["mathRandom"], "undefined");
     assert_eq!(value["dateNow"], "undefined");
@@ -176,9 +432,16 @@ async fn args_global_is_visible_to_the_script() {
 return await agent(args.who);
 "#;
 
-    let value = WorkflowEngine::run(script, serde_json::json!({ "who": "Neo" }), spawner, sink)
-        .await
-        .expect("workflow runs");
+    let value = WorkflowEngine::execute(
+        RunSpec::new(script)
+            .with_args(serde_json::json!({ "who": "Neo" }))
+            .with_workflows_dir(scratch("args")),
+        spawner,
+        sink,
+    )
+    .await
+    .expect("workflow runs")
+    .value;
 
     assert_eq!(value, serde_json::json!("result:Neo"));
 }
@@ -215,7 +478,9 @@ return await parallel([
   () => agent('C'),
   () => agent('D'),
 ]);"#;
-    let spec = RunSpec::new(script).with_limits(RunLimits::new(2, 2).unwrap());
+    let spec = RunSpec::new(script)
+        .with_workflows_dir(scratch("lifetime-cap"))
+        .with_limits(RunLimits::new(2, 2).unwrap());
     let report = WorkflowEngine::execute(spec, spawner.clone(), Arc::new(NullSink))
         .await
         .expect("bounded workflow runs");
@@ -249,9 +514,8 @@ impl AgentSpawner for WrongVersionSpawner {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incompatible_spawner_port_version_fails_before_the_script() {
-    let error = WorkflowEngine::run(
-        "return 'unreachable';",
-        serde_json::Value::Null,
+    let error = WorkflowEngine::execute(
+        RunSpec::new("return 'unreachable';").with_workflows_dir(scratch("wrong-spawner-version")),
         Arc::new(WrongVersionSpawner),
         Arc::new(NullSink),
     )
@@ -273,7 +537,9 @@ return await parallel([
   () => agent('A'), () => agent('B'), () => agent('C'),
   () => agent('D'), () => agent('E'), () => agent('F'),
 ]);"#;
-    let spec = RunSpec::new(script).with_limits(RunLimits::new(2, 16).unwrap());
+    let spec = RunSpec::new(script)
+        .with_workflows_dir(scratch("progress-fan"))
+        .with_limits(RunLimits::new(2, 16).unwrap());
     let report = WorkflowEngine::execute(spec, spawner, sink.clone())
         .await
         .expect("fan runs");
@@ -336,9 +602,8 @@ impl ProgressSink for WrongVersionSink {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incompatible_sink_port_version_fails_before_the_script() {
-    let error = WorkflowEngine::run(
-        "return 'unreachable';",
-        serde_json::Value::Null,
+    let error = WorkflowEngine::execute(
+        RunSpec::new("return 'unreachable';").with_workflows_dir(scratch("wrong-sink-version")),
         Arc::new(MockSpawner { delay_ms: 0 }),
         Arc::new(WrongVersionSink),
     )

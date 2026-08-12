@@ -36,6 +36,7 @@ fn req() -> TurnRequest {
         cache_system: false,
         thinking_budget: 0,
         reasoning_effort: ReasoningEffort::Low,
+        controls: Default::default(),
     }
 }
 
@@ -152,7 +153,10 @@ struct ProbeTransport {
 }
 
 impl HttpTransport for ProbeTransport {
-    fn client(&self) -> Result<HttpClient, ProviderError> {
+    fn client(
+        &self,
+        policy: iteron_provider::ProviderTransportTimeoutPolicy,
+    ) -> Result<HttpClient, ProviderError> {
         self.built.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             Err(ProviderError::Configuration(
@@ -160,7 +164,7 @@ impl HttpTransport for ProbeTransport {
             ))
         } else {
             // Delegate to the default secure client so the adapter is otherwise real.
-            DefaultHttpTransport.client()
+            DefaultHttpTransport.client(policy)
         }
     }
 }

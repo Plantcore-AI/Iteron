@@ -33,12 +33,14 @@ pub(crate) mod hyperlink;
 mod inline_shell;
 mod jobs;
 mod keyboard_enhancement;
+mod mcp_command;
 mod mouse_capture;
 mod notification;
 mod picker_catalog;
 mod session_adoption;
 mod session_management;
 mod session_picker;
+mod status_command;
 mod status_line;
 mod submission;
 mod terminal_input;
@@ -240,6 +242,41 @@ impl Session {
         &self.facts.rollout_path
     }
 
+    pub(crate) fn tunables_checkpoint(&self) -> Option<&iteron_record::TunablesCheckpoint> {
+        self.facts.tunables_checkpoint.as_ref()
+    }
+
+    pub(crate) fn tunables_effective_digest(&self) -> Option<&str> {
+        match self.tunables_checkpoint()? {
+            iteron_record::TunablesCheckpoint::V1(snapshot) => {
+                Some(&snapshot.effective_digest_sha256)
+            }
+            iteron_record::TunablesCheckpoint::V2(snapshot) => {
+                Some(&snapshot.effective_digest_sha256)
+            }
+        }
+    }
+
+    pub(crate) fn runtime_profile_id(&self) -> Option<&'static str> {
+        let digest = match self.tunables_checkpoint()? {
+            iteron_record::TunablesCheckpoint::V1(snapshot) => {
+                snapshot.profile_digest_sha256.as_deref()
+            }
+            iteron_record::TunablesCheckpoint::V2(snapshot) => {
+                snapshot.profile_digest_sha256.as_deref()
+            }
+        }?;
+        iteron_tunables::RuntimeProfile::ALL
+            .into_iter()
+            .find(|profile| {
+                iteron_tunables::runtime_profile_digest(*profile)
+                    .ok()
+                    .as_deref()
+                    == Some(digest)
+            })
+            .map(iteron_tunables::RuntimeProfile::id)
+    }
+
     pub(crate) fn model(&self) -> &str {
         &self.state.model
     }
@@ -258,6 +295,13 @@ impl Session {
 
     pub(crate) fn permission_rules(&self) -> &PermissionRules {
         &self.state.permission_rules
+    }
+
+    /// Ordered, durable provenance for the mutable policy fields projected beside the immutable
+    /// run-genesis tunables checkpoint. `None` is reserved for legacy or unsealed runtimes and is
+    /// never interpreted as "the genesis value is still current".
+    pub(crate) fn runtime_policy(&self) -> Option<&crate::runtime::RuntimePolicyOverlaySnapshot> {
+        self.state.runtime_policy.as_ref()
     }
 
     pub(crate) fn ledger_summary(&self) -> &str {
@@ -297,8 +341,10 @@ impl Session {
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
+                runtime_policy: None,
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             },
             facts: app_server::SessionFacts {
                 session_id: iteron_protocol::SessionId("session-test".into()),
@@ -315,6 +361,7 @@ impl Session {
                 registry_tools: Vec::new(),
                 dependency_skill_dirs: Vec::new(),
                 agent_catalog: Arc::new(iteron_agents::AgentCatalog::builtin_only()),
+                tunables_checkpoint: None,
             },
         }
     }
@@ -349,9 +396,13 @@ impl Session {
     pub(crate) fn adopt_run(
         &mut self,
         rollout_path: std::path::PathBuf,
+        tunables_checkpoint: iteron_record::TunablesCheckpoint,
+        compaction_trigger_tokens: usize,
         snapshot: app_server::SessionSnapshot,
     ) {
         self.facts.rollout_path = rollout_path;
+        self.facts.tunables_checkpoint = Some(tunables_checkpoint);
+        self.facts.compaction_trigger_tokens = compaction_trigger_tokens;
         self.state = snapshot;
     }
 
@@ -887,6 +938,8 @@ enum InputDestination {
     StartTurn,
     SteerCurrentRun,
     AfterTurn,
+    /// A control whose owner is intentionally reachable while the resident Agent is borrowed.
+    ImmediateCommand,
 }
 
 /// The filesystem half of the drop discriminator. `symlink_metadata` answers for a dangling
@@ -904,9 +957,23 @@ fn slash_command_body(text: &str) -> Option<&str> {
     commands::slash_command_body(text, &path_exists_on_disk)
 }
 
+fn is_immediate_running_command(text: &str) -> bool {
+    let Some(command) = slash_command_body(text) else {
+        return false;
+    };
+    commands::dispatch(command).is_ok_and(|routed| {
+        matches!(
+            routed.route,
+            commands::DispatchRoute::InProcess(SlashCommand::Mcp | SlashCommand::Status)
+        )
+    })
+}
+
 fn input_destination(running: bool, interrupting: bool, text: &str) -> InputDestination {
     if !running {
         InputDestination::StartTurn
+    } else if is_immediate_running_command(text) {
+        InputDestination::ImmediateCommand
     } else if interrupting
         || slash_command_body(text).is_some()
         || text.trim_start().starts_with('!')
@@ -1261,24 +1328,39 @@ pub async fn run(
     // fail-soft: an unavailable or malformed history file cannot prevent an interactive session,
     // but its diagnostic is retained for the first rendered transcript.
     let mut history_warning = None;
-    let history_store = match prompt_history::Store::resolve(
-        history_mode,
+    let history_source_run = prompt_history::source_run_from_rollout(&facts.rollout_path);
+    let history_store_result = match (
         crate::config::config_home(),
-        &facts.workspace,
+        facts
+            .rollout_path
+            .parent()
+            .map(std::path::Path::to_path_buf),
     ) {
+        (Some(config_home), Some(runs_dir)) => prompt_history::Store::resolve_with_runs_dir(
+            history_mode,
+            config_home,
+            &facts.workspace,
+            runs_dir,
+        ),
+        _ => Ok(None),
+    };
+    let history_store = match history_store_result {
         Ok(store) => store,
         Err(error) => {
             history_warning = Some(format!("prompt history disabled for this session: {error}"));
             None
         }
     };
-    let history_state = history_store.as_ref().and_then(|store| match store.load() {
-        Ok(state) => Some(state),
-        Err(error) => {
-            history_warning = Some(format!("prompt history could not be restored: {error}"));
-            None
-        }
-    });
+    let history_state = history_store
+        .as_ref()
+        .zip(history_source_run.as_ref())
+        .and_then(|(store, active_run)| match store.load(active_run) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                history_warning = Some(format!("prompt history could not be restored: {error}"));
+                None
+            }
+        });
     let history_writer = prompt_history::Writer::new(history_store);
     let (mut active_keymap, initial_keymap_warning) =
         match keymap::Keymap::from_config(keymap_config.as_ref()) {
@@ -1528,6 +1610,7 @@ pub async fn run(
             schedule_transcript_viewer_effect(
                 &mut app,
                 session.workspace(),
+                session.rollout_path(),
                 &mut transcript_effects,
                 effect,
             );
@@ -1826,6 +1909,7 @@ pub async fn run(
                             schedule_transcript_viewer_effect(
                                 &mut app,
                                 session.workspace(),
+                                session.rollout_path(),
                                 &mut transcript_effects,
                                 effect,
                             );
@@ -2352,6 +2436,20 @@ pub async fn run(
                             } else {
                             let text = app.editor.take_submit();
                             match input_destination(app.running, app.interrupting, &text) {
+                                InputDestination::ImmediateCommand => {
+                                    let command = slash_command_body(&text)
+                                        .expect("the destination admitted a slash command");
+                                    dispatch_slash_command(
+                                        &mut term,
+                                        &mut app,
+                                        &mut session,
+                                        &providers,
+                                        &mut transcript_effects,
+                                        &interrupt,
+                                        command,
+                                    )
+                                    .await?;
+                                }
                                 InputDestination::AfterTurn => {
                                     if let Err(text) = app.queue_after_turn(text) {
                                         app.editor.insert_str(&text);
@@ -2461,7 +2559,11 @@ pub async fn run(
         let revision = app.editor.persistence_revision();
         let history_len = app.editor.history_len();
         if history_len != persisted_history_len || revision.wrapping_sub(persisted_revision) >= 32 {
-            history_writer.schedule(app.editor.persistence_state());
+            if let Some(active_run) =
+                prompt_history::source_run_from_rollout(session.rollout_path())
+            {
+                history_writer.schedule(app.editor.persistence_state(), active_run);
+            }
             persisted_revision = revision;
             persisted_history_len = history_len;
         }
@@ -2476,7 +2578,11 @@ pub async fn run(
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    history_writer.finish(app.editor.persistence_state());
+    if let Some(active_run) = prompt_history::source_run_from_rollout(session.rollout_path()) {
+        history_writer.finish(app.editor.persistence_state(), active_run);
+    } else {
+        drop(history_writer);
+    }
     if let Some(exit_code) = termination_exit {
         drop(session);
         // A catchable termination still gives the server its shutdown: that is where a live
@@ -3968,16 +4074,26 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
     } else if app.running && !text.is_empty() {
-        let queues_after_turn =
-            input_destination(true, app.interrupting, &text) == InputDestination::AfterTurn;
-        if density == surface::Density::Compact && queues_after_turn {
-            "enter queue · ctrl+j newline · esc stop"
-        } else if queues_after_turn {
-            "enter queues after this turn · ctrl+j newline · esc interrupt"
-        } else if density == surface::Density::Compact {
-            "enter steer · tab queue · esc stop"
-        } else {
-            "enter steer · tab queue · ctrl+j newline · esc interrupt"
+        match input_destination(true, app.interrupting, &text) {
+            InputDestination::ImmediateCommand if density == surface::Density::Compact => {
+                "enter control · ctrl+j newline · esc stop"
+            }
+            InputDestination::ImmediateCommand => {
+                "enter runs this control now · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::AfterTurn if density == surface::Density::Compact => {
+                "enter queue · ctrl+j newline · esc stop"
+            }
+            InputDestination::AfterTurn => {
+                "enter queues after this turn · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::SteerCurrentRun if density == surface::Density::Compact => {
+                "enter steer · tab queue · esc stop"
+            }
+            InputDestination::SteerCurrentRun => {
+                "enter steer · tab queue · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::StartTurn => unreachable!("the app is running"),
         }
     } else if app.running && !app.queued.is_empty() {
         if density == surface::Density::Compact {

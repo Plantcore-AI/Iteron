@@ -1,20 +1,23 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::MAX_STDIN_BYTES;
 use super::output::OutputRing;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::supervisor::Supervisor;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::types::ActionError;
 use super::types::{JobState, ProcessSnapshot};
-use super::{MAX_COMMAND_BYTES, POLL_OUTPUT_BYTES_PER_STREAM, RETAINED_OUTPUT_BYTES_PER_STREAM};
+use super::{
+    ChildProcessEnvironmentPolicy, InstalledProcessLaunchPolicy, MAX_COMMAND_BYTES,
+    POLL_OUTPUT_BYTES_PER_STREAM, ProcessLaunchPolicy, RETAINED_OUTPUT_BYTES_PER_STREAM,
+};
 use crate::{Registry, ToolExecution};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use iteron_protocol::ToolResult;
 use iteron_protocol::{Capability, Purity, ToolUse};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -37,14 +40,30 @@ fn tool_use(name: &str, input: Value) -> ToolUse {
     }
 }
 
-#[cfg(target_os = "linux")]
+fn installed_launch(root: &Path) -> InstalledProcessLaunchPolicy {
+    let policy = ProcessLaunchPolicy::owner(root).unwrap();
+    let child_environment = iteron_sandbox::bounded_child_environment(
+        policy.environment.reuse,
+        policy.environment.max_entries,
+        policy.environment.max_bytes,
+        &policy.environment.blocked_names,
+        &[],
+    )
+    .unwrap();
+    InstalledProcessLaunchPolicy {
+        policy,
+        child_environment,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn result(execution: ToolExecution) -> ToolResult {
     match execution {
         ToolExecution::Definite(result) | ToolExecution::Unknown(result) => result,
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn success_json(execution: ToolExecution) -> Value {
     let result = result(execution);
     assert!(!result.is_error, "{}", result.content);
@@ -59,26 +78,56 @@ fn assert_definite_error(execution: ToolExecution, needle: &str) {
     assert!(result.content.contains(needle), "{}", result.content);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn start(registry: &Registry, command: &str) -> Option<Value> {
+    start_with_size(
+        registry,
+        command,
+        super::DEFAULT_PTY_ROWS,
+        super::DEFAULT_PTY_COLS,
+    )
+    .await
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn start_with_size(
+    registry: &Registry,
+    command: &str,
+    rows: u16,
+    cols: u16,
+) -> Option<Value> {
+    if registry.installed_process_launch_policy().is_none() {
+        registry
+            .install_process_launch_policy(ProcessLaunchPolicy::owner(&registry.root).unwrap())
+            .unwrap();
+    }
     let execution = registry
-        .run_effect(tool_use("process_start", json!({"command":command})))
+        .run_effect(tool_use(
+            "process_start",
+            json!({"command":command,"rows":rows,"cols":cols}),
+        ))
         .await;
     let result = result(execution);
     if result.is_error && result.content.contains("unsupported") {
         // Linux is intentionally capability-gated when trusted bwrap/user namespaces are absent.
+        #[cfg(target_os = "macos")]
+        panic!(
+            "macOS Seatbelt PTY backend unexpectedly unavailable: {}",
+            result.content
+        );
+        #[cfg(target_os = "linux")]
         return None;
     }
     assert!(!result.is_error, "{}", result.content);
     Some(serde_json::from_str(&result.content).unwrap())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn poll(registry: &Registry, job_id: &str, wait_ms: u64) -> Value {
     poll_from(registry, job_id, 0, 0, wait_ms).await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn poll_from(
     registry: &Registry,
     job_id: &str,
@@ -101,7 +150,7 @@ async fn poll_from(
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn wait_terminal(registry: &Registry, job_id: &str) -> Value {
     let mut stdout_cursor = 0;
     let mut stderr_cursor = 0;
@@ -115,6 +164,29 @@ async fn wait_terminal(registry: &Registry, job_id: &str) -> Value {
         stderr_cursor = value["stderr"]["next_cursor"].as_u64().unwrap();
     }
     panic!("job `{job_id}` did not reach a terminal state within the fixed test budget");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn wait_stdout_contains_from(
+    registry: &Registry,
+    job_id: &str,
+    mut stdout_cursor: u64,
+    needle: &str,
+) -> (Value, String) {
+    let mut last = None;
+    let mut observed = String::new();
+    for _ in 0..12 {
+        let value = poll_from(registry, job_id, stdout_cursor, 0, 250).await;
+        observed.push_str(value["stdout"]["text"].as_str().unwrap());
+        stdout_cursor = value["stdout"]["next_cursor"].as_u64().unwrap();
+        if observed.contains(needle) {
+            return (value, observed);
+        }
+        last = Some(value);
+    }
+    panic!(
+        "job `{job_id}` did not emit {needle:?} within the fixed test budget; observed: {observed:?}; last snapshot: {last:?}"
+    );
 }
 
 fn cleanup(root: &Path) {
@@ -161,9 +233,11 @@ fn output_observation_limit_notifies_once_and_serialized_pages_stay_fixed_bounde
     assert!(!hostile_stderr.push(&vec![0_u8; POLL_OUTPUT_BYTES_PER_STREAM]));
     let stderr = hostile_stderr.frame(0).unwrap();
     let snapshot = ProcessSnapshot {
-        schema_version: 1,
+        schema_version: 2,
         job_id: "job-0123456789abcdef-00000001".into(),
-        backend: "linux-bubblewrap-pipes",
+        backend: "linux-bubblewrap-pty",
+        runtime_policy: super::ProcessRuntimePolicy::default(),
+        awaiting_stdin: false,
         state: JobState::Running,
         stdout,
         stderr,
@@ -190,7 +264,7 @@ fn cleanup_unknown_is_terminal_for_the_caller_but_quarantines_a_capacity_slot() 
 }
 
 #[test]
-fn coding_registry_has_five_typed_process_tools_one_control_port_and_read_only_has_none() {
+fn coding_registry_has_six_typed_process_tools_one_control_port_and_read_only_has_none() {
     let root = temp_root("registry");
     let coding = Registry::coding_agent(&root).unwrap();
     let read_only = Registry::read_only(&root).unwrap();
@@ -206,6 +280,7 @@ fn coding_registry_has_five_typed_process_tools_one_control_port_and_read_only_h
         "process_list",
         "process_poll",
         "process_write",
+        "process_resize",
         "process_stop",
     ] {
         assert!(coding_names.iter().any(|candidate| candidate == name));
@@ -220,7 +295,12 @@ fn coding_registry_has_five_typed_process_tools_one_control_port_and_read_only_h
         coding.capability_of("process_list"),
         Some(Capability::ReadOnly)
     );
-    for name in ["process_start", "process_write", "process_stop"] {
+    for name in [
+        "process_start",
+        "process_write",
+        "process_resize",
+        "process_stop",
+    ] {
         assert_eq!(coding.capability_of(name), Some(Capability::CodeExecuting));
     }
     assert_eq!(
@@ -236,6 +316,55 @@ fn coding_registry_has_five_typed_process_tools_one_control_port_and_read_only_h
     );
     assert!(read_only.process_control().is_none());
     cleanup(&root);
+}
+
+#[tokio::test]
+async fn process_launch_policy_is_required_one_shot_and_consumed_before_spawn() {
+    let root = temp_root("launch-policy");
+    let other = temp_root("launch-policy-other");
+    let registry = Registry::coding_agent(&root).unwrap();
+
+    assert_definite_error(
+        registry
+            .run_effect(tool_use("process_start", json!({"command":"exit 0"})))
+            .await,
+        "launch policy was not installed",
+    );
+
+    let mut policy = ProcessLaunchPolicy::owner(&other).unwrap();
+    policy.environment = ChildProcessEnvironmentPolicy {
+        reuse: false,
+        max_entries: 0,
+        max_bytes: 0,
+        blocked_names: vec!["EXACT_BLOCKED_NAME".into()],
+    };
+    registry
+        .install_process_launch_policy(policy.clone())
+        .unwrap();
+    assert_eq!(registry.installed_process_launch_policy(), Some(policy));
+    assert!(
+        registry
+            .install_process_launch_policy(ProcessLaunchPolicy::owner(&root).unwrap())
+            .is_err(),
+        "a resume cannot replace the session-pinned owner"
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use("process_start", json!({"command":"exit 0"})))
+            .await,
+        "absolute job workspace",
+    );
+
+    assert!(
+        iteron_sandbox::bounded_child_environment(true, 0, 0, &[], &[]).is_err(),
+        "reuse refuses rather than silently truncating an ambient environment"
+    );
+    assert_eq!(
+        iteron_sandbox::bounded_child_environment(false, 0, 0, &[], &[]).unwrap(),
+        Vec::new()
+    );
+    cleanup(&root);
+    cleanup(&other);
 }
 
 #[tokio::test]
@@ -271,17 +400,30 @@ async fn malformed_and_oversized_inputs_refuse_before_process_dispatch() {
         registry
             .run_effect(tool_use(
                 "process_poll",
-                json!({"job_id":"job-0000000000000001-00000001","wait_ms":5001}),
+                json!({"job_id":"job-0000000000000001-00000001","wait_ms":super::MAX_STDIN_POLL_MILLISECONDS + 1}),
             ))
             .await,
-        "5000ms",
+        &format!("{}ms", super::MAX_STDIN_POLL_MILLISECONDS),
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use(
+                "process_resize",
+                json!({
+                    "job_id":"job-0000000000000001-00000001",
+                    "rows":0,
+                    "cols":80
+                }),
+            ))
+            .await,
+        "at least 1",
     );
     cleanup(&root);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
-async fn pipe_job_round_trip_long_poll_and_eof_have_one_typed_lifecycle() {
+async fn pty_job_round_trip_long_poll_and_terminal_eof_have_one_typed_lifecycle() {
     let root = temp_root("round-trip");
     let registry = Registry::coding_agent(&root).unwrap();
     let Some(started) = start(
@@ -294,8 +436,8 @@ async fn pipe_job_round_trip_long_poll_and_eof_have_one_typed_lifecycle() {
         return;
     };
     let job_id = started["job_id"].as_str().unwrap();
-    assert_eq!(started["schema_version"], 1);
-    assert!(started["backend"].as_str().unwrap().ends_with("-pipes"));
+    assert_eq!(started["schema_version"], 2);
+    assert!(started["backend"].as_str().unwrap().ends_with("-pty"));
 
     let written = success_json(
         registry
@@ -333,7 +475,54 @@ async fn pipe_job_round_trip_long_poll_and_eof_have_one_typed_lifecycle() {
     cleanup(&root);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn pty_is_controlling_terminal_and_resize_notifies_foreground_group() {
+    let root = temp_root("pty-resize");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start_with_size(
+        &registry,
+        "trap 'printf \"winch:\"; stty size' WINCH; if test -t 0 && test -t 1; then printf 'tty:yes\\n'; else printf 'tty:no\\n'; fi; printf 'initial:'; stty size; printf 'ready\\n'; while :; do sleep 1; done",
+        31,
+        97,
+    )
+    .await
+    else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    assert!(started["backend"].as_str().unwrap().ends_with("-pty"));
+
+    let (initial, initial_text) = wait_stdout_contains_from(&registry, job_id, 0, "ready").await;
+    assert!(initial_text.contains("tty:yes"), "{initial_text:?}");
+    assert!(initial_text.contains("initial:31 97"), "{initial_text:?}");
+
+    let resized = success_json(
+        registry
+            .run_effect(tool_use(
+                "process_resize",
+                json!({"job_id":job_id,"rows":41,"cols":123}),
+            ))
+            .await,
+    );
+    assert_eq!(resized["schema_version"], 2);
+    assert_eq!(resized["state"]["kind"], "running");
+
+    let initial_cursor = initial["stdout"]["next_cursor"].as_u64().unwrap();
+    let (_, resized_output) =
+        wait_stdout_contains_from(&registry, job_id, initial_cursor, "winch:41 123").await;
+    assert!(resized_output.contains("winch:41 123"));
+    let stopped = success_json(
+        registry
+            .run_effect(tool_use("process_stop", json!({"job_id":job_id})))
+            .await,
+    );
+    assert_eq!(stopped["state"]["kind"], "stopped");
+    cleanup(&root);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn long_poll_wakes_on_output_without_a_model_side_busy_loop() {
     let root = temp_root("long-poll");
@@ -343,9 +532,24 @@ async fn long_poll_wakes_on_output_without_a_model_side_busy_loop() {
         return;
     };
     let job_id = started["job_id"].as_str().unwrap();
+    let initial = poll(&registry, job_id, 0).await;
+    let mut stdout_cursor = initial["stdout"]["next_cursor"].as_u64().unwrap();
+    let mut stderr_cursor = initial["stderr"]["next_cursor"].as_u64().unwrap();
+    let mut observed = initial["stdout"]["text"].as_str().unwrap().to_owned();
     let began = Instant::now();
-    let value = poll(&registry, job_id, 2_000).await;
-    assert!(value["stdout"]["text"].as_str().unwrap().contains("ready"));
+    for _ in 0..3 {
+        if observed.contains("ready") {
+            break;
+        }
+        let value = poll_from(&registry, job_id, stdout_cursor, stderr_cursor, 2_000).await;
+        observed.push_str(value["stdout"]["text"].as_str().unwrap());
+        stdout_cursor = value["stdout"]["next_cursor"].as_u64().unwrap();
+        stderr_cursor = value["stderr"]["next_cursor"].as_u64().unwrap();
+        if observed.contains("ready") {
+            break;
+        }
+    }
+    assert!(observed.contains("ready"), "{observed:?}");
     assert!(began.elapsed() < Duration::from_secs(3));
     let _ = registry
         .run_effect(tool_use("process_stop", json!({"job_id":job_id})))
@@ -353,7 +557,7 @@ async fn long_poll_wakes_on_output_without_a_model_side_busy_loop() {
     cleanup(&root);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn oversized_stdin_refuses_and_stop_is_authoritative_idempotent() {
     let root = temp_root("stop");
@@ -388,12 +592,21 @@ async fn oversized_stdin_refuses_and_stop_is_authoritative_idempotent() {
     cleanup(&root);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
     let root = temp_root("control-race");
     let supervisor = Supervisor::new().unwrap();
-    let started = match supervisor.start(&root, "sleep 30", Vec::new()).await {
+    let started = match supervisor
+        .start(
+            &root,
+            "sleep 30",
+            super::DEFAULT_PTY_ROWS,
+            super::DEFAULT_PTY_COLS,
+            installed_launch(&root),
+        )
+        .await
+    {
         Ok(started) => started,
         Err(ActionError::Definite(error)) if error.contains("unsupported") => {
             cleanup(&root);
@@ -477,12 +690,15 @@ async fn detached_session_cannot_outlive_the_reported_job_terminal() {
     cleanup(&root);
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[tokio::test]
 async fn unsupported_platform_refuses_detached_session_oracle_before_spawn() {
     let root = temp_root("unsupported-detached-session");
     let marker = root.join("spawned.txt");
     let registry = Registry::coding_agent(&root).unwrap();
+    registry
+        .install_process_launch_policy(ProcessLaunchPolicy::owner(&root).unwrap())
+        .unwrap();
     let execution = registry
         .run_effect(tool_use(
             "process_start",
@@ -533,7 +749,9 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
         .start(
             &root,
             "(sleep 1; printf escaped > escaped.txt) & printf armed; wait",
-            Vec::new(),
+            super::DEFAULT_PTY_ROWS,
+            super::DEFAULT_PTY_COLS,
+            installed_launch(&root),
         )
         .await
     {
@@ -600,13 +818,22 @@ async fn persistent_process_keeps_writes_inside_the_workspace_boundary() {
     cleanup(&parent);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() {
     let root = temp_root("job-id");
     let first = Supervisor::new().unwrap();
     let second = Supervisor::new().unwrap();
-    let one = match first.start(&root, "exit 0", Vec::new()).await {
+    let one = match first
+        .start(
+            &root,
+            "exit 0",
+            super::DEFAULT_PTY_ROWS,
+            super::DEFAULT_PTY_COLS,
+            installed_launch(&root),
+        )
+        .await
+    {
         Ok(value) => value,
         Err(ActionError::Definite(error)) if error.contains("unsupported") => {
             cleanup(&root);
@@ -614,7 +841,16 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
         }
         Err(error) => panic!("start failed: {error:?}"),
     };
-    let two = first.start(&root, "exit 0", Vec::new()).await.unwrap();
+    let two = first
+        .start(
+            &root,
+            "exit 0",
+            super::DEFAULT_PTY_ROWS,
+            super::DEFAULT_PTY_COLS,
+            installed_launch(&root),
+        )
+        .await
+        .unwrap();
     assert_ne!(one.job_id, two.job_id);
     assert_eq!(&one.job_id[..20], &two.job_id[..20]);
     let error = second.poll(&one.job_id, 0, 0, 0).await.unwrap_err();

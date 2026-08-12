@@ -220,10 +220,10 @@ mod tests {
         for bad in [
             "",
             "iteron",
-            "iteron/",
+            "core/",
             "/role",
-            "iteron/a/b",
-            "iteron/tool policy",
+            "core/a/b",
+            "core/tool policy",
         ] {
             assert!(
                 SlotId(bad.into()).validate().is_err(),
@@ -239,7 +239,7 @@ mod tests {
         // uppercase, a pack could register `Acme/Router`, have the kernel honour it, and leave it
         // ungovernable: no policy bundle could name it, so it would silently fall back to the
         // built-in strategy. `crates/evolve` owns the test that runs both validators together.
-        for rejected in ["Acme/Router", "iteron/toolPolicy", "CORE/CONTEXT"] {
+        for rejected in ["Acme/Router", "core/toolPolicy", "CORE/CONTEXT"] {
             assert!(
                 SlotId(rejected.into()).validate().is_err(),
                 "{rejected:?} is valid on neither side of the seam and must be refused here"

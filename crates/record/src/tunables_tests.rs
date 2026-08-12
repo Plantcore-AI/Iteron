@@ -116,7 +116,8 @@ fn genesis_tracker_rejects_late_duplicate_and_unbound_fork_snapshots() {
     root.observe(0, &root_start(None)).unwrap();
     root.observe(1, &snapshot_event(snapshot.clone(), None))
         .unwrap();
-    assert_eq!(root.snapshot(), Some(&snapshot));
+    let checkpoint = TunablesCheckpoint::V1(snapshot.clone());
+    assert_eq!(root.checkpoint(), Some(&checkpoint));
     assert!(matches!(
         root.observe(2, &snapshot_event(snapshot.clone(), None)),
         Err(TunablesSnapshotError::GenesisOrder { .. })
@@ -198,6 +199,7 @@ fn accepted_report_projection_covers_every_family_and_aggregate_commitment() {
         effective_digest_sha256: digest.clone(),
         resolution_digest_sha256: digest,
         profile_digest_sha256: None,
+        fixed_authority_attestations: Vec::new(),
         entries,
     };
     let snapshot = snapshot_from_report(&report).unwrap();

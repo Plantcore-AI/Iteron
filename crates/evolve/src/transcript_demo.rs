@@ -40,7 +40,10 @@ pub(crate) fn run(
             "the admitted recorded-run fixture did not project",
         ))?;
     let projected_run_id = envelope.run_id.clone();
-    let mut trajectory_registry = TrajectoryRegistry::open(&root.join("trajectory"))?;
+    let trajectory_root = root.join("trajectory");
+    let content_runs_dir = trajectory_root.join(".private-content");
+    let private_manifest_root = root.join("evolution-private");
+    let mut trajectory_registry = TrajectoryRegistry::open(&trajectory_root)?;
     trajectory_registry.ingest(&envelope)?;
     let trajectory_registry_path = trajectory_registry.path().to_path_buf();
     let registered =
@@ -56,6 +59,7 @@ pub(crate) fn run(
     });
     // From this point onward the projected value is intentionally shadowed by the envelope loaded
     // through `get_by_run`, whose scan re-verifies the registry chain and evidence bindings.
+    let private_tenant = registered.envelope.tenant_id.clone();
     let envelope = registered.envelope;
     let signed_trajectories = vec![SignedTrajectory::sign(
         demo::PRODUCER_ID,
@@ -63,7 +67,11 @@ pub(crate) fn run(
         &demo::attestation_key(),
     )?];
     let verifier = demo::verifier();
-    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let mut datasets = ConsentAwareDatasetRegistry::open_record_backed(
+        &private_manifest_root,
+        &content_runs_dir,
+        private_tenant.clone(),
+    )?;
     let verified_dataset = datasets.build_and_register(&verifier, &signed_trajectories)?;
     let eligible = training_policy.admit(signed_trajectories[0].envelope())?;
     let governed_dataset = crate::GovernedTrainingDataset::new(&[eligible])?;
@@ -82,12 +90,15 @@ pub(crate) fn run(
     let control_policy = demo::control_policy();
     let authorizer = demo::authorizer(&control_policy)?;
     let authority_root = root.join("promotion");
-    let mut authority = PromotionAuthority::open(
+    let mut authority = PromotionAuthority::open_record_backed(
         &authority_root,
         demo::AUTHORITY_ID,
         control_policy.clone(),
         vec![demo::promotion_anchor()],
         vec![demo::evaluator_anchor()],
+        &private_manifest_root,
+        &content_runs_dir,
+        private_tenant.clone(),
     )?;
     let bootstrap = PromotionRequest::bootstrap("baseline-bootstrap", &baseline.bundle().digest)?;
     authority.bootstrap(
@@ -102,12 +113,15 @@ pub(crate) fn run(
     let target_control_policy = demo::control_policy();
     let target_authorizer = demo::target_authorizer(&target_control_policy)?;
     let target_authority_root = root.join("promotion-target");
-    let mut target_authority = PromotionAuthority::open(
+    let mut target_authority = PromotionAuthority::open_record_backed(
         &target_authority_root,
         demo::TARGET_AUTHORITY_ID,
         target_control_policy,
         vec![demo::promotion_anchor()],
         vec![demo::evaluator_anchor()],
+        &private_manifest_root,
+        &content_runs_dir,
+        private_tenant.clone(),
     )?;
     let target_bootstrap =
         PromotionRequest::bootstrap("target-baseline-bootstrap", &baseline.bundle().digest)?;
@@ -123,7 +137,11 @@ pub(crate) fn run(
     let admission = demo::admission(&baseline_policy);
     let promotion_parties = BTreeSet::from([demo::PROMOTION_PARTY.to_owned()]);
     let corpus = HeldOutTrainingCorpus::from_verified(&verified_dataset);
-    let mut evidence_store = HeldOutEvidenceStore::new();
+    let mut evidence_store = HeldOutEvidenceStore::open_record_backed(
+        &private_manifest_root,
+        &content_runs_dir,
+        private_tenant.clone(),
+    )?;
     let source_model = config.source_base_model().clone();
     let target_model = config.target_base_model().clone();
     let primary_kind = config.primary_producer();
@@ -142,6 +160,7 @@ pub(crate) fn run(
         source_model.clone(),
         primary_kind.as_str(),
     )?;
+    datasets.persist_candidate(&primary)?;
     push_produced(&primary_source_label, &primary, &mut events);
     let primary_checkpoint = demo::checkpoint(
         &format!("{primary_source_label}-bundle"),
@@ -267,7 +286,11 @@ pub(crate) fn run(
         &baseline_policy,
         &rebound_manifest.policy,
     )?;
-    let mut unsafe_evidence_store = HeldOutEvidenceStore::new();
+    let mut unsafe_evidence_store = HeldOutEvidenceStore::open_record_backed(
+        &private_manifest_root,
+        &content_runs_dir,
+        private_tenant.clone(),
+    )?;
     let unsafe_target = register_evidence(
         &mut unsafe_evidence_store,
         &primary,
@@ -375,6 +398,7 @@ pub(crate) fn run(
         source_model,
         secondary_kind.as_str(),
     )?;
+    datasets.persist_candidate(&secondary)?;
     push_produced(&secondary_source_label, &secondary, &mut events);
     let secondary_checkpoint = demo::checkpoint(
         &format!("{secondary_source_label}-bundle"),

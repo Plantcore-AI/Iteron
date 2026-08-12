@@ -1125,12 +1125,12 @@ fn validate_registry(registry: &Registry) -> Result<()> {
     }
     for (package, dependencies) in &registry.cargo_policy.packages {
         validate_text("Cargo package", package, &mut errors);
-        let mut seen = BTreeMap::new();
         for (kind, names) in [
             ("normal", &dependencies.normal),
             ("dev", &dependencies.dev),
             ("build", &dependencies.build),
         ] {
+            let mut seen = BTreeSet::new();
             for dependency in names {
                 if !registry.cargo_policy.packages.contains_key(dependency) {
                     errors.push(format!(
@@ -1140,9 +1140,9 @@ fn validate_registry(registry: &Registry) -> Result<()> {
                 if dependency == package {
                     errors.push(format!("Cargo package `{package}` cannot depend on itself"));
                 }
-                if let Some(previous_kind) = seen.insert(dependency.as_str(), kind) {
+                if !seen.insert(dependency.as_str()) {
                     errors.push(format!(
-                        "Cargo package `{package}` repeats dependency `{dependency}` in `{previous_kind}` and `{kind}`"
+                        "Cargo package `{package}` repeats dependency `{dependency}` in `{kind}`"
                     ));
                 }
             }
@@ -2178,5 +2178,43 @@ Rollback: revert the commit\n\
             github: Some("@CORE-OWNER".into()),
         });
         assert!(validate_registry(&registry).is_err());
+    }
+
+    #[test]
+    fn cargo_dependency_may_repeat_across_distinct_kinds() {
+        let mut registry: Registry =
+            serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
+        let dependencies = registry
+            .cargo_policy
+            .packages
+            .get_mut("iteron-cli")
+            .unwrap();
+        assert!(
+            dependencies
+                .normal
+                .iter()
+                .any(|name| name == "iteron-protocol")
+        );
+        dependencies.dev.push("iteron-protocol".into());
+
+        assert!(validate_registry(&registry).is_ok());
+    }
+
+    #[test]
+    fn cargo_dependency_cannot_repeat_within_one_kind() {
+        let mut registry: Registry =
+            serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
+        let dependencies = registry
+            .cargo_policy
+            .packages
+            .get_mut("iteron-cli")
+            .unwrap();
+        dependencies.normal.push("iteron-protocol".into());
+
+        let error = validate_registry(&registry)
+            .expect_err("same-kind dependency duplication must be rejected");
+        assert!(format!("{error:#}").contains(
+            "Cargo package `iteron-cli` repeats dependency `iteron-protocol` in `normal`"
+        ));
     }
 }

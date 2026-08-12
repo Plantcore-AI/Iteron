@@ -392,6 +392,8 @@ pub enum TranscriptRunError {
     PromptProducer(#[from] PromptPreferenceError),
     #[error("offline transcript held-out bridge failed: {0}")]
     HeldOut(#[from] HeldOutBridgeError),
+    #[error("offline transcript private evolution storage failed: {0}")]
+    PrivateContent(#[from] crate::EvolutionPrivateContentError),
     #[error("offline transcript projection setup failed: {0}")]
     ProjectionSetup(#[from] RecordedRunProjectorError),
     #[error("offline transcript checkpoint algebra failed: {0}")]

@@ -1,5 +1,6 @@
 use super::input::SourceDocument;
-use super::session::{Launcher, LiveResult, RunFailure, run_query_owned};
+use super::pool::Launcher;
+use super::session::{LiveResult, RunFailure};
 use super::{LspToolError, QueryKind};
 use std::sync::Arc;
 
@@ -7,20 +8,16 @@ use std::sync::Arc;
 /// future signals the owned task; the owned task then spends the process-group capability, reaps
 /// the direct child, and joins stderr before it retires.
 pub(super) async fn run_query(
-    launcher: &Launcher,
+    launcher: Arc<Launcher>,
     document: Arc<SourceDocument>,
     query: QueryKind,
     sensitive_env_names: Vec<String>,
     active_deadline: tokio::time::Instant,
     total_deadline: tokio::time::Instant,
 ) -> Result<LiveResult, RunFailure> {
-    let epoch = launcher
-        .mint_epoch()
-        .map_err(|error| RunFailure::new(error, false))?;
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     let mut cancellation = CancellationOnDrop(Some(cancel_tx));
-    let operation = tokio::spawn(run_query_owned(
-        epoch,
+    let operation = tokio::spawn(launcher.run_query_owned(
         document,
         query,
         sensitive_env_names,

@@ -13,8 +13,8 @@
 
 use crate::sse::StreamItem;
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult, UsageReport,
+    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
+    ProviderError, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
 use futures_util::StreamExt;
 use iteron_protocol::{
@@ -27,8 +27,6 @@ const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 1024;
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_REASONING_STATE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -43,7 +41,7 @@ pub struct OpenAiCompat {
     error_profile: ErrorProfile,
     route_scope: String,
     static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
-    client: reqwest::Client,
+    client: crate::catalog::RuntimeHttpClient,
 }
 
 impl OpenAiCompat {
@@ -61,7 +59,7 @@ impl OpenAiCompat {
                 error_profile: ErrorProfile::CustomConservative,
                 route_scope: direct_chat_route_scope(),
                 static_metadata: crate::StaticProviderMetadata::embedded(),
-                client: reqwest::Client::new(),
+                client: crate::catalog::RuntimeHttpClient::inert(),
             },
         }
     }
@@ -73,7 +71,8 @@ impl OpenAiCompat {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
+        let client = crate::catalog::RuntimeHttpClient::default_reconfigurable()?;
+        Self::with_client(key, api_root, client)
     }
 
     /// Build against an exact API root, obtaining the HTTP client from an injected
@@ -84,6 +83,18 @@ impl OpenAiCompat {
         api_root: ApiRoot,
         transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
+        Self::with_client(
+            key,
+            api_root,
+            crate::catalog::RuntimeHttpClient::fixed(transport)?,
+        )
+    }
+
+    fn with_client(
+        key: String,
+        api_root: ApiRoot,
+        client: crate::catalog::RuntimeHttpClient,
+    ) -> Result<Self, ProviderError> {
         Ok(OpenAiCompat {
             key,
             api_root: Some(api_root),
@@ -91,7 +102,7 @@ impl OpenAiCompat {
             error_profile: ErrorProfile::CustomConservative,
             route_scope: direct_chat_route_scope(),
             static_metadata: crate::StaticProviderMetadata::embedded(),
-            client: transport.client()?,
+            client,
         })
     }
 
@@ -153,6 +164,13 @@ impl OpenAiCompat {
         });
         if !tools.is_empty() {
             b["tools"] = serde_json::json!(tools);
+        }
+        match req.controls.service_tier {
+            ServiceTier::ProviderDefault => {}
+            ServiceTier::Auto => b["service_tier"] = serde_json::json!("auto"),
+            ServiceTier::Standard => b["service_tier"] = serde_json::json!("default"),
+            ServiceTier::Flex => b["service_tier"] = serde_json::json!("flex"),
+            ServiceTier::Priority => b["service_tier"] = serde_json::json!("priority"),
         }
         if let Some(level) = chat_reasoning_effort_with_metadata(
             self.error_profile,
@@ -828,6 +846,25 @@ fn apply_reported_usage(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.error_profile == ErrorProfile::OpenAi
+            && self
+                .api_root
+                .as_ref()
+                .is_some_and(|root| root.as_str() == "https://api.openai.com/v1")
+        {
+            capabilities.service_tiers.extend([
+                ServiceTier::Auto,
+                ServiceTier::Standard,
+                ServiceTier::Flex,
+                ServiceTier::Priority,
+            ]);
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         chat_effort_application_with_metadata(
             self.error_profile,
@@ -851,14 +888,24 @@ impl Provider for OpenAiCompat {
                     .unwrap_or_else(|| "invalid API root".into()),
             )
         })?;
-        let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
+        let transport = req.controls.transport;
+        let deadline = Instant::now()
+            .checked_add(transport.request_total)
+            .ok_or_else(|| {
+                ProviderError::Configuration(
+                    "provider request total deadline exceeds the platform clock range".into(),
+                )
+            })?;
+        let client = self.client.client(transport)?;
         let body = self.body(req)?;
-        let request = self
-            .client
+        let request = client
             .post(api_root.endpoint("chat/completions")?)
             .bearer_auth(&self.key)
             .json(&body);
-        let resp = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, request.send())
+        let header_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(RESPONSE_HEADER_TIMEOUT);
+        let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| {
                 ProviderError::Http("OpenAI-compatible response headers timed out".into())
@@ -869,7 +916,9 @@ impl Provider for OpenAiCompat {
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
             let error = tokio::time::timeout(
-                RESPONSE_HEADER_TIMEOUT,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(RESPONSE_HEADER_TIMEOUT),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::OpenAiCompatibleChat,
@@ -910,7 +959,7 @@ impl Provider for OpenAiCompat {
                     "OpenAI-compatible stream exceeded total deadline".into(),
                 ));
             }
-            let wait = remaining.min(STREAM_IDLE_TIMEOUT);
+            let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
                 .map_err(|_| {
@@ -1238,6 +1287,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         let body = provider.body(&request).unwrap();
@@ -1264,6 +1314,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         request.input_images =
             vec![ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap()];
@@ -1823,6 +1874,7 @@ mod tests {
                 cache_system: false,
                 thinking_budget: 16_384,
                 reasoning_effort: requested,
+                controls: Default::default(),
             };
             let encoded = serde_json::to_vec(&provider.body(&request).unwrap()).unwrap();
             let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
@@ -1860,6 +1912,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 4_096,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         let body = provider.body(&request).unwrap();
@@ -1909,6 +1962,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 4_096,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         assert!(
             provider

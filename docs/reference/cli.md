@@ -39,6 +39,8 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--ask-permissions` | Restore the capability gate: edits, code execution, trust changes and external actions ask for approval according to the permission mode. This is the opt-out from the default bypass. In one-shot (`-p`) there is no approval channel, so an "ask" there is a refusal — pair it with `--mode acceptEdits` or an explicit `/permissions` allow rule. |
 | `--mode <MODE>` | Permission mode: default \| acceptEdits \| plan \| yolo (ADR-007 §3). Reads always auto; the mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only. |
 | `--runs-dir <RUNS_DIR>` | Directory for the append-only rollout (the audit record). Default `.iteron/runs`. |
+| `--benchmark-attempt-scope <ATTEMPT>` | Internal eval-harness attempt identity. Activates strict parent-memory isolation and content-free contamination evidence; hidden because ordinary sessions must inherit memory. |
+| `--harness-profile <HARNESS_PROFILE>` | Immutable runtime-tunables profile. Benchmark attempts select `benchmark` automatically; ordinary runs select `interactive` unless this operator-owned flag says otherwise. |
 | `--resume <RESUME>` | Resume a prior run by id: reconstruct its transcript from the rollout and continue (invariant #2, recoverable). When set, the task argument may be a follow-up instruction. |
 | `-c`, `--continue` | Continue the most recent session in this repo (like `claude --continue`). |
 | `--sessions` | List sessions in this repo (id, turns, model, cost, title) and exit. |
@@ -84,6 +86,14 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron config <SUBCOMMAND>` | Read or write one operator setting in the user config. |
 | `iteron config get [KEY]` | Print one persisted setting, or every settable key. |
 | `iteron config set <KEY> <VALUE>` | Persist one setting atomically at mode 0600. |
+| `iteron config explain [--effective] [--family <FAMILY>] [--format <FORMAT>]` | Explain the exact immutable settings that would govern this run. |
+| `iteron record <SUBCOMMAND>` | Execute, inspect, or resume receipt-backed record erasure operations. |
+| `iteron record delete <RUN_ID> [--operation-id <ID>]` | Delete one inactive session and all private-content references owned only by it. |
+| `iteron record revoke <DIGEST> [--operation-id <ID>]` | Crypto-shred one content digest and invalidate every derivative handle. |
+| `iteron record prune [--older-than-days <DAYS>] [--keep-last <N>] [--operation-id <ID>]` | Apply a durable, resumable retention operation. |
+| `iteron record receipt <OPERATION_ID>` | Print one content-free erasure receipt. |
+| `iteron record receipts [--limit <LIMIT>]` | List the bounded receipt inventory, including incomplete operations. |
+| `iteron record resume <OPERATION_ID>` | Resume an incomplete operation from its durable receipt request. |
 | `iteron pricing <SUBCOMMAND>` | Produce the operator pricing material a USD ceiling and a cost display require. |
 | `iteron pricing print-digests` | Print the exact route a rate card must pin for the selected provider and model. |
 | `iteron pricing sign <CARD> [--key-env <KEY_ENV>] [--signer-id <SIGNER_ID>]` | Sign an operator-authored rate card and print the `rate_cards[]` entry that installs it. |

@@ -125,17 +125,19 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             external_rule!("on_failure", OperatorAuthority)
         ]
     ),
-    scalar_schema!(
+    list_schema!(
         "mcp_transport_selection",
-        Enum,
+        1,
+        2,
+        true,
         finite_enum_domain!("stdio", "http"),
         [external_rule!("$", OperatorAuthority)]
     ),
     scalar_schema!(
         "deferred_discovery_threshold",
         Count,
-        int_domain!(0, 100_000, "discovery_units"),
-        [external_rule!("$", ContextWindow)]
+        int_domain!(0, 100_000, "tool_schemas"),
+        []
     ),
     object_schema!(
         "mcp_reconnect_backoff",
@@ -157,17 +159,43 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             external_rule!("cap_milliseconds", ParentWall)
         ]
     ),
-    scalar_schema!(
+    object_schema!(
         "per_server_startup_deadline",
-        Duration,
-        int_domain!(1, 86_400_000, "milliseconds"),
-        [external_rule!("$", ParentWall)]
+        [
+            scalar_field!(
+                "stdio_milliseconds",
+                true,
+                int_domain!(1, 86_400_000, "milliseconds")
+            ),
+            scalar_field!(
+                "http_milliseconds",
+                true,
+                int_domain!(1, 86_400_000, "milliseconds")
+            )
+        ],
+        [
+            external_rule!("stdio_milliseconds", ParentWall),
+            external_rule!("http_milliseconds", ParentWall)
+        ]
     ),
-    scalar_schema!(
+    object_schema!(
         "per_tool_mcp_deadline",
-        Duration,
-        int_domain!(1, 86_400_000, "milliseconds"),
-        [external_rule!("$", ParentWall)]
+        [
+            scalar_field!(
+                "stdio_milliseconds",
+                true,
+                int_domain!(1, 86_400_000, "milliseconds")
+            ),
+            scalar_field!(
+                "http_milliseconds",
+                true,
+                int_domain!(1, 86_400_000, "milliseconds")
+            )
+        ],
+        [
+            external_rule!("stdio_milliseconds", ParentWall),
+            external_rule!("http_milliseconds", ParentWall)
+        ]
     ),
     object_schema!(
         "mcp_result_cap_spill_policy",
@@ -185,55 +213,117 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "cleanup",
                 true,
-                finite_enum_domain!("tool_end", "turn_end", "run_end")
+                finite_enum_domain!("tool_end", "turn_end", "run_end", "session_end")
             ),
             scalar_field!("private_storage", true, bool_domain!())
         ],
         [
             less_equal_rule!("visible_max_bytes", "spill_max_bytes"),
-            external_rule!("visible_max_bytes", ContextWindow)
+            crate::CrossFieldRule::Equals {
+                field: "private_storage",
+                value: crate::RuleValue::Boolean { value: true },
+            }
         ]
     ),
     object_schema!(
         "oauth_auth_lifecycle_policy",
         [
             scalar_field!(
-                "flow",
+                "credential_mode",
                 true,
-                finite_enum_domain!("disabled", "authorization_code", "device_code")
+                finite_enum_domain!("bearer", "refresh_token", "mixed")
             ),
-            scalar_field!("refresh", true, bool_domain!()),
+            scalar_field!("binding_count", true, int_domain!(1, 1024, "bindings")),
+            scalar_field!(
+                "refresh_binding_count",
+                true,
+                int_domain!(0, 1024, "bindings")
+            ),
+            scalar_field!(
+                "revocation_binding_count",
+                true,
+                int_domain!(0, 1024, "bindings")
+            ),
+            scalar_field!("refresh_before_expiry_when_capable", true, bool_domain!()),
+            scalar_field!(
+                "retry_once_after_unauthorized_when_capable",
+                true,
+                bool_domain!()
+            ),
+            scalar_field!("revoke_access_after_forbidden", true, bool_domain!()),
             scalar_field!("expiry_skew_seconds", true, int_domain!(0, 3600, "seconds")),
-            scalar_field!("revocation", true, bool_domain!())
+            scalar_field!("revocation_endpoint_configured", true, bool_domain!())
         ],
-        [external_rule!("flow", OperatorAuthority)]
+        [
+            less_equal_rule!("refresh_binding_count", "binding_count"),
+            less_equal_rule!("revocation_binding_count", "refresh_binding_count"),
+            crate::CrossFieldRule::Requires {
+                if_field: "credential_mode",
+                equals: crate::RuleValue::Enum {
+                    value: "refresh_token"
+                },
+                then_field: "refresh_binding_count",
+            },
+            crate::CrossFieldRule::Requires {
+                if_field: "credential_mode",
+                equals: crate::RuleValue::Enum { value: "mixed" },
+                then_field: "refresh_binding_count",
+            },
+            crate::CrossFieldRule::Equals {
+                field: "revoke_access_after_forbidden",
+                value: crate::RuleValue::Boolean { value: true },
+            },
+            crate::CrossFieldRule::Equals {
+                field: "expiry_skew_seconds",
+                value: crate::RuleValue::Integer { value: 30 },
+            },
+            external_rule!("credential_mode", OperatorAuthority)
+        ]
     ),
-    object_schema!(
+    object_schema_v3!(
         "resource_prompt_plugin_capability_exposure",
         [
-            list_field!(
-                "resource_schemes",
+            scalar_field!(
+                "resource_discovery",
                 true,
-                0,
-                256,
+                finite_enum_domain!("disabled", "lazy")
+            ),
+            scalar_field!(
+                "prompt_discovery",
                 true,
-                text_domain!(1, 96, Identifier)
+                finite_enum_domain!("disabled", "lazy")
             ),
             list_field!(
-                "prompt_ids",
+                "resource_tool_ids",
                 true,
                 0,
-                10_000,
+                512,
                 true,
-                text_domain!(1, 96, NamespacedId)
+                text_domain!(1, 256, Identifier)
             ),
             list_field!(
-                "plugin_ids",
+                "prompt_tool_ids",
                 true,
                 0,
-                10_000,
+                512,
                 true,
-                text_domain!(1, 96, NamespacedId)
+                text_domain!(1, 256, Identifier)
+            ),
+            list_field!(
+                "plugin_binding_ids",
+                true,
+                0,
+                512,
+                true,
+                text_domain!(1, 256, NamespacedId)
+            ),
+            list_field!(
+                "server_binding_ids",
+                true,
+                0,
+                512,
+                true,
+                text_domain!(1, 256, NamespacedId)
             ),
             scalar_field!(
                 "max_visible_bytes",
@@ -241,11 +331,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 int_domain!(0, 16_777_216, "bytes")
             )
         ],
-        [
-            external_rule!("resource_schemes", OperatorAuthority),
-            external_rule!("plugin_ids", OperatorAuthority),
-            external_rule!("max_visible_bytes", ContextWindow)
-        ]
+        []
     ),
     scalar_schema!(
         "request_compression_policy",

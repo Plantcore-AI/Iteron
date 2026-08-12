@@ -191,6 +191,7 @@ mod tests {
                 id: EffectId("effect-0".into()),
                 tool: "provider".into(),
                 reason: "no terminal observed".into(),
+                provider_route_attempt: None,
             },
         );
         let export = project("run-1", &[&unknown], &Timeline::default());
@@ -209,6 +210,7 @@ mod tests {
                 id: EffectId("effect-0".into()),
                 tool: "hook".into(),
                 duration_ms: None,
+                provider_route_attempt: None,
             },
         );
         let export = project("run-1", &[&legacy], &Timeline::default());
@@ -225,6 +227,7 @@ mod tests {
                 id: EffectId("effect-7".into()),
                 tool: "provider".into(),
                 duration_ms: Some(1200),
+                provider_route_attempt: None,
             },
         );
         let export = project("run-1", &[&done], &Timeline::default());
@@ -245,6 +248,7 @@ mod tests {
                         id: EffectId(format!("effect-{seq}")),
                         tool: "hook".into(),
                         duration_ms: Some(1),
+                        provider_route_attempt: None,
                     },
                 )
             })
@@ -288,6 +292,7 @@ mod tests {
                 id: EffectId("effect-0".into()),
                 tool: "provider".into(),
                 duration_ms: Some(1200),
+                provider_route_attempt: None,
             },
         );
         let timeline = crate::timeline::fold(vec![(Some(0u64), &done)]);

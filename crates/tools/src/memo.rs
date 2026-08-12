@@ -12,13 +12,38 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const DEFAULT_CAPACITY: usize = 256;
+pub(crate) const DEFAULT_TTL_SECONDS: u64 = 60;
+pub(crate) const MAX_TTL_SECONDS: u64 = 86_400;
 const MAX_TOOL_NAME_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_INPUT_DEPTH: usize = 32;
 const MAX_INPUT_NODES: usize = 4_096;
 const MAX_CONTAINER_ITEMS: usize = 4_096;
+
+/// Exact fixed owner projection for the registry's physical pure-result cache. The projection is
+/// read from the same `Memo` instance that performs lookup and invalidation, so composition cannot
+/// drift from a separately copied set of defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PureMemoCachePolicy {
+    pub max_entries: usize,
+    pub max_key_bytes: usize,
+    pub generation_scoped: bool,
+}
+
+impl PureMemoCachePolicy {
+    /// Immutable production owner used by every non-test registry. Resume admission can sample
+    /// this value without constructing a registry or reading the checkpoint it is validating.
+    pub const fn production_owner() -> Self {
+        Self {
+            max_entries: DEFAULT_CAPACITY,
+            max_key_bytes: MAX_INPUT_BYTES,
+            generation_scoped: true,
+        }
+    }
+}
 
 struct BoundedDigestWriter<'a> {
     digest: &'a mut Sha256,
@@ -84,10 +109,18 @@ pub(crate) enum Lookup {
 struct State {
     generation: u64,
     accepts_inserts: bool,
-    cache: HashMap<MemoKey, ToolResult>,
+    cache: HashMap<MemoKey, MemoEntry>,
     insertion_order: VecDeque<MemoKey>,
     hits: u64,
     misses: u64,
+    ttl: Duration,
+    policy_installed: bool,
+    activated: bool,
+}
+
+struct MemoEntry {
+    result: ToolResult,
+    inserted_at: Instant,
 }
 
 impl State {
@@ -99,6 +132,9 @@ impl State {
             insertion_order: VecDeque::with_capacity(capacity),
             hits: 0,
             misses: 0,
+            ttl: Duration::from_secs(DEFAULT_TTL_SECONDS),
+            policy_installed: false,
+            activated: false,
         }
     }
 }
@@ -109,6 +145,13 @@ pub(crate) struct Memo {
 }
 
 impl Memo {
+    pub(crate) fn policy(&self) -> PureMemoCachePolicy {
+        PureMemoCachePolicy {
+            max_entries: self.capacity,
+            ..PureMemoCachePolicy::production_owner()
+        }
+    }
+
     pub(crate) fn key(tool_name: &str, input: &Value) -> Option<MemoKey> {
         if tool_name.len() > MAX_TOOL_NAME_BYTES {
             return None;
@@ -131,8 +174,21 @@ impl Memo {
     }
 
     pub(crate) fn lookup(&self, key: MemoKey) -> Lookup {
+        self.lookup_at(key, Instant::now())
+    }
+
+    pub(crate) fn lookup_at(&self, key: MemoKey, now: Instant) -> Lookup {
         let mut state = self.state.lock().unwrap();
-        if let Some(result) = state.cache.get(&key).cloned() {
+        state.activated = true;
+        let ttl = state.ttl;
+        let expired = state.cache.get(&key).is_some_and(|entry| {
+            ttl.is_zero() || now.saturating_duration_since(entry.inserted_at) >= ttl
+        });
+        if expired {
+            state.cache.remove(&key);
+            state.insertion_order.retain(|candidate| candidate != &key);
+        }
+        if let Some(result) = state.cache.get(&key).map(|entry| entry.result.clone()) {
             state.hits = state.hits.saturating_add(1);
             Lookup::Hit(result)
         } else {
@@ -140,13 +196,22 @@ impl Memo {
             Lookup::Miss(PendingInsert {
                 generation: state.generation,
                 key,
-                enabled: state.accepts_inserts,
+                enabled: state.accepts_inserts && !state.ttl.is_zero(),
             })
         }
     }
 
     /// Cache a successful pure result only when no effect completed after its lookup miss.
     pub(crate) fn complete(&self, pending: PendingInsert, result: &ToolResult) -> bool {
+        self.complete_at(pending, result, Instant::now())
+    }
+
+    pub(crate) fn complete_at(
+        &self,
+        pending: PendingInsert,
+        result: &ToolResult,
+        now: Instant,
+    ) -> bool {
         if result.is_error || !pending.enabled || self.capacity == 0 {
             return false;
         }
@@ -155,7 +220,10 @@ impl Memo {
             return false;
         }
         if let Some(existing) = state.cache.get_mut(&pending.key) {
-            *existing = result.clone();
+            *existing = MemoEntry {
+                result: result.clone(),
+                inserted_at: now,
+            };
             return true;
         }
         if state.cache.len() == self.capacity
@@ -164,8 +232,34 @@ impl Memo {
             state.cache.remove(&oldest);
         }
         state.insertion_order.push_back(pending.key);
-        state.cache.insert(pending.key, result.clone());
+        state.cache.insert(
+            pending.key,
+            MemoEntry {
+                result: result.clone(),
+                inserted_at: now,
+            },
+        );
         true
+    }
+
+    pub(crate) fn install_ttl_seconds(&self, ttl_seconds: u64) -> Result<(), &'static str> {
+        if ttl_seconds > MAX_TTL_SECONDS {
+            return Err("tool-result cache TTL exceeds 86400 seconds");
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.policy_installed {
+            return Err("tool-result cache TTL was already installed");
+        }
+        if state.activated {
+            return Err("tool-result cache TTL must be installed before the first lookup");
+        }
+        state.ttl = Duration::from_secs(ttl_seconds);
+        state.policy_installed = true;
+        Ok(())
+    }
+
+    pub(crate) fn ttl_seconds(&self) -> u64 {
+        self.state.lock().unwrap().ttl.as_secs()
     }
 
     /// Invalidate all reads after every completed effecting attempt, including error outcomes.

@@ -28,10 +28,6 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
         names: &["require_current"],
     },
     FreeFunctions {
-        path: "crates/record/src/lib.rs",
-        names: &["replay"],
-    },
-    FreeFunctions {
         path: "crates/eval/src/contract.rs",
         names: &[
             "admit_type_version",
@@ -75,6 +71,15 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
     },
 ];
 
+// `record::replay`, `record::replay_timed`, and `Rollout::append` deliberately evolve behind the
+// stricter structural dataflow authorities in `schema_compat_rust_runtime_record`: that gate proves
+// the exact Event -> canonical payload -> ChainLine and ChainLine -> optional revocation hydrate ->
+// Event -> authoritative sequence flows, including mutation oracles. Freezing their complete token
+// bodies here as well would reject a strengthened gate while adding no independent invariant.
+// Likewise, `iteron_ctx::ContextEstimate` is an internal measurement object: its bounded public
+// projection is independently locked producer -> strict eval DTO -> golden by
+// `schema_compat_rust_cli`, so new internal ledger dimensions are not machine-schema fields.
+
 const WHOLE_FILES: &[&str] = &["crates/eval/src/strict_json.rs"];
 
 const METHODS: &[Methods] = &[
@@ -87,11 +92,6 @@ const METHODS: &[Methods] = &[
         path: "crates/protocol/src/wire.rs",
         target: "EqEnvelope",
         names: &["current", "into_current"],
-    },
-    Methods {
-        path: "crates/record/src/lib.rs",
-        target: "Rollout",
-        names: &["append"],
     },
     Methods {
         path: "crates/cli/src/output.rs",
@@ -144,10 +144,6 @@ const TYPES: &[Types] = &[
     Types {
         path: "crates/provider/src/lib.rs",
         names: &["EffortApplication"],
-    },
-    Types {
-        path: "crates/ctx/src/compact.rs",
-        names: &["ContextEstimate"],
     },
     Types {
         path: "crates/obs/src/lib.rs",
@@ -565,11 +561,17 @@ mod tests {
             mod pricing;
             mod image_input;
         };
-        // `Rollout::append` contains `self.file.write_all(...)`, but its tokens do not contain the
-        // trait name `Write`. A local `EvilWrite for File` can therefore redirect that exact method
-        // call while leaving the frozen method byte-for-byte unchanged.
-        let names = referenced("self.file.write_all(line.as_bytes())");
-        assert!(path_has_frozen_executable("crates/record/src/lib.rs"));
+        // `write_json_line` contains `writer.write_all(..)`, but its tokens do not contain the
+        // trait name `Write`. A local `EvilWrite` can therefore redirect that exact method call
+        // while leaving the frozen function byte-for-byte unchanged.
+        //
+        // This used to name `Rollout::append`, which is no longer token-frozen: `record::replay`,
+        // `record::replay_timed` and `Rollout::append` moved behind the stricter structural
+        // dataflow authorities in `schema_compat_rust_runtime_record` (see the note above
+        // `WHOLE_FILES`). The illustration has to stand on a path that is still frozen here, or it
+        // argues from an example this module no longer governs.
+        let names = referenced("writer.write_all(line.as_bytes())");
+        assert!(path_has_frozen_executable("crates/cli/src/output.rs"));
         assert_eq!(
             scope_drift(&base, &redirected, Some(&names)),
             None,

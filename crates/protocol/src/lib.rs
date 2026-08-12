@@ -1,10 +1,10 @@
-//! iteron-protocol — the core vocabulary.
+//! iteron-protocol — the iteron vocabulary.
 //!
 //! The design decisions this file encodes as *types* (not conventions):
 //!   - Trust tier (ADR-007 R11): every context segment and tool result carries one.
 //!   - Purity (ADR-004 R4 / ADR-007 R16): licenses early dispatch, memoization, speculation.
 //!   - Capability class (ADR-007 R12): tier by what a tool can do, not by textual reversibility.
-//!   - The SQ/EQ shape (ADR-010): one id-correlated submission/event protocol; the core has
+//!   - The SQ/EQ shape (ADR-010): one id-correlated submission/event protocol; the iteron has
 //!     exactly one input channel and one output channel, both correlated by `id`.
 //!
 //! Keep this crate small. Codex's 220 KB kitchen-sink protocol is a named defect
@@ -18,17 +18,21 @@ pub mod capability_set;
 pub mod context;
 pub mod diff;
 pub mod effect;
+pub mod erasure;
 pub mod event;
 pub mod ids;
 pub mod intent;
 pub mod lifecycle;
 pub mod message;
 pub mod permission;
+pub mod policy_bundle_checkpoint;
+pub mod policy_evidence;
 pub mod pricing;
 pub mod slot;
 pub mod task;
 pub mod tool;
 pub mod trust;
+pub mod tunables_snapshot;
 pub mod wire;
 
 pub mod home;
@@ -36,10 +40,27 @@ pub mod input;
 pub mod text;
 
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
+pub use erasure::ids::{
+    ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, ErasureScopeId, ErasureTargetId,
+    MAX_ERASURE_AUTHORITY_ID_BYTES, MAX_ERASURE_OPERATION_ID_BYTES, MAX_ERASURE_SCOPE_ID_BYTES,
+    MAX_ERASURE_TARGET_ID_BYTES,
+};
+pub use erasure::{
+    ERASURE_RECEIPT_SCHEMA_VERSION, ErasureFailureCode, ErasureOperationKind,
+    ErasurePropagationCoverage, ErasureReceipt, ErasureRequest, ErasureState, ErasureTarget,
+    ErasureValidationError, ErasureVerification, MAX_ERASURE_RECEIPT_BYTES, MAX_RETENTION_AGE_SECS,
+    MAX_RETENTION_KEEP_LAST,
+};
 pub use event::{
-    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,
-    MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
-    RuntimePolicyEventVersion, RuntimePolicySource, RuntimePolicyState, SubmissionRejectionReason,
+    DurableEnvironmentContext, DurableInstructionContext, EnvironmentSnapshotIdentity, Event,
+    EventKind, MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
+    ProviderGovernorDecision, ProviderGovernorDecisionVersion, ProviderHedgeSuppressionReason,
+    ProviderRouteAttemptAccounting, ProviderRouteAttemptAccountingVersion,
+    ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
+    ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason, RuntimePolicyEventVersion,
+    RuntimePolicySource, RuntimePolicyState, SubmissionRejectionReason,
+    VerificationConsensusEvidence, VerificationOutcomeEvidence, VerificationPolicyEvent,
+    VerificationPolicyEventVersion, VerificationRollbackEvidence, VerificationSelectionEvidence,
     WorkflowChildOutcome, WorkflowCostEvidence, WorkflowEvent, WorkflowEventVersion,
     WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome, WorkflowPhase, WorkflowTaskEvidence,
 };
@@ -62,20 +83,36 @@ pub use message::{
     StopReason, StopReasonCode, Usage,
 };
 pub use permission::{PermissionMode, PermissionRules, Verdict, gate};
+pub use policy_bundle_checkpoint::{
+    MAX_POLICY_IMPLEMENTATION_ID_BYTES, PolicyBundleCoverage, PolicySlotApplicationStatus,
+    RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION, RUN_GENESIS_POLICY_BUNDLE_SLOT_COUNT,
+    RunGenesisPolicyBundleInheritance, RunGenesisPolicyBundleSnapshot,
+    RunGenesisPolicyBundleVersion, RunGenesisPolicySlotBinding,
+};
+pub use policy_evidence::{
+    MAX_POLICY_ACTIONS, MAX_POLICY_MACHINE_ID_BYTES, POLICY_ACTION_VOCABULARY_VERSION,
+    POLICY_DECISION_EVIDENCE_SCHEMA_VERSION, POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyDecisionEvidence,
+    PolicyEvidenceError, PolicyHarnessErrorCode, PolicyHarnessErrorJoinDigest,
+    PolicyHarnessOutcomeId, PolicyOpportunityId, PolicyOpportunityJoinDigest,
+    PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyRuntimeIdentity, PolicyTerminalOutcome,
+    PolicyVerifierOutcome,
+};
 pub use pricing::{
     CostAttribution, CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS,
     PricingRoute, PricingVersion, RateCard, SignedRateCard, TokenRateCard,
 };
 pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
+pub use tunables_snapshot::{
+    MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
+    MAX_RUN_GENESIS_TUNABLE_ID_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_BYTES,
+    MAX_RUN_GENESIS_TUNABLES_V2_DEPTH, MAX_RUN_GENESIS_TUNABLES_V2_NODES,
+    RUN_GENESIS_TUNABLES_CANONICALIZATION, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
+    RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
+    RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2,
+};
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
-
-/// Maximum number of semantic families admitted in one v1 genesis snapshot.
-pub const MAX_RUN_GENESIS_TUNABLE_ENTRIES: usize = 160;
-/// Maximum UTF-8 bytes in a snapshot's stable registry/family/semantic identifiers.
-pub const MAX_RUN_GENESIS_TUNABLE_ID_BYTES: usize = 256;
-/// Canonical encoding committed by [`RunGenesisTunablesSnapshot::snapshot_digest_sha256`].
-pub const RUN_GENESIS_TUNABLES_CANONICALIZATION: &str = "core-run-genesis-tunables-json-v1";
 
 /// Schema version for [`EventKind::TunablesSnapshot`].
 /// A future format must use a new top-level event tag so an older reader can skip it safely.

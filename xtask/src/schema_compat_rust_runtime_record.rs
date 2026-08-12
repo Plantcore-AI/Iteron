@@ -63,14 +63,24 @@ fn validate_replay_named(file: &syn::File, name: &str) -> Result<()> {
     }
     let mut probe = ReplayProbe::default();
     probe.visit_block(&function.block);
-    if probe.payload_decodes != 1
+    let direct_decode = probe.chain_payload_decodes == 1
+        && probe.hydrated_payload_decodes == 0
+        && probe.payload_moves == 0
+        && probe.hydrate_calls == 0;
+    let gated_decode = probe.chain_payload_decodes == 0
+        && probe.hydrated_payload_decodes == 1
+        && probe.payload_moves == 1
+        && probe.hydrate_calls == 1;
+    if !(direct_decode || gated_decode)
+        || probe.other_payload_moves != 0
+        || probe.other_hydrate_calls != 0
         || probe.other_event_bindings != 0
         || probe.seq_stamps != 1
         || probe.event_pushes != 1
         || probe.other_pushes != 0
     {
         bail!(
-            "record {name} no longer binds ChainLine.payload -> Event -> authoritative seq -> output exactly"
+            "record {name} no longer binds ChainLine.payload -> optional exact revocation hydration -> Event -> authoritative seq -> output exactly"
         );
     }
     Ok(())
@@ -247,7 +257,12 @@ fn timed_event_wrapper(expression: &syn::Expr) -> bool {
 
 #[derive(Default)]
 struct ReplayProbe {
-    payload_decodes: usize,
+    chain_payload_decodes: usize,
+    hydrated_payload_decodes: usize,
+    payload_moves: usize,
+    other_payload_moves: usize,
+    hydrate_calls: usize,
+    other_hydrate_calls: usize,
     other_event_bindings: usize,
     seq_stamps: usize,
     event_pushes: usize,
@@ -257,21 +272,53 @@ struct ReplayProbe {
 impl<'ast> Visit<'ast> for ReplayProbe {
     fn visit_local(&mut self, local: &'ast syn::Local) {
         if event_pattern(&local.pat) {
-            let exact = local.init.as_ref().is_some_and(|initializer| {
-                initializer.diverge.is_none()
-                    && matches!(initializer.expr.as_ref(), syn::Expr::Try(expression)
-                        if matches!(expression.expr.as_ref(), syn::Expr::Call(call)
-                            if expr_path(&call.func, &["serde_json", "from_value"])
-                                && call.args.len() == 1
-                                && is_field(&call.args[0], "cl", "payload")))
+            let source = local.init.as_ref().and_then(|initializer| {
+                if initializer.diverge.is_some() {
+                    return None;
+                }
+                let syn::Expr::Try(expression) = initializer.expr.as_ref() else {
+                    return None;
+                };
+                let syn::Expr::Call(call) = expression.expr.as_ref() else {
+                    return None;
+                };
+                if !expr_path(&call.func, &["serde_json", "from_value"]) || call.args.len() != 1 {
+                    return None;
+                }
+                Some(&call.args[0])
             });
-            if exact {
-                self.payload_decodes = self.payload_decodes.saturating_add(1);
+            if source.is_some_and(|source| is_field(source, "cl", "payload")) {
+                self.chain_payload_decodes = self.chain_payload_decodes.saturating_add(1);
+            } else if source.is_some_and(|source| expr_path(source, &["payload"])) {
+                self.hydrated_payload_decodes = self.hydrated_payload_decodes.saturating_add(1);
             } else {
                 self.other_event_bindings = self.other_event_bindings.saturating_add(1);
             }
         }
+        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "payload") {
+            let exact = matches!(&local.pat, syn::Pat::Ident(binding) if binding.mutability.is_some())
+                && local.init.as_ref().is_some_and(|initializer| {
+                    initializer.diverge.is_none()
+                        && is_field(initializer.expr.as_ref(), "cl", "payload")
+                });
+            if exact {
+                self.payload_moves = self.payload_moves.saturating_add(1);
+            } else {
+                self.other_payload_moves = self.other_payload_moves.saturating_add(1);
+            }
+        }
         syn::visit::visit_local(self, local);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if expr_path(&call.func, &["content_store", "hydrate_event_payload"]) {
+            if exact_hydrate_call(call) {
+                self.hydrate_calls = self.hydrate_calls.saturating_add(1);
+            } else {
+                self.other_hydrate_calls = self.other_hydrate_calls.saturating_add(1);
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
     }
 
     fn visit_expr_assign(&mut self, assignment: &'ast syn::ExprAssign) {
@@ -302,6 +349,30 @@ impl<'ast> Visit<'ast> for ReplayProbe {
         }
         syn::visit::visit_expr_method_call(self, call);
     }
+}
+
+fn exact_hydrate_call(call: &syn::ExprCall) -> bool {
+    call.args.len() == 3
+        && expr_path(&call.args[0], &["runs_dir"])
+        && tenant_from_chain(&call.args[1])
+        && matches!(&call.args[2], syn::Expr::Reference(reference)
+            if reference.mutability.is_some() && expr_path(&reference.expr, &["payload"]))
+}
+
+fn tenant_from_chain(expression: &syn::Expr) -> bool {
+    let syn::Expr::Reference(reference) = expression else {
+        return false;
+    };
+    let syn::Expr::Call(call) = reference.expr.as_ref() else {
+        return false;
+    };
+    if !expr_path(&call.func, &["TenantId"]) || call.args.len() != 1 {
+        return false;
+    }
+    matches!(&call.args[0], syn::Expr::MethodCall(method)
+        if method.method == "clone"
+            && method.args.is_empty()
+            && is_field(&method.receiver, "cl", "tenant"))
 }
 
 fn event_pattern(pattern: &syn::Pat) -> bool {

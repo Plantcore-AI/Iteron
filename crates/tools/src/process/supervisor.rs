@@ -1,19 +1,23 @@
 use super::actor::{StopControl, WriteControl, spawn_actor};
 use super::output::OutputRing;
+use super::policy::{
+    InstalledProcessLaunchPolicy, PersistentBackendSelection, ProcessRuntimePolicy,
+};
 use super::types::{
-    ActionError, JobId, JobShared, JobState, ProcessSnapshot, ProcessSummary, WriteReceipt, lock,
+    ActionError, JobId, JobShared, JobState, ProcessHealth, ProcessSnapshot, ProcessSummary,
+    WriteReceipt, lock,
 };
 use super::{
-    CONTROL_RESPONSE_SECS, MAX_ACTIVE_JOBS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS,
-    ProcessLifecycleObserver,
+    CONTROL_RESPONSE_SECS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS, ProcessLifecycleObserver,
 };
 use futures_util::future::join_all;
 use iteron_sandbox::{
-    ConfinedProcess, ConfinedProcessControl, Confinement, PersistentBackend, SandboxError,
-    spawn_confined_process,
+    ConfinedProcessControl, ConfinedPtyProcess, ConfinedPtyResize, Confinement, PersistentBackend,
+    SandboxError, pty::WindowSize, spawn_confined_pty_process,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
@@ -27,6 +31,7 @@ pub(super) struct Supervisor {
     instance: u64,
     state: Mutex<SupervisorState>,
     start_gate: AsyncMutex<()>,
+    policy: Mutex<ProcessRuntimePolicy>,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
 }
 
@@ -42,8 +47,33 @@ impl Supervisor {
                 jobs: BTreeMap::new(),
             }),
             start_gate: AsyncMutex::new(()),
+            policy: Mutex::new(ProcessRuntimePolicy::default()),
             lifecycle_observer: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub(super) fn configure_policy(
+        &self,
+        requested: ProcessRuntimePolicy,
+    ) -> Result<(), ActionError> {
+        let policy = ProcessRuntimePolicy::new(
+            requested.backend,
+            requested.max_background_jobs,
+            requested.idle_stall_milliseconds,
+            requested.stdin_wait,
+        )
+        .map_err(|error| ActionError::Definite(error.to_string()))?;
+        if !lock(&self.state).jobs.is_empty() {
+            return Err(ActionError::Definite(
+                "process policy is immutable after this session admits its first job".into(),
+            ));
+        }
+        *lock(&self.policy) = policy;
+        Ok(())
+    }
+
+    pub(super) fn policy(&self) -> ProcessRuntimePolicy {
+        *lock(&self.policy)
     }
 
     pub(super) fn bind_lifecycle_observer(&self, observer: ProcessLifecycleObserver) {
@@ -54,20 +84,35 @@ impl Supervisor {
         &self,
         root: &Path,
         command: &str,
-        sensitive_env_names: Vec<String>,
+        rows: u16,
+        cols: u16,
+        launch: InstalledProcessLaunchPolicy,
     ) -> Result<ProcessSnapshot, ActionError> {
         let _start = self.start_gate.lock().await;
-        let id = self.reserve_id()?;
-        let mut confinement = Confinement::egress_off(root);
+        launch
+            .policy
+            .validate_root(root)
+            .map_err(|error| ActionError::Definite(error.to_string()))?;
+        let policy = self.policy();
+        if policy.backend == PersistentBackendSelection::Disabled {
+            return Err(ActionError::Definite(
+                "process backend is disabled by the immutable session policy".into(),
+            ));
+        }
+        let id = self.reserve_id(policy.max_background_jobs)?;
+        let mut confinement = Confinement::egress_off(&launch.policy.cwd.initial_cwd);
         confinement.timeout_secs = MAX_JOB_RUNTIME_SECS;
-        confinement.sensitive_env_names = sensitive_env_names;
-        let process = spawn_confined_process(command, &confinement)
+        confinement.child_environment = Some(launch.child_environment);
+        let window = WindowSize::new(rows, cols)
+            .map_err(|error| ActionError::Definite(error.to_string()))?;
+        let process = spawn_confined_pty_process(command, &confinement, window)
             .await
             .map_err(spawn_error)?;
         let job = Job::spawn(
             id,
             command.to_owned(),
             process,
+            policy,
             Arc::clone(&self.lifecycle_observer),
         )
         .await?;
@@ -99,6 +144,15 @@ impl Supervisor {
 
     pub(super) async fn stop(&self, raw_id: &str) -> Result<ProcessSnapshot, ActionError> {
         self.lookup(raw_id)?.stop().await
+    }
+
+    pub(super) fn resize(
+        &self,
+        raw_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<ProcessSnapshot, ActionError> {
+        self.lookup(raw_id)?.resize(rows, cols)
     }
 
     /// Stop every retained job without holding the registry lock across an await.
@@ -145,7 +199,40 @@ impl Supervisor {
             .collect()
     }
 
-    fn reserve_id(&self) -> Result<JobId, ActionError> {
+    pub(super) fn health(&self) -> ProcessHealth {
+        let policy = self.policy();
+        let state = lock(&self.state);
+        let mut active_jobs = 0;
+        let mut terminal_jobs = 0;
+        let mut cleanup_unknown_jobs = 0;
+        let mut awaiting_stdin_jobs = 0;
+        for job in state.jobs.values() {
+            match &*lock(&job.shared.state) {
+                JobState::Running | JobState::Stopping => active_jobs += 1,
+                JobState::CleanupUnknown { .. } => {
+                    terminal_jobs += 1;
+                    cleanup_unknown_jobs += 1;
+                }
+                _ => terminal_jobs += 1,
+            }
+            awaiting_stdin_jobs += usize::from(
+                job.shared
+                    .awaiting_stdin
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
+        }
+        ProcessHealth {
+            schema_version: 1,
+            policy,
+            retained_jobs: state.jobs.len(),
+            active_jobs,
+            terminal_jobs,
+            cleanup_unknown_jobs,
+            awaiting_stdin_jobs,
+        }
+    }
+
+    fn reserve_id(&self, max_active_jobs: usize) -> Result<JobId, ActionError> {
         let mut state = lock(&self.state);
         while state.jobs.len() >= MAX_JOB_RECORDS {
             let Some(id) = state
@@ -164,9 +251,9 @@ impl Supervisor {
             .values()
             .filter(|job| !job.is_reconciled_terminal())
             .count();
-        if active >= MAX_ACTIVE_JOBS {
+        if active >= max_active_jobs {
             return Err(ActionError::Definite(format!(
-                "active process limit reached ({MAX_ACTIVE_JOBS})"
+                "active process limit reached ({max_active_jobs})"
             )));
         }
         if state.next_sequence == 0 {
@@ -217,6 +304,8 @@ struct Job {
     command: String,
     backend: PersistentBackend,
     process_control: ConfinedProcessControl,
+    resize: ConfinedPtyResize,
+    runtime_policy: ProcessRuntimePolicy,
     shared: Arc<JobShared>,
     writes: mpsc::Sender<WriteControl>,
     stop: mpsc::Sender<StopControl>,
@@ -234,19 +323,18 @@ impl Job {
     async fn spawn(
         id: JobId,
         command: String,
-        mut process: ConfinedProcess,
+        mut process: ConfinedPtyProcess,
+        runtime_policy: ProcessRuntimePolicy,
         lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     ) -> Result<Arc<Self>, ActionError> {
         let backend = process.backend();
         let process_control = process.control();
-        let Some(stdin) = process.take_stdin() else {
-            return failed_process_setup(process, "stdin").await;
+        let resize = process.resize_control();
+        let Some(stdin) = process.take_input() else {
+            return failed_process_setup(process, "input").await;
         };
-        let Some(stdout) = process.take_stdout() else {
-            return failed_process_setup(process, "stdout").await;
-        };
-        let Some(stderr) = process.take_stderr() else {
-            return failed_process_setup(process, "stderr").await;
+        let Some(stdout) = process.take_output() else {
+            return failed_process_setup(process, "output").await;
         };
 
         let (revision, _) = watch::channel(0);
@@ -254,6 +342,7 @@ impl Job {
             state: Mutex::new(JobState::Running),
             stdout: Arc::new(Mutex::new(OutputRing::default())),
             stderr: Arc::new(Mutex::new(OutputRing::default())),
+            awaiting_stdin: AtomicBool::new(false),
             revision,
         });
         let channels = spawn_actor(
@@ -261,8 +350,8 @@ impl Job {
             process,
             stdin,
             stdout,
-            stderr,
             Arc::clone(&shared),
+            runtime_policy,
             lifecycle_observer,
         );
         #[cfg(all(test, target_os = "linux"))]
@@ -275,9 +364,11 @@ impl Job {
             command,
             backend,
             process_control,
+            resize,
             shared,
             writes: channels.writes,
             stop: channels.stop,
+            runtime_policy,
             #[cfg(all(test, target_os = "linux"))]
             actor_abort,
         }))
@@ -300,9 +391,14 @@ impl Job {
             .frame(stderr_cursor)
             .map_err(ActionError::Definite)?;
         Ok(ProcessSnapshot {
-            schema_version: 1,
+            schema_version: 2,
             job_id: self.id.to_string(),
             backend: self.backend.as_str(),
+            runtime_policy: self.runtime_policy,
+            awaiting_stdin: self
+                .shared
+                .awaiting_stdin
+                .load(std::sync::atomic::Ordering::Acquire),
             state,
             stdout,
             stderr,
@@ -311,9 +407,14 @@ impl Job {
 
     fn summary(&self) -> ProcessSummary {
         ProcessSummary {
-            schema_version: 1,
+            schema_version: 2,
             job_id: self.id.to_string(),
             backend: self.backend.as_str(),
+            runtime_policy: self.runtime_policy,
+            awaiting_stdin: self
+                .shared
+                .awaiting_stdin
+                .load(std::sync::atomic::Ordering::Acquire),
             command: self.command.clone(),
             state: lock(&self.shared.state).clone(),
             stdout_cursor: lock(&self.shared.stdout).end_cursor(),
@@ -337,6 +438,12 @@ impl Job {
     }
 
     async fn write(&self, bytes: Vec<u8>, eof: bool) -> Result<WriteReceipt, ActionError> {
+        if self.runtime_policy.backend == PersistentBackendSelection::OneShot {
+            return Err(ActionError::Definite(format!(
+                "job `{}` uses the one-shot backend and has no interactive stdin",
+                self.id
+            )));
+        }
         if !matches!(*lock(&self.shared.state), JobState::Running) {
             return Err(ActionError::Definite(format!(
                 "job `{}` is not accepting stdin because it is stopping or terminal",
@@ -381,6 +488,19 @@ impl Job {
             stdin_closed: eof,
             state: lock(&self.shared.state).clone(),
         })
+    }
+
+    fn resize(&self, rows: u16, cols: u16) -> Result<ProcessSnapshot, ActionError> {
+        if !matches!(*lock(&self.shared.state), JobState::Running) {
+            return Err(ActionError::Definite(format!(
+                "job `{}` is not running and cannot be resized",
+                self.id
+            )));
+        }
+        self.resize
+            .resize(rows, cols)
+            .map_err(|error| ActionError::Definite(format!("resize pty: {error}")))?;
+        self.snapshot(0, 0)
     }
 
     async fn stop(&self) -> Result<ProcessSnapshot, ActionError> {
@@ -479,13 +599,13 @@ impl Drop for Job {
 }
 
 async fn failed_process_setup<T>(
-    mut process: ConfinedProcess,
+    mut process: ConfinedPtyProcess,
     stream: &str,
 ) -> Result<T, ActionError> {
     process.control().force_kill();
     let _ = process.terminate_and_reap().await;
     Err(ActionError::Unknown(format!(
-        "persistent process crossed spawn without a {stream} pipe; it was terminated"
+        "persistent process crossed spawn without a pty {stream}; it was terminated"
     )))
 }
 

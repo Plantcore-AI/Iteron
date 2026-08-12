@@ -46,12 +46,12 @@ impl Agent {
             input_images: Vec::new(),
             tools: vec![],
             max_tokens: 1024,
-            // The decomposition prefix is a fixed literal, so it is exactly the stable prefix the
-            // cache discipline exists for (ADR-002). Leaving it uncached made every ultracode run
-            // pay a cold round the rest of the kernel does not (I-62).
-            cache_system: true,
+            // The decomposition prefix is a fixed literal and therefore cache-eligible, but the
+            // immutable family-23/family-158 policy remains the only authority that enables it.
+            cache_system: self.provider_cache_system_enabled(),
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         // The draft itself stays private to the planner, but decode progress is real operator
         // evidence. Publish bounded cumulative counts instead of dropping the stream or leaking
@@ -65,7 +65,10 @@ impl Agent {
             Some(turn_id),
             LifecyclePayload::default(),
         );
-        let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
+        let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+        let usd_attempt = admission.attempt_guard;
+        let primary_route_permit = admission.primary_route_permit;
+        let use_hedge = admission.use_hedge;
         self.emit(
             turn_id,
             EventKind::Phase {
@@ -86,7 +89,9 @@ impl Agent {
                 progress.observe(&item);
             };
             let model_started = Instant::now();
-            let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
+            let response = self
+                .brokered_provider_turn(turn_id, &req, &mut sink, primary_route_permit, use_hedge)
+                .await;
             (response, model_started)
         };
         let (response, model_started) = response;
@@ -126,7 +131,8 @@ impl Agent {
                 text
             }
             Err(error) => {
-                self.mark_usd_unknown();
+                // Physical route accounting has already closed the reservation exactly; the
+                // planner fallback must not reclassify a known terminal as unknown cost.
                 self.lifecycle_event(
                     "workflow.planning_failed",
                     Some(turn_id),
@@ -145,12 +151,12 @@ impl Agent {
                     },
                 );
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-                self.advance_turn()?;
+                self.advance_turn().await?;
                 return Ok(Vec::new());
             }
         };
         self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
-        self.advance_turn()?;
+        self.advance_turn().await?;
         // Keep raw lines. Decomposer owns legal list-prefix stripping, visibility checks, bounds,
         // deduplication, and FAN_CAP accounting; doing any of that here previously corrupted
         // legitimate assignments beginning with paths such as `.github/workflows/ci.yml`.

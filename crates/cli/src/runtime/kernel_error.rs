@@ -53,6 +53,8 @@ pub enum KernelError {
         reserved_output_tokens: u32,
         context_window_tokens: u64,
     },
+    #[error("request context component admission failed: {0}")]
+    ContextBudget(String),
     #[error("instruction context is {bytes} bytes, exceeding the {max}-byte admission limit")]
     InstructionContextTooLarge { bytes: usize, max: usize },
     #[error("instruction context is already resolved for this run")]
@@ -67,6 +69,20 @@ pub enum KernelError {
     ContextAlreadyResolved,
     #[error("agent catalog is already pinned for this run")]
     AgentCatalogAlreadyResolved,
+    #[error("runtime tunables are already pinned for this run")]
+    TunablesAlreadyResolved,
+    #[error("runtime tunables must be pinned before this operation")]
+    TunablesNotResolved,
+    #[error("resolved tooling policy could not be installed: {0}")]
+    ToolingPolicy(String),
+    #[error("resolved execution policy could not be installed: {0}")]
+    ExecutionPolicy(String),
+    #[error("ordinary tool-output spill lifecycle invariant failed: {0}")]
+    ToolOutputSpill(&'static str),
+    #[error("MCP lifecycle invariant failed: {0}")]
+    McpLifecycle(&'static str),
+    #[error("policy evidence invariant failed: {0}")]
+    PolicyEvidence(String),
     #[error("delegation depth limit reached; child agents cannot delegate")]
     DelegationDepthExceeded,
     #[cfg(test)]
@@ -104,6 +120,9 @@ impl KernelError {
             Self::InvalidPermissionPolicy(reason) => {
                 format!("invalid permission policy: {reason}")
             }
+            Self::ExecutionPolicy(_) => {
+                "resolved execution policy failed validation; no child work was admitted".into()
+            }
             Self::RuntimePolicyAlreadyRecorded => {
                 "initial runtime policy was changed after the session record began".into()
             }
@@ -132,6 +151,9 @@ impl KernelError {
             } => format!(
                 "request is too large for the selected model: {estimated_input_tokens} estimated input + {reserved_output_tokens} reserved output > {context_window_tokens} context window"
             ),
+            Self::ContextBudget(_) => {
+                "one request context component exceeded its immutable run ceiling".into()
+            }
             Self::InstructionContextTooLarge { bytes, max } => {
                 format!("instruction context is {bytes} bytes, exceeding the {max}-byte limit")
             }
@@ -152,6 +174,25 @@ impl KernelError {
             }
             Self::AgentCatalogAlreadyResolved => {
                 "agent catalog is already fixed for this run".into()
+            }
+            Self::TunablesAlreadyResolved => {
+                "runtime tunables are already fixed for this run".into()
+            }
+            Self::TunablesNotResolved => {
+                "runtime tunables were not resolved before execution began".into()
+            }
+            Self::ToolingPolicy(_) => {
+                "resolved process/LSP policy could not be installed before execution".into()
+            }
+            Self::ToolOutputSpill(_) => {
+                "private tool-output spill storage could not be confirmed; Iteron stopped the run"
+                    .into()
+            }
+            Self::McpLifecycle(_) => {
+                "private MCP result cleanup could not be confirmed; Iteron stopped the run".into()
+            }
+            Self::PolicyEvidence(_) => {
+                "policy evidence could not be joined to the immutable run identity".into()
             }
             Self::DelegationDepthExceeded => {
                 "delegation depth limit reached; child agents cannot delegate".into()

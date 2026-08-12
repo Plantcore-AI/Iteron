@@ -23,8 +23,17 @@ use iteron_protocol::{Block, Message, Role, ToolSpec};
 /// a fast, deterministic admission estimate used before a request exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenEstimateProvenance {
-    /// UTF-8 bytes divided by 3.5, rounded up, plus explicit message/tool framing allowances.
+    /// Legacy pre-v2 estimate retained so historical UI/test events remain representable.
     HeuristicBytesPerToken35,
+    /// One token per UTF-8 byte: an explicitly identified upper-bound fallback for an unknown
+    /// provider/model route. Provider-reported usage remains authoritative after the request.
+    ConservativeByteUpperBound,
+    /// Route-selected, content-aware approximation for OpenAI-compatible BPE tokenizers.
+    OpenAiBpeApproximation,
+    /// Route-selected, content-aware approximation for Anthropic tokenizers.
+    AnthropicBpeApproximation,
+    /// Route-selected, content-aware approximation for SentencePiece-like provider families.
+    SentencePieceApproximation,
 }
 
 /// Estimated input context for the exact request projection the kernel is about to send.
@@ -34,6 +43,12 @@ pub enum TokenEstimateProvenance {
 pub struct ContextEstimate {
     pub system_tokens: usize,
     pub tool_tokens: usize,
+    /// User/assistant text, thinking, provider state, and tool-call envelopes.
+    pub conversation_tokens: usize,
+    /// Ordinary tool-result bodies retained in the transcript.
+    pub tool_result_tokens: usize,
+    /// Language-server result bodies, accounted separately from ordinary tools.
+    pub lsp_result_tokens: usize,
     pub transcript_tokens: usize,
     pub framing_tokens: usize,
     pub total_tokens: usize,
@@ -48,24 +63,40 @@ pub fn estimate_request_context(
     messages: &[Message],
     tools: &[ToolSpec],
 ) -> ContextEstimate {
+    estimate_request_context_with_profile(
+        crate::TokenEstimatorProfile::default(),
+        system,
+        messages,
+        tools,
+    )
+}
+
+pub fn estimate_request_context_with_profile(
+    profile: crate::TokenEstimatorProfile,
+    system: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> ContextEstimate {
+    let transcript = transcript_components(messages, profile);
     assemble_estimate(
-        crate::estimate_tokens(system),
-        tool_set_tokens(tools),
-        messages.iter().map(message_content_tokens).sum(),
+        profile.estimate(system),
+        tool_set_tokens(tools, profile),
+        transcript,
         messages.len(),
         tools.len(),
+        profile.provenance(),
     )
 }
 
 /// Serialising every `input_schema` is the expensive half of the estimate. Kept separate so the
 /// one-shot and the cached paths cannot drift into disagreeing about what a tool set costs.
-fn tool_set_tokens(tools: &[ToolSpec]) -> usize {
+fn tool_set_tokens(tools: &[ToolSpec], profile: crate::TokenEstimatorProfile) -> usize {
     tools
         .iter()
         .map(|tool| {
-            crate::estimate_tokens(&tool.name)
-                + crate::estimate_tokens(&tool.description)
-                + crate::estimate_tokens(&tool.input_schema.to_string())
+            profile.estimate(&tool.name)
+                + profile.estimate(&tool.description)
+                + profile.estimate(&tool.input_schema.to_string())
         })
         .sum()
 }
@@ -73,15 +104,17 @@ fn tool_set_tokens(tools: &[ToolSpec]) -> usize {
 fn assemble_estimate(
     system_tokens: usize,
     tool_tokens: usize,
-    transcript_tokens: usize,
+    transcript: TranscriptComponents,
     message_count: usize,
     tool_count: usize,
+    provenance: TokenEstimateProvenance,
 ) -> ContextEstimate {
     // Provider encodings differ, so account for roles, content wrappers, tool declarations, and
     // the system envelope explicitly without pretending this is an exact tokenizer result.
     let framing_tokens = 4usize
         .saturating_add(message_count.saturating_mul(4))
         .saturating_add(tool_count.saturating_mul(12));
+    let transcript_tokens = transcript.total();
     let total_tokens = system_tokens
         .saturating_add(tool_tokens)
         .saturating_add(transcript_tokens)
@@ -89,10 +122,13 @@ fn assemble_estimate(
     ContextEstimate {
         system_tokens,
         tool_tokens,
+        conversation_tokens: transcript.conversation,
+        tool_result_tokens: transcript.tool_results,
+        lsp_result_tokens: transcript.lsp_results,
         transcript_tokens,
         framing_tokens,
         total_tokens,
-        provenance: TokenEstimateProvenance::HeuristicBytesPerToken35,
+        provenance,
     }
 }
 
@@ -109,8 +145,11 @@ fn assemble_estimate(
 /// A shortened transcript is detected here; an in-place edit is not observable from a slice.
 #[derive(Debug, Clone, Default)]
 pub struct RequestEstimator {
-    per_message: Vec<usize>,
-    transcript_tokens: usize,
+    profile: crate::TokenEstimatorProfile,
+    policy: crate::TokenEstimatorPolicy,
+    per_message: Vec<TranscriptComponents>,
+    transcript: TranscriptComponents,
+    lsp_tool_ids: std::collections::BTreeSet<String>,
     tools: Option<CachedToolEstimate>,
 }
 
@@ -127,23 +166,75 @@ impl RequestEstimator {
         Self::default()
     }
 
+    pub fn for_route(provider_id: Option<&str>, model_id: &str) -> Self {
+        Self {
+            profile: crate::TokenEstimatorProfile::for_route(provider_id, model_id),
+            ..Self::default()
+        }
+    }
+
+    pub fn set_route(&mut self, provider_id: Option<&str>, model_id: &str) {
+        let profile = match self.policy {
+            crate::TokenEstimatorPolicy::RouteAwareV2 => {
+                crate::TokenEstimatorProfile::for_route(provider_id, model_id)
+            }
+        };
+        if self.profile != profile {
+            self.profile = profile;
+            self.invalidate_transcript();
+            self.tools = None;
+        }
+    }
+
+    /// Pin the exact selector policy recovered from the immutable tunables checkpoint. Concrete
+    /// profiles remain route-aware and every selected identity is exposed to ContextLedger.
+    pub fn pin_policy(&mut self, policy: crate::TokenEstimatorPolicy) {
+        self.policy = policy;
+    }
+
+    pub fn tokenizer_identity(&self) -> crate::TokenizerIdentity {
+        self.profile.identity()
+    }
+
+    pub fn estimate_text(&self, text: &str) -> usize {
+        self.profile.estimate(text)
+    }
+
+    pub fn estimate_image(&self, encoded_base64_bytes: usize) -> usize {
+        self.profile.estimate_image(encoded_base64_bytes)
+    }
+
+    pub fn estimate_uncached(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> ContextEstimate {
+        estimate_request_context_with_profile(self.profile, system, messages, tools)
+    }
+
     /// Forget every cached message estimate. Cheap; the next estimate rebuilds the running total.
     pub fn invalidate_transcript(&mut self) {
         self.per_message.clear();
-        self.transcript_tokens = 0;
+        self.transcript = TranscriptComponents::default();
+        self.lsp_tool_ids.clear();
     }
 
     /// The transcript's estimated tokens, walking only messages appended since the last call.
-    pub fn transcript_tokens(&mut self, messages: &[Message]) -> usize {
+    fn transcript_components(&mut self, messages: &[Message]) -> TranscriptComponents {
         if messages.len() < self.per_message.len() {
             self.invalidate_transcript();
         }
         for message in &messages[self.per_message.len()..] {
-            let tokens = message_content_tokens(message);
-            self.per_message.push(tokens);
-            self.transcript_tokens = self.transcript_tokens.saturating_add(tokens);
+            let components = message_components(message, &mut self.lsp_tool_ids, self.profile);
+            self.per_message.push(components);
+            self.transcript = self.transcript.saturating_add(components);
         }
-        self.transcript_tokens
+        self.transcript
+    }
+
+    pub fn transcript_tokens(&mut self, messages: &[Message]) -> usize {
+        self.transcript_components(messages).total()
     }
 
     fn tool_tokens(&mut self, tools: &[ToolSpec]) -> usize {
@@ -158,7 +249,7 @@ impl RequestEstimator {
         if !reusable {
             self.tools = Some(CachedToolEstimate {
                 names: tools.iter().map(|tool| tool.name.clone()).collect(),
-                tokens: tool_set_tokens(tools),
+                tokens: tool_set_tokens(tools, self.profile),
             });
         }
         self.tools.as_ref().map_or(0, |cached| cached.tokens)
@@ -172,15 +263,16 @@ impl RequestEstimator {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> ContextEstimate {
-        let system_tokens = crate::estimate_tokens(system);
-        let transcript_tokens = self.transcript_tokens(messages);
+        let system_tokens = self.profile.estimate(system);
+        let transcript = self.transcript_components(messages);
         let tool_tokens = self.tool_tokens(tools);
         assemble_estimate(
             system_tokens,
             tool_tokens,
-            transcript_tokens,
+            transcript,
             messages.len(),
             tools.len(),
+            self.profile.provenance(),
         )
     }
 }
@@ -192,6 +284,12 @@ pub struct CompactionPolicy {
     pub trigger_tokens: usize,
     /// Always keep the last N messages verbatim (recent context is highest-signal).
     pub keep_recent: usize,
+    /// Automatic compaction may be disabled without disabling the explicit `/compact` command.
+    pub enabled: bool,
+    pub hysteresis: crate::CompactionHysteresis,
+    pub summary_topology: crate::SummaryTopology,
+    pub summary_profile: crate::SummaryProfile,
+    pub coverage_check: bool,
     window_relative: bool,
 }
 
@@ -203,6 +301,11 @@ impl Default for CompactionPolicy {
         CompactionPolicy {
             trigger_tokens: 120_000,
             keep_recent: 6,
+            enabled: true,
+            hysteresis: crate::CompactionHysteresis::default(),
+            summary_topology: crate::SummaryTopology::SingleStage,
+            summary_profile: crate::SummaryProfile::default(),
+            coverage_check: true,
             window_relative: true,
         }
     }
@@ -217,6 +320,17 @@ pub struct CompactionPlan {
     pub keep_verbatim: Vec<Message>,
     /// The very first message (the task) is always preserved as the anchor.
     pub task_anchor: Message,
+    obligations: crate::compact_obligations::CompactionObligations,
+}
+
+impl CompactionPlan {
+    pub fn obligations_preserved(&self) -> u32 {
+        self.obligations.preserved_count()
+    }
+
+    pub fn obligations_lost(&self) -> u32 {
+        self.obligations.lost_count()
+    }
 }
 
 impl CompactionPolicy {
@@ -253,7 +367,8 @@ impl CompactionPolicy {
 
     /// Should we compact this transcript?
     pub fn should_compact(&self, messages: &[Message]) -> bool {
-        messages.len() > self.keep_recent + 2
+        self.enabled
+            && messages.len() > self.keep_recent + 2
             && self.transcript_tokens(messages) > self.trigger_tokens
     }
 
@@ -273,6 +388,9 @@ impl CompactionPolicy {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Option<CompactionPlan> {
+        if !self.enabled {
+            return None;
+        }
         let estimate = estimate_request_context(system, messages, tools);
         if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= self.trigger_tokens {
             return None;
@@ -288,9 +406,9 @@ impl CompactionPolicy {
         model_context_window: Option<u64>,
         reserved_output_tokens: u32,
     ) -> usize {
-        self.effective_trigger_tokens(model_context_window, reserved_output_tokens)
-            .saturating_mul(3)
-            / 4
+        self.hysteresis.enter_threshold(
+            self.effective_trigger_tokens(model_context_window, reserved_output_tokens),
+        )
     }
 
     /// The routine path: plan a compaction to run AFTER the turn the operator was waiting on,
@@ -304,6 +422,9 @@ impl CompactionPolicy {
         model_context_window: Option<u64>,
         reserved_output_tokens: u32,
     ) -> Option<CompactionPlan> {
+        if !self.enabled {
+            return None;
+        }
         let estimate = estimate_request_context(system, messages, tools);
         let trigger = self.approaching_trigger_tokens(model_context_window, reserved_output_tokens);
         if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
@@ -324,6 +445,9 @@ impl CompactionPolicy {
         model_context_window: Option<u64>,
         reserved_output_tokens: u32,
     ) -> Option<CompactionPlan> {
+        if !self.enabled {
+            return None;
+        }
         if messages.len() <= self.keep_recent + 2 {
             return None;
         }
@@ -373,6 +497,9 @@ impl CompactionPolicy {
         model_context_window: Option<u64>,
         reserved_output_tokens: u32,
     ) -> Option<CompactionPlan> {
+        if !self.enabled {
+            return None;
+        }
         let trigger = self.effective_trigger_tokens(model_context_window, reserved_output_tokens);
         if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
             return None;
@@ -411,6 +538,11 @@ impl CompactionPolicy {
             return None;
         }
         Some(CompactionPlan {
+            obligations: crate::compact_obligations::CompactionObligations::gather(
+                &to_summarize,
+                &task_anchor,
+                &keep_verbatim,
+            ),
             to_summarize,
             keep_verbatim,
             task_anchor,
@@ -422,10 +554,11 @@ impl CompactionPolicy {
     /// not prose.
     pub fn summary_prompt() -> &'static str {
         "Summarize the conversation so far into a compact hand-off note for continuing the task. \
-         Preserve, as terse bullet points: the goal; files inspected and what was found; edits \
-         already made; commands run and their outcomes; decisions taken and why; and what remains \
-         to do. Omit pleasantries and reasoning that did not change the plan. This note replaces \
-         the detailed history, so anything you drop is lost."
+         Preserve, as terse bullet points: the goal; every still-applicable operator constraint; \
+         files inspected and what was found; edits already made; commands run and their outcomes; \
+         decisions taken and why; and what remains to do. Mark superseded operator instructions as \
+         superseded. Omit pleasantries and reasoning that did not change the plan. This note \
+         replaces the detailed history, so anything you drop is lost."
     }
 
     /// Rebuild the transcript from a produced summary string. The result is:
@@ -505,19 +638,93 @@ pub fn replay_compaction(prior: Vec<Message>, recorded: Vec<Message>) -> Vec<Mes
     out
 }
 
-fn message_content_tokens(m: &Message) -> usize {
-    m.content
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TranscriptComponents {
+    conversation: usize,
+    tool_results: usize,
+    lsp_results: usize,
+}
+
+impl TranscriptComponents {
+    fn total(self) -> usize {
+        self.conversation
+            .saturating_add(self.tool_results)
+            .saturating_add(self.lsp_results)
+    }
+
+    fn saturating_add(self, other: Self) -> Self {
+        Self {
+            conversation: self.conversation.saturating_add(other.conversation),
+            tool_results: self.tool_results.saturating_add(other.tool_results),
+            lsp_results: self.lsp_results.saturating_add(other.lsp_results),
+        }
+    }
+}
+
+fn transcript_components(
+    messages: &[Message],
+    profile: crate::TokenEstimatorProfile,
+) -> TranscriptComponents {
+    let mut lsp_tool_ids = std::collections::BTreeSet::new();
+    messages
         .iter()
-        .map(|b| match b {
-            Block::Text { text } => crate::estimate_tokens(text),
-            Block::Thinking { thinking } => crate::estimate_tokens(thinking),
+        .fold(TranscriptComponents::default(), |total, message| {
+            total.saturating_add(message_components(message, &mut lsp_tool_ids, profile))
+        })
+}
+
+fn message_components(
+    message: &Message,
+    lsp_tool_ids: &mut std::collections::BTreeSet<String>,
+    profile: crate::TokenEstimatorProfile,
+) -> TranscriptComponents {
+    let mut estimate = TranscriptComponents::default();
+    for block in &message.content {
+        match block {
+            Block::Text { text } => {
+                estimate.conversation =
+                    estimate.conversation.saturating_add(profile.estimate(text));
+            }
+            Block::Thinking { thinking } => {
+                estimate.conversation = estimate
+                    .conversation
+                    .saturating_add(profile.estimate(thinking));
+            }
             // Adapter-private state still consumes provider context when its route matches. The
             // producing adapter enforces a strict byte bound before this reaches the transcript.
-            Block::ProviderState(state) => crate::estimate_tokens(&state.payload.to_string()) + 8,
-            Block::ToolUse(t) => crate::estimate_tokens(&t.input.to_string()) + 8,
-            Block::ToolResult(r) => crate::estimate_tokens(&r.content) + 8,
-        })
-        .sum()
+            Block::ProviderState(state) => {
+                estimate.conversation = estimate
+                    .conversation
+                    .saturating_add(profile.estimate(&state.payload.to_string()) + 8);
+            }
+            Block::ToolUse(tool) => {
+                if tool.name == "lsp_query" {
+                    lsp_tool_ids.insert(tool.id.clone());
+                }
+                estimate.conversation = estimate
+                    .conversation
+                    .saturating_add(profile.estimate(&tool.input.to_string()) + 8);
+            }
+            Block::ToolResult(result) => {
+                let tokens = profile.estimate(&result.content) + 8;
+                if lsp_tool_ids.contains(&result.tool_use_id) {
+                    estimate.lsp_results = estimate.lsp_results.saturating_add(tokens);
+                } else {
+                    estimate.tool_results = estimate.tool_results.saturating_add(tokens);
+                }
+            }
+        }
+    }
+    estimate
+}
+
+fn message_content_tokens(message: &Message) -> usize {
+    message_components(
+        message,
+        &mut std::collections::BTreeSet::new(),
+        crate::TokenEstimatorProfile::default(),
+    )
+    .total()
 }
 
 #[cfg(test)]
@@ -596,6 +803,26 @@ mod tests {
                 + estimate.tool_tokens
                 + estimate.transcript_tokens
                 + estimate.framing_tokens
+        );
+    }
+
+    #[test]
+    fn route_aware_checkpointed_selector_tracks_cross_provider_changes() {
+        let mut estimator = RequestEstimator::for_route(Some("openai"), "gpt-5");
+        estimator.pin_policy(crate::TokenEstimatorPolicy::RouteAwareV2);
+        assert_eq!(
+            estimator.tokenizer_identity().catalog_id,
+            "iteron.openai-bpe-approx"
+        );
+
+        estimator.set_route(Some("anthropic"), "claude-opus");
+        assert_eq!(
+            estimator.tokenizer_identity().catalog_id,
+            "iteron.anthropic-bpe-approx"
+        );
+        assert_eq!(
+            crate::TokenEstimatorPolicy::RouteAwareV2.id(),
+            crate::ROUTE_AWARE_ESTIMATOR_POLICY_ID
         );
     }
 
@@ -751,7 +978,7 @@ mod tests {
     #[test]
     fn small_window_compacts_before_input_admission_boundary() {
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        let messages = vec![big_user(2_200); policy.keep_recent + 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         let usable = 32_768usize - 8_192;
         assert!(estimate.total_tokens < usable);
@@ -769,7 +996,9 @@ mod tests {
         // window bought an extra synchronous summary round before the operator's own request.
         // The emergency valve declines it; only the end-of-turn path takes it.
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        // The unidentified-route fallback is one token per UTF-8 byte. Keep this projection
+        // between the 60% trigger and the 75% admission boundary under that conservative owner.
+        let messages = vec![big_user(2_200); policy.keep_recent + 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         assert!(estimate.total_tokens.saturating_add(8_192) < 32_768);
         assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));

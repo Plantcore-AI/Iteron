@@ -236,6 +236,19 @@ pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
                     let _ = output.push(format_args!(" <= {limit}"));
                 }
             }
+            CrossFieldRule::SumEquals { terms, total } => {
+                for (index, term) in terms.iter().enumerate() {
+                    if index > 0 && !output.push_str(" + ") {
+                        break;
+                    }
+                    if !output.push_str(term) {
+                        break;
+                    }
+                }
+                if !output.is_truncated() {
+                    let _ = output.push(format_args!(" = {}e-{}", total.coefficient, total.scale));
+                }
+            }
             CrossFieldRule::Requires {
                 if_field,
                 equals,
@@ -247,7 +260,7 @@ pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
                     let _ = output.push_str(&json);
                 }
                 if !output.is_truncated() {
-                    let _ = output.push(format_args!(" then require {then_field}"));
+                    let _ = output.push(format_args!(" then require truthy {then_field}"));
                 }
             }
             CrossFieldRule::MutuallyExclusive { fields } => {
@@ -259,6 +272,44 @@ pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
                     if !output.push_str(field) {
                         break;
                     }
+                }
+            }
+            CrossFieldRule::MapEntryDomain { key, domain } => {
+                let _ = output.push(format_args!("{key} in "));
+                if !output.is_truncated() {
+                    let json = compact_json(domain);
+                    let _ = output.push_str(&json);
+                }
+            }
+            CrossFieldRule::AtLeastOneNonZero { fields } => {
+                let _ = output.push_str("at least one non-zero: ");
+                for (index, field) in fields.iter().enumerate() {
+                    if index > 0 && !output.push_str(", ") {
+                        break;
+                    }
+                    if !output.push_str(field) {
+                        break;
+                    }
+                }
+            }
+            CrossFieldRule::Equals { field, value } => {
+                let _ = output.push(format_args!("{field} = "));
+                if !output.is_truncated() {
+                    let json = compact_json(value);
+                    let _ = output.push_str(&json);
+                }
+            }
+            CrossFieldRule::ResolvedSetSumLessOrEqual { terms, limit, .. } => {
+                for (index, term) in terms.iter().enumerate() {
+                    if index > 0 && !output.push_str(" + ") {
+                        break;
+                    }
+                    if !output.push(format_args!("{}:{}", term.family, term.path)) {
+                        break;
+                    }
+                }
+                if !output.is_truncated() {
+                    let _ = output.push(format_args!(" <= {}:{}", limit.family, limit.path));
                 }
             }
             CrossFieldRule::ExternalCeiling {

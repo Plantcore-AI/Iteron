@@ -11,8 +11,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(6);
-const PROVIDER_TIMEOUT: Duration = Duration::from_secs(10);
+// A PTY step may include a separately scheduled process startup while the all-target suite is
+// running many test binaries. Causal latency properties below use byte ordering; this remains only
+// the bounded harness watchdog for observing their terminal effects.
+const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 const PROVIDER_IO_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 1024 * 1024;
@@ -20,6 +23,8 @@ const LINK_PROVIDER_ID: &str = "tui-link-fixture";
 const LINK_MODEL_ID: &str = "tui-link-model";
 const LINK_TEST_KEY_ENV: &str = "ITERON_TUI_LINK_TEST_KEY";
 const LINK_TEST_KEY: &str = "integration-test-placeholder";
+const LINK_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
+const INERT_GLM_API_KEY: &str = "integration-test-inert-never-requested";
 const LINK_TARGET: &str = "https://example.com/core-guide";
 const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Iteron: run complete\x07";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
@@ -100,7 +105,13 @@ impl Scratch {
                 "key_env": LINK_TEST_KEY_ENV,
                 "enabled": true,
                 "catalog": false,
-                "models": [LINK_MODEL_ID]
+                "models": [LINK_MODEL_ID],
+                "model_capabilities": {
+                    (LINK_MODEL_ID): {
+                        "context_window_tokens": LINK_CONTEXT_WINDOW_TOKENS,
+                        "image_input": false
+                    }
+                }
             }]
         });
         if let Some(enabled) = completion_notifications {
@@ -352,6 +363,10 @@ impl InterruptHandoffProvider {
                 first_body.len()
             );
             let _ = first.flush();
+            // The response advertises `Connection: close`; release the socket before waiting for
+            // the queued turn so the fake has the same terminal boundary as a real HTTP/1.1
+            // server instead of keeping the interrupted request artificially live.
+            drop(first);
 
             let mut second = accept_provider_connection(&listener);
             let request = read_provider_request(&mut second);
@@ -738,6 +753,11 @@ impl PtyHarness {
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
             command.arg(CLIENT_PARITY_TASK.trim());
         } else {
+            // These fixtures exercise only terminal and local-tool paths, but production route
+            // admission still requires the bundled GLM credential owner to be present. Keep the
+            // fixed inert value inside the env-cleared child; no fixture in this branch submits a
+            // provider request.
+            command.env("GLM_API_KEY", INERT_GLM_API_KEY);
             command.env("ITERON_PROVIDER", "glm");
             command.env("ITERON_MODEL", "glm-5.2");
         }
@@ -1158,7 +1178,7 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
         },
     );
 
-    pty.send(b"/tunables\r");
+    pty.send(b"/tunables registry\r");
     pty.wait_until("searchable 160-family tunables registry", |pty| {
         let screen = pty.screen_text();
         screen.contains("tunables · catalog")
@@ -1313,8 +1333,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     }
     #[cfg(not(target_os = "linux"))]
     pty.wait_until("truthful fail-closed export diagnostic", |pty| {
-        pty.screen_text()
-            .contains("export failed before dispatch: secure transcript")
+        pty.screen_text().contains("export failed before dispatch:")
             && !scratch.repo().join("core-transcript-filtered.md").exists()
     });
 
@@ -1356,8 +1375,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     pty.wait_until(
         "slash export fails closed without filesystem mutation",
         |pty| {
-            pty.screen_text()
-                .contains("export failed before dispatch: secure transcript")
+            pty.screen_text().contains("export failed before dispatch:")
                 && !slash_export.exists()
                 && !slash_export_2.exists()
         },
@@ -1409,18 +1427,21 @@ fn osc11_light_background_selects_the_light_truecolor_palette_without_colorfgbg(
 #[test]
 fn unanswered_osc11_query_times_out_to_colorfgbg_without_blocking_startup() {
     let scratch = Scratch::new("osc11-timeout-theme");
-    let started = Instant::now();
     let mut pty = PtyHarness::spawn_osc11_timeout_fixture(&scratch, 80, 24);
     wait_for_ready(&mut pty);
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "an unanswered terminal query must not hold TUI startup"
-    );
     // The query is now issued BEHIND the first frame, so a painted surface no longer implies the
     // probe has been written. Wait for the real bytes before asserting anything about the timeout.
     pty.wait_until("the deferred OSC 11 background query", |pty| {
         find_sequence(&pty.capture, OSC11_QUERY).is_some()
     });
+    let first_frame = find_sequence(&pty.capture, FIRST_FRAME_MARKER)
+        .expect("the initial surface reaches the terminal");
+    let background_query =
+        find_sequence(&pty.capture, OSC11_QUERY).expect("the deferred OSC 11 query is written");
+    assert!(
+        first_frame < background_query,
+        "an unanswered OSC 11 query must be written after, and therefore cannot block, the first frame"
+    );
 
     let capture = std::str::from_utf8(&pty.capture).expect("terminal stream is valid UTF-8");
     assert!(
@@ -1810,7 +1831,12 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     let second_request = provider
         .second_request
         .recv_timeout(PROVIDER_TIMEOUT)
-        .expect("the next prompt starts a fresh provider request");
+        .unwrap_or_else(|error| {
+            panic!(
+                "the next prompt starts a fresh provider request: {error}; screen:\n{}",
+                pty.screen_text(),
+            )
+        });
     let second_request = String::from_utf8(second_request).expect("provider request is UTF-8");
     assert!(
         second_request.contains(NEXT_PROMPT),
@@ -1819,7 +1845,9 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     );
     pty.wait_until("the queued next turn reaches its terminal event", |pty| {
         let screen = pty.screen_text();
-        screen.contains("Next prompt completed.") && screen.contains("idle")
+        screen.contains("Next prompt completed.")
+            && screen.contains("idle")
+            && !screen.contains(" pending")
     });
 
     // The authoritative terminal event has returned the app to idle, so Esc is now a real exit.

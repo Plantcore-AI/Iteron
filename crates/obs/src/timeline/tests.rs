@@ -16,6 +16,7 @@ fn effect_done(seq: u64, tool: &str, duration_ms: Option<u64>) -> Event {
             id: EffectId(format!("effect-{seq}")),
             tool: tool.into(),
             duration_ms,
+            provider_route_attempt: None,
         },
     )
 }
@@ -107,6 +108,7 @@ fn an_unproven_effect_is_counted_and_never_imputed() {
             id: EffectId("effect-1".into()),
             tool: "provider".into(),
             reason: "no terminal observed".into(),
+            provider_route_attempt: None,
         },
     );
     let done = effect_done(0, "provider", Some(100));

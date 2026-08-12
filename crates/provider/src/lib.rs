@@ -17,6 +17,10 @@ use std::time::{Duration, SystemTime};
 
 pub mod anthropic;
 pub mod catalog;
+mod controls;
+mod governor;
+mod governor_policy;
+mod governor_snapshot;
 pub mod openai;
 pub mod responses;
 pub mod sse;
@@ -30,6 +34,23 @@ pub use catalog::{
     CredentialKind, CredentialSource, CredentialStatus, ErrorProfile, FileCredential,
     ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
     ProviderInstance, RawModel, Selectability, discover_catalog, probe_account,
+    provider_connect_timeout, provider_http_pool_policy,
+};
+pub use controls::{
+    CacheBreakpoint, CacheScope, ControlError, PromptCacheControl, ProviderControlCapabilities,
+    ProviderRequestControls, RequestCompression, ResponseVerbosity, ServiceTier,
+};
+pub use governor::{
+    Admission as ProviderAdmission, AdmissionReason, AttemptPermit, CircuitTransition,
+    ProviderGovernor,
+};
+pub use governor_policy::{
+    CircuitPolicy, FailoverClass, FailoverRule, FailurePoint, GovernorPolicy, GovernorPolicyError,
+    HedgePolicy, MAX_GOVERNED_ROUTES, MAX_HEDGE_DUPLICATES, ObjectiveWeights, RateAdmissionPolicy,
+    RouteObjectiveScores, UnknownQuotaPolicy,
+};
+pub use governor_snapshot::{
+    ProviderGovernorSnapshot, RouteCircuitSnapshot, RouteGovernorSnapshot,
 };
 pub use openai::OpenAiCompat;
 pub use responses::OpenAiResponses;
@@ -42,6 +63,52 @@ pub use usage::{UsageIncompleteReason, UsageReport};
 /// unbounded allocation in the agent.
 pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// One immutable owner for the physical request deadline and stream-idle watchdog used by every
+/// network adapter. Keeping these together prevents a newly added adapter from silently acquiring
+/// a looser transport lifetime than the checkpointed fixed authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderTransportTimeoutPolicy {
+    pub connect_tls: Duration,
+    pub request_total: Duration,
+    pub stream_idle: Duration,
+    pub pool_idle: Duration,
+    pub tcp_keepalive: Duration,
+    pub connection_reuse: bool,
+}
+
+pub const fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
+    ProviderTransportTimeoutPolicy {
+        connect_tls: Duration::from_secs(30),
+        request_total: Duration::from_secs(15 * 60),
+        stream_idle: Duration::from_secs(120),
+        pool_idle: Duration::from_secs(300),
+        tcp_keepalive: Duration::from_secs(30),
+        connection_reuse: true,
+    }
+}
+
+impl Default for ProviderTransportTimeoutPolicy {
+    fn default() -> Self {
+        provider_transport_timeout_policy()
+    }
+}
+
+impl ProviderTransportTimeoutPolicy {
+    pub fn validate(self) -> Result<Self, ProviderError> {
+        if self.connect_tls.is_zero()
+            || self.request_total.is_zero()
+            || self.stream_idle.is_zero()
+            || self.connect_tls > self.request_total
+            || self.stream_idle > self.request_total
+        {
+            return Err(ProviderError::Configuration(
+                "provider transport timeout policy is inconsistent".into(),
+            ));
+        }
+        Ok(self)
+    }
+}
 
 /// Whether retrying the same request is safe from the provider's point of view. The scheduler
 /// applies the separate, stricter rule that a committed stream is never retried.
@@ -1069,6 +1136,8 @@ pub struct TurnRequest {
     /// Semantic model effort, independent of the thinking-token budget and of harness
     /// orchestration. Adapters must not infer this value from `thinking_budget`.
     pub reasoning_effort: iteron_protocol::ReasoningEffort,
+    /// Typed route controls validated against [`Provider::control_capabilities`] before dispatch.
+    pub controls: ProviderRequestControls,
 }
 
 /// Bounded, secret-free strategy notice emitted before a provider request. Notices are
@@ -1187,6 +1256,12 @@ pub trait Provider: Send + Sync {
     /// should forward the inner capability rather than infer it from a model name.
     fn supports_image_input(&self) -> bool {
         false
+    }
+
+    /// Exact request controls this adapter can faithfully serialize for the configured route.
+    /// The conservative default supports only omission/default values and never idempotency.
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        ProviderControlCapabilities::default()
     }
 
     /// Report the adapter's actual control surface before the request is sent. Implementations
@@ -1372,6 +1447,10 @@ impl Provider for HealthReportingProvider {
             .unwrap_or_else(|| self.inner.supports_image_input())
     }
 
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        self.inner.control_capabilities()
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(request)
     }
@@ -1493,6 +1572,7 @@ mod guard_tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         }
     }
 

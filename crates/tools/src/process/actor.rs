@@ -1,10 +1,14 @@
+use super::policy::{PersistentBackendSelection, ProcessRuntimePolicy};
 use super::types::JobId;
 use super::types::{ActionError, JobShared, JobState, lock};
 use super::{
     CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, ProcessLifecycleKind,
     ProcessLifecycleNotice, ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
 };
-use iteron_sandbox::{ConfinedProcess, ConfinedProcessControl};
+use iteron_sandbox::{
+    ConfinedProcessControl, ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess,
+};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -29,11 +33,11 @@ pub(super) struct ActorChannels {
 
 pub(super) fn spawn_actor(
     job_id: JobId,
-    process: ConfinedProcess,
-    stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
-    stderr: tokio::process::ChildStderr,
+    process: ConfinedPtyProcess,
+    stdin: ConfinedPtyInput,
+    stdout: ConfinedPtyOutput,
     shared: Arc<JobShared>,
+    runtime_policy: ProcessRuntimePolicy,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
 ) -> ActorChannels {
     let (writes, write_receiver) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
@@ -45,8 +49,10 @@ pub(super) fn spawn_actor(
         event_sender.clone(),
         shared.revision.clone(),
     ));
+    // A terminal is one ordered byte stream: stderr is intentionally merged into stdout by the
+    // kernel pty. Keep the legacy stderr cursor as a closed empty stream for schema compatibility.
     let stderr_task = tokio::spawn(drain_output(
-        stderr,
+        tokio::io::empty(),
         Arc::clone(&shared.stderr),
         event_sender,
         shared.revision.clone(),
@@ -59,6 +65,7 @@ pub(super) fn spawn_actor(
         stop_receiver,
         events,
         shared,
+        runtime_policy,
         lifecycle_observer,
         stdout_task,
         stderr_task,
@@ -67,6 +74,7 @@ pub(super) fn spawn_actor(
 }
 
 enum DrainEvent {
+    Activity,
     Limit,
     ReadFailed,
 }
@@ -75,6 +83,7 @@ enum TerminalCause {
     Natural,
     Stop,
     Timeout,
+    IdleStall,
     OutputLimit,
     IoFailure,
     OwnerDropped,
@@ -122,12 +131,13 @@ impl Drop for ControllerExitGuard {
 #[allow(clippy::too_many_arguments)]
 async fn run_job(
     job_id: JobId,
-    mut process: ConfinedProcess,
-    stdin: tokio::process::ChildStdin,
+    mut process: ConfinedPtyProcess,
+    stdin: ConfinedPtyInput,
     mut writes: mpsc::Receiver<WriteControl>,
     mut stops: mpsc::Receiver<StopControl>,
     mut events: mpsc::Receiver<DrainEvent>,
     shared: Arc<JobShared>,
+    runtime_policy: ProcessRuntimePolicy,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     stdout_task: tokio::task::JoinHandle<()>,
     stderr_task: tokio::task::JoinHandle<()>,
@@ -140,65 +150,121 @@ async fn run_job(
         lifecycle_observer: Arc::clone(&lifecycle_observer),
         committed: false,
     };
-    let mut stdin = Some(stdin);
+    let mut stdin = match runtime_policy.backend {
+        PersistentBackendSelection::OneShot | PersistentBackendSelection::Persistent => Some(stdin),
+        PersistentBackendSelection::Disabled => {
+            drop(stdin);
+            None
+        }
+    };
     let deadline = tokio::time::sleep(Duration::from_secs(MAX_JOB_RUNTIME_SECS));
     tokio::pin!(deadline);
+    let interactive = runtime_policy.backend == PersistentBackendSelection::Persistent;
+    let idle_milliseconds = if interactive {
+        runtime_policy
+            .idle_stall_milliseconds
+            .min(runtime_policy.stdin_wait.idle_timeout_milliseconds)
+    } else {
+        runtime_policy.idle_stall_milliseconds
+    };
+    let idle_deadline = tokio::time::sleep(Duration::from_millis(idle_milliseconds));
+    tokio::pin!(idle_deadline);
+    let prompt_enabled = interactive && runtime_policy.stdin_wait.operator_prompt;
+    let prompt_deadline = tokio::time::sleep(Duration::from_millis(
+        runtime_policy.stdin_wait.poll_milliseconds,
+    ));
+    tokio::pin!(prompt_deadline);
     let mut stop_reply = None;
     let mut events_open = true;
-    let (cause, status) = loop {
-        tokio::select! {
-            biased;
-            stop = stops.recv() => {
-                match stop {
-                    Some(StopControl::Request(reply)) => stop_reply = Some(reply),
-                    Some(StopControl::Cleanup) | None => {}
-                }
-                mark_stopping(&shared);
-                let status = process.terminate_and_reap().await;
-                let cause = if stop_reply.is_some() {
-                    TerminalCause::Stop
-                } else {
-                    TerminalCause::OwnerDropped
-                };
-                break (cause, status);
-            }
-            waited = process.wait() => {
-                break match waited {
-                    Ok(status) => (TerminalCause::Natural, Some(status)),
-                    Err(_) => (TerminalCause::WaitFailed, None),
-                };
-            }
-            _ = &mut deadline => {
-                mark_stopping(&shared);
-                let status = process.terminate_and_reap().await;
-                break (TerminalCause::Timeout, status);
-            }
-            event = events.recv(), if events_open => {
-                match event {
-                    Some(DrainEvent::Limit) => {
-                        mark_stopping(&shared);
-                        let status = process.terminate_and_reap().await;
-                        break (TerminalCause::OutputLimit, status);
+    let initial_eof_failed = if runtime_policy.backend == PersistentBackendSelection::OneShot {
+        write_stdin(&mut stdin, &[], true).await.is_err()
+    } else {
+        false
+    };
+    let (cause, status) = if initial_eof_failed {
+        mark_stopping(&shared);
+        (TerminalCause::IoFailure, process.terminate_and_reap().await)
+    } else {
+        loop {
+            tokio::select! {
+                biased;
+                stop = stops.recv() => {
+                    match stop {
+                        Some(StopControl::Request(reply)) => stop_reply = Some(reply),
+                        Some(StopControl::Cleanup) | None => {}
                     }
-                    Some(DrainEvent::ReadFailed) => {
+                    mark_stopping(&shared);
+                    let status = process.terminate_and_reap().await;
+                    let cause = if stop_reply.is_some() {
+                        TerminalCause::Stop
+                    } else {
+                        TerminalCause::OwnerDropped
+                    };
+                    break (cause, status);
+                }
+                waited = process.wait() => {
+                    break match waited {
+                        Ok(status) => (TerminalCause::Natural, Some(status)),
+                        Err(_) => (TerminalCause::WaitFailed, None),
+                    };
+                }
+                _ = &mut deadline => {
+                    mark_stopping(&shared);
+                    let status = process.terminate_and_reap().await;
+                    break (TerminalCause::Timeout, status);
+                }
+                _ = &mut idle_deadline => {
+                    mark_stopping(&shared);
+                    let status = process.terminate_and_reap().await;
+                    break (TerminalCause::IdleStall, status);
+                }
+                _ = &mut prompt_deadline, if prompt_enabled && !shared.awaiting_stdin.load(Ordering::Acquire) => {
+                    shared.awaiting_stdin.store(true, Ordering::Release);
+                    shared.notify();
+                }
+                event = events.recv(), if events_open => {
+                    match event {
+                        Some(DrainEvent::Activity) => reset_activity(
+                            &shared,
+                            &mut idle_deadline,
+                            &mut prompt_deadline,
+                            idle_milliseconds,
+                            runtime_policy.stdin_wait.poll_milliseconds,
+                        ),
+                        Some(DrainEvent::Limit) => {
+                            mark_stopping(&shared);
+                            let status = process.terminate_and_reap().await;
+                            break (TerminalCause::OutputLimit, status);
+                        }
+                        Some(DrainEvent::ReadFailed) => {
+                            mark_stopping(&shared);
+                            let status = process.terminate_and_reap().await;
+                            break (TerminalCause::IoFailure, status);
+                        }
+                        None => events_open = false,
+                    }
+                }
+                write = writes.recv() => {
+                    let Some(WriteControl { bytes, eof, reply }) = write else {
+                        continue;
+                    };
+                    let result = write_stdin(&mut stdin, &bytes, eof).await;
+                    let failed = matches!(&result, Err(ActionError::Unknown(_)));
+                    if result.is_ok() {
+                        reset_activity(
+                            &shared,
+                            &mut idle_deadline,
+                            &mut prompt_deadline,
+                            idle_milliseconds,
+                            runtime_policy.stdin_wait.poll_milliseconds,
+                        );
+                    }
+                    let _ = reply.send(result);
+                    if failed {
                         mark_stopping(&shared);
                         let status = process.terminate_and_reap().await;
                         break (TerminalCause::IoFailure, status);
                     }
-                    None => events_open = false,
-                }
-            }
-            write = writes.recv() => {
-                let Some(WriteControl { bytes, eof, reply }) = write else {
-                    continue;
-                };
-                let result = write_stdin(&mut stdin, &bytes, eof).await;
-                let failed = matches!(result, Err(ActionError::Unknown(_)));
-                let _ = reply.send(result);
-                if failed {
-                    mark_stopping(&shared);
-                    let status = process.terminate_and_reap().await;
-                    break (TerminalCause::IoFailure, status);
                 }
             }
         }
@@ -218,6 +284,7 @@ async fn run_job(
         }
     }
     drop(stdin);
+    shared.awaiting_stdin.store(false, Ordering::Release);
     finish_drains(stdout_task, stderr_task, &shared).await;
     let authoritative = status.is_some();
     let terminal = terminal_state(cause, status);
@@ -239,6 +306,7 @@ fn notify_terminal(
         JobState::Exited { .. } => ProcessLifecycleKind::Exited,
         JobState::Stopped { .. } => ProcessLifecycleKind::Stopped,
         JobState::TimedOut { .. } => ProcessLifecycleKind::TimedOut,
+        JobState::IdleStalled { .. } => ProcessLifecycleKind::IdleStalled,
         JobState::OutputLimitExceeded { .. } => ProcessLifecycleKind::OutputLimitExceeded,
         JobState::IoFailed { .. } => ProcessLifecycleKind::IoFailed,
         JobState::CleanupUnknown { .. } => ProcessLifecycleKind::CleanupUnknown,
@@ -270,7 +338,7 @@ fn reject_pending_writes(writes: &mut mpsc::Receiver<WriteControl>) {
 }
 
 async fn write_stdin(
-    stdin: &mut Option<tokio::process::ChildStdin>,
+    stdin: &mut Option<ConfinedPtyInput>,
     bytes: &[u8],
     eof: bool,
 ) -> Result<(), ActionError> {
@@ -282,7 +350,7 @@ async fn write_stdin(
             handle.write_all(bytes).await?;
         }
         if eof {
-            handle.shutdown().await?;
+            handle.send_eof().await?;
         }
         Ok::<(), std::io::Error>(())
     };
@@ -314,7 +382,9 @@ async fn drain_output<R: AsyncRead + Unpin>(
             Ok(0) => break,
             Ok(read) => {
                 if lock(&ring).push(&chunk[..read]) {
-                    let _ = events.try_send(DrainEvent::Limit);
+                    let _ = events.send(DrainEvent::Limit).await;
+                } else {
+                    let _ = events.send(DrainEvent::Activity).await;
                 }
                 revision.send_modify(|value| *value = value.wrapping_add(1));
             }
@@ -354,6 +424,7 @@ fn terminal_state(cause: TerminalCause, status: Option<std::process::ExitStatus>
             TerminalCause::Natural | TerminalCause::WaitFailed => "wait_failed",
             TerminalCause::Stop => "stop",
             TerminalCause::Timeout => "timeout",
+            TerminalCause::IdleStall => "idle_stall",
             TerminalCause::OutputLimit => "output_limit",
             TerminalCause::IoFailure => "io_failure",
             TerminalCause::OwnerDropped => "owner_drop",
@@ -367,6 +438,7 @@ fn terminal_state(cause: TerminalCause, status: Option<std::process::ExitStatus>
             JobState::Stopped { exit_code, signal }
         }
         TerminalCause::Timeout => JobState::TimedOut { exit_code, signal },
+        TerminalCause::IdleStall => JobState::IdleStalled { exit_code, signal },
         TerminalCause::OutputLimit => JobState::OutputLimitExceeded { exit_code, signal },
         TerminalCause::IoFailure => JobState::IoFailed { exit_code, signal },
         TerminalCause::WaitFailed => JobState::CleanupUnknown {
@@ -394,4 +466,23 @@ fn mark_stopping(shared: &JobShared) {
     }
     drop(state);
     shared.notify();
+}
+
+fn reset_activity(
+    shared: &JobShared,
+    idle_deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+    prompt_deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+    idle_milliseconds: u64,
+    prompt_milliseconds: u64,
+) {
+    let now = tokio::time::Instant::now();
+    idle_deadline
+        .as_mut()
+        .reset(now + Duration::from_millis(idle_milliseconds));
+    prompt_deadline
+        .as_mut()
+        .reset(now + Duration::from_millis(prompt_milliseconds));
+    if shared.awaiting_stdin.swap(false, Ordering::AcqRel) {
+        shared.notify();
+    }
 }

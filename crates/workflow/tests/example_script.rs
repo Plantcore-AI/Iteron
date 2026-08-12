@@ -54,8 +54,12 @@ async fn the_example_workflow_script_runs_as_written() {
     );
 
     let sink = Arc::new(VecSink::default());
-    let spec =
-        RunSpec::new(EXAMPLE).with_args(serde_json::json!({ "topic": "the rollout writer" }));
+    let workflows =
+        std::env::temp_dir().join(format!("iteron-workflow-example-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workflows);
+    let spec = RunSpec::new(EXAMPLE)
+        .with_args(serde_json::json!({ "topic": "the rollout writer" }))
+        .with_workflows_dir(&workflows);
     let report = WorkflowEngine::execute(spec, Arc::new(ScriptedSpawner), sink.clone())
         .await
         .expect("the shipped example runs");
@@ -88,4 +92,5 @@ async fn the_example_workflow_script_runs_as_written() {
         4,
         "three investigators plus the reducer each declare a row"
     );
+    let _ = std::fs::remove_dir_all(workflows);
 }

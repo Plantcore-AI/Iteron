@@ -1,0 +1,6 @@
+{
+  "version": "v1",
+  "route_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "physical_attempt": 1,
+  "max_cost_reservation_microusd": 1000
+}

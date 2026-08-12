@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-pub const HARD_MAX_TASKS: usize = 512;
+pub const HARD_MAX_TASKS: usize = 1_024;
+pub const HARD_MAX_ATTEMPTS: usize = 4_096;
 pub const HARD_MAX_EDGES: usize = 4_096;
 pub const HARD_MAX_MESSAGES: usize = 8_192;
 pub const HARD_MAX_JOINS: usize = 512;
@@ -38,6 +39,7 @@ macro_rules! numeric_id {
 }
 
 numeric_id!(TaskId);
+numeric_id!(AttemptId);
 numeric_id!(CommandId);
 numeric_id!(MessageId);
 numeric_id!(JoinId);
@@ -214,6 +216,11 @@ impl BudgetReservation {
 #[serde(deny_unknown_fields)]
 pub struct TaskSpec {
     pub id: TaskId,
+    /// Stable workflow declaration identity. `None` is retained only for historical/general DAG
+    /// callers; the production workflow adapter always persists `Some(index)` and reconstructs
+    /// dependency resolution from it on reopen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration_index: Option<u32>,
     pub parent: Option<TaskId>,
     pub dependencies: Vec<TaskId>,
     pub label: String,
@@ -259,6 +266,129 @@ pub struct Task {
     pub dependency_depth: usize,
     pub inbox: Vec<MessageId>,
     pub(crate) child_reservations: BudgetReservation,
+}
+
+/// One physical child dispatch belonging to a logical [`Task`]. Retries and speculative siblings
+/// receive distinct ids so a selected result can never erase the consumed budget or terminal of
+/// another dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptSpec {
+    pub id: AttemptId,
+    pub task: TaskId,
+    pub retry_ordinal: u32,
+    pub sibling_ordinal: u32,
+    /// Version zero represents historical logs written before explicit lineage existed. The
+    /// production adapter writes version one and the reducer enforces its complete predecessor
+    /// contract. Keeping zero readable avoids turning an upgrade into log corruption.
+    #[serde(default)]
+    pub lineage_version: u8,
+    /// The exact terminal attempt whose evidence caused this retry group. Every sibling in a
+    /// retry group names the same predecessor; an initial group has no predecessor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<AttemptId>,
+    #[serde(default)]
+    pub assignment: AttemptAssignment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_cause: Option<AttemptRetryCause>,
+    /// Canonical digest of the complete durable predecessor terminal. The reducer recomputes this
+    /// value at registration; callers cannot substitute a digest of transient prompt text or
+    /// schema diagnostics. `retry_cause` records why that terminal was not logically sufficient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_evidence_digest: Option<String>,
+    pub input_digest: String,
+}
+
+/// Controller-owned assignment lineage for one physical attempt. This is deliberately separate
+/// from `retry_ordinal`: a replay can distinguish retrying the same assignee policy from selecting
+/// a fresh assignee without inferring intent from prompt text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptAssignment {
+    Initial,
+    RetrySame,
+    Reassigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptRetryCause {
+    NegativeTerminal,
+    ChildFailure,
+    SchemaValidation,
+}
+
+impl Default for AttemptAssignment {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
+
+/// Why a physical attempt was (or was not) selected by the controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptDisposition {
+    /// The task had exactly one physical candidate in this attempt group.
+    Sole,
+    /// The first verified positive candidate selected from a speculative group.
+    Winner,
+    /// A sibling that was not selected, including a positively-completed late sibling.
+    Loser,
+    /// A definite negative terminal; no positive result was selected from it.
+    Negative,
+    /// Cleanup ended without evidence that the external child effect reached a terminal.
+    UnknownEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptCompletion {
+    Succeeded,
+    Failed,
+    Cancelled,
+    UnknownEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AttemptState {
+    Registered,
+    Running,
+    Succeeded {
+        result_digest: String,
+        disposition: AttemptDisposition,
+    },
+    Failed {
+        code: String,
+        detail: String,
+        disposition: AttemptDisposition,
+    },
+    Cancelled {
+        reason: String,
+        disposition: AttemptDisposition,
+    },
+    UnknownEffect {
+        reason: String,
+    },
+}
+
+impl AttemptState {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded { .. }
+                | Self::Failed { .. }
+                | Self::Cancelled { .. }
+                | Self::UnknownEffect { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attempt {
+    pub spec: AttemptSpec,
+    pub state: AttemptState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +460,23 @@ pub enum Command {
     StartTask {
         actor: Actor,
         task: TaskId,
+    },
+    RegisterAttempt {
+        actor: Actor,
+        attempt: AttemptSpec,
+    },
+    StartAttempt {
+        actor: Actor,
+        attempt: AttemptId,
+    },
+    CompleteAttempt {
+        actor: Actor,
+        attempt: AttemptId,
+        completion: AttemptCompletion,
+        disposition: AttemptDisposition,
+        result_digest: Option<String>,
+        code: Option<String>,
+        detail: Option<String>,
     },
     ChargeBudget {
         actor: Actor,

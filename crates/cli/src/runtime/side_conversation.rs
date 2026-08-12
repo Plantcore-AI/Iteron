@@ -1,11 +1,5 @@
 use super::*;
 
-/// Ceiling for one side conversation. Deliberately independent from the parent's remaining turn
-/// budget; a side conversation must not silently consume the main session's allowance.
-const MAX_TURNS: u32 = 24;
-const MAX_WALL_SECS: u64 = 300;
-const MAX_CONSECUTIVE_TOOL_ERRORS: u32 = 3;
-
 const SYSTEM: &str = "You are answering a question on the side of a coding session. You have \
 read-only tools: you can read files, glob, search, and inspect the repository, but you cannot edit \
 files, run commands, or delegate. Answer the operator directly and cite file:line when you looked \
@@ -57,6 +51,7 @@ impl SideConversation {
         if self.asks > 0 {
             self.agent
                 .stage_follow_up_transcript()
+                .await
                 .map_err(|error| error.public_summary())?;
             self.agent.verify_attempts = 0;
         }
@@ -71,6 +66,10 @@ impl SideConversation {
             outcome,
             status: self.status(),
         })
+    }
+
+    pub(crate) fn finalize_policy_run(&mut self) -> Result<(), KernelError> {
+        self.agent.finalize_policy_run()
     }
 }
 
@@ -92,49 +91,76 @@ impl Agent {
             .map_err(|error| format!("side conversation setup failed: {error}"))?;
         let directory = self.side_conversation_directory();
         let run_id = self.subagent_run_id("side", 0, self.side_conversations_opened as usize);
+        let tunables_pin = self
+            .tunables_pin_snapshot()
+            .map_err(|error| error.public_summary())?;
+        let tunables_config_digest = format!("sha256:{}", tunables_pin.resolution_digest_sha256());
         let rollout = Rollout::open(&directory, &run_id, self.rollout.tenant().clone())
             .map_err(|error| format!("side conversation record failed: {error}"))?;
         let record_path = rollout.path().to_path_buf();
-        let mut side = Agent::new(
+        let mut side = Agent::new_with_tunables_pin(
             self.provider.clone(),
             registry,
             rollout,
             self.model.clone(),
             SYSTEM.into(),
-            Budget {
-                max_turns: MAX_TURNS,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: MAX_WALL_SECS,
-                max_consecutive_tool_errors: MAX_CONSECUTIVE_TOOL_ERRORS,
-            },
-        );
+            // A side conversation owns a separate ledger, so it does not consume the main
+            // session's allowance. Its *ceilings* must nevertheless be the exact values named by
+            // the inherited immutable tunables checkpoint. Installing a second local default here
+            // would make the child record claim one budget while enforcing another one.
+            self.budget.clone(),
+            tunables_pin,
+        )
+        .map_err(|error| error.public_summary())?;
         side.runtime_state_dir = self.runtime_state_dir.clone();
         side.lifecycle_emitter = self.lifecycle_emitter.clone();
         side.lifecycle_telemetry = self.lifecycle_telemetry.clone();
         side.lifecycle_hooks = self.lifecycle_hooks.clone();
         side.workspace = self.workspace.clone();
-        side.context_strategy = self.context_strategy.clone();
-        side.tool_policy = self.tool_policy.clone();
+        side.install_compiled_policy_bundle(self.compiled_policy_bundle.clone())
+            .map_err(|error| error.public_summary())?;
         side.context_port = self.context_port.clone();
+        side.deferred_tool_eager_limit = self.deferred_tool_eager_limit;
+        side.context_budget_policy = self.context_budget_policy;
+        side.context_materialization_policy = self.context_materialization_policy;
+        side.compaction = self.compaction;
         side.context_home_dir = self.context_home_dir.clone();
         side.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         side.model_context_window = self.model_context_window;
         side.model_max_output_tokens = self.model_max_output_tokens;
         side.sensitive_env_names = self.sensitive_env_names.clone();
-        side.hooks = self.hooks.clone();
+        side.install_hooks(self.hooks.clone())
+            .map_err(|error| error.public_summary())?;
         side.hook_effect_journal = self.hook_effect_journal.clone();
+        side.composition_environment_context = self.composition_environment_context.clone();
+        side.environment_context = self.composition_environment_context.clone();
         side.delegation_depth = self.delegation_depth.saturating_add(1);
-        side.effort = if self.effort == iteron_protocol::Effort::Ultracode {
-            iteron_protocol::Effort::Max
-        } else {
-            self.effort
-        };
+        let child_effort = self.execution_policy.subagent_effort;
+        side.bypass_permissions = self.bypass_permissions;
+        side.configure_initial_runtime_policy(
+            child_effort,
+            self.permission_mode,
+            self.permission_rules.clone(),
+        )
+        .map_err(|error| error.public_summary())?;
         if let Some(interrupt) = &self.interrupt {
             side.set_interrupt(interrupt.clone());
         }
         side.drain = self.drain.clone();
         side.owns_drain = false;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let parent_run = self.rollout.run_id().clone();
+        side.record_child_genesis_with_tunables(
+            &parent_run,
+            self.workspace.display().to_string(),
+            created_at,
+            tunables_config_digest,
+            None,
+        )
+        .map_err(|error| error.public_summary())?;
         self.inherit_route_and_pricing(&mut side)
             .map_err(|error| error.public_summary())?;
         self.side_conversations_opened = self.side_conversations_opened.saturating_add(1);

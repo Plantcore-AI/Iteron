@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 #[cfg(test)]
 use std::time::Duration;
@@ -25,6 +25,82 @@ use worker::{WorkerFailure, WorkerRun};
 pub(crate) use worker::{worker_main, worker_requested};
 mod process;
 pub(super) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};
+
+const EXPORT_SEQUENCE_BASE: u64 = (1_u64 << 63) | (1_u64 << 61);
+static NEXT_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(EXPORT_SEQUENCE_BASE);
+
+/// One invocation-scoped transcript export rooted in the record private-content graph.
+///
+/// The UI first renders a bounded snapshot in memory, but the worker is never handed that copy.
+/// It receives bytes hydrated through this exact handle after every record source has been bound
+/// as durable lineage. The owner lease remains live through worker settlement, so revocation and
+/// export cannot race to produce a post-tombstone copy.
+struct ManagedExportPayload {
+    store: iteron_record::PrivateContentDerivativeStore,
+    seq: iteron_protocol::Seq,
+    handle: iteron_record::PrivateContentHandle,
+    cleanup_on_drop: bool,
+}
+
+impl ManagedExportPayload {
+    fn stage(rollout_path: &std::path::Path, bytes: &[u8]) -> Result<Self, &'static str> {
+        let runs_dir = rollout_path
+            .parent()
+            .ok_or("transcript export record store is unavailable")?;
+        let (tenant, run) = iteron_record::verified_rollout_identity(rollout_path)
+            .map_err(|_| "transcript export record lineage is unavailable")?;
+        let sequence = NEXT_EXPORT_SEQUENCE
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| "transcript export sequence space is exhausted")?;
+        let seq = iteron_protocol::Seq(sequence);
+        let store = iteron_record::PrivateContentDerivativeStore::open_registered(
+            runs_dir,
+            tenant,
+            run.clone(),
+            iteron_record::PrivateContentNamespace::Export,
+            iteron_record::PrivateContentClass::Export,
+            iteron_record::PrivateContentRetention::Session,
+            transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES,
+        )
+        .map_err(|_| "transcript export private store is unavailable")?;
+        let handle = store
+            .put_derived_from_run(seq, bytes, &run)
+            .map_err(|_| "transcript export source lineage is unavailable")?;
+        Ok(Self {
+            store,
+            seq,
+            handle,
+            cleanup_on_drop: true,
+        })
+    }
+
+    fn read(&self) -> Result<Vec<u8>, &'static str> {
+        self.store
+            .read_at(self.seq, &self.handle)
+            .map_err(|_| "transcript export content is revoked or unavailable")
+    }
+
+    #[cfg(test)]
+    fn abandon_for_recovery(
+        mut self,
+    ) -> (iteron_protocol::Seq, iteron_record::PrivateContentHandle) {
+        self.cleanup_on_drop = false;
+        (self.seq, self.handle.clone())
+    }
+}
+
+impl Drop for ManagedExportPayload {
+    fn drop(&mut self) {
+        if !self.cleanup_on_drop {
+            return;
+        }
+        // A failed release leaves the encrypted reference for exact-session recovery. It must not
+        // unlink one side of the graph or turn a cleanup failure into an untracked plaintext copy.
+        let _ = self.store.release(self.seq, &self.handle.digest);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -85,6 +161,7 @@ pub(crate) enum Request {
     },
     Export {
         workspace: PathBuf,
+        rollout_path: PathBuf,
         blocks: Vec<Arc<block::Block>>,
         selected_ids: Option<Vec<u64>>,
         requested: String,
@@ -311,6 +388,7 @@ async fn run(
         }
         Request::Export {
             workspace,
+            rollout_path,
             blocks,
             selected_ids,
             requested,
@@ -318,6 +396,42 @@ async fn run(
             origin,
         } => {
             let bytes = match transcript_export::body(&blocks, selected_ids.as_deref()) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    send(
+                        &sender,
+                        Event {
+                            origin,
+                            outcome: Disposition::KnownFailure,
+                            message: format!("export failed before dispatch: {error}"),
+                            shell: None,
+                            control: None,
+                            final_slot: true,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let payload = match ManagedExportPayload::stage(&rollout_path, &bytes) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    send(
+                        &sender,
+                        Event {
+                            origin,
+                            outcome: Disposition::KnownFailure,
+                            message: format!("export failed before dispatch: {error}"),
+                            shell: None,
+                            control: None,
+                            final_slot: true,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let bytes = match payload.read() {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     send(
@@ -569,6 +683,83 @@ async fn run_test_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_payload_is_lineaged_and_refuses_a_revoked_transcript_source() {
+        use iteron_protocol::{
+            ErasureAuthorityId, ErasureOperationId, ErasureRequest, ErasureScopeId, ErasureTarget,
+            Event as RecordEvent, EventKind, RunId, Seq, TenantId, TurnId,
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("wall clock after epoch")
+            .as_nanos();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "core-private-export-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&runs_dir).expect("create export fixture");
+        let tenant = TenantId::default();
+        let run = RunId("private-export-source".into());
+        let mut rollout = iteron_record::Rollout::open(&runs_dir, &run, tenant.clone())
+            .expect("open source rollout");
+        rollout
+            .append(&RecordEvent {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Notice {
+                    text: "operator-visible transcript source".into(),
+                },
+            })
+            .expect("append transcript source");
+        let path = rollout.path().to_path_buf();
+        let sources =
+            iteron_record::content_store::private_content_sources_for_run(&runs_dir, &tenant, &run)
+                .expect("inventory source record fields");
+        assert_eq!(sources.len(), 1);
+
+        let payload = ManagedExportPayload::stage(&path, b"# bounded export\nprivate transcript")
+            .expect("stage lineaged export");
+        assert_eq!(
+            payload.read().expect("read through export gate"),
+            b"# bounded export\nprivate transcript"
+        );
+        let (seq, handle) = payload.abandon_for_recovery();
+        drop(rollout);
+
+        iteron_record::erasure::execute_erasure(
+            &runs_dir,
+            ErasureRequest {
+                operation_id: ErasureOperationId::new("revoke-export-source").unwrap(),
+                authority_id: ErasureAuthorityId::new("wire-value-is-not-authority").unwrap(),
+                target: ErasureTarget::ContentRevocation {
+                    scope_id: ErasureScopeId::new(tenant.0.clone()).unwrap(),
+                    content_digest: sources[0].digest.clone(),
+                },
+                requested_at_unix_ms: 1,
+            },
+        )
+        .expect("revoke source and propagate to export");
+
+        let recovered = iteron_record::PrivateContentDerivativeStore::open_registered(
+            &runs_dir,
+            tenant,
+            run,
+            iteron_record::PrivateContentNamespace::Export,
+            iteron_record::PrivateContentClass::Export,
+            iteron_record::PrivateContentRetention::Session,
+            transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES,
+        )
+        .expect("open recovered export owner");
+        assert!(matches!(
+            recovered.read_at(seq, &handle),
+            Err(iteron_record::ContentStoreError::Revoked { .. })
+                | Err(iteron_record::ContentStoreError::Unresolved { .. })
+        ));
+        drop(recovered);
+        std::fs::remove_dir_all(runs_dir).expect("remove export fixture");
+    }
 
     #[test]
     fn injected_post_dispatch_faults_are_typed_unknown_with_exact_ui_text() {

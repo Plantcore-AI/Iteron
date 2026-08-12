@@ -239,6 +239,9 @@ pub struct BrokeredEffect {
     pub capability: Capability,
     pub audit_arguments: serde_json::Value,
     pub workspace: String,
+    /// Content-free identity committed before a physical provider request may dispatch. The
+    /// proposal gate requires this exactly for `kind == "provider"` and forbids it otherwise.
+    pub provider_route_attempt: Option<iteron_protocol::ProviderRouteAttemptIdentity>,
 }
 
 impl BrokeredEffect {
@@ -255,6 +258,7 @@ impl BrokeredEffect {
             self.capability,
             self.audit_arguments.clone(),
             self.workspace.clone(),
+            self.provider_route_attempt.clone(),
         )
     }
 }
@@ -365,6 +369,7 @@ pub struct EffectTicket {
     turn: TurnId,
     effect_id: EffectId,
     kind: String,
+    provider_route_attempt: Option<iteron_protocol::ProviderRouteAttemptIdentity>,
     /// When the write-ahead intent became durable. The ticket is the only object that already
     /// survives from admission to terminal, which makes it the correct — and only — carrier for a
     /// measurement of the whole admitted lifetime. Holding it here is what lets ONE seam measure
@@ -410,6 +415,64 @@ pub enum Settlement {
     Unknown(String),
 }
 
+/// Validate the terminal against the exact ticket that authorised dispatch.
+///
+/// This is intentionally a mint-time rule. Historical JSON remains decodable, while every new
+/// provider terminal must carry the same route digest and physical ordinal committed in its
+/// pre-dispatch intent. Non-provider terminals cannot smuggle provider accounting onto another
+/// effect class.
+fn validate_terminal_for_ticket(
+    terminal: &EventKind,
+    expected_id: &EffectId,
+    expected_kind: &str,
+    expected_provider_attempt: Option<&iteron_protocol::ProviderRouteAttemptIdentity>,
+) -> Result<(), &'static str> {
+    let provider_accounting = match terminal {
+        EventKind::EffectDone {
+            id,
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectFailed {
+            id,
+            tool,
+            provider_route_attempt,
+            ..
+        }
+        | EventKind::EffectUnknown {
+            id,
+            tool,
+            provider_route_attempt,
+            ..
+        } => {
+            if id != expected_id || tool != expected_kind {
+                return Err("effect terminal identity does not match its durable intent ticket");
+            }
+            provider_route_attempt.as_ref()
+        }
+        EventKind::ToolDone {
+            effect_id, tool, ..
+        } => {
+            if effect_id.as_ref() != Some(expected_id) || tool.as_deref() != Some(expected_kind) {
+                return Err("tool terminal identity does not match its durable intent ticket");
+            }
+            None
+        }
+        _ => return Err("an effect ticket can only settle with an effect terminal"),
+    };
+
+    match (expected_provider_attempt, provider_accounting) {
+        (Some(expected), Some(accounting)) if accounting.identity() == *expected => Ok(()),
+        (Some(_), Some(_)) => {
+            Err("provider terminal route identity does not match its pre-dispatch intent")
+        }
+        (Some(_), None) => Err("provider terminal omits its pre-dispatch route identity"),
+        (None, Some(_)) => Err("non-provider terminal carries provider route accounting"),
+        (None, None) => Ok(()),
+    }
+}
+
 /// Phase one of the one and only dispatch sequence: admit the identity, validate the proposal,
 /// fsync the write-ahead intent. The executor has NOT run when this returns.
 pub fn open_effect<L>(
@@ -436,6 +499,7 @@ where
         capability,
         audit_arguments,
         workspace,
+        provider_route_attempt,
     } = effect;
     log.append_effect(&Event {
         seq: Seq::ZERO,
@@ -447,12 +511,14 @@ where
             capability,
             arguments: audit_arguments,
             workspace,
+            provider_route_attempt: provider_route_attempt.clone(),
         },
     })?;
     Ok(EffectTicket {
         turn,
         effect_id,
         kind,
+        provider_route_attempt,
         // Started AFTER the intent is durable, so the measurement covers the executor and not the
         // fsync that authorised it. A reader comparing effects across runs must not see one class
         // absorb the log's write latency because its intent happened to be larger.
@@ -474,8 +540,11 @@ where
         turn,
         effect_id,
         kind,
+        provider_route_attempt,
         opened_at,
     } = ticket;
+    let expected_id = effect_id.clone();
+    let expected_kind = kind.clone();
     let elapsed_ms = duration_ms_ceil(opened_at.elapsed());
     let terminal = match settlement {
         // The executor supplies the terminal; the BOUNDARY supplies the measurement. Stamping it
@@ -487,21 +556,25 @@ where
             id,
             tool,
             duration_ms,
+            provider_route_attempt,
         }) => EventKind::EffectDone {
             id,
             tool,
             duration_ms: duration_ms.or(Some(elapsed_ms)),
+            provider_route_attempt,
         },
         Settlement::Definite(EventKind::EffectFailed {
             id,
             tool,
             reason,
             duration_ms,
+            provider_route_attempt,
         }) => EventKind::EffectFailed {
             id,
             tool,
             reason,
             duration_ms: duration_ms.or(Some(elapsed_ms)),
+            provider_route_attempt,
         },
         // A registry tool settles as `ToolDone`, whose `ToolResult` already carries `latency_ms`
         // measured at the registry. Stamping a second, differently-scoped number onto it would put
@@ -514,8 +587,18 @@ where
             id: effect_id,
             tool: kind,
             reason,
+            provider_route_attempt: provider_route_attempt
+                .clone()
+                .map(iteron_protocol::ProviderRouteAttemptAccounting::outcome_unobservable),
         },
     };
+    validate_terminal_for_ticket(
+        &terminal,
+        &expected_id,
+        &expected_kind,
+        provider_route_attempt.as_ref(),
+    )
+    .map_err(BrokerError::Proposal)?;
     log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
@@ -562,6 +645,7 @@ where
         capability,
         audit_arguments,
         workspace,
+        provider_route_attempt: None,
     };
     let outcome = broker_effect(log, admissions, effect, move || async move {
         let mut outcome: ToolExecution = execute(intent).await.into();
@@ -615,6 +699,7 @@ mod tests {
                 capability: Capability::ReversibleLocal,
                 arguments: serde_json::json!({"path":"f"}),
                 workspace: "/repo".into(),
+                provider_route_attempt: None,
             },
         }
     }
@@ -814,6 +899,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
                 id: EffectId("fx1-00000001-0000".into()),
                 tool: "edit".into(),
                 reason: "crash window".into(),
+                provider_route_attempt: None,
             },
         };
         assert_eq!(
@@ -1027,6 +1113,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
                 capability: Capability::ReversibleLocal,
                 audit_arguments: serde_json::json!({"key":"profile","bytes":42}),
                 workspace: "/repo".into(),
+                provider_route_attempt: None,
             },
         )
     }
@@ -1159,6 +1246,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             capability: Capability::IrreversibleExternal,
             audit_arguments: serde_json::json!({"endpoint":"/v1/messages"}),
             workspace: "/repo".into(),
+            provider_route_attempt: None,
         };
 
         let outcome: BrokeredOutcome<u8> = broker_effect(

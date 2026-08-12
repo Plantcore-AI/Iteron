@@ -50,12 +50,13 @@ pub(crate) struct RouteView {
     pub provider_id: String,
     pub provider_display_name: String,
     pub model_id: String,
-    /// The exact API root the next request is dispatched to, including its version prefix. A BYOK
-    /// operator debugging a 401 needs this and the credential name before anything else.
+    /// The exact API root the next request is dispatched to. Renderers must project only its
+    /// scheme/host/port; userinfo, query text, and operator path components are not status data.
     pub api_root: String,
     pub adapter: String,
     pub error_profile: String,
-    /// `env NAME` or `file /path` plus presence/expiry. Never a credential value.
+    /// `env NAME` or `file /path` plus presence/expiry. `rows()` keeps only the environment name or
+    /// credential-file basename, so this exact descriptor never leaks a machine path to status.
     pub credential: String,
     pub catalog_provenance: String,
     pub context_window_tokens: Option<u64>,
@@ -177,10 +178,10 @@ impl RouteView {
                 },
             ),
             ("model", self.model_id.clone()),
-            ("api_root", self.api_root.clone()),
+            ("api_root", status_api_root(&self.api_root)),
             ("adapter", self.adapter.clone()),
             ("error profile", self.error_profile.clone()),
-            ("credential", self.credential.clone()),
+            ("credential", status_credential(&self.credential)),
             ("catalog", self.catalog_provenance.clone()),
         ];
         if let Some(window) = self.context_window_tokens {
@@ -193,10 +194,109 @@ impl RouteView {
             rows.push(("capability source", source.clone()));
         }
         if let Some(reason) = &self.blocked_reason {
-            rows.push(("blocked", reason.clone()));
+            rows.push(("blocked", status_reason(reason, &self.credential)));
         }
         rows
     }
+}
+
+const MAX_STATUS_METADATA_CHARS: usize = 256;
+
+fn bounded_status_text(value: &str) -> String {
+    let mut output = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_STATUS_METADATA_CHARS)
+        .collect::<String>();
+    if value
+        .chars()
+        .filter(|character| !character.is_control())
+        .count()
+        > MAX_STATUS_METADATA_CHARS
+    {
+        output.push('…');
+    }
+    output
+}
+
+fn status_api_root(value: &str) -> String {
+    let Ok(parsed) = url::Url::parse(value) else {
+        return "(endpoint unavailable)".into();
+    };
+    let Some(host) = parsed.host_str() else {
+        return "(endpoint host unavailable)".into();
+    };
+    let mut endpoint = format!("{}://{host}", parsed.scheme());
+    if let Some(port) = parsed.port() {
+        endpoint.push(':');
+        endpoint.push_str(&port.to_string());
+    }
+    bounded_status_text(&endpoint)
+}
+
+fn status_credential(value: &str) -> String {
+    if matches!(value, "(unresolved)" | "(none)") {
+        return value.into();
+    }
+    if let Some(rest) = value.strip_prefix("env ") {
+        let name = rest.split_whitespace().next().unwrap_or_default();
+        if !valid_env_name(name) {
+            return "environment credential source present (details withheld)".into();
+        }
+        let state = if rest.contains("(absent)") {
+            " (absent)"
+        } else if rest.contains("(expired)") {
+            " (expired)"
+        } else if rest.contains("(present)") {
+            " (present)"
+        } else {
+            ""
+        };
+        return format!("env {name}{state}");
+    }
+    let Some(rest) = value.strip_prefix("file ") else {
+        return "credential source present (details withheld)".into();
+    };
+    let (path, suffix) = rest
+        .split_once(" (")
+        .map_or((rest, ""), |(path, suffix)| (path, suffix));
+    let basename = std::path::Path::new(path)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("credential-file");
+    if suffix.is_empty() {
+        format!("file {}", bounded_status_text(basename))
+    } else {
+        format!(
+            "file {} ({})",
+            bounded_status_text(basename),
+            bounded_status_text(suffix)
+        )
+    }
+}
+
+fn status_reason(reason: &str, credential: &str) -> String {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("credential") || lower.contains("api key") || lower.contains("token") {
+        let source = status_credential(credential);
+        return format!("credential unavailable · {source}");
+    }
+    if lower.contains("not in this configuration") || lower.contains("not configured") {
+        return "provider is not configured".into();
+    }
+    if lower.contains("model") {
+        return "model is unavailable on the selected route".into();
+    }
+    "route unavailable (details withheld)".into()
+}
+
+fn valid_env_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 fn adapter_label(adapter: iteron_provider::AdapterKind) -> &'static str {
@@ -249,23 +349,25 @@ mod tests {
         );
     }
 
-    /// A failing BYOK operator needs the endpoint and the credential NAME; neither was ever shown
-    /// by `/config` or `/status`, and neither may be a credential VALUE.
+    /// A failing BYOK operator needs the endpoint host and credential source name; status must not
+    /// expose URL userinfo/query text, a credential value, or an absolute credential-file path.
     #[test]
     fn i26_route_rows_name_the_endpoint_and_the_credential_source_but_no_value() {
         let view = RouteView {
             provider_id: "gateway".into(),
             provider_display_name: "Gateway".into(),
             model_id: "vendor/model-1".into(),
-            api_root: "https://gateway.example/v1".into(),
+            api_root: "https://user:api-sentinel@gateway.example/v1?token=query-sentinel".into(),
             adapter: "openai_chat".into(),
             error_profile: "custom".into(),
-            credential: "env GATEWAY_KEY".into(),
+            credential: "file /private/operator/credential-value-sentinel.json (absent)".into(),
             catalog_provenance: "provider catalog (fresh)".into(),
             context_window_tokens: Some(128_000),
             max_output_tokens: Some(8192),
             capability_source: Some("vendor snapshot".into()),
-            blocked_reason: None,
+            blocked_reason: Some(
+                "missing credential (file /private/operator/credential-value-sentinel.json)".into(),
+            ),
             limits: limits(),
         };
         let rows = view.rows();
@@ -276,7 +378,33 @@ mod tests {
             rows.iter()
                 .find(|(key, _)| *key == "api_root")
                 .map(|(_, value)| value.as_str()),
-            Some("https://gateway.example/v1")
+            Some("https://gateway.example")
+        );
+        let rendered = rows
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("credential-value-sentinel.json"));
+        for forbidden in ["api-sentinel", "query-sentinel", "/private/operator"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "status leaked {forbidden}: {rendered}"
+            );
+        }
+        let mut forged = view.clone();
+        forged.credential = "raw-secret-value-sentinel".into();
+        forged.api_root = "invalid-endpoint-value-sentinel".into();
+        forged.blocked_reason = None;
+        let forged_rows = forged.rows();
+        assert!(forged_rows.iter().any(|(key, value)| {
+            *key == "credential" && value == "credential source present (details withheld)"
+        }));
+        assert!(
+            !forged_rows
+                .iter()
+                .any(|(_, value)| value.contains("raw-secret-value-sentinel")
+                    || value.contains("invalid-endpoint-value-sentinel"))
         );
         assert_eq!(view.short_label(), "gateway/model-1");
     }

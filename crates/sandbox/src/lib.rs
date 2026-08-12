@@ -25,6 +25,7 @@
 //! `egress` is a capability the caller must explicitly request, and granting it is an operator
 //! decision recorded above this crate (ADR-007 §2: network tests are a separate, gated escalation).
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -38,12 +39,22 @@ mod persistent;
 /// lifetime rules rather than a port of this one.
 #[cfg(unix)]
 pub mod pty;
+#[cfg(unix)]
+mod pty_async;
 pub mod seatbelt;
 
 pub use persistent::{
     ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
     spawn_confined_process_from_workspace,
 };
+#[cfg(unix)]
+pub use persistent_pty::{
+    ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess, ConfinedPtyResize,
+    spawn_confined_pty_process,
+};
+
+#[cfg(unix)]
+mod persistent_pty;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
@@ -81,6 +92,10 @@ pub struct Confinement {
     /// secret detection intentionally remains a second layer; custom names such as `GATEWAY_KEY`
     /// must also be removed from model-driven child processes.
     pub sensitive_env_names: Vec<String>,
+    /// Exact, session-pinned environment inherited by process tools. `None` preserves the legacy
+    /// caller-owned ambient filtering used by ordinary shell execution; `Some` is immutable and
+    /// always applied with `env_clear` before backend-specific presentation variables are added.
+    pub child_environment: Option<Vec<(OsString, OsString)>>,
     /// Run with the operator's own authority: no `sandbox-exec`, no `bwrap`, no profile. Every
     /// other field except the ceilings and `sensitive_env_names` becomes inert, because there is
     /// no backend left to enforce them. This is the harness default (owner-directed, 2026-08-05).
@@ -137,6 +152,7 @@ impl Confinement {
             timeout_secs: 120,
             max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
             sensitive_env_names: Vec::new(),
+            child_environment: None,
             unconfined,
         }
     }
@@ -159,6 +175,28 @@ pub struct RunOutput {
 const POST_KILL_DRAIN_SECS: u64 = 1;
 #[cfg(unix)]
 const TERMINATION_GRACE_MS: u64 = 50;
+
+/// Immutable process-group termination policy consumed by every sandbox backend.
+///
+/// Keeping the policy typed and exported lets the runtime resolver attest the exact physical
+/// owner rather than restating an unrelated enum literal. The implementation below reads these
+/// same fields for TERM -> grace -> KILL -> bounded reap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessSignalKillEscalationPolicy {
+    pub term_grace_milliseconds: u64,
+    pub post_kill_reap_seconds: u64,
+}
+
+impl ProcessSignalKillEscalationPolicy {
+    pub const ID: &'static str = "term_grace_kill_reap";
+}
+
+pub const fn process_signal_kill_escalation_policy() -> ProcessSignalKillEscalationPolicy {
+    ProcessSignalKillEscalationPolicy {
+        term_grace_milliseconds: TERMINATION_GRACE_MS,
+        post_kill_reap_seconds: POST_KILL_DRAIN_SECS,
+    }
+}
 
 #[derive(Default)]
 struct BoundedCapture {
@@ -273,11 +311,12 @@ impl Drop for ProcessGroupDropGuard {
 async fn terminate_with_grace(
     child: &mut tokio::process::Child,
 ) -> Option<std::process::ExitStatus> {
+    let policy = process_signal_kill_escalation_policy();
     #[cfg(unix)]
     {
         signal_process_group(child.id(), libc::SIGTERM);
         if let Ok(Ok(status)) = tokio::time::timeout(
-            std::time::Duration::from_millis(TERMINATION_GRACE_MS),
+            std::time::Duration::from_millis(policy.term_grace_milliseconds),
             child.wait(),
         )
         .await
@@ -291,7 +330,7 @@ async fn terminate_with_grace(
     // platforms. The fixed reap ceiling prevents a hostile child from wedging shutdown forever.
     let _ = child.start_kill();
     tokio::time::timeout(
-        std::time::Duration::from_secs(POST_KILL_DRAIN_SECS),
+        std::time::Duration::from_secs(policy.post_kill_reap_seconds),
         child.wait(),
     )
     .await
@@ -396,7 +435,7 @@ pub(crate) async fn run_direct(
     cmd.arg("-c").arg(command).current_dir(&conf.workspace);
     // No scratch redirection: an unconfined child shares the operator's own temp directory, since
     // a private scratch exists to keep a CONFINED child out of the ambient one.
-    confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
+    apply_confinement_environment(&mut cmd, conf);
     cmd.env("TERM", "dumb")
         .env("PAGER", "cat")
         .env("MANPAGER", "cat")
@@ -529,6 +568,57 @@ pub fn confine_env_with_exact(cmd: &mut tokio::process::Command, exact: &[String
         if is_secret_env_key(&k) {
             cmd.env_remove(&k);
         }
+    }
+}
+
+/// Capture the exact ambient environment admitted by an immutable child-process policy.
+///
+/// Values never appear in an error or durable policy record. A ceiling violation refuses the
+/// whole snapshot instead of silently dropping entries, because a partial PATH/HOME/toolchain
+/// environment would make resumed executions behave differently from the pinned owner.
+pub fn bounded_child_environment(
+    reuse: bool,
+    max_entries: usize,
+    max_bytes: usize,
+    blocked_names: &[String],
+    sensitive_env_names: &[String],
+) -> Result<Vec<(OsString, OsString)>, &'static str> {
+    if !reuse {
+        return Ok(Vec::new());
+    }
+    let mut retained = std::env::vars_os()
+        .filter(|(key, _)| {
+            let Some(key) = key.to_str() else {
+                return false;
+            };
+            !is_secret_env_key(key)
+                && !blocked_names.iter().any(|name| name == key)
+                && !sensitive_env_names.iter().any(|name| name == key)
+        })
+        .collect::<Vec<_>>();
+    retained.sort_by(|left, right| left.0.cmp(&right.0));
+    let encoded_bytes = retained.iter().try_fold(0_usize, |total, (key, value)| {
+        total
+            .checked_add(encoded_len(key.as_os_str()))?
+            .checked_add(1)?
+            .checked_add(encoded_len(value.as_os_str()))
+    });
+    if retained.len() > max_entries || encoded_bytes.is_none_or(|bytes| bytes > max_bytes) {
+        return Err("ambient child environment exceeds its immutable entry or byte ceiling");
+    }
+    Ok(retained)
+}
+
+fn encoded_len(value: &OsStr) -> usize {
+    value.as_encoded_bytes().len()
+}
+
+pub(crate) fn apply_confinement_environment(cmd: &mut tokio::process::Command, conf: &Confinement) {
+    if let Some(environment) = &conf.child_environment {
+        cmd.env_clear();
+        cmd.envs(environment.iter().cloned());
+    } else {
+        confine_env_with_exact(cmd, &conf.sensitive_env_names);
     }
 }
 

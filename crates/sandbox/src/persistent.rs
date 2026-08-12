@@ -1,28 +1,34 @@
 //! Confined persistent child processes with explicit pipe semantics.
 //!
 //! This is deliberately not a PTY abstraction. Linux uses the same bubblewrap confinement as the
-//! one-shot sandbox plus its PID namespace and parent-death semantics, while giving an owning
-//! controller bounded access to stdin/stdout/stderr. Other platforms refuse before spawn: macOS
-//! process groups cannot contain a descendant that calls `setsid`, and Windows needs a Job Object.
+//! one-shot sandbox plus its PID namespace and parent-death semantics. macOS uses Seatbelt plus a
+//! dedicated process group for protocol-style children that require distinct stdin/stdout/stderr.
+//! Windows still refuses before spawn because it needs a Job Object.
 
 use crate::{Confinement, SandboxError};
 use std::fs::File;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::process::Stdio;
 
 /// The confinement backend and transport actually used by a persistent process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersistentBackend {
     LinuxBubblewrapPipes,
+    LinuxBubblewrapPty,
+    MacOsSeatbeltPipes,
+    MacOsSeatbeltPty,
 }
 
 impl PersistentBackend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LinuxBubblewrapPipes => "linux-bubblewrap-pipes",
+            Self::LinuxBubblewrapPty => "linux-bubblewrap-pty",
+            Self::MacOsSeatbeltPipes => "macos-seatbelt-pipes",
+            Self::MacOsSeatbeltPty => "macos-seatbelt-pty",
         }
     }
 }
@@ -39,6 +45,8 @@ pub struct ConfinedProcess {
     control: ConfinedProcessControl,
     #[cfg(unix)]
     exit_signal: tokio::signal::unix::Signal,
+    #[cfg(target_os = "macos")]
+    _scratch: Option<crate::seatbelt::ScratchCleanup>,
 }
 
 struct ProcessGroupToken {
@@ -56,8 +64,16 @@ struct ProcessGroupToken {
 pub struct ConfinedProcessControl(Arc<ProcessGroupToken>);
 
 impl ConfinedProcessControl {
+    pub(crate) fn for_child(pid: Option<u32>) -> Self {
+        Self(Arc::new(ProcessGroupToken {
+            #[cfg(unix)]
+            pid,
+            armed: Mutex::new(true),
+        }))
+    }
+
     #[cfg(unix)]
-    fn signal_while_owned(&self, signal: libc::c_int) {
+    pub(crate) fn signal_while_owned(&self, signal: libc::c_int) {
         let armed = self
             .0
             .armed
@@ -69,7 +85,7 @@ impl ConfinedProcessControl {
     }
 
     #[cfg(unix)]
-    fn abandon(&self) {
+    pub(crate) fn abandon(&self) {
         *self
             .0
             .armed
@@ -223,8 +239,8 @@ impl Drop for ConfinedProcess {
 /// Spawn one command under the platform confinement with piped standard streams.
 ///
 /// Linux uses a capability-probed root-owned bubblewrap with `--unshare-pid` and
-/// `--die-with-parent`. Every other platform returns [`SandboxError::Unsupported`] before child
-/// spawn. This function never falls back to an unconfined process.
+/// `--die-with-parent`; macOS uses Seatbelt and a dedicated process group. This function never
+/// falls back to an unconfined process.
 pub async fn spawn_confined_process(
     command: &str,
     conf: &Confinement,
@@ -237,10 +253,15 @@ pub async fn spawn_confined_process(
         let mut process = tokio::process::Command::new(binary);
         process.args(crate::bubblewrap::bwrap_args_for_persistent(conf, command));
         configure_pipes(&mut process, conf);
-        spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes).await
+        spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes, None).await
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        spawn_macos_pipes(command, conf, None).await
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (command, conf);
         Err(SandboxError::Unsupported)
@@ -274,21 +295,88 @@ pub async fn spawn_confined_process_from_workspace(
         ));
         crate::bubblewrap::inherit_fd_in_tokio_command(&mut process, descriptor);
         configure_pipes(&mut process, conf);
-        let spawned = spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes).await;
+        let spawned = spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes, None).await;
         drop(inherited);
         spawned
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let pinned = workspace.metadata().map_err(|error| {
+            SandboxError::Profile(format!("inspect workspace capability: {error}"))
+        })?;
+        let visible = std::fs::metadata(&conf.workspace)
+            .map_err(|error| SandboxError::Profile(format!("inspect workspace path: {error}")))?;
+        if pinned.dev() != visible.dev() || pinned.ino() != visible.ino() {
+            return Err(SandboxError::Profile(
+                "workspace path no longer names the admitted directory capability".into(),
+            ));
+        }
+        spawn_macos_pipes(command, conf, Some(workspace)).await
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (command, conf, workspace);
         Err(SandboxError::Unsupported)
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+async fn spawn_macos_pipes(
+    command: &str,
+    conf: &Confinement,
+    workspace: Option<&File>,
+) -> Result<ConfinedProcess, SandboxError> {
+    use std::os::fd::AsRawFd as _;
+
+    if !std::path::Path::new("/usr/bin/sandbox-exec").is_file() {
+        return Err(SandboxError::Unsupported);
+    }
+    crate::seatbelt::prepare_private_scratch(&conf.scratch)?;
+    let scratch = crate::seatbelt::ScratchCleanup(conf.scratch.clone());
+    let profile = crate::seatbelt::profile(conf)?;
+    let mut process = tokio::process::Command::new("/usr/bin/sandbox-exec");
+    process
+        .arg("-p")
+        .arg(profile)
+        .arg(crate::confined_shell())
+        .arg("-c")
+        .arg(command);
+    if let Some(workspace) = workspace {
+        let pinned = workspace.try_clone().map_err(|error| {
+            SandboxError::Profile(format!("duplicate workspace capability: {error}"))
+        })?;
+        let descriptor = pinned.as_raw_fd();
+        // SAFETY: `fchdir` is async-signal-safe and the owned CLOEXEC duplicate is captured by the
+        // callback, so it remains live in the fork child until cwd has been bound to that exact
+        // directory vnode. Exec then closes it rather than leaking the capability to the server.
+        unsafe {
+            process.pre_exec(move || {
+                let _keep_capability_live = &pinned;
+                if libc::fchdir(descriptor) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    } else {
+        process.current_dir(&conf.workspace);
+    }
+    configure_pipes(&mut process, conf);
+    spawn_checked(
+        process,
+        PersistentBackend::MacOsSeatbeltPipes,
+        Some(scratch),
+    )
+    .await
+}
+
+#[cfg(unix)]
 fn configure_pipes(process: &mut tokio::process::Command, conf: &Confinement) {
-    crate::confine_env_with_exact(process, &conf.sensitive_env_names);
+    crate::apply_confinement_environment(process, conf);
     process
         .env("TERM", "dumb")
         .env("PAGER", "cat")
@@ -303,10 +391,12 @@ fn configure_pipes(process: &mut tokio::process::Command, conf: &Confinement) {
     crate::configure_process_group(process);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn spawn_checked(
     mut command: tokio::process::Command,
     backend: PersistentBackend,
+    #[cfg(target_os = "macos")] scratch: Option<crate::seatbelt::ScratchCleanup>,
+    #[cfg(not(target_os = "macos"))] _scratch: Option<()>,
 ) -> Result<ConfinedProcess, SandboxError> {
     let exit_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())
         .map_err(|error| SandboxError::Spawn(format!("install SIGCHLD observer: {error}")))?;
@@ -324,6 +414,8 @@ async fn spawn_checked(
             backend,
             control,
             exit_signal,
+            #[cfg(target_os = "macos")]
+            _scratch: scratch,
         };
         let _ = process.terminate_and_reap().await;
         return Err(SandboxError::Spawn(
@@ -335,11 +427,13 @@ async fn spawn_checked(
         child,
         backend,
         exit_signal,
+        #[cfg(target_os = "macos")]
+        _scratch: scratch,
     })
 }
 
 #[cfg(unix)]
-fn child_exit_is_pending(pid: Option<u32>) -> std::io::Result<bool> {
+pub(crate) fn child_exit_is_pending(pid: Option<u32>) -> std::io::Result<bool> {
     let pid = pid.ok_or_else(|| std::io::Error::other("persistent child has no process id"))?;
     let id: libc::id_t = pid;
     // SAFETY: a zeroed siginfo_t is the documented WNOHANG sentinel. P_PID scopes observation to
@@ -370,6 +464,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[cfg(target_os = "macos")]
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     #[tokio::test]
     async fn exit_observation_does_not_reap_or_lose_the_status() {
@@ -425,6 +522,8 @@ mod tests {
             backend: PersistentBackend::LinuxBubblewrapPipes,
             control,
             exit_signal,
+            #[cfg(target_os = "macos")]
+            _scratch: None,
         };
         assert!(
             process
@@ -437,6 +536,51 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn seatbelt_pipe_child_uses_pinned_workspace_and_round_trips_protocol_bytes() {
+        let workspace = std::env::temp_dir().join(format!(
+            "core-seatbelt-pipes-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("workspace-marker"), b"yes").unwrap();
+        let root = std::fs::File::open(&workspace).unwrap();
+        let confinement = crate::Confinement::egress_off(&workspace);
+        let mut process = super::spawn_confined_process_from_workspace(
+            "test -f workspace-marker || exit 17; IFS= read -r line; printf 'reply:%s' \"$line\"",
+            &confinement,
+            &root,
+        )
+        .await
+        .unwrap();
+        assert_eq!(process.backend(), PersistentBackend::MacOsSeatbeltPipes);
+        let mut stdin = process.take_stdin().unwrap();
+        let mut stdout = process.take_stdout().unwrap();
+        let mut stderr = process.take_stderr().unwrap();
+        stdin.write_all(b"ping\n").await.unwrap();
+        drop(stdin);
+        let mut output = String::new();
+        let mut diagnostics = String::new();
+        let (status, stdout_result, stderr_result) = tokio::join!(
+            process.wait(),
+            stdout.read_to_string(&mut output),
+            stderr.read_to_string(&mut diagnostics),
+        );
+        assert!(
+            status.unwrap().success(),
+            "seatbelt diagnostics: {diagnostics}"
+        );
+        stdout_result.unwrap();
+        stderr_result.unwrap();
+        assert_eq!(output, "reply:ping");
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

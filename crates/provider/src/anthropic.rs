@@ -4,8 +4,8 @@
 
 use crate::sse::{ANTHROPIC_CONTENT_BLOCKS_FORMAT, SseFrame, StreamItem, StreamParser};
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult,
+    AdapterKind, ApiRoot, CacheBreakpoint, CacheScope, EffortApplication, ErrorProfile, Provider,
+    ProviderControlCapabilities, ProviderError, TurnRequest, TurnResult,
 };
 use futures_util::StreamExt;
 use iteron_protocol::{Block, Message, ProviderState, Role};
@@ -16,8 +16,6 @@ const DEFAULT_API_ROOT: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_STATE_FORMAT_BYTES: usize = 128;
@@ -34,7 +32,7 @@ pub struct Anthropic {
     error_profile: ErrorProfile,
     static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
     prompt_cache: bool,
-    client: reqwest::Client,
+    client: crate::catalog::RuntimeHttpClient,
 }
 
 impl Anthropic {
@@ -46,7 +44,8 @@ impl Anthropic {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
+        let client = crate::catalog::RuntimeHttpClient::default_reconfigurable()?;
+        Self::with_client(key, api_root, client)
     }
 
     /// Construct against an exact API root while obtaining the HTTP client from an
@@ -59,7 +58,15 @@ impl Anthropic {
         api_root: ApiRoot,
         transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
-        let client = transport.client()?;
+        let client = crate::catalog::RuntimeHttpClient::fixed(transport)?;
+        Self::with_client(key, api_root, client)
+    }
+
+    fn with_client(
+        key: String,
+        api_root: ApiRoot,
+        client: crate::catalog::RuntimeHttpClient,
+    ) -> Result<Self, ProviderError> {
         Ok(Self {
             key,
             route_scope: direct_route_scope(),
@@ -114,12 +121,19 @@ impl Anthropic {
         );
         // Stable prefix first (tools -> system), volatile last (messages) — the cache
         // discipline (ADR-002). cache_control on the system block marks the breakpoint.
-        let cache_prompt = req.cache_system && self.prompt_cache && capabilities.prompt_cache;
+        let requested_breakpoint = match req.controls.prompt_cache.breakpoint {
+            CacheBreakpoint::None if req.cache_system => CacheBreakpoint::Rolling,
+            requested => requested,
+        };
+        let cache_prompt = requested_breakpoint != CacheBreakpoint::None
+            && self.prompt_cache
+            && capabilities.prompt_cache;
+        let cache_control = anthropic_cache_control(req.controls.prompt_cache.ttl_seconds)?;
         let system = if cache_prompt {
             serde_json::json!([{
                 "type": "text",
                 "text": req.system,
-                "cache_control": {"type": "ephemeral"}
+                "cache_control": cache_control
             }])
         } else {
             serde_json::json!(req.system)
@@ -141,7 +155,8 @@ impl Anthropic {
         // is over 90% of the request. Roll a second breakpoint along with the conversation: it
         // sits on the last block of the second-to-last message, so turn N reads every prior turn
         // from cache and only the newest turn is uncached. Two of the four allowed breakpoints.
-        let transcript_breakpoint = cache_prompt
+        let transcript_breakpoint = (cache_prompt
+            && requested_breakpoint == CacheBreakpoint::Rolling)
             .then(|| req.messages.len().checked_sub(2))
             .flatten();
         let image_target = image_target(&req.messages, &req.input_images)?;
@@ -185,6 +200,16 @@ impl Anthropic {
             body["output_config"] = serde_json::json!({"effort": req.reasoning_effort.label()});
         }
         Ok(body)
+    }
+}
+
+fn anthropic_cache_control(ttl_seconds: u32) -> Result<serde_json::Value, ProviderError> {
+    match ttl_seconds {
+        0 | 300 => Ok(serde_json::json!({"type": "ephemeral"})),
+        3_600 => Ok(serde_json::json!({"type": "ephemeral", "ttl": "1h"})),
+        _ => Err(ProviderError::Configuration(
+            "Anthropic prompt-cache TTL was not capability-attested".into(),
+        )),
     }
 }
 
@@ -575,6 +600,33 @@ fn frame_boundary(buf: &str) -> Option<(usize, usize)> {
 
 #[async_trait::async_trait]
 impl Provider for Anthropic {
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.prompt_cache {
+            capabilities
+                .cache_breakpoints
+                .extend([CacheBreakpoint::Rolling, CacheBreakpoint::Explicit]);
+            // The 5 minute form is the wire default. The 1 hour form is attested only for the
+            // first-party endpoint; compatible gateways commonly reject the `ttl` member.
+            capabilities.cache_ttl_seconds.insert(300);
+            capabilities
+                .cache_scopes
+                .extend([CacheScope::Request, CacheScope::Session]);
+            capabilities.cache_invalidates_on_tool_change = true;
+            if self.error_profile == ErrorProfile::Anthropic
+                && self.api_root.as_str() == DEFAULT_API_ROOT
+            {
+                capabilities.cache_ttl_seconds.insert(3_600);
+            }
+        }
+        if self.error_profile == ErrorProfile::Anthropic
+            && self.api_root.as_str() == DEFAULT_API_ROOT
+        {
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         anthropic_effort_application(
             self.error_profile,
@@ -589,9 +641,16 @@ impl Provider for Anthropic {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
-        let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
-        let mut request = self
-            .client
+        let transport = req.controls.transport;
+        let deadline = Instant::now()
+            .checked_add(transport.request_total)
+            .ok_or_else(|| {
+                ProviderError::Configuration(
+                    "provider request total deadline exceeds the platform clock range".into(),
+                )
+            })?;
+        let client = self.client.client(transport)?;
+        let mut request = client
             .post(self.api_root.endpoint("messages")?)
             .header("x-api-key", &self.key)
             .header("anthropic-version", API_VERSION)
@@ -607,7 +666,10 @@ impl Provider for Anthropic {
         {
             request = request.header("anthropic-beta", header);
         }
-        let resp = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, request.send())
+        let header_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(RESPONSE_HEADER_TIMEOUT);
+        let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Http("Anthropic response headers timed out".into()))?
             .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -617,7 +679,9 @@ impl Provider for Anthropic {
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
             let error = tokio::time::timeout(
-                RESPONSE_HEADER_TIMEOUT,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(RESPONSE_HEADER_TIMEOUT),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::AnthropicMessages,
@@ -655,7 +719,7 @@ impl Provider for Anthropic {
                     "Anthropic stream exceeded total deadline".into(),
                 ));
             }
-            let wait = remaining.min(STREAM_IDLE_TIMEOUT);
+            let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
                 .map_err(|_| {
@@ -786,7 +850,22 @@ mod tests {
             cache_system: true,
             thinking_budget: 9_000,
             reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn oversized_request_deadline_is_a_typed_pre_dispatch_refusal() {
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
+        let mut request = request("claude-sonnet-4-5");
+        request.controls.transport.request_total = Duration::MAX;
+        let error = provider
+            .turn(&request, &mut |_| {})
+            .await
+            .expect_err("an unrepresentable deadline must refuse before network dispatch");
+        assert!(matches!(error, ProviderError::Configuration(_)));
+        assert!(error.to_string().contains("platform clock range"));
     }
 
     /// A request whose transcript already holds `messages` alternating turns.

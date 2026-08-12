@@ -1,10 +1,9 @@
 //! Bounded materialization of a pure context plan.
 
+use crate::context_materialization::AuditedGrantBuilder;
 use crate::context_strategy::MAX_CONTEXT_OUTLINE_DEPTH;
-use crate::instructions::framed;
 use crate::memory::{
-    FileMemory, MemBudget, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy,
-    MemoryStrategy,
+    FileMemory, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy, MemoryStrategy,
 };
 use crate::{outline, skills};
 use iteron_protocol::context::{
@@ -13,10 +12,10 @@ use iteron_protocol::context::{
 use iteron_protocol::{Trust, home, slot::StrategySlot};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ContextPlan;
 
-const SKILL_INDEX_BYTES: usize = 2_000;
 const MAX_TRANSCRIPT_VALUES: usize = 1_024;
 
 /// Already-gathered context bytes with their real provenance.
@@ -36,6 +35,11 @@ pub struct ContextPortInput {
     pub transcript: Vec<ContextValue>,
     /// Exact verified plugin skill directories selected by runtime composition.
     pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
+    /// Content-free identity of an isolated benchmark attempt. Parent memory stores are audited
+    /// for contamination but are never materialized while this is present.
+    pub memory_benchmark_scope: Option<[u8; 32]>,
+    /// Immutable run policy for memory and skill materialization.
+    pub materialization: crate::ContextMaterializationPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +82,25 @@ pub trait ContextPort: Send + Sync {
         self.resolve_with_memory_strategy(plan, input, memory_strategy)
             .map(|grant| (grant, None))
     }
+
+    /// Resolve plus the exact bounded source-admission decisions made by the world port. A custom
+    /// port that cannot expose those decisions returns an empty audit rather than inventing them.
+    fn resolve_with_decision_audit(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
+    ) -> Result<
+        (
+            ContextGrant,
+            Option<MemoryRecallAudit>,
+            crate::ContextMaterializationAudit,
+        ),
+        ContextPortError,
+    > {
+        self.resolve_with_memory_audit(plan, input, memory_strategy)
+            .map(|(grant, memory)| (grant, memory, crate::ContextMaterializationAudit::default()))
+    }
 }
 
 /// Filesystem-backed context adapter composed from the existing bounded ctx mechanisms.
@@ -99,6 +122,33 @@ impl ContextPort for DefaultContextPort {
         input: &ContextPortInput,
         memory_strategy: &dyn StrategySlot,
     ) -> Result<ContextGrant, ContextPortError> {
+        self.resolve_with_decision_audit(plan, input, memory_strategy)
+            .map(|(grant, _, _)| grant)
+    }
+
+    fn resolve_with_memory_audit(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
+    ) -> Result<(ContextGrant, Option<MemoryRecallAudit>), ContextPortError> {
+        self.resolve_with_decision_audit(plan, input, memory_strategy)
+            .map(|(grant, memory, _)| (grant, memory))
+    }
+
+    fn resolve_with_decision_audit(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
+    ) -> Result<
+        (
+            ContextGrant,
+            Option<MemoryRecallAudit>,
+            crate::ContextMaterializationAudit,
+        ),
+        ContextPortError,
+    > {
         plan.request
             .validate()
             .map_err(|reason| ContextPortError(reason.into()))?;
@@ -108,8 +158,14 @@ impl ContextPort for DefaultContextPort {
             )));
         }
         let workspace = explicit_workspace(input)?;
-        let mut builder = GrantBuilder::new(&plan.request);
+        let mut builder = AuditedGrantBuilder::new(&plan.request);
         let stores = memory_stores(&workspace, input.home_dir.as_deref());
+        // Capture once so materialization and its explanation cannot make different recency
+        // decisions merely because the wall clock advanced between the two projections.
+        let memory_reference_unix_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let mut memory_audit = None;
 
         for selector in &plan.request.selectors {
             match selector {
@@ -130,7 +186,7 @@ impl ContextPort for DefaultContextPort {
                 }
                 ContextSelector::Instructions { scope } => {
                     let home_core = input.home_dir.as_deref().map(|home| home::path(home, ""));
-                    let bundle = crate::instructions::discover_hierarchy_scope(
+                    let bundle = crate::instructions::discover_hierarchy_scope_with_policy(
                         home_core.as_deref(),
                         &workspace,
                         if input.active_dir.as_os_str().is_empty() {
@@ -139,14 +195,16 @@ impl ContextPort for DefaultContextPort {
                             &input.active_dir
                         },
                         *scope,
+                        input.materialization.instruction_discovery,
                     );
-                    let mut rendered = String::new();
-                    for source in bundle.sources() {
-                        rendered.push_str(&framed(&source.source, &source.content));
-                    }
+                    let rendered =
+                        bundle.render_with_policy(input.materialization.instruction_discovery);
                     builder.push(rendered, Trust::Untrusted, ContextSource::Instructions);
                 }
                 ContextSelector::MemoryKeys { keys } => {
+                    if input.memory_benchmark_scope.is_some() {
+                        continue;
+                    }
                     for key in keys {
                         if let Ok(fact) = FileMemory.read_fact(&stores, key) {
                             builder.push(fact.framed(), fact.trust(), ContextSource::Memory);
@@ -168,13 +226,19 @@ impl ContextPort for DefaultContextPort {
             }
         }
 
-        if plan.recall_memory && builder.remaining_bytes() > 0 {
-            let segment = FileMemory.recall_with_slot(
+        if plan.recall_memory
+            && input.memory_benchmark_scope.is_none()
+            && builder.remaining_bytes() > 0
+        {
+            let (segment, exact_audit) = FileMemory.recall_with_slot_policy_at_audited(
                 &stores,
                 &plan.task,
-                &MemBudget::default(),
+                &input.materialization.memory,
                 memory_strategy,
+                memory_reference_unix_secs,
+                input.materialization.memory_retrieval,
             );
+            memory_audit = Some(exact_audit);
             if !segment.is_empty() {
                 builder.push(
                     segment.render(),
@@ -191,39 +255,34 @@ impl ContextPort for DefaultContextPort {
                 &input.dependency_skill_dirs,
             );
             let active = skills::active_paths_from_text(&plan.task);
-            let listing = catalog
-                .listing_for_paths(SKILL_INDEX_BYTES.min(builder.remaining_bytes()), &active);
+            let listing = catalog.listing_for_paths(
+                input
+                    .materialization
+                    .skill_listing_bytes
+                    .min(builder.remaining_bytes()),
+                &active,
+            );
             if let Some(trust) = catalog.governing_trust() {
                 builder.push(listing, trust, ContextSource::Skills);
             }
         }
 
-        let grant = builder.finish();
+        let (grant, audit) = builder.finish();
         grant
             .validate_for(&plan.request)
             .map_err(|reason| ContextPortError(reason.into()))?;
-        Ok(grant)
-    }
-
-    fn resolve_with_memory_audit(
-        &self,
-        plan: &ContextPlan,
-        input: &ContextPortInput,
-        memory_strategy: &dyn StrategySlot,
-    ) -> Result<(ContextGrant, Option<MemoryRecallAudit>), ContextPortError> {
-        let grant = self.resolve_with_memory_strategy(plan, input, memory_strategy)?;
-        if !plan.recall_memory {
-            return Ok((grant, None));
+        if plan.recall_memory && input.memory_benchmark_scope.is_some() {
+            memory_audit = Some(FileMemory::audit_recall_with_slot_in_scope_and_policy_at(
+                &stores,
+                &plan.task,
+                &input.materialization.memory,
+                memory_strategy,
+                input.memory_benchmark_scope.is_some(),
+                memory_reference_unix_secs,
+                input.materialization.memory_retrieval,
+            ));
         }
-        let workspace = explicit_workspace(input)?;
-        let stores = memory_stores(&workspace, input.home_dir.as_deref());
-        let audit = FileMemory::audit_recall_with_slot(
-            &stores,
-            &plan.task,
-            &MemBudget::default(),
-            memory_strategy,
-        );
-        Ok((grant, Some(audit)))
+        Ok((grant, memory_audit, audit))
     }
 }
 
@@ -248,81 +307,16 @@ impl ContextPort for PortStub {
         plan.request
             .validate()
             .map_err(|reason| ContextPortError(reason.into()))?;
-        let mut builder = GrantBuilder::new(&plan.request);
+        let mut builder = AuditedGrantBuilder::new(&plan.request);
         for segment in self.segments.iter().take(MAX_CONTEXT_SEGMENTS) {
             builder.push(segment.text.clone(), segment.trust, segment.source);
         }
-        let grant = builder.finish();
+        let (grant, _) = builder.finish();
         grant
             .validate_for(&plan.request)
             .map_err(|reason| ContextPortError(reason.into()))?;
         Ok(grant)
     }
-}
-
-struct GrantBuilder<'a> {
-    request: &'a iteron_protocol::context::ContextRequest,
-    segments: Vec<ContextSegment>,
-    bytes: usize,
-}
-
-impl<'a> GrantBuilder<'a> {
-    fn new(request: &'a iteron_protocol::context::ContextRequest) -> Self {
-        Self {
-            request,
-            segments: Vec::new(),
-            bytes: 0,
-        }
-    }
-
-    fn remaining_bytes(&self) -> usize {
-        (self.request.max_bytes as usize).saturating_sub(self.bytes)
-    }
-
-    fn push(&mut self, text: String, trust: Trust, source: ContextSource) {
-        if text.is_empty()
-            || self.segments.len() == MAX_CONTEXT_SEGMENTS
-            || self.remaining_bytes() == 0
-        {
-            return;
-        }
-        let text = bounded_text(&text, self.remaining_bytes());
-        if text.is_empty() {
-            return;
-        }
-        self.bytes = self.bytes.saturating_add(text.len());
-        self.segments.push(ContextSegment {
-            text,
-            trust: trust.min(self.request.trust_ceiling),
-            source,
-        });
-    }
-
-    fn finish(self) -> ContextGrant {
-        ContextGrant {
-            request_id: self.request.request_id,
-            segments: self.segments,
-            bytes: self.bytes as u32,
-        }
-    }
-}
-
-fn bounded_text(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_owned();
-    }
-    const MARKER: &str = "\n… (truncated)";
-    if max_bytes <= MARKER.len() {
-        return String::new();
-    }
-    let mut end = max_bytes - MARKER.len();
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut output = String::with_capacity(max_bytes);
-    output.push_str(&text[..end]);
-    output.push_str(MARKER);
-    output
 }
 
 fn explicit_workspace(input: &ContextPortInput) -> Result<PathBuf, ContextPortError> {
@@ -369,11 +363,15 @@ fn memory_stores(workspace: &Path, home_dir: Option<&Path>) -> Vec<MemStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContextSlotObservation, ContextStrategy};
+    use crate::{ContextSlotObservation, ContextStrategy, MemoryRecallDisposition, MemoryStore};
     use iteron_protocol::Capability;
     use iteron_protocol::capability_set::CapabilitySet;
     use iteron_protocol::context::{ContextSource, RequestId};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -480,6 +478,8 @@ mod tests {
                         trust: Trust::Trusted,
                     }],
                     dependency_skill_dirs: Vec::new(),
+                    memory_benchmark_scope: None,
+                    materialization: crate::ContextMaterializationPolicy::default(),
                 },
             )
             .unwrap();
@@ -501,6 +501,83 @@ mod tests {
             );
         }
         grant.validate_for(&plan.request).unwrap();
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn live_memory_materialization_and_audit_share_one_physical_slot_decision() {
+        struct RefusingMemorySlot {
+            slot: SlotId,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl StrategySlot for RefusingMemorySlot {
+            fn slot(&self) -> &SlotId {
+                &self.slot
+            }
+
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                SlotOutcome {
+                    admitted: CapabilitySet::none(),
+                    decision: serde_json::Value::Null,
+                }
+            }
+        }
+
+        let workspace = temp_workspace();
+        MemoryStore::at(&workspace)
+            .add("single physical memory decision fixture")
+            .unwrap();
+        let mut observation = ContextSlotObservation::baseline(RequestId(29), "memory decision");
+        observation.include_outline = false;
+        observation.instruction_scopes.clear();
+        observation.include_environment = false;
+        observation.transcript_turns = 0;
+        observation.include_skills = false;
+        observation.recall_memory = true;
+        let plan = ContextStrategy::default()
+            .select(&observation, CapabilitySet::only(Capability::ReadOnly))
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let slot = RefusingMemorySlot {
+            slot: SlotId("core/memory".into()),
+            calls: calls.clone(),
+        };
+        let input = ContextPortInput {
+            workspace: workspace.clone(),
+            active_dir: workspace.clone(),
+            materialization: crate::ContextMaterializationPolicy::default(),
+            ..ContextPortInput::default()
+        };
+
+        let (_, audit, _) = DefaultContextPort
+            .resolve_with_decision_audit(&plan, &input, &slot)
+            .unwrap();
+        let audit = audit.expect("a live recall has one exact audit");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(audit.disposition, MemoryRecallDisposition::Abstained);
+        assert!(audit.selected.is_empty());
+
+        let (_, isolated_audit, _) = DefaultContextPort
+            .resolve_with_decision_audit(
+                &plan,
+                &ContextPortInput {
+                    memory_benchmark_scope: Some([7; 32]),
+                    ..input
+                },
+                &slot,
+            )
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "outer scope denial must not invent a slot decision"
+        );
+        assert_eq!(
+            isolated_audit.unwrap().disposition,
+            MemoryRecallDisposition::NotInvokedScopeDenied
+        );
         let _ = std::fs::remove_dir_all(workspace);
     }
 }

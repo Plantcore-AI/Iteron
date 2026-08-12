@@ -65,6 +65,8 @@ pub(super) fn checked_entries(
             return Err(ExplainError::InvalidReportStructure);
         }
     }
+    crate::resolved_set_rules::validate_report(&report.entries)
+        .map_err(|_| ExplainError::InvalidReportStructure)?;
     Ok(entries)
 }
 
@@ -425,7 +427,13 @@ fn external_rule(
 }
 
 pub(super) fn valid_shadowed_reason(value: &str) -> bool {
-    matches!(value, "same_source_profile_overridden" | "lower_precedence")
+    matches!(
+        value,
+        "same_source_profile_overridden"
+            | "lower_precedence"
+            | "project_tightened"
+            | "project_tightening_inert"
+    )
 }
 
 fn safe_code(value: &str) -> bool {

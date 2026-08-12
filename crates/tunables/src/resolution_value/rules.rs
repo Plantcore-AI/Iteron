@@ -35,15 +35,28 @@ pub(crate) fn validate_rules(
                     return Err(format!("sum of terms exceeds `{limit}`"));
                 }
             }
+            CrossFieldRule::SumEquals { terms, total } => {
+                let values = terms
+                    .iter()
+                    .map(|term| {
+                        value_at(value, term)
+                            .and_then(decimal_value)
+                            .ok_or_else(|| format!("sum term `{term}` is not numeric"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if fixed_sum(&values, total).is_none_or(|equal| !equal) {
+                    return Err("sum of terms does not equal the required total".to_owned());
+                }
+            }
             CrossFieldRule::Requires {
                 if_field,
                 equals,
                 then_field,
             } => {
                 if value_at(value, if_field).is_some_and(|actual| rule_value_eq(actual, equals))
-                    && value_at(value, then_field).is_none()
+                    && value_at(value, then_field).is_none_or(|required| !required_truthy(required))
                 {
-                    return Err(format!("`{if_field}` requires `{then_field}`"));
+                    return Err(format!("`{if_field}` requires truthy `{then_field}`"));
                 }
             }
             CrossFieldRule::MutuallyExclusive { fields } => {
@@ -56,6 +69,33 @@ pub(crate) fn validate_rules(
                     return Err(format!("fields {fields:?} are mutually exclusive"));
                 }
             }
+            CrossFieldRule::MapEntryDomain { key, domain } => {
+                if let Some(entry) = value_at(value, key) {
+                    validate_scalar_against_domain(entry, domain)
+                        .map_err(|_| format!("map entry `{key}` is outside its typed domain"))?;
+                }
+            }
+            CrossFieldRule::AtLeastOneNonZero { fields } => {
+                let mut any_non_zero = false;
+                for field in fields {
+                    if let Some(actual) = value_at(value, field) {
+                        any_non_zero |= numeric_non_zero(actual)
+                            .ok_or_else(|| format!("non-zero field `{field}` is not numeric"))?;
+                    }
+                }
+                if !any_non_zero {
+                    return Err(format!("at least one of {fields:?} must be non-zero"));
+                }
+            }
+            CrossFieldRule::Equals {
+                field,
+                value: expected,
+            } => {
+                if value_at(value, field).is_some_and(|actual| !rule_value_eq(actual, expected)) {
+                    return Err(format!("`{field}` must equal its fixed admissible value"));
+                }
+            }
+            CrossFieldRule::ResolvedSetSumLessOrEqual { .. } => {}
             CrossFieldRule::ExternalCeiling { .. } => {}
         }
     }
@@ -67,8 +107,10 @@ pub(crate) fn value_at<'a>(value: &'a ResolutionValue, path: &str) -> Option<&'a
         return Some(value);
     }
     let (head, tail) = path.split_once('.').unwrap_or((path, ""));
-    let ResolutionValue::Object { fields } = value else {
-        return None;
+    let fields = match value {
+        ResolutionValue::Object { fields } => fields,
+        ResolutionValue::Map { entries } => entries,
+        _ => return None,
     };
     let child = fields.get(head)?;
     if tail.is_empty() {
@@ -116,6 +158,30 @@ pub(crate) fn numeric_cmp(left: &ResolutionValue, right: &ResolutionValue) -> Op
     }
 }
 
+fn validate_scalar_against_domain(
+    value: &ResolutionValue,
+    domain: crate::ScalarDomain,
+) -> Result<(), String> {
+    super::validate_scalar(value, domain, &std::collections::BTreeMap::new())
+}
+
+fn numeric_non_zero(value: &ResolutionValue) -> Option<bool> {
+    match value {
+        ResolutionValue::Integer { value } => Some(*value != 0),
+        ResolutionValue::Decimal { value } => Some(value.coefficient != 0),
+        _ => None,
+    }
+}
+
+fn required_truthy(value: &ResolutionValue) -> bool {
+    match value {
+        ResolutionValue::Boolean { value } => *value,
+        ResolutionValue::Integer { value } => *value != 0,
+        ResolutionValue::Decimal { value } => value.coefficient != 0,
+        _ => false,
+    }
+}
+
 pub(super) fn decimal_cmp(left: DecimalValue, right: DecimalValue) -> Option<Ordering> {
     let scale = left.scale.max(right.scale);
     let left = i128::from(left.coefficient)
@@ -132,6 +198,34 @@ fn integer(value: &ResolutionValue) -> Option<i128> {
     }
 }
 
+fn decimal_value(value: &ResolutionValue) -> Option<DecimalValue> {
+    match value {
+        ResolutionValue::Integer { value } => Some(DecimalValue {
+            coefficient: *value,
+            scale: 0,
+        }),
+        ResolutionValue::Decimal { value } => Some(*value),
+        _ => None,
+    }
+}
+
+fn fixed_sum(values: &[DecimalValue], total: DecimalValue) -> Option<bool> {
+    let scale = values
+        .iter()
+        .map(|value| value.scale)
+        .chain([total.scale])
+        .max()?;
+    let scaled = |value: DecimalValue| {
+        i128::from(value.coefficient)
+            .checked_mul(10i128.checked_pow(u32::from(scale - value.scale))?)
+    };
+    let sum = values
+        .iter()
+        .copied()
+        .try_fold(0i128, |sum, value| sum.checked_add(scaled(value)?))?;
+    Some(sum == scaled(total)?)
+}
+
 fn rule_value_eq(value: &ResolutionValue, expected: RuleValue) -> bool {
     match (value, expected) {
         (ResolutionValue::Boolean { value }, RuleValue::Boolean { value: expected }) => {
@@ -139,6 +233,9 @@ fn rule_value_eq(value: &ResolutionValue, expected: RuleValue) -> bool {
         }
         (ResolutionValue::Integer { value }, RuleValue::Integer { value: expected }) => {
             *value == expected
+        }
+        (ResolutionValue::Decimal { value }, RuleValue::Decimal { value: expected }) => {
+            decimal_cmp(*value, expected).is_some_and(|ordering| ordering.is_eq())
         }
         (ResolutionValue::Enum { value }, RuleValue::Enum { value: expected }) => value == expected,
         _ => false,

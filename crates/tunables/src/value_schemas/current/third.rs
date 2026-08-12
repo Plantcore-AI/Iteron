@@ -4,14 +4,50 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     object_schema!(
         "direct_child_allocation",
         [
-            scalar_field!("turns", true, int_domain!(1, 1_000_000, "turns")),
-            scalar_field!("tokens", true, int_domain!(1, 1_000_000_000, "tokens")),
-            scalar_field!("wall_seconds", true, int_domain!(1, 86_400, "seconds"))
+            scalar_field!(
+                "writer_turn_numerator",
+                true,
+                int_domain!(0, 1_000, "parts")
+            ),
+            scalar_field!(
+                "writer_turn_denominator",
+                true,
+                int_domain!(1, 1_000, "parts")
+            ),
+            scalar_field!("strictly_dominant_writer", true, bool_domain!()),
+            scalar_field!(
+                "child_token_numerator",
+                true,
+                int_domain!(0, 1_000, "parts")
+            ),
+            scalar_field!(
+                "child_token_denominator",
+                true,
+                int_domain!(1, 1_000, "parts")
+            ),
+            scalar_field!("child_wall_numerator", true, int_domain!(0, 1_000, "parts")),
+            scalar_field!(
+                "child_wall_denominator",
+                true,
+                int_domain!(1, 1_000, "parts")
+            ),
+            scalar_field!(
+                "minimum_child_turns",
+                true,
+                int_domain!(1, 1_000_000, "turns")
+            ),
+            scalar_field!(
+                "minimum_remaining_wall_seconds",
+                true,
+                int_domain!(1, 86_400, "seconds")
+            )
         ],
         [
-            external_rule!("turns", ParentTurns),
-            external_rule!("tokens", ParentTokens),
-            external_rule!("wall_seconds", ParentWall)
+            less_equal_rule!("writer_turn_numerator", "writer_turn_denominator"),
+            less_equal_rule!("child_token_numerator", "child_token_denominator"),
+            less_equal_rule!("child_wall_numerator", "child_wall_denominator"),
+            external_rule!("minimum_child_turns", ParentTurns),
+            external_rule!("minimum_remaining_wall_seconds", ParentWall)
         ]
     ),
     scalar_schema!(
@@ -24,7 +60,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "report_budget",
         Bytes,
         int_domain!(1, 16_777_216, "bytes"),
-        [external_rule!("$", ContextWindow)]
+        [external_rule!("$", ToolBudget)]
     ),
     object_schema!(
         "join_reduce",
@@ -43,7 +79,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "workflow_aggregate",
         [
             scalar_field!("max_calls", true, int_domain!(1, 1_000_000, "calls")),
-            scalar_field!("max_tokens", true, int_domain!(1, 1_000_000_000, "tokens")),
+            scalar_field!("max_tokens", false, int_domain!(1, 1_000_000_000, "tokens")),
             scalar_field!("max_wall_seconds", true, int_domain!(1, 86_400, "seconds")),
             scalar_field!("max_concurrency", true, int_domain!(1, 1024, "tasks"))
         ],
@@ -82,24 +118,23 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     object_schema!(
         "multimodal_input_admission_decode_envelope",
         [
-            scalar_field!("max_images", true, int_domain!(0, 64, "images")),
+            scalar_field!("max_images", true, int_domain!(0, 8, "images")),
             scalar_field!(
                 "per_image_raw_bytes",
                 true,
-                int_domain!(1, 67_108_864, "bytes")
+                int_domain!(1, 6_291_456, "bytes")
             ),
             scalar_field!(
                 "aggregate_raw_bytes",
                 true,
-                int_domain!(1, 268_435_456, "bytes")
+                int_domain!(1, 25_165_824, "bytes")
             ),
-            scalar_field!("max_dimension", true, int_domain!(1, 65_536, "pixels")),
-            scalar_field!("max_frames", true, int_domain!(1, 4096, "frames"))
+            scalar_field!("max_dimension", true, int_domain!(1, 8_192, "pixels")),
+            scalar_field!("max_frames", true, int_domain!(1, 256, "frames"))
         ],
         [
             less_equal_rule!("per_image_raw_bytes", "aggregate_raw_bytes"),
-            external_rule!("aggregate_raw_bytes", ContextWindow),
-            external_rule!("max_images", ProviderCapability)
+            external_rule!("aggregate_raw_bytes", ToolBudget)
         ]
     ),
     object_schema!(
@@ -164,10 +199,12 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             external_rule!("eager_budget_milliseconds", ParentWall)
         ]
     ),
-    scalar_schema!(
+    object_schema!(
         "operator_prompt_stream",
-        String,
-        text_domain!(1, 1_048_576, Utf8),
+        [
+            scalar_field!("digest_sha256", true, text_domain!(64, 64, Sha256)),
+            scalar_field!("canonical_bytes", true, int_domain!(1, 1_048_576, "bytes"))
+        ],
         [
             external_domain_rule!("$", ContextWindow),
             external_rule!("$", OperatorAuthority)
@@ -277,48 +314,26 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         ],
         [external_catalog_rule!("transport", OperatorAuthority)]
     ),
-    map_schema!(
+    catalog_schema!(
         "hooks_map",
-        0,
         256,
-        finite_enum_domain!(
-            "run_start",
-            "turn_start",
-            "tool_start",
-            "tool_end",
-            "run_end"
-        ),
-        crate::FieldDomain::Object {
-            fields: &[
-                scalar_field!("matcher", true, text_domain!(1, 1024, Regex)),
-                scalar_field!("command", true, text_domain!(1, 4096, Command)),
-                scalar_field!("timeout_seconds", true, int_domain!(1, 3600, "seconds"))
-            ],
-            additional_fields: false
-        },
-        [external_rule!("$", OperatorAuthority)]
+        [
+            scalar_field!("event_id", true, text_domain!(1, 96, NamespacedId)),
+            scalar_field!("command_sha256", true, text_domain!(64, 64, Sha256)),
+            scalar_field!("command_bytes", true, int_domain!(1, 4096, "bytes")),
+            scalar_field!("timeout_seconds", true, int_domain!(1, 3600, "seconds"))
+        ],
+        [external_catalog_rule!("command_sha256", OperatorAuthority)]
     ),
-    map_schema!(
+    catalog_schema!(
         "workflow_graph",
-        1,
-        4096,
-        text_domain!(1, 96, NamespacedId),
-        crate::FieldDomain::Object {
-            fields: &[
-                list_field!(
-                    "dependencies",
-                    true,
-                    0,
-                    4096,
-                    true,
-                    text_domain!(1, 96, NamespacedId)
-                ),
-                scalar_field!("action", true, text_domain!(1, 4096, Identifier)),
-                scalar_field!("max_attempts", true, int_domain!(1, 64, "attempts"))
-            ],
-            additional_fields: false
-        },
-        [external_domain_rule!("$", RunBudget)]
+        64,
+        [
+            scalar_field!("component", true, text_domain!(1, 96, NamespacedId)),
+            scalar_field!("digest_sha256", true, text_domain!(64, 64, Sha256)),
+            scalar_field!("version", true, text_domain!(1, 64, Semver))
+        ],
+        []
     ),
     catalog_schema!(
         "tool_action_space",
@@ -378,14 +393,18 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         ],
         [external_catalog_rule!("version", BenchmarkProtocol)]
     ),
-    map_schema!(
+    object_schema!(
         "environment_snapshot",
-        0,
-        4096,
-        text_domain!(1, 96, NamespacedId),
-        crate::FieldDomain::Scalar {
-            domain: text_domain!(0, 16_384, Utf8)
-        },
+        [
+            scalar_field!("present", true, bool_domain!()),
+            scalar_field!("digest_sha256", true, text_domain!(64, 64, Sha256)),
+            scalar_field!("canonical_bytes", true, int_domain!(0, 4096, "bytes")),
+            scalar_field!(
+                "trust",
+                true,
+                finite_enum_domain!("untrusted", "workspace", "trusted")
+            )
+        ],
         [external_rule!("$", TenantScope)]
     ),
     catalog_schema!(

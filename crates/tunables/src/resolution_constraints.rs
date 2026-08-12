@@ -49,13 +49,24 @@ pub(crate) fn validate_evidence_set(input: &ResolutionInput) -> Result<(), Strin
                 if !matches!(violation, ConstraintViolation::ClampNumeric) {
                     return Err("upper-bound rule has a non-clamp registry action".into());
                 }
-                domain::validate_upper_bound(family, &evidence.field, value)?;
+                domain::validate_upper_bound(family, &evidence.field, value).map_err(|detail| {
+                    format!(
+                        "constraint evidence for {}.{} is invalid: {detail}",
+                        family.id, evidence.field
+                    )
+                })?;
             }
             (ConstraintRelation::Exact, ConstraintValue::Exact { value }) => {
                 if !matches!(violation, ConstraintViolation::Reject) {
                     return Err("exact rule has a non-reject registry action".into());
                 }
-                domain::validate_exact(family, &evidence.field, projection, value, &catalogs)?;
+                domain::validate_exact(family, &evidence.field, projection, value, &catalogs)
+                    .map_err(|detail| {
+                        format!(
+                            "constraint evidence for {}.{} is invalid: {detail}",
+                            family.id, evidence.field
+                        )
+                    })?;
             }
             (ConstraintRelation::AttestedDomain, value @ ConstraintValue::Domain { .. }) => {
                 match (evidence.ceiling, violation) {
@@ -73,7 +84,13 @@ pub(crate) fn validate_evidence_set(input: &ResolutionInput) -> Result<(), Strin
                     projection,
                     value,
                     &catalogs,
-                )?;
+                )
+                .map_err(|detail| {
+                    format!(
+                        "constraint evidence for {}.{} is invalid: {detail}",
+                        family.id, evidence.field
+                    )
+                })?;
             }
             _ => {
                 return Err("constraint relation and evidence variant do not match exactly".into());

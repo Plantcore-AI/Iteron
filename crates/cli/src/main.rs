@@ -1,6 +1,6 @@
 //! `iteron` — the coding agent CLI. Point it at a repo, give it a task, watch it work.
 //!
-//! This is the first thin frontend adapter on the core (ADR-010): it constructs an `Op`,
+//! This is the first thin frontend adapter on the iteron (ADR-010): it constructs an `Op`,
 //! wires the five collaborators, and streams events. A server frontend can follow without
 //! touching the kernel.
 
@@ -9,6 +9,7 @@ mod block;
 mod commands;
 mod config;
 mod editor;
+mod effective_config;
 mod environment;
 mod external_editor;
 mod file_input;
@@ -38,7 +39,9 @@ mod bundle_adapter;
 mod client_event;
 mod route;
 mod runtime;
+mod runtime_tunables;
 mod semantic_text;
+mod session_isolation;
 mod session_view;
 mod setup;
 mod startup;
@@ -147,6 +150,11 @@ enum LocalCommand {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Execute, inspect, or resume receipt-backed record erasure operations.
+    Record {
+        #[command(subcommand)]
+        action: RecordAction,
+    },
     /// Produce the operator pricing material a USD ceiling and a cost display require.
     Pricing {
         #[command(subcommand)]
@@ -201,6 +209,52 @@ enum ConfigAction {
         /// Its new value.
         value: String,
     },
+    /// Explain the exact immutable settings that would govern this run.
+    Explain {
+        /// Resolve the production composition root rather than an offline simulation.
+        #[arg(long)]
+        effective: bool,
+        /// Limit output to one canonical family id or semantic key.
+        #[arg(long)]
+        family: Option<String>,
+        /// Human text or machine-readable JSON.
+        #[arg(long, value_enum, default_value_t = tunables::ExplainFormat::Text)]
+        format: tunables::ExplainFormat,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum RecordAction {
+    /// Delete one inactive session and all private-content references owned only by it.
+    Delete {
+        run_id: String,
+        #[arg(long, value_name = "ID")]
+        operation_id: String,
+    },
+    /// Crypto-shred one content digest and invalidate every derivative handle.
+    Revoke {
+        digest: String,
+        #[arg(long, value_name = "ID")]
+        operation_id: String,
+    },
+    /// Apply a durable, resumable retention operation.
+    Prune {
+        #[arg(long, value_name = "DAYS")]
+        older_than_days: Option<u64>,
+        #[arg(long, value_name = "N")]
+        keep_last: Option<u32>,
+        #[arg(long, value_name = "ID")]
+        operation_id: String,
+    },
+    /// Print one content-free erasure receipt.
+    Receipt { operation_id: String },
+    /// List the bounded receipt inventory, including incomplete operations.
+    Receipts {
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// Resume an incomplete operation from its durable receipt request.
+    Resume { operation_id: String },
 }
 
 /// `iteron pricing …` — the shipped path from "I know what this model costs" to a run that reports a
@@ -328,9 +382,11 @@ fn assemble_system_prompt(
     home_core: Option<&std::path::Path>,
     repository_root: &std::path::Path,
     active_dir: &std::path::Path,
+    policy: iteron_ctx::InstructionDiscoveryPolicy,
 ) -> SystemPromptAssembly {
-    let bundle = iteron_ctx::discover_hierarchy(home_core, repository_root, active_dir);
-    let instruction_bytes = bundle.render();
+    let bundle =
+        iteron_ctx::discover_hierarchy_with_policy(home_core, repository_root, active_dir, policy);
+    let instruction_bytes = bundle.render_with_policy(policy);
     let instruction_trust = if instruction_bytes.is_empty() {
         iteron_protocol::Trust::Trusted
     } else {
@@ -413,6 +469,23 @@ fn warn_if_stale() {
         .unwrap_or_default();
     if let Some(note) = staleness_note(BUILD_DATE, now) {
         eprintln!("{note}");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum HarnessProfileArg {
+    Interactive,
+    Benchmark,
+    Research,
+}
+
+impl From<HarnessProfileArg> for iteron_tunables::RuntimeProfile {
+    fn from(value: HarnessProfileArg) -> Self {
+        match value {
+            HarnessProfileArg::Interactive => Self::Interactive,
+            HarnessProfileArg::Benchmark => Self::Benchmark,
+            HarnessProfileArg::Research => Self::Research,
+        }
     }
 }
 
@@ -527,6 +600,16 @@ struct Cli {
     /// Directory for the append-only rollout (the audit record).
     #[arg(long, default_value = ".iteron/runs")]
     runs_dir: PathBuf,
+
+    /// Internal eval-harness attempt identity. Activates strict parent-memory isolation and
+    /// content-free contamination evidence; hidden because ordinary sessions must inherit memory.
+    #[arg(long, hide = true, value_name = "ATTEMPT")]
+    benchmark_attempt_scope: Option<String>,
+
+    /// Immutable runtime-tunables profile. Benchmark attempts select `benchmark` automatically;
+    /// ordinary runs select `interactive` unless this operator-owned flag says otherwise.
+    #[arg(long, value_enum)]
+    harness_profile: Option<HarnessProfileArg>,
 
     /// Resume a prior run by id: reconstruct its transcript from the rollout and continue
     /// (invariant #2, recoverable). When set, the task argument may be a follow-up instruction.
@@ -668,6 +751,110 @@ fn resolve_runs_dir(cli: &Cli, repo: &std::path::Path) -> PathBuf {
     }
 }
 
+fn erasure_now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn local_erasure_request(
+    runs_dir: &std::path::Path,
+    operation_id: &str,
+    target: iteron_protocol::ErasureTarget,
+) -> anyhow::Result<iteron_protocol::ErasureRequest> {
+    let authority = iteron_record::erasure::authorize_local_erasure(runs_dir)?;
+    Ok(iteron_protocol::ErasureRequest {
+        operation_id: iteron_protocol::ErasureOperationId::new(operation_id)?,
+        authority_id: authority.id().clone(),
+        requested_at_unix_ms: erasure_now_unix_ms(),
+        target,
+    })
+}
+
+fn print_erasure_receipt(receipt: &iteron_protocol::ErasureReceipt) -> anyhow::Result<u8> {
+    println!("{}", serde_json::to_string_pretty(receipt)?);
+    Ok(output::EXIT_SUCCESS)
+}
+
+fn run_record_command(runs_dir: &std::path::Path, action: &RecordAction) -> anyhow::Result<u8> {
+    use iteron_protocol::{ErasureContentDigest, ErasureScopeId, ErasureTarget, ErasureTargetId};
+
+    let scope = || ErasureScopeId::new(TenantId::default().0);
+    match action {
+        RecordAction::Delete {
+            run_id,
+            operation_id,
+        } => {
+            let request = local_erasure_request(
+                runs_dir,
+                operation_id,
+                ErasureTarget::ExactSession {
+                    scope_id: scope()?,
+                    run_id: ErasureTargetId::new(run_id.clone())?,
+                },
+            )?;
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+        }
+        RecordAction::Revoke {
+            digest,
+            operation_id,
+        } => {
+            let request = local_erasure_request(
+                runs_dir,
+                operation_id,
+                ErasureTarget::ContentRevocation {
+                    scope_id: scope()?,
+                    content_digest: ErasureContentDigest::new(digest.clone())?,
+                },
+            )?;
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+        }
+        RecordAction::Prune {
+            older_than_days,
+            keep_last,
+            operation_id,
+        } => {
+            if older_than_days.is_none() && keep_last.is_none() {
+                anyhow::bail!("record prune needs --older-than-days and/or --keep-last");
+            }
+            let request = local_erasure_request(
+                runs_dir,
+                operation_id,
+                ErasureTarget::RetentionPrune {
+                    scope_id: scope()?,
+                    max_age_secs: older_than_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+                    keep_last: *keep_last,
+                },
+            )?;
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+        }
+        RecordAction::Receipt { operation_id } => {
+            let operation_id = iteron_protocol::ErasureOperationId::new(operation_id.clone())?;
+            let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
+                .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
+            print_erasure_receipt(&receipt)
+        }
+        RecordAction::Receipts { limit } => {
+            let receipts = iteron_record::erasure::list_erasure_receipts(runs_dir, *limit)?;
+            println!("{}", serde_json::to_string_pretty(&receipts)?);
+            Ok(output::EXIT_SUCCESS)
+        }
+        RecordAction::Resume { operation_id } => {
+            let operation_id = iteron_protocol::ErasureOperationId::new(operation_id.clone())?;
+            let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
+                .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
+            if receipt.state().is_terminal() {
+                return print_erasure_receipt(&receipt);
+            }
+            print_erasure_receipt(&iteron_record::erasure::execute_erasure(
+                runs_dir,
+                receipt.request().clone(),
+            )?)
+        }
+    }
+}
+
 /// `iteron prune` — the only path that ever deletes a run journal. The policy must be stated: run
 /// journals are append-only and are the sole durable evidence a run happened, so "prune" with no
 /// rule is a question, not a command.
@@ -687,6 +874,21 @@ fn run_prune_command(
         keep_last,
         dry_run,
     };
+    if !dry_run {
+        let operation_id = format!("prune.{}.{}", std::process::id(), erasure_now_unix_ms());
+        let keep_last = keep_last
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("--keep-last exceeds the erasure receipt bound"))?;
+        return run_record_command(
+            runs_dir,
+            &RecordAction::Prune {
+                older_than_days,
+                keep_last,
+                operation_id,
+            },
+        );
+    }
     let report = iteron_record::session::prune(runs_dir, &TenantId::default(), &policy)?;
     let verb = if dry_run { "would remove" } else { "removed" };
     for run in &report.removed {
@@ -844,12 +1046,16 @@ async fn run_cli() -> anyhow::Result<u8> {
                 AuthAction::Logout { provider } => setup::run_auth_logout(provider.clone()).await,
             };
         }
-        Some(LocalCommand::Config { action }) => {
-            return match action {
-                ConfigAction::Get { key } => setup::run_config_get(key.clone()),
-                ConfigAction::Set { key, value } => setup::run_config_set(key, value),
-            };
-        }
+        Some(LocalCommand::Config { action }) => match action {
+            ConfigAction::Get { key } => return setup::run_config_get(key.clone()),
+            ConfigAction::Set { key, value } => {
+                return setup::run_config_set(key, value);
+            }
+            ConfigAction::Explain { effective, .. } if !effective => {
+                anyhow::bail!("`iteron config explain` requires --effective");
+            }
+            ConfigAction::Explain { .. } => {}
+        },
         Some(LocalCommand::Tunables { action }) => return tunables::run(action),
         Some(LocalCommand::Plugin { action }) => {
             let home = config::config_home()
@@ -868,6 +1074,10 @@ async fn run_cli() -> anyhow::Result<u8> {
     // call sites used the raw default, so `iteron -C /elsewhere` wrote its audit record next to
     // whatever directory the process happened to start in.
     let runs_dir = resolve_runs_dir(&cli, &repo);
+
+    if let Some(LocalCommand::Record { action }) = &cli.command {
+        return run_record_command(&runs_dir, action);
+    }
 
     if matches!(cli.command, Some(LocalCommand::Reindex)) {
         let count = iteron_record::reindex(&runs_dir)?;
@@ -1130,6 +1340,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             "warning: ignoring `effort` in the project config (untrusted origin); use --effort, ITERON_EFFORT, or ~/.iteron/config.json"
         );
     }
+    if file.model.is_some() {
+        eprintln!(
+            "warning: ignoring `model` in the project config (untrusted origin); choose it with --model, ITERON_MODEL, or ~/.iteron/config.json"
+        );
+    }
     if file.compaction_trigger_tokens.is_some() {
         eprintln!(
             "warning: ignoring `compaction_trigger_tokens` in the project config (untrusted origin); configure it in ~/.iteron/config.json"
@@ -1194,8 +1409,8 @@ async fn run_cli() -> anyhow::Result<u8> {
         );
     }
     // Retry tuning is resolved at the composition root with project input structurally ignored.
-    // It remains deliberately inactive while `RetryProvider` reports opaque internal attempts:
-    // the kernel refuses that decorator until every physical request gets its own durable intent.
+    // The kernel applies it around individually journaled physical attempts; opaque provider-side
+    // retry decorators remain refused because their hidden attempts cannot cross our WAL boundary.
     let retry_environment = config::load_retry_environment().map_err(anyhow::Error::msg)?;
     let retry_resolution = config::resolve_retry_policy(
         retry_environment,
@@ -1210,7 +1425,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     if retry_resolution.trusted_override_present {
         eprintln!(
-            "warning: retry policy base_ms={} cap_ms={} max_attempts={} is validated but inactive until each physical provider attempt has write-ahead durability",
+            "retry policy: base_ms={} cap_ms={} max_attempts={} (every physical attempt is journaled)",
             retry_resolution.policy.base_ms,
             retry_resolution.policy.cap_ms,
             retry_resolution.policy.max_attempts,
@@ -1233,8 +1448,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             configured_mcp.push(server);
         }
     }
-    mcp::register_configured_servers(&mut registry, &configured_mcp, &pricing_key_env_names)
-        .await?;
+    let mcp_runtime =
+        mcp::register_configured_servers(&mut registry, &configured_mcp, &pricing_key_env_names)?;
     startup.mark(startup::StartupPhase::ToolServer);
 
     // Routing-sensitive defaults never consult the repository config. A cloned project must not
@@ -1339,57 +1554,57 @@ async fn run_cli() -> anyhow::Result<u8> {
         );
     }
 
-    // A project may suggest only a bare model within the already trusted provider. Recognize a
-    // qualifier only when its left side is an actual provider id, preserving legitimate model ids
-    // that themselves contain `:` (for example `ft:gpt-*` or `qwen:7b`).
-    let project_model_is_provider_qualified = file.model.as_deref().is_some_and(|model| {
-        config::has_known_provider_qualifier(model, |provider_id| {
-            provider_directory.entry(provider_id).is_some()
-        })
-    });
-    if project_model_is_provider_qualified {
-        eprintln!(
-            "warning: ignoring provider-qualified `model` in the project config (untrusted origin); a project model may not change the trusted provider or egress destination"
-        );
-    }
     let (mut requested_model, mut model_origin) = match model_candidate {
-        Some((_model, config::ConfigOrigin::ProjectConfig))
-            if project_model_is_provider_qualified =>
-        {
-            (None, None)
-        }
         Some((model, origin)) => (Some(model), Some(origin)),
         None => (None, None),
     };
-    let model_from_project = model_origin == Some(config::ConfigOrigin::ProjectConfig);
     // Owner-directed 2026-08-05: the CLI default follows `Budget::default()` instead of carrying
     // its own smaller number. 40 turns was reached by ordinary multi-file work, and the run ended
     // reporting a budget rather than a result.
-    let trusted_max_turns = config::pick(
+    let trusted_max_turns = config::pick_with_origin(
         cli.max_turns,
         config::env_u32("ITERON_MAX_TURNS"),
         user_file.max_turns,
         Budget::default().max_turns,
     );
-    let max_turns = config::tighten(file.max_turns, trusted_max_turns);
-    let trusted_max_usd = cli
-        .max_usd
-        .or_else(|| config::env_f64("ITERON_MAX_USD"))
-        .or(user_file.max_usd);
-    let max_usd = config::tighten_optional(file.max_usd, trusted_max_usd);
+    let (max_turns, max_turns_origin) =
+        config::tighten_with_origin(file.max_turns, trusted_max_turns);
+    let trusted_max_usd = config::pick_optional_with_origin(
+        cli.max_usd,
+        config::env_f64("ITERON_MAX_USD"),
+        user_file.max_usd,
+    );
+    let max_usd_with_origin = config::tighten_optional_with_origin(file.max_usd, trusted_max_usd);
+    let (max_usd, max_usd_origin) = max_usd_with_origin
+        .map(|(value, origin)| (Some(value), Some(origin)))
+        .unwrap_or((None, None));
     let max_tokens = cli.max_tokens;
-    let trusted_max_wall_secs = cli
-        .max_wall_secs
-        .or(user_file.max_wall_secs)
-        .unwrap_or_else(|| Budget::default().max_wall_secs);
-    let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
+    let max_tokens_origin = max_tokens.map(|_| config::ConfigOrigin::Cli);
+    let trusted_max_wall_secs = config::pick_with_origin(
+        cli.max_wall_secs,
+        None,
+        user_file.max_wall_secs,
+        Budget::default().max_wall_secs,
+    );
+    let (max_wall_secs, max_wall_secs_origin) =
+        config::tighten_with_origin(file.max_wall_secs, trusted_max_wall_secs);
     // Grant-by-default (owner-directed 2026-08-05; README, SECURITY.md and
     // docs/using/permissions-and-sandbox.md are updated to state it): code execution is ON until an
     // operator-owned source turns it off. A cloned repository is still not an authorization
     // principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables
     // it, while a project `true` stays inert.
-    let trusted_allow_code = trusted_allow_code(cli.allow_code, user_file.allow_code);
-    let allow_code = config::tighten_grant(file.allow_code, trusted_allow_code);
+    let trusted_allow_code = (
+        trusted_allow_code(cli.allow_code, user_file.allow_code),
+        if cli.allow_code {
+            config::ConfigOrigin::Cli
+        } else if user_file.allow_code.is_some() {
+            config::ConfigOrigin::UserConfig
+        } else {
+            config::ConfigOrigin::Builtin
+        },
+    );
+    let (allow_code, allow_code_origin) =
+        config::tighten_grant_with_origin(file.allow_code, trusted_allow_code);
 
     // ---- Validate ALL purely-local arguments BEFORE opening the rollout ----
     // A rejected --verify/--effort/--mode (or a no-terminal TUI attempt) must not leave a
@@ -1406,10 +1621,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     let env_effort = config::env_string("ITERON_EFFORT");
     let effort_runtime_override = cli.effort.is_some() || env_effort.is_some();
-    let effort_value = config::pick_run_setting(
+    let (effort_value, effort_origin) = config::pick_with_origin(
         cli.effort.clone(),
         env_effort,
-        None,
         user_file.effort.clone(),
         iteron_protocol::Effort::default().label().to_string(),
     );
@@ -1438,11 +1652,27 @@ async fn run_cli() -> anyhow::Result<u8> {
     // approval channel — while one-shot starts in `acceptEdits` because it has none. Code execution
     // is a separate grant in every mode (ADR-007 §3, R5).
     let mode_runtime_override = cli.mode.is_some();
-    let mode = match cli.mode.as_deref() {
-        Some(s) => iteron_protocol::PermissionMode::parse(s).ok_or_else(|| {
-            anyhow::anyhow!("unknown --mode `{s}` (default|acceptEdits|plan|yolo)")
-        })?,
-        None => default_permission_mode(one_shot),
+    let (mode, mode_origin) = match cli.mode.as_deref() {
+        Some(s) => (
+            iteron_protocol::PermissionMode::parse(s).ok_or_else(|| {
+                anyhow::anyhow!("unknown --mode `{s}` (default|acceptEdits|plan|yolo)")
+            })?,
+            config::ConfigOrigin::Cli,
+        ),
+        None => {
+            let default_mode = default_permission_mode(one_shot);
+            (
+                default_mode,
+                // `default` is the immutable embedded owner. The intentionally different
+                // no-approval-channel posture is selected by this CLI invocation and must be an
+                // admitted override, never a second value attributed to the Builtin owner.
+                if default_mode == iteron_protocol::PermissionMode::Default {
+                    config::ConfigOrigin::Builtin
+                } else {
+                    config::ConfigOrigin::Cli
+                },
+            )
+        }
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
@@ -1465,6 +1695,30 @@ async fn run_cli() -> anyhow::Result<u8> {
     for path in &cli.images {
         one_shot_images.attach_path(path)?;
     }
+    let runtime_profile = cli
+        .harness_profile
+        .map(iteron_tunables::RuntimeProfile::from)
+        .unwrap_or_else(|| {
+            if cli.benchmark_attempt_scope.is_some() {
+                iteron_tunables::RuntimeProfile::Benchmark
+            } else {
+                iteron_tunables::RuntimeProfile::Interactive
+            }
+        });
+    if runtime_profile == iteron_tunables::RuntimeProfile::Benchmark
+        && cli.benchmark_attempt_scope.is_none()
+    {
+        anyhow::bail!("--harness-profile benchmark requires --benchmark-attempt-scope");
+    }
+    if runtime_profile != iteron_tunables::RuntimeProfile::Benchmark
+        && cli.benchmark_attempt_scope.is_some()
+    {
+        anyhow::bail!(
+            "--benchmark-attempt-scope requires the benchmark harness profile; omit --harness-profile or select benchmark"
+        );
+    }
+    session_isolation::SessionIsolationPolicy::from_runtime_profile(runtime_profile)
+        .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;
 
     // Resolve continuation before provider/model selection so a resumed run inherits its last
     // durably recorded route. CLI/environment routing overrides remain authoritative; user/project
@@ -1497,8 +1751,16 @@ async fn run_cli() -> anyhow::Result<u8> {
         None => None,
     };
     let mut resolved_agent_definition_tag = cli.agent_definition_tag.clone();
+    let mut resumed_tunables_checkpoint = None;
     if let Some(resume) = &resume_id {
         let recorded = iteron_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
+        resumed_tunables_checkpoint = Some(
+            iteron_record::tunables_checkpoint_from_events(&recorded)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot resume {resume}: rollout has no immutable tunables checkpoint"
+                )
+            })?,
+        );
         let recorded_agent_definition_tag = recorded.iter().find_map(|event| match &event.kind {
             iteron_protocol::EventKind::RunStart {
                 agent_definition_tag,
@@ -1608,7 +1870,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             ))
         } else if qualified_provider.is_some() {
             provider_directory.resolve_model(model_id, Some(&provider_name))
-        } else if provider_was_explicit || model_from_project {
+        } else if provider_was_explicit {
             let selection = providers::ModelSelection {
                 provider_id: provider_name.clone(),
                 model_id: model_id.to_owned(),
@@ -1672,7 +1934,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         .map(|port| port.resolve_rate_card(&pricing_route, now))
         .transpose()?
         .flatten();
-    if max_usd.is_some_and(|ceiling| ceiling > 0.0) && selected_rate_card.is_none() {
+    if resume_id.is_none()
+        && max_usd.is_some_and(|ceiling| ceiling > 0.0)
+        && selected_rate_card.is_none()
+    {
         // Say how to fix it. This refusal is correct — an unpriced ceiling is not a ceiling — but
         // without a route to the tooling it reads as "this feature is not for you" (I-40).
         anyhow::bail!(
@@ -1719,68 +1984,288 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Capture Git/clock-derived facts only for a fresh run. Resume and fork reuse the durable
     // ContextInjection and therefore do not even invoke the live collector before discarding it.
     let environment_context = match fresh_created_at {
-        Some(created_at) => Some(environment::capture_at(&repo, created_at).await),
+        // Scrub once before both resolution and runtime installation. `Agent` repeats the scrub
+        // defensively at its trust boundary; using the already-scrubbed bytes here makes the
+        // immutable environment_snapshot identity and the durable RunStart payload one truth.
+        Some(created_at) => Some(iteron_record::redact::scrub(
+            &environment::capture_at(&repo, created_at).await,
+        )),
         None => None,
     };
-    let rollout = match locked_resume.take() {
-        Some(rollout) => rollout,
-        None => Rollout::open(&runs_dir, &run, tenant.clone())?,
-    };
-
+    let (max_consecutive_tool_errors, max_consecutive_tool_errors_origin) = cli
+        .max_consecutive_tool_errors
+        .map(|value| (value, config::ConfigOrigin::Cli))
+        .unwrap_or_else(|| {
+            (
+                Budget::default().max_consecutive_tool_errors,
+                config::ConfigOrigin::Builtin,
+            )
+        });
     let budget = Budget {
         max_turns,
         max_usd,
         max_tokens,
         max_wall_secs,
-        max_consecutive_tool_errors: cli
-            .max_consecutive_tool_errors
-            .unwrap_or_else(|| Budget::default().max_consecutive_tool_errors),
+        max_consecutive_tool_errors,
+    };
+    let built_in_policy_capabilities =
+        iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
+            iteron_protocol::Capability::ReadOnly,
+            iteron_protocol::Capability::ReversibleLocal,
+            iteron_protocol::Capability::CodeExecuting,
+            iteron_protocol::Capability::TrustMutating,
+            iteron_protocol::Capability::IrreversibleExternal,
+        ]);
+    let mut authority_ceiling = built_in_policy_capabilities;
+    if let Some(task) = cli.task.as_deref() {
+        let op = iteron_protocol::Op::UserInput {
+            text: task.to_owned(),
+        };
+        let envelope = iteron_protocol::task::TaskEnvelope::from_user_input(
+            iteron_protocol::SubmissionId(0),
+            &op,
+            iteron_protocol::Trust::Trusted,
+            built_in_policy_capabilities,
+        )
+        .expect("a UserInput always constructs a task envelope")
+        .with_budget(budget.clone());
+        authority_ceiling = authority_ceiling.intersect(envelope.ceiling);
+    }
+    let initial_rules = initial_permission_rules(allow_code);
+    let bypass_permissions = !cli.ask_permissions;
+    let mut compaction_policy = iteron_ctx::CompactionPolicy::default();
+    let compaction_owner = if let Some(trigger_tokens) = user_file.compaction_trigger_tokens {
+        compaction_policy.set_fixed_trigger_tokens(trigger_tokens);
+        runtime_tunables::core_facts::CompactionOwner::UserFixed
+    } else {
+        runtime_tunables::core_facts::CompactionOwner::AdaptiveDefault
     };
 
-    // ONE route view, built from the values this run dispatches and enforces with. The banner,
-    // the statusline, `/status`, `/config` and `/model` all read it and derive nothing of their
-    // own, so a displayed route cannot disagree with the request that goes out (I-26).
-    let route = route::RouteView::resolve(
-        &provider_directory,
-        &selection,
-        route::RouteLimits {
-            max_turns: budget.max_turns,
-            max_usd: budget.max_usd,
-            max_tokens: budget.max_tokens,
-            max_wall_secs: budget.max_wall_secs,
-        },
-    );
-
-    eprintln!(
-        "iteron · repo={} · model={} · run={}",
-        repo.display(),
-        model,
-        run
-    );
-    // The endpoint and the credential SOURCE are the two facts a failing BYOK operator needs, and
-    // neither was visible anywhere in the product. They come from the one route view, so the
-    // banner cannot name an endpoint the run is not using.
-    eprintln!(
-        "route: {}:{} · {} · {}",
-        route.provider_id, route.model_id, route.api_root, route.credential
-    );
-    if let Some(reason) = &route.blocked_reason {
-        eprintln!("route blocked: {reason}");
-    }
-    eprintln!("record: {}", rollout.path().display());
-    // Discover operator + hierarchical repository instructions outside the kernel. Every accepted
-    // source gets its own untrusted provenance frame; imports remain confined and the complete
-    // merged prefix is bounded by iteron-ctx before it crosses into the Agent.
     // One config root for the whole binary. `ITERON_CONFIG_HOME` exists so a container or CI
     // runner without HOME is usable at all (I-24); resolving instructions and hooks from a
     // different root than the config would make that fallback a half-measure.
     let home_core = config::config_home().map(|home| home.join(".iteron"));
+
+    let agent_catalog = discover_agent_catalog(&repo, &runtime_plugins.agents);
+    let (mut configured_hooks, configured_telemetry) = if let Some(home) = config::config_home() {
+        let mut hooks = runtime::hooks::Hooks::load_user(&home);
+        for (event, commands) in &runtime_plugins.hooks {
+            for command in commands {
+                if let Err(reason) = hooks.append_verified_plugin(event, command.clone()) {
+                    eprintln!("plugin hook {event:?} refused: {reason}");
+                }
+            }
+        }
+        let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
+        hooks.set_sensitive_env_names(credential_env_names.clone());
+        if !hooks.is_empty() {
+            eprintln!("hooks: loaded from ~/.iteron/config.json (user config)");
+        }
+        (hooks, telemetry)
+    } else {
+        (runtime::hooks::Hooks::default(), None)
+    };
+    // Resolve the complete fresh runtime exactly once before creating its rollout. Resume does
+    // the inverse: decode the immutable V2 checkpoint while retaining the existing writer lock
+    // and never consult current registry defaults. Both paths then use the same typed projection.
+    let selected_entry = provider_directory
+        .entry(&selection.provider_id)
+        .ok_or_else(|| anyhow::anyhow!("selected provider disappeared before composition"))?;
+    let selected_api_root = selected_entry.instance.api_root().as_str().to_owned();
+    let selected_provider_origin = if selection.provider_id == provider_name {
+        provider_origin
+    } else {
+        model_origin.unwrap_or(config::ConfigOrigin::Builtin)
+    };
+    let selected_model_origin = model_origin.unwrap_or(config::ConfigOrigin::Builtin);
+    let base_url_origin = if selection.provider_id == CLI_OVERRIDE_PROVIDER_ID {
+        provider_origin
+    } else if configured_providers
+        .iter()
+        .any(|provider| provider.id == selection.provider_id)
+    {
+        config::ConfigOrigin::UserConfig
+    } else {
+        config::ConfigOrigin::Builtin
+    };
+    let prompt_cache_enabled = selected_entry.instance.prompt_cache();
+    let provider_governor_configured = user_file.provider_governor.is_some();
+    let workflow_run_limits =
+        runtime::governed_workflow_limits(&budget, iteron_workflow::RunLimits::default())
+            .map_err(anyhow::Error::msg)?;
+    let provider_governor = user_file
+        .provider_governor
+        .clone()
+        .unwrap_or_default()
+        .resolve(workflow_run_limits.max_concurrency(), prompt_cache_enabled)
+        .map_err(anyhow::Error::msg)?;
+    let provider_control_capabilities = provider_arc.control_capabilities();
+    provider_control_capabilities
+        .validate(&provider_governor.controls)
+        .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
+    let fresh_composition = if resumed_tunables_checkpoint.is_none() {
+        Some(runtime_tunables::composition::resolve_fresh(
+            runtime_tunables::composition::FreshCompositionInput {
+                directory: &provider_directory,
+                selection: &selection,
+                model_capabilities: &model_capabilities,
+                catalog_digest: &catalog_digest,
+                capability_digest: &capability_digest,
+                registry: &registry,
+                agent_spawn_available: true,
+                configured_mcp: &configured_mcp,
+                agent_catalog: &agent_catalog,
+                profile: runtime_profile,
+                tenant: &tenant,
+                benchmark_scope: cli.benchmark_attempt_scope.as_deref(),
+                workspace: &repo,
+                environment: environment_context.as_deref(),
+                operator_prompt: cli.task.as_deref(),
+                hooks_catalog: (!configured_hooks.is_empty())
+                    .then(|| configured_hooks.catalog_identity()),
+                app_server_active: true,
+                provider_origin: selected_provider_origin,
+                model_origin: selected_model_origin,
+                base_url: runtime_tunables::core_facts::Sourced {
+                    value: &selected_api_root,
+                    origin: base_url_origin,
+                },
+                effort: runtime_tunables::core_facts::Sourced {
+                    value: resolved_effort,
+                    origin: effort_origin,
+                },
+                budget: &budget,
+                budget_origins: runtime_tunables::core_facts::BudgetOrigins {
+                    max_turns: max_turns_origin,
+                    max_usd: max_usd_origin,
+                    max_tokens: max_tokens_origin,
+                    max_wall_secs: max_wall_secs_origin,
+                    max_consecutive_tool_errors: max_consecutive_tool_errors_origin,
+                },
+                allow_code: runtime_tunables::core_facts::Sourced {
+                    value: allow_code,
+                    origin: allow_code_origin,
+                },
+                permission_mode: runtime_tunables::core_facts::Sourced {
+                    value: mode,
+                    origin: mode_origin,
+                },
+                permission_rules_origin: None,
+                permission_rules: &initial_rules,
+                bypass_permissions: runtime_tunables::core_facts::Sourced {
+                    value: bypass_permissions,
+                    origin: if cli.ask_permissions {
+                        config::ConfigOrigin::Cli
+                    } else {
+                        config::ConfigOrigin::Builtin
+                    },
+                },
+                compaction: &compaction_policy,
+                compaction_owner,
+                retry: &retry_resolution.policy,
+                retry_origins: runtime_tunables::core_facts::RetryOrigins {
+                    base_ms: retry_resolution.base_origin,
+                    cap_ms: retry_resolution.cap_origin,
+                    max_attempts: retry_resolution.max_attempts_origin,
+                },
+                verify_command: cli.verify.as_deref(),
+                verification_config: config::trusted_verification_config(&user_file, &file),
+                memory_enabled: runtime_tunables::core_facts::Sourced {
+                    value: true,
+                    origin: config::ConfigOrigin::Builtin,
+                },
+                tenant_allows_memory: true,
+                prompt_cache_enabled,
+                provider_governor: &provider_governor,
+                provider_governor_configured,
+                provider_control_capabilities: &provider_control_capabilities,
+                authority_ceiling,
+                run_limits: workflow_run_limits,
+                operator_egress_allow: user_file.egress_allow.as_deref(),
+                project_egress_allow: file.egress_allow.as_deref(),
+            },
+        )?)
+    } else {
+        None
+    };
+    let effective_settings = if let Some(fresh) = &fresh_composition {
+        if fresh.fact_summary.core_gaps
+            + fresh.fact_summary.execution_gaps
+            + fresh.fact_summary.provider_process_gaps
+            + fresh.fact_summary.extension_gaps
+            > 0
+        {
+            eprintln!(
+                "tunables: active Full owner gaps={} · nonblocking FixedHidden/inactive inventory iteron={} execution={} provider/process={} extension={}",
+                fresh.fact_summary.active_full_gaps,
+                fresh.fact_summary.core_gaps,
+                fresh.fact_summary.execution_gaps,
+                fresh.fact_summary.provider_process_gaps,
+                fresh.fact_summary.extension_gaps,
+            );
+        }
+        fresh.settings.clone()
+    } else {
+        let checkpoint = resumed_tunables_checkpoint
+            .as_ref()
+            .expect("resume checkpoint was loaded while holding the rollout lock");
+        let settings =
+            runtime_tunables::effective_runtime::decode_checkpoint(checkpoint, None)?.core;
+        settings.verify_route(
+            &selection.provider_id,
+            &selection.model_id,
+            &selected_api_root,
+        )?;
+        settings
+    };
+    effective_settings
+        .session_isolation
+        .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;
+    effective_settings.verify_model_capability_ceiling(
+        model_capabilities.context_window_tokens,
+        model_capabilities.max_output_tokens,
+    )?;
+    if let Some(LocalCommand::Config {
+        action:
+            ConfigAction::Explain {
+                effective: true,
+                family,
+                format,
+            },
+    }) = &cli.command
+    {
+        let fresh_snapshot;
+        let snapshot = if let Some(fresh) = &fresh_composition {
+            fresh_snapshot = iteron_record::snapshot_v2_from_resolved(&fresh.resolved)?;
+            &fresh_snapshot
+        } else {
+            resumed_tunables_checkpoint
+                .as_ref()
+                .and_then(iteron_record::TunablesCheckpoint::as_v2)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "the resumed run has no reconstructable V2 effective-config checkpoint"
+                    )
+                })?
+        };
+        return effective_config::emit(snapshot, family.as_deref(), *format);
+    }
+    // Discovery happens only after the fresh atomic resolver result or historical checkpoint has
+    // been decoded. A resumed run therefore cannot silently traverse/render with today's machine
+    // defaults before learning the policy it originally pinned.
     let SystemPromptAssembly {
         base_system,
         instruction_bytes,
         instruction_trust,
         bundle: instruction_bundle,
-    } = assemble_system_prompt(home_core.as_deref(), &repo, &repo);
+    } = assemble_system_prompt(
+        home_core.as_deref(),
+        &repo,
+        &repo,
+        effective_settings
+            .context_materialization
+            .instruction_discovery,
+    );
     for source in instruction_bundle.sources() {
         eprintln!(
             "instructions: loaded `{}` (untrusted guidance)",
@@ -1800,38 +2285,199 @@ async fn run_cli() -> anyhow::Result<u8> {
         );
     }
     eprintln!("{}", "-".repeat(72));
+    let model = effective_settings.model_id.clone();
+    mcp_runtime.configure(
+        effective_settings.mcp,
+        effective_settings.mcp_exposure.clone(),
+    )?;
+    let budget = effective_settings.budget.clone();
+    let route = route::RouteView::resolve(
+        &provider_directory,
+        &selection,
+        route::RouteLimits {
+            max_turns: budget.max_turns,
+            max_usd: budget.max_usd,
+            max_tokens: budget.max_tokens,
+            max_wall_secs: budget.max_wall_secs,
+        },
+    );
+    eprintln!(
+        "iteron · repo={} · model={} · run={}",
+        repo.display(),
+        model,
+        run
+    );
+    eprintln!(
+        "route: {}:{} · {} · {}",
+        route.provider_id, route.model_id, route.api_root, route.credential
+    );
+    if let Some(reason) = &route.blocked_reason {
+        eprintln!("route blocked: {reason}");
+    }
+    eprintln!(
+        "record: {}",
+        runs_dir.join(format!("{run}.jsonl")).display()
+    );
 
-    let agent_catalog = discover_agent_catalog(&repo, &runtime_plugins.agents);
-    let mut agent = Agent::new(provider_arc, registry, rollout, model, base_system, budget);
-    agent.set_boot_bundle(bundle_adapter::resolve_boot_bundle_from_active(
-        user_file.active_policy_bundle.clone(),
-    ))?;
+    // Compile the complete nine-slot policy generation before a fresh rollout exists. Resume is
+    // deliberately reconstructed only from its immutable checkpoint while the writer lock is
+    // retained; current user configuration cannot silently change a historical run.
+    let compiled_policy_bundle = match locked_resume.as_ref() {
+        Some(rollout) => {
+            let snapshot = rollout.policy_bundle_checkpoint()?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot resume {run}: rollout has no immutable policy-bundle checkpoint"
+                )
+            })?;
+            bundle_adapter::compile_recorded_bundle(&snapshot).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot resume {run}: {error}; receipt={}",
+                    serde_json::to_string(&error.receipt)
+                        .unwrap_or_else(|_| "<unavailable>".into())
+                )
+            })?
+        }
+        None => bundle_adapter::compile_configured_bundle(
+            user_file.active_policy_bundle.as_ref(),
+            config::ConfigOrigin::UserConfig,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error}; receipt={}",
+                serde_json::to_string(&error.receipt).unwrap_or_else(|_| "<unavailable>".into())
+            )
+        })?,
+    };
+    let current_route_id = format!("{provider_id}:{model}");
+    let fallback_start = effective_settings
+        .provider_governor
+        .fallback_routes
+        .iter()
+        .position(|route| route == &current_route_id)
+        .map_or(0, |index| index.saturating_add(1));
+    let fallback_provider_routes = effective_settings
+        .provider_governor
+        .fallback_routes
+        .iter()
+        .skip(fallback_start)
+        .map(|route_id| {
+            let (fallback_provider_id, fallback_model_id) = route_id
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("invalid fallback route identity"))?;
+            if fallback_provider_id == provider_id && fallback_model_id == model {
+                anyhow::bail!("the primary provider route cannot also be a fallback route");
+            }
+            let fallback_selection = providers::ModelSelection {
+                provider_id: fallback_provider_id.to_owned(),
+                model_id: fallback_model_id.to_owned(),
+            };
+            provider_directory
+                .validate_selection(&fallback_selection, true)
+                .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
+            let provider = provider_directory
+                .build(&fallback_selection)
+                .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
+            provider
+                .control_capabilities()
+                .validate(&effective_settings.provider_governor.controls)
+                .map_err(|error| {
+                    anyhow::anyhow!("fallback route request controls are unsupported: {error}")
+                })?;
+            let capabilities = provider_directory.selection_capabilities(&fallback_selection);
+            let (catalog_digest, capability_digest) =
+                provider_directory.selection_digests(&fallback_selection);
+            let route = iteron_protocol::PricingRoute {
+                provider_id: fallback_selection.provider_id,
+                model_id: fallback_selection.model_id,
+                catalog_digest,
+                capability_digest,
+            };
+            if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {
+                let Some(port) = pricing_port.as_ref() else {
+                    anyhow::bail!("a priced fallback route requires a pricing authority");
+                };
+                if port.resolve_rate_card(&route, now)?.is_none() {
+                    anyhow::bail!(
+                        "cannot enforce the USD ceiling: a fallback route has no active verified rate card"
+                    );
+                }
+            }
+            Ok(runtime::GovernedProviderRoute::new(
+                provider,
+                route,
+                capabilities.image_input,
+                capabilities.tool_calling,
+                capabilities.context_window_tokens,
+                capabilities.max_output_tokens,
+                capabilities.routing_objectives,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let rollout = match locked_resume.take() {
+        Some(rollout) => rollout,
+        None => Rollout::open(&runs_dir, &run, tenant.clone())?,
+    };
+    let mut agent = if let Some(fresh) = &fresh_composition {
+        Agent::new_with_resolved_tunables(
+            provider_arc,
+            registry,
+            rollout,
+            model,
+            base_system,
+            budget,
+            fresh.resolved.clone(),
+        )?
+    } else {
+        Agent::new_with_tunables_checkpoint(
+            provider_arc,
+            registry,
+            rollout,
+            model,
+            base_system,
+            budget,
+            resumed_tunables_checkpoint
+                .take()
+                .expect("resume checkpoint was decoded above"),
+        )?
+    };
+    agent
+        .install_mcp_runtime(mcp_runtime)
+        .map_err(anyhow::Error::msg)?;
+    let session_spawn_ledger = match &fresh_composition {
+        Some(fresh) => fresh.session_spawn_ledger.clone(),
+        None => std::sync::Arc::new(
+            runtime::SessionSpawnLedger::new(effective_settings.session_spawn_cap)
+                .map_err(anyhow::Error::msg)?,
+        ),
+    };
+    agent.install_session_spawn_ledger(session_spawn_ledger)?;
+    agent.set_deferred_tool_eager_limit(effective_settings.deferred_tool_eager_limit);
+    agent.set_context_runtime_policy(
+        effective_settings.context_budget,
+        effective_settings.context_materialization,
+    )?;
+    agent.set_retry_policy(effective_settings.retry);
+    agent.set_provider_controls(effective_settings.provider_governor.controls)?;
+    let governed_route_ids = std::iter::once(current_route_id.clone())
+        .chain(
+            fallback_provider_routes
+                .iter()
+                .map(runtime::GovernedProviderRoute::id),
+        )
+        .collect::<Vec<_>>();
+    agent.install_fallback_provider_routes(fallback_provider_routes)?;
+    agent.install_provider_governor(
+        effective_settings.provider_governor.policy.clone(),
+        governed_route_ids,
+    )?;
+    bundle_adapter::install_compiled_bundle(&mut agent, compiled_policy_bundle)?;
     agent.pin_agent_catalog(agent_catalog)?;
-    let built_in_policy_capabilities =
-        iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
-            iteron_protocol::Capability::ReadOnly,
-            iteron_protocol::Capability::ReversibleLocal,
-            iteron_protocol::Capability::CodeExecuting,
-            iteron_protocol::Capability::TrustMutating,
-            iteron_protocol::Capability::IrreversibleExternal,
-        ]);
     // The built-in policy declares its complete static tool surface. This declaration never grants
     // authority by itself: runtime admission intersects it with each admitted task envelope.
     agent.narrow_policy_capabilities(built_in_policy_capabilities);
-    if let Some(task) = cli.task.as_deref() {
-        let op = iteron_protocol::Op::UserInput {
-            text: task.to_owned(),
-        };
-        let envelope = iteron_protocol::task::TaskEnvelope::from_user_input(
-            iteron_protocol::SubmissionId(0),
-            &op,
-            iteron_protocol::Trust::Trusted,
-            built_in_policy_capabilities,
-        )
-        .expect("a UserInput always constructs a task envelope")
-        .with_budget(agent.budget.clone());
-        agent.narrow_authority_ceiling(envelope.ceiling);
-    }
+    agent.narrow_authority_ceiling(
+        effective_settings.constrain_authority_ceiling(authority_ceiling),
+    );
     agent.set_context_home_dir(
         home_core
             .as_deref()
@@ -1857,29 +2503,31 @@ async fn run_cli() -> anyhow::Result<u8> {
         agent.set_pricing_port(pricing_port);
     }
     agent.set_sensitive_env_names(credential_env_names.clone());
-    agent.model_context_window = model_capabilities.context_window_tokens;
-    agent.model_max_output_tokens = model_capabilities.max_output_tokens;
+    agent.install_hooks(std::mem::take(&mut configured_hooks))?;
+    agent.model_context_window = effective_settings.model_context_window;
+    agent.model_max_output_tokens = effective_settings.request_output_cap;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
-    let initial_rules = initial_permission_rules(allow_code);
     agent.workspace = repo.clone();
     // Owner-directed 2026-08-05: bypass is the default posture, and `--ask-permissions` is the
     // way back to the gate. The banner still prints on every bypassed run — a default that
     // auto-approves everything has to announce itself, or the operator learns it from the damage.
-    agent.bypass_permissions = !cli.ask_permissions;
+    agent.bypass_permissions = effective_settings.bypass_permissions;
     if agent.bypass_permissions {
         eprintln!(
             "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)"
         );
     }
-    agent.memory_workspace = Some(repo.clone()); // modular memory: .iteron/memory (R5)
-    agent.verify_command = cli.verify.clone(); // validated above (needs --allow-code), before open
-    if let Some(cmd) = &cli.verify {
+    agent.memory_workspace = effective_settings.memory_enabled.then(|| repo.clone()); // modular memory: .iteron/memory (R5)
+    if let Some(scope) = cli.benchmark_attempt_scope.as_deref() {
+        agent.set_memory_benchmark_scope(scope)?;
+    }
+    agent.verify_command = effective_settings.verify_command.clone();
+    agent.set_verification_policy(effective_settings.verification.clone())?;
+    if let Some(cmd) = &agent.verify_command {
         eprintln!("verify gate: harness will run `{cmd}` before accepting 'done'");
     }
-    if let Some(trigger_tokens) = user_file.compaction_trigger_tokens {
-        agent.compaction.set_fixed_trigger_tokens(trigger_tokens);
-    }
+    agent.compaction = effective_settings.compaction;
     if let Some(msgs) = resume_messages {
         agent.set_resume(msgs)?;
         if effort_runtime_override {
@@ -1907,7 +2555,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             )?;
         }
     } else {
-        agent.configure_initial_runtime_policy(resolved_effort, mode, initial_rules)?;
+        agent.configure_initial_runtime_policy(
+            effective_settings.effort,
+            effective_settings.permission_mode,
+            effective_settings.permission_rules.clone(),
+        )?;
     }
     eprintln!("effort: {}", agent.effort().label());
     match agent
@@ -1959,7 +2611,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                     agent.model_context_window,
                     // Same resolution as the request path: the declared ceiling is recorded, not
                     // a clamp, so the digest names the compaction trigger the run actually used.
-                    agent.model_max_output_tokens.unwrap_or(8192),
+                    agent
+                        .model_max_output_tokens
+                        .unwrap_or(runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
                 )
                 .to_string(),
             agent.compaction.keep_recent.to_string(),
@@ -1972,7 +2626,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Record the session genesis header on a FRESH run (SESS-4): cwd/model/effort/created_at, so
     // `--sessions` has metadata and a `--fork` inherits it. Resume already has a genesis.
     if let Some(created_at) = fresh_created_at {
-        agent.record_genesis(
+        agent.record_genesis_with_tunables(
             repo.display().to_string(),
             created_at,
             config_digest,
@@ -1981,7 +2635,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     // Record the actual route before any turn can use it. On resume this appends an explicit new
     // selection, so a changed provider/model is never hidden behind the old genesis model string.
-    agent.record_model_selection(
+    agent.record_initial_model_selection(
         provider_id.clone(),
         agent.model.clone(),
         catalog_digest,
@@ -1993,27 +2647,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
         );
     }
-    // Lifecycle hooks (R5) from the USER config ONLY (trust-by-origin: a project/cloned-repo config
-    // must never run a command). Empty if there is no ~/.iteron/config.json hooks block.
-    if let Some(home) = config::config_home() {
-        let mut hooks = runtime::hooks::Hooks::load_user(&home);
-        for (event, commands) in &runtime_plugins.hooks {
-            for command in commands {
-                if let Err(reason) = hooks.append_verified_plugin(event, command.clone()) {
-                    eprintln!("plugin hook {event:?} refused: {reason}");
-                }
-            }
-        }
-        // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
-        // a cloned repo must never be able to name one.
-        let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
-        hooks.set_sensitive_env_names(credential_env_names.clone());
-        agent.hooks = hooks;
-        agent.telemetry = telemetry;
-        if !agent.hooks.is_empty() {
-            eprintln!("hooks: loaded from ~/.iteron/config.json (user config)");
-        }
-    }
+    agent.telemetry = configured_telemetry;
 
     eprintln!("permission mode: {}", agent.permission_mode().label());
 
@@ -2357,17 +2991,17 @@ fn safe_agent_diagnostic(value: &str) -> String {
 }
 
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
-/// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `ITERON_WORKFLOW_SPAWNER=provider` to swap in the generic-only, exact-parent-route
-/// single-completion `ProviderSpawner` instead. The fallback cannot resolve catalog definitions or
-/// alternate models and refuses those requests before a provider turn.
+/// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. There is
+/// deliberately no provider-only escape hatch: bypassing the child kernel would also bypass its
+/// immutable governor, per-physical-attempt journal, budget, and cancellation surfaces.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
 /// digests from `ProviderDirectory::selection_digests`, the documented model window/output caps, the
 /// repo as workspace, and `<runs_dir>` as the runtime-state root (child rollouts land under
-/// `<runs_dir>/subagents/`). No USD ceiling is set, so `pricing_port` stays `None` (per #2's report:
-/// pricing is load-bearing only for a positive `budget.max_usd`).
+/// `<runs_dir>/subagents/`). Pricing is the same operator-trusted port resolved for the exact
+/// selected route; a positive USD ceiling is refused before this context exists when no active
+/// card can enforce it.
 // Ten parameters because this is the composition root wiring a spawner out of the provider,
 // selection digests, capability caps and run paths. Grouping them into a struct would just move
 // the same fields behind a name that exists only for this one call site.
@@ -2379,17 +3013,26 @@ fn build_workflow_spawner(
     catalog_digest: String,
     capability_digest: String,
     caps: &providers::ModelCapabilities,
+    provider_governor: config::ResolvedProviderGovernorConfig,
+    fallback_provider_routes: Vec<runtime::GovernedProviderRoute>,
+    pricing_port: Option<std::sync::Arc<dyn iteron_obs::PricingPort>>,
     repo: &std::path::Path,
     runs_dir: &std::path::Path,
     parent_run_id: &str,
     workflow_id: &str,
+    compiled_policy_bundle: std::sync::Arc<bundle_adapter::CompiledPolicyBundle>,
     runtime_plugins: &plugin_runtime::RuntimePlugins,
-) -> std::sync::Arc<dyn iteron_workflow::AgentSpawner> {
-    if config::env_string("ITERON_WORKFLOW_SPAWNER").as_deref() == Some("provider") {
-        eprintln!(
-            "spawner: ProviderSpawner (single-completion fallback via ITERON_WORKFLOW_SPAWNER)"
+    tunables_checkpoint: iteron_record::TunablesCheckpoint,
+    effective: &runtime_tunables::effective_core::EffectiveCoreSettings,
+    session_spawn_ledger: std::sync::Arc<runtime::SessionSpawnLedger>,
+) -> anyhow::Result<std::sync::Arc<dyn iteron_workflow::AgentSpawner>> {
+    // Standalone WorkflowEngine children intentionally receive no MCP registry/runtime owner.
+    // Their immutable checkpoint must therefore say MCP is inactive too; accepting an active
+    // transport/exposure here would claim a physical consumer that the child cannot possess.
+    if !effective.mcp.is_disabled() || !effective.mcp_exposure.is_disabled() {
+        anyhow::bail!(
+            "standalone workflow checkpoint enables MCP, but workflow children have no MCP runtime owner"
         );
-        return std::sync::Arc::new(workflow::ProviderSpawner::new(provider_arc, model));
     }
     let mut cx = runtime::KernelSpawnerContext::new(
         provider_arc,
@@ -2403,8 +3046,36 @@ fn build_workflow_spawner(
         parent_run_id.to_string(),
         workflow_id.to_string(),
     );
-    cx.model_context_window = caps.context_window_tokens;
-    cx.model_max_output_tokens = caps.max_output_tokens;
+    effective
+        .verify_model_capability_ceiling(caps.context_window_tokens, caps.max_output_tokens)?;
+    cx.model_context_window = effective.model_context_window;
+    cx.model_max_output_tokens = effective.request_output_cap;
+    cx.standalone_mcp_policy = Some((effective.mcp, effective.mcp_exposure.clone()));
+    cx.provider_controls = provider_governor.controls;
+    cx.fallback_provider_routes = fallback_provider_routes;
+    cx.initialize_provider_governor(provider_governor.policy)
+        .map_err(anyhow::Error::msg)?;
+    cx.pin_tunables_checkpoint(tunables_checkpoint)?;
+    cx.install_session_spawn_ledger(session_spawn_ledger);
+    cx.default_effort = effective.effort;
+    cx.execution_policy = effective.execution;
+    cx.budget = effective.budget.clone();
+    cx.install_pricing_authority(pricing_port)
+        .map_err(anyhow::Error::msg)?;
+    cx.retry_policy = effective.retry;
+    cx.verify_command = effective.verify_command.clone();
+    cx.deferred_tool_eager_limit = effective.deferred_tool_eager_limit;
+    cx.context_budget_policy = effective.context_budget;
+    cx.context_materialization_policy = effective.context_materialization;
+    cx.compaction_policy = effective.compaction;
+    cx.permission_mode = effective.permission_mode;
+    cx.permission_rules = effective.permission_rules.clone();
+    cx.bypass_permissions = effective.bypass_permissions;
+    // A standalone workflow starts from a read-only host ceiling. Family 9 may only narrow that
+    // ceiling; `allow_code=true` cannot mint authority the workflow composition never received.
+    cx.authority_ceiling = effective.constrain_authority_ceiling(
+        iteron_protocol::capability_set::CapabilitySet::only(iteron_protocol::Capability::ReadOnly),
+    );
     cx.context_home_dir = config::config_home();
     cx.agent_catalog = std::sync::Arc::new(discover_agent_catalog(repo, &runtime_plugins.agents));
     cx.dependency_skill_dirs = runtime_plugins
@@ -2412,7 +3083,8 @@ fn build_workflow_spawner(
         .iter()
         .map(|skill| (skill.root.clone(), skill.directory.clone()))
         .collect();
-    std::sync::Arc::new(runtime::KernelSpawner::new(cx))
+    cx.install_compiled_policy_bundle(compiled_policy_bundle);
+    Ok(std::sync::Arc::new(runtime::KernelSpawner::new(cx)))
 }
 
 /// `iteron pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
@@ -2591,22 +3263,74 @@ async fn run_workflow_command(
         WorkflowAction::List => unreachable!("handled above"),
     };
 
+    // Resume/watch is governed by the exact immutable V2 runtime checkpoint written by the
+    // original process. Decode it before provider selection so today's config cannot silently
+    // change route, budget, retry, context, or governor policy for an existing lineage.
+    let resumed_tunables_checkpoint = resume_from
+        .as_deref()
+        .map(|recorded_run_id| workflow::load_tunables_checkpoint(&workflows_dir, recorded_run_id))
+        .transpose()?;
+    let resumed_effective_settings = resumed_tunables_checkpoint
+        .as_ref()
+        .map(|checkpoint| {
+            runtime_tunables::effective_runtime::decode_checkpoint(checkpoint, None)
+                .map(|effective| effective.core)
+                .map_err(anyhow::Error::from)
+        })
+        .transpose()?;
+
+    // A standalone workflow is also a governed run. Fresh runs compile the trusted active bundle
+    // before creating any run artifact; resume/watch reconstruct only the immutable sidecar and
+    // never consult today's user configuration.
+    let compiled_policy_bundle = match resume_from.as_deref() {
+        Some(recorded_run_id) => {
+            let snapshot = workflow::load_policy_checkpoint(&workflows_dir, recorded_run_id)?;
+            bundle_adapter::compile_recorded_bundle(&snapshot).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot resume workflow `{recorded_run_id}`: {error}; receipt={}",
+                    serde_json::to_string(&error.receipt)
+                        .unwrap_or_else(|_| "<unavailable>".into())
+                )
+            })?
+        }
+        None => bundle_adapter::compile_configured_bundle(
+            user_file.active_policy_bundle.as_ref(),
+            config::ConfigOrigin::UserConfig,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error}; receipt={}",
+                serde_json::to_string(&error.receipt).unwrap_or_else(|_| "<unavailable>".into())
+            )
+        })?,
+    };
+
     // Provider selection with the same trusted precedence as a normal run (CLI > env > user config >
     // built-in). Routing never consults the project config (untrusted origin).
     let configured_providers = user_file.providers.clone().unwrap_or_default();
-    let (provider_name, _origin) = config::pick_trusted_string(
-        cli.provider.clone(),
-        config::env_string("ITERON_PROVIDER"),
-        user_file.provider.clone(),
-        BUILTIN_DEFAULT_PROVIDER,
-    );
+    let (provider_name, provider_origin) = match &resumed_effective_settings {
+        Some(settings) => (settings.provider_id.clone(), config::ConfigOrigin::Builtin),
+        None => config::pick_trusted_string(
+            cli.provider.clone(),
+            config::env_string("ITERON_PROVIDER"),
+            user_file.provider.clone(),
+            BUILTIN_DEFAULT_PROVIDER,
+        ),
+    };
     let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
-    let requested_model = cli
-        .model
-        .clone()
-        .or_else(|| config::env_string("ITERON_MODEL"))
-        .or_else(|| user_file.model.clone());
-    let selection = match requested_model.as_deref() {
+    let requested_model_with_origin = match &resumed_effective_settings {
+        Some(settings) => Some((settings.model_id.clone(), config::ConfigOrigin::Builtin)),
+        None => config::pick_model_string(
+            cli.model.clone(),
+            config::env_string("ITERON_MODEL"),
+            user_file.model.clone(),
+            None,
+        ),
+    };
+    let requested_model = requested_model_with_origin
+        .as_ref()
+        .map(|(model, _)| model.as_str());
+    let selection = match requested_model {
         Some(model_id) => provider_directory
             .resolve_model(model_id, Some(&provider_name))
             .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,
@@ -2622,6 +3346,353 @@ async fn run_workflow_command(
     // inputs), plus the documented window/output caps the children inherit.
     let (catalog_digest, capability_digest) = provider_directory.selection_digests(&selection);
     let caps = provider_directory.selection_capabilities(&selection);
+    let workflow_pricing_route = iteron_protocol::PricingRoute {
+        provider_id: selection.provider_id.clone(),
+        model_id: selection.model_id.clone(),
+        catalog_digest: catalog_digest.clone(),
+        capability_digest: capability_digest.clone(),
+    };
+    // Authenticate pricing before persisting workflow sidecars or opening any child rollout. The
+    // opaque port retains key material; only its exact active-card result crosses composition.
+    let workflow_pricing_port =
+        pricing::load_authority(user_file.rate_cards.as_deref().unwrap_or_default())?;
+    let workflow_pricing_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let workflow_rate_card = workflow_pricing_port
+        .as_ref()
+        .map(|port| port.resolve_rate_card(&workflow_pricing_route, workflow_pricing_now))
+        .transpose()?
+        .flatten();
+    let selected_entry = provider_directory
+        .entry(&selection.provider_id)
+        .ok_or_else(|| anyhow::anyhow!("selected workflow provider disappeared"))?;
+    let selected_api_root = selected_entry.instance.api_root().as_str().to_owned();
+    let prompt_cache_enabled = selected_entry.instance.prompt_cache();
+    if let Some(settings) = &resumed_effective_settings {
+        settings.verify_route(
+            &selection.provider_id,
+            &selection.model_id,
+            &selected_api_root,
+        )?;
+    }
+    let provider_governor = match &resumed_effective_settings {
+        Some(settings) => settings.provider_governor.clone(),
+        None => user_file
+            .provider_governor
+            .clone()
+            .unwrap_or_default()
+            .resolve(
+                iteron_workflow::RunLimits::default().max_concurrency(),
+                prompt_cache_enabled,
+            )
+            .map_err(anyhow::Error::msg)?,
+    };
+    provider_arc
+        .control_capabilities()
+        .validate(&provider_governor.controls)
+        .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
+    let fallback_provider_routes = provider_governor
+        .fallback_routes
+        .iter()
+        .map(|route_id| {
+            let (provider_id, model_id) = route_id
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("invalid fallback route identity"))?;
+            let fallback = providers::ModelSelection {
+                provider_id: provider_id.to_owned(),
+                model_id: model_id.to_owned(),
+            };
+            if fallback == selection {
+                anyhow::bail!("the primary provider route cannot also be a fallback route");
+            }
+            provider_directory
+                .validate_selection(&fallback, true)
+                .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
+            let provider = provider_directory
+                .build(&fallback)
+                .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
+            provider
+                .control_capabilities()
+                .validate(&provider_governor.controls)
+                .map_err(|error| {
+                    anyhow::anyhow!("fallback route request controls are unsupported: {error}")
+                })?;
+            let capabilities = provider_directory.selection_capabilities(&fallback);
+            let (catalog_digest, capability_digest) =
+                provider_directory.selection_digests(&fallback);
+            Ok(runtime::GovernedProviderRoute::new(
+                provider,
+                iteron_protocol::PricingRoute {
+                    provider_id: fallback.provider_id,
+                    model_id: fallback.model_id,
+                    catalog_digest,
+                    capability_digest,
+                },
+                capabilities.image_input,
+                capabilities.tool_calling,
+                capabilities.context_window_tokens,
+                capabilities.max_output_tokens,
+                capabilities.routing_objectives,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    // Standalone workflows use the same complete 160-family resolver as the interactive agent.
+    // The workflow engine itself has no rollout genesis, so the exact V2 checkpoint is persisted
+    // beside its policy checkpoint and inherited by every child rollout.
+    let runtime_profile = cli
+        .harness_profile
+        .map(iteron_tunables::RuntimeProfile::from)
+        .unwrap_or(iteron_tunables::RuntimeProfile::Interactive);
+    if resume_from.is_none()
+        && runtime_profile == iteron_tunables::RuntimeProfile::Benchmark
+        && cli.benchmark_attempt_scope.is_none()
+    {
+        anyhow::bail!("--harness-profile benchmark requires --benchmark-attempt-scope");
+    }
+    // The standalone workflow owns a top-level run checkpoint, so its built-in budget must be the
+    // same canonical owner as every other root run. Each physical workflow child is still
+    // intersected with `subagent_budget_ceiling()` by `KernelSpawner`; using that child ceiling as
+    // the root's Builtin value would create a second default and fail the literal-owner seal.
+    let default_budget = Budget::default();
+    let (workflow_max_turns, workflow_max_turns_origin) = config::pick_with_origin(
+        cli.max_turns,
+        config::env_u32("ITERON_MAX_TURNS"),
+        user_file.max_turns,
+        default_budget.max_turns,
+    );
+    let workflow_max_usd_with_origin = config::pick_optional_with_origin(
+        cli.max_usd,
+        config::env_f64("ITERON_MAX_USD"),
+        user_file.max_usd,
+    );
+    let (workflow_max_usd, workflow_max_usd_origin) = workflow_max_usd_with_origin
+        .map(|(value, origin)| (Some(value), Some(origin)))
+        .unwrap_or((None, None));
+    let workflow_max_tokens = cli.max_tokens.or(default_budget.max_tokens);
+    let workflow_max_tokens_origin =
+        cli.max_tokens
+            .map(|_| config::ConfigOrigin::Cli)
+            .or_else(|| {
+                default_budget
+                    .max_tokens
+                    .map(|_| config::ConfigOrigin::Builtin)
+            });
+    let (workflow_max_wall_secs, workflow_max_wall_secs_origin) = config::pick_with_origin(
+        cli.max_wall_secs,
+        None,
+        user_file.max_wall_secs,
+        default_budget.max_wall_secs,
+    );
+    let (workflow_tool_errors, workflow_tool_errors_origin) = cli
+        .max_consecutive_tool_errors
+        .map(|value| (value, config::ConfigOrigin::Cli))
+        .unwrap_or((
+            default_budget.max_consecutive_tool_errors,
+            config::ConfigOrigin::Builtin,
+        ));
+    let workflow_budget = Budget {
+        max_turns: workflow_max_turns,
+        max_usd: workflow_max_usd,
+        max_tokens: workflow_max_tokens,
+        max_wall_secs: workflow_max_wall_secs,
+        max_consecutive_tool_errors: workflow_tool_errors,
+    };
+    workflow_budget.validate().map_err(anyhow::Error::msg)?;
+    let workflow_run_limits =
+        runtime::governed_workflow_limits(&workflow_budget, iteron_workflow::RunLimits::default())
+            .map_err(anyhow::Error::msg)?;
+    if workflow_budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && workflow_rate_card.is_none()
+    {
+        anyhow::bail!(
+            "cannot enforce the requested workflow USD ceiling: the exact selected route has no active verified rate card. Use `iteron pricing print-digests` and `iteron pricing sign <card.json>` before retrying."
+        );
+    }
+    if workflow_budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {
+        let pricing = workflow_pricing_port
+            .as_ref()
+            .expect("an active primary workflow rate card has a pricing authority");
+        pricing.verify_rate_card(
+            workflow_rate_card
+                .as_ref()
+                .expect("positive workflow USD ceiling checked the primary card above"),
+        )?;
+        // Every admitted fallback is a future physical-spend authority. Resolve all of them while
+        // composition is still effect-free instead of discovering an unpriced route only after a
+        // primary failure has already consumed money.
+        for fallback in &fallback_provider_routes {
+            let Some(card) = pricing.resolve_rate_card(&fallback.route, workflow_pricing_now)?
+            else {
+                anyhow::bail!(
+                    "cannot enforce the requested workflow USD ceiling: fallback route `{}` has no active verified rate card",
+                    fallback.id()
+                );
+            };
+            pricing.verify_rate_card(&card)?;
+        }
+    }
+    let (workflow_effort_text, workflow_effort_origin) = config::pick_with_origin(
+        cli.effort.clone(),
+        config::env_string("ITERON_EFFORT"),
+        user_file.effort.clone(),
+        iteron_protocol::Effort::default().label().to_owned(),
+    );
+    let workflow_effort =
+        iteron_protocol::Effort::parse(&workflow_effort_text).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown effort `{workflow_effort_text}` (low|medium|high|xhigh|max|ultracode)"
+            )
+        })?;
+    let retry_environment = config::load_retry_environment().map_err(anyhow::Error::msg)?;
+    let retry_resolution =
+        config::resolve_retry_policy(retry_environment, user_file.retry.as_ref(), None)
+            .map_err(anyhow::Error::msg)?;
+    let mut workflow_compaction = iteron_ctx::CompactionPolicy::default();
+    let workflow_compaction_owner = if let Some(trigger) = user_file.compaction_trigger_tokens {
+        workflow_compaction.set_fixed_trigger_tokens(trigger);
+        runtime_tunables::core_facts::CompactionOwner::UserFixed
+    } else {
+        runtime_tunables::core_facts::CompactionOwner::AdaptiveDefault
+    };
+    let runtime_plugins = plugin_runtime::RuntimePlugins::load(
+        config::config_home()
+            .map(|home| iteron_protocol::home::path(&home, "plugins"))
+            .as_deref(),
+        iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
+            iteron_protocol::Capability::ReadOnly,
+        ]),
+    );
+    let workflow_agent_catalog = discover_agent_catalog(repo, &runtime_plugins.agents);
+    // Standalone workflow children have no MCP process/session owner and a read-only registry.
+    // Do not activate MCP families merely because operator/plugin configuration exists on this
+    // machine; the interactive session path composes those servers with its real McpRuntime.
+    let workflow_registry = Registry::read_only(repo.to_path_buf())?;
+    let workflow_rules = initial_permission_rules(false);
+    let workflow_authority =
+        iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
+            iteron_protocol::Capability::ReadOnly,
+        ]);
+    let provider_controls_capabilities = provider_arc.control_capabilities();
+    let base_url_origin = if configured_providers
+        .iter()
+        .any(|provider| provider.id == selection.provider_id)
+    {
+        config::ConfigOrigin::UserConfig
+    } else {
+        config::ConfigOrigin::Builtin
+    };
+    let model_origin = requested_model_with_origin
+        .as_ref()
+        .map(|(_, origin)| *origin)
+        .unwrap_or(config::ConfigOrigin::Builtin);
+    let provider_governor_configured = user_file.provider_governor.is_some();
+    let (tunables_checkpoint, effective_settings, workflow_spawn_ledger) = match (
+        resumed_tunables_checkpoint.clone(),
+        resumed_effective_settings.clone(),
+    ) {
+        (Some(checkpoint), Some(settings)) => {
+            let ledger = std::sync::Arc::new(
+                runtime::SessionSpawnLedger::new(settings.session_spawn_cap)
+                    .map_err(anyhow::Error::msg)?,
+            );
+            (checkpoint, settings, ledger)
+        }
+        (None, None) => {
+            let fresh = runtime_tunables::composition::resolve_fresh(
+                runtime_tunables::composition::FreshCompositionInput {
+                    directory: &provider_directory,
+                    selection: &selection,
+                    model_capabilities: &caps,
+                    catalog_digest: &catalog_digest,
+                    capability_digest: &capability_digest,
+                    registry: &workflow_registry,
+                    agent_spawn_available: true,
+                    configured_mcp: &[],
+                    agent_catalog: &workflow_agent_catalog,
+                    profile: runtime_profile,
+                    tenant: &TenantId::default(),
+                    benchmark_scope: cli.benchmark_attempt_scope.as_deref(),
+                    workspace: repo,
+                    environment: None,
+                    operator_prompt: None,
+                    // Standalone workflow children do not execute operator lifecycle hooks. Their
+                    // immutable checkpoint therefore records the exact empty runtime owner rather
+                    // than claiming that merely configured hooks are installed here.
+                    hooks_catalog: None,
+                    app_server_active: false,
+                    provider_origin,
+                    model_origin,
+                    base_url: runtime_tunables::core_facts::Sourced {
+                        value: &selected_api_root,
+                        origin: base_url_origin,
+                    },
+                    effort: runtime_tunables::core_facts::Sourced {
+                        value: workflow_effort,
+                        origin: workflow_effort_origin,
+                    },
+                    budget: &workflow_budget,
+                    budget_origins: runtime_tunables::core_facts::BudgetOrigins {
+                        max_turns: workflow_max_turns_origin,
+                        max_usd: workflow_max_usd_origin,
+                        max_tokens: workflow_max_tokens_origin,
+                        max_wall_secs: workflow_max_wall_secs_origin,
+                        max_consecutive_tool_errors: workflow_tool_errors_origin,
+                    },
+                    allow_code: runtime_tunables::core_facts::Sourced {
+                        value: false,
+                        // The standalone workflow CLI selects a fixed read-only posture. This is
+                        // an operator-owned tightening, not a second built-in default.
+                        origin: config::ConfigOrigin::Cli,
+                    },
+                    permission_mode: runtime_tunables::core_facts::Sourced {
+                        value: iteron_protocol::PermissionMode::Plan,
+                        origin: config::ConfigOrigin::Cli,
+                    },
+                    permission_rules_origin: None,
+                    permission_rules: &workflow_rules,
+                    bypass_permissions: runtime_tunables::core_facts::Sourced {
+                        value: false,
+                        origin: config::ConfigOrigin::Cli,
+                    },
+                    compaction: &workflow_compaction,
+                    compaction_owner: workflow_compaction_owner,
+                    retry: &retry_resolution.policy,
+                    retry_origins: runtime_tunables::core_facts::RetryOrigins {
+                        base_ms: retry_resolution.base_origin,
+                        cap_ms: retry_resolution.cap_origin,
+                        max_attempts: retry_resolution.max_attempts_origin,
+                    },
+                    verify_command: None,
+                    verification_config: user_file.verification.as_ref(),
+                    memory_enabled: runtime_tunables::core_facts::Sourced {
+                        value: false,
+                        origin: config::ConfigOrigin::Cli,
+                    },
+                    tenant_allows_memory: false,
+                    prompt_cache_enabled,
+                    provider_governor: &provider_governor,
+                    provider_governor_configured,
+                    provider_control_capabilities: &provider_controls_capabilities,
+                    authority_ceiling: workflow_authority,
+                    run_limits: workflow_run_limits,
+                    operator_egress_allow: user_file.egress_allow.as_deref(),
+                    project_egress_allow: None,
+                },
+            )?;
+            let snapshot = iteron_record::snapshot_v2_from_resolved(&fresh.resolved)?;
+            (
+                iteron_record::TunablesCheckpoint::V2(snapshot),
+                fresh.settings,
+                fresh.session_spawn_ledger,
+            )
+        }
+        _ => anyhow::bail!("workflow runtime checkpoint/settings state is inconsistent"),
+    };
+    effective_settings
+        .session_isolation
+        .admit_continuation(resume_from.is_some(), false)?;
 
     let meta = iteron_workflow::extract_meta(&src);
     let name = meta
@@ -2655,23 +3726,29 @@ async fn run_workflow_command(
         catalog_digest,
         capability_digest,
         &caps,
+        effective_settings.provider_governor.clone(),
+        fallback_provider_routes,
+        workflow_pricing_port,
         repo,
         &runs_dir,
         &run_id,
         &name,
-        &plugin_runtime::RuntimePlugins::load(
-            config::config_home()
-                .map(|home| iteron_protocol::home::path(&home, "plugins"))
-                .as_deref(),
-            iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
-                iteron_protocol::Capability::ReadOnly,
-            ]),
-        ),
-    );
+        compiled_policy_bundle.clone(),
+        &runtime_plugins,
+        tunables_checkpoint.clone(),
+        &effective_settings,
+        workflow_spawn_ledger,
+    )?;
 
     // Persist the re-launchable inputs for a FRESH run BEFORE it starts (a crash still leaves a
     // resumable record). Resume/Watch reuse the existing sidecars.
     if resume_from.is_none() {
+        workflow::persist_policy_checkpoint(
+            &workflows_dir,
+            &run_id,
+            compiled_policy_bundle.genesis_snapshot(),
+        )?;
+        workflow::persist_tunables_checkpoint(&workflows_dir, &run_id, &tunables_checkpoint)?;
         let manifest = workflow::RunManifest {
             run_id: run_id.clone(),
             name: name.clone(),
@@ -2687,10 +3764,20 @@ async fn run_workflow_command(
     }
 
     // Assemble the persisted RunSpec (journal under `<workflows_dir>/<run_id>/journal.jsonl`).
+    let effective_run_limits = iteron_workflow::RunLimits::new(
+        effective_settings.execution.workflow.max_concurrency,
+        effective_settings.execution.workflow.max_calls,
+    )
+    .map_err(anyhow::Error::msg)?;
     let mut spec = iteron_workflow::RunSpec::new(src.clone())
         .with_args(args_value.clone())
         .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
-        .with_workflows_dir(workflows_dir.clone());
+        .with_workflows_dir(workflows_dir.clone())
+        .with_limits(effective_run_limits)
+        .with_early_stop_quorum(effective_settings.execution.early_stop_quorum)
+        .with_speculative_siblings(effective_settings.execution.speculative_siblings)
+        .with_task_retry(effective_settings.execution.task_retry)
+        .with_schema_retry(effective_settings.execution.schema_retry);
     if let Some(prior) = &resume_from {
         spec = spec.with_resume_from(iteron_workflow::RunId::new(prior.clone()));
     }
@@ -3107,7 +4194,12 @@ mod tests {
         std::fs::write(repo.join("CLAUDE.md"), "root claude guidance").unwrap();
         std::fs::write(active.join("AGENTS.md"), "nested guidance").unwrap();
 
-        let assembly = assemble_system_prompt(Some(&home_core), &repo, &active);
+        let assembly = assemble_system_prompt(
+            Some(&home_core),
+            &repo,
+            &active,
+            iteron_ctx::InstructionDiscoveryPolicy::owner(),
+        );
         assert_eq!(
             assembly.instruction_trust,
             iteron_protocol::Trust::Untrusted
@@ -3144,6 +4236,22 @@ mod tests {
             assert!(!assembly.base_system.contains(expected));
         }
         assert_eq!(assembly.instruction_bytes.matches("UNTRUSTED").count(), 4);
+
+        let checkpoint_policy = iteron_ctx::InstructionDiscoveryPolicy::try_new(8, 1, 1_024, 2_048)
+            .expect("bounded checkpoint policy");
+        let resumed = assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy);
+        assert_eq!(
+            resumed
+                .bundle
+                .sources()
+                .iter()
+                .map(|source| source.source.as_str())
+                .collect::<Vec<_>>(),
+            ["~/.iteron/instructions.md"],
+            "the physical discovery path obeys the policy supplied by the decoded checkpoint"
+        );
+        assert!(resumed.instruction_bytes.contains("home guidance"));
+        assert!(!resumed.instruction_bytes.contains("root agents guidance"));
         std::fs::remove_dir_all(&base).ok();
     }
 

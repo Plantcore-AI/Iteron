@@ -20,14 +20,11 @@ mod discovery;
 mod lifecycle;
 mod managed_connect;
 mod transport;
-pub(crate) use content::render_tool_content;
+pub(crate) use content::{render_extension_content, render_tool_content};
 use lifecycle::OwnedProcess;
 #[cfg(test)]
 use transport::read_frame;
 use transport::{ResponseLimits, read_matching_response};
-
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Certainty of one `tools/call` exchange. A matching server response is a completed attempt even
 /// when the server reports `isError`; transport/protocol loss after dispatch is `Unknown` because
@@ -65,6 +62,9 @@ pub struct McpClient {
     calls: Mutex<()>,
     next_id: std::sync::atomic::AtomicU64,
     request_timeout: Duration,
+    deadlines: crate::McpTransportDeadlines,
+    result_policy: crate::McpResultPolicy,
+    spill_store: crate::result_policy::McpSpillStore,
     negotiated_protocol_version: Option<String>,
     capabilities: crate::McpServerCapabilities,
     pub server_name: String,
@@ -73,7 +73,15 @@ pub struct McpClient {
 impl McpClient {
     /// Spawn `command args...` as an MCP server and complete the initialize handshake.
     pub async fn connect(command: &str, args: &[String], name: &str) -> Result<Self, McpError> {
-        Self::connect_with_deadlines(command, args, name, HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT).await
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
+        Self::connect_with_deadlines(
+            command,
+            args,
+            name,
+            deadlines.startup(),
+            deadlines.tool_call(),
+        )
+        .await
     }
 
     /// Protocol version selected during the completed initialize handshake.
@@ -87,6 +95,27 @@ impl McpClient {
         self.capabilities
     }
 
+    pub fn deadlines(&self) -> crate::McpTransportDeadlines {
+        self.deadlines
+    }
+
+    pub fn result_policy(&self) -> crate::McpResultPolicy {
+        self.result_policy
+    }
+
+    /// Install the immutable session result policy before discovery or a tool call. The spill
+    /// store remains owned by this connection and is cleaned with it; reconnecting creates a new
+    /// store under the same compiled caps.
+    pub(crate) fn set_result_policy(&mut self, policy: crate::McpResultPolicy) {
+        self.result_policy = policy;
+    }
+
+    /// Apply an owning lifecycle boundary to this connection's private result store.
+    pub fn cleanup_spills(&self, boundary: crate::McpSpillCleanup) -> Result<(), McpError> {
+        self.spill_store
+            .cleanup(self.result_policy.cleanup(), boundary)
+    }
+
     /// Invoke the standard resource/prompt surface under the same correlated response bounds.
     pub async fn call_extension(&self, method: &str, params: Value) -> Result<Value, McpError> {
         match method {
@@ -97,6 +126,92 @@ impl McpClient {
         self.call(method, params).await
     }
 
+    pub async fn call_extension_rendered(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<String, McpError> {
+        let result = self.call_extension(method, params).await?;
+        let content = render_extension_content(&result, self.result_policy, &self.spill_store)?;
+        self.cleanup_spills(crate::McpSpillCleanup::ToolEnd)?;
+        Ok(content)
+    }
+
+    /// Invoke a resource/prompt request without erasing post-dispatch uncertainty. Extension
+    /// methods are read-only by protocol, but the registry still needs the same exact dispatch
+    /// evidence and reconnect refusal as a tool call so it never guesses about a lost response.
+    pub async fn call_extension_outcome_observed<F>(
+        &self,
+        method: &str,
+        params: Value,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match method {
+            "resources/list" | "resources/read" if self.capabilities.resources => {}
+            "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
+            _ => {
+                return McpToolOutcome::FailedDefinite {
+                    error: McpError::Protocol("MCP capability is not declared".into()),
+                    evidence: None,
+                };
+            }
+        }
+        let (result, latency) = match self
+            .call_with_certainty_and_dispatch_observer(
+                method,
+                params,
+                format!("request `{method}`"),
+                Some(Box::new(on_dispatch)),
+            )
+            .await
+        {
+            CallOutcome::Completed(Ok(result), Some(latency)) => (result, latency),
+            CallOutcome::Completed(Ok(_), None) => {
+                return McpToolOutcome::FailedDefinite {
+                    error: McpError::Protocol(
+                        "MCP extension completed without dispatch evidence".into(),
+                    ),
+                    evidence: None,
+                };
+            }
+            CallOutcome::Completed(Err(error), latency) => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: latency.map(|latency| {
+                        McpToolCallEvidence::new(&self.server_name, method, latency)
+                    }),
+                };
+            }
+            CallOutcome::Unknown(error, latency) => {
+                return McpToolOutcome::Unknown {
+                    error,
+                    evidence: McpToolCallEvidence::new(&self.server_name, method, latency),
+                };
+            }
+        };
+        let evidence = McpToolCallEvidence::new(&self.server_name, method, latency);
+        match render_extension_content(&result, self.result_policy, &self.spill_store) {
+            Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
+                Ok(()) => McpToolOutcome::Completed {
+                    content,
+                    is_error: false,
+                    evidence,
+                },
+                Err(error) => McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: Some(evidence),
+                },
+            },
+            Err(error) => McpToolOutcome::FailedDefinite {
+                error,
+                evidence: Some(evidence),
+            },
+        }
+    }
+
     /// Connect while removing the caller's exact credential-variable names from the helper
     /// environment. MCP servers are trusted configuration, but are not pricing authorities.
     pub async fn connect_with_sensitive_env_names(
@@ -105,12 +220,13 @@ impl McpClient {
         name: &str,
         sensitive_env_names: &[String],
     ) -> Result<Self, McpError> {
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
         Self::connect_with_deadlines_and_sensitive_env_names(
             command,
             args,
             name,
-            HANDSHAKE_TIMEOUT,
-            REQUEST_TIMEOUT,
+            deadlines.startup(),
+            deadlines.tool_call(),
             sensitive_env_names,
         )
         .await
@@ -466,7 +582,7 @@ impl McpClient {
         let evidence = McpToolCallEvidence::new(&self.server_name, name, latency);
         // Preserve text and make every unsupported block observable without reflecting its
         // untrusted type/payload. The renderer enforces one total output ceiling.
-        let output = match render_tool_content(&result) {
+        let output = match render_tool_content(&result, self.result_policy, &self.spill_store) {
             Ok(output) => output,
             Err(error) => {
                 return McpToolOutcome::FailedDefinite {
@@ -475,6 +591,12 @@ impl McpClient {
                 };
             }
         };
+        if let Err(error) = self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
+            return McpToolOutcome::FailedDefinite {
+                error,
+                evidence: Some(evidence),
+            };
+        }
         McpToolOutcome::Completed {
             content: output,
             is_error: result

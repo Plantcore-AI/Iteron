@@ -154,7 +154,18 @@ pub enum ConstraintViolation {
 pub enum RuleValue {
     Boolean { value: bool },
     Integer { value: i64 },
+    Decimal { value: DecimalValue },
     Enum { value: &'static str },
+}
+
+/// One exact numeric value inside the effective resolved-set. Unlike a local schema path, this
+/// path names both the stable family authority and the value below that family's schema root.
+/// Keeping this typed and canonical prevents composition code from inventing hidden joins between
+/// independently valid families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct ResolvedValuePath {
+    pub family: &'static str,
+    pub path: &'static str,
 }
 
 /// Typed cross-field/admission rules. Field names are validated against the schema AST; there is
@@ -170,6 +181,14 @@ pub enum CrossFieldRule {
         terms: &'static [&'static str],
         limit: &'static str,
     },
+    /// Require a set of numeric fields or closed-map entries to sum to one exact fixed-point
+    /// total. This captures normalized runtime policies without inventing a hidden fourth field.
+    SumEquals {
+        terms: &'static [&'static str],
+        total: DecimalValue,
+    },
+    /// When the trigger matches, the required field must be present and truthy. Truthy is a
+    /// closed typed predicate: boolean `true` or a non-zero integer/decimal.
     Requires {
         if_field: &'static str,
         equals: RuleValue,
@@ -177,6 +196,30 @@ pub enum CrossFieldRule {
     },
     MutuallyExclusive {
         fields: &'static [&'static str],
+    },
+    /// Override the homogeneous value domain for one key in a closed map. The override must be a
+    /// subset of the map's base value domain and is enforced for defaults and resolved values.
+    MapEntryDomain {
+        key: &'static str,
+        domain: ScalarDomain,
+    },
+    /// At least one named numeric object field or closed-map key must be non-zero. Missing optional
+    /// entries count as zero.
+    AtLeastOneNonZero {
+        fields: &'static [&'static str],
+    },
+    /// When the named field/map entry is present, it must equal the typed literal.
+    Equals {
+        field: &'static str,
+        value: RuleValue,
+    },
+    /// Sum numeric values across independently owned families and reject the complete resolution
+    /// when the result exceeds the named authority. The rule is attached to the limit family's
+    /// schema; registry validation rejects a rule whose `limit.family` is not that owner.
+    ResolvedSetSumLessOrEqual {
+        rule_id: &'static str,
+        terms: &'static [ResolvedValuePath],
+        limit: ResolvedValuePath,
     },
     ExternalCeiling {
         field: &'static str,
@@ -221,6 +264,9 @@ pub enum StructuredValueDomain {
 /// Typed value-domain contract consumed by resolution and clamping layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ValueSchema {
+    /// Version of this family's value shape. This is deliberately independent of
+    /// [`crate::Family::schema_version`], which versions the family metadata envelope.
+    pub version: u16,
     pub schema_id: &'static str,
     pub kind: ValueKind,
     pub domain: StructuredValueDomain,

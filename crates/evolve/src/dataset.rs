@@ -5,7 +5,10 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 
 pub const MAX_GOVERNED_DATASET_TRAJECTORIES: usize = 1_024;
-pub const MAX_GOVERNED_DATASET_BYTES: usize = 16 * 1_024 * 1_024;
+// A governed dataset is also one revocable private-content object. Keep the canonical dataset
+// bound equal to the record CAS bound so no accepted dataset can bypass erasure by requiring an
+// untracked side-channel chunk store.
+pub const MAX_GOVERNED_DATASET_BYTES: usize = iteron_record::MAX_PRIVATE_CONTENT_BYTES;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GovernedDatasetError {
