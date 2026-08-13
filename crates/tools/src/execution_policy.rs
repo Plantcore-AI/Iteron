@@ -4,6 +4,65 @@
 //! closures retain the same shared cell, so fresh, resumed, and child sessions cannot rediscover
 //! process-local defaults after their checkpoint has been pinned.
 
+// Shipped defaults for every bounded observation tool. Each is the value a run starts from when
+// its tunables checkpoint names nothing, so each has to be addressable by name rather than by
+// position inside the `Default` impl. The hard envelopes that reject an out-of-range override live
+// in `validate` and are deliberately not defaults.
+
+/// Largest file `read_file` will open at all; above this the read is refused rather than truncated.
+const DEFAULT_READ_FILE_SOURCE_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Bytes of one `read_file` window kept in context — the truncation point, not the file limit.
+const DEFAULT_READ_FILE_OUTPUT_MAX_BYTES: usize = 400_000;
+/// Line ceiling for one `read_file` window; the byte cap is normally what binds first.
+const DEFAULT_READ_FILE_MAX_LINES: usize = 1_000_000;
+
+/// Directory levels `list_dir` descends. Shallow, because a deep listing answers no question a
+/// targeted glob would not answer more cheaply.
+const DEFAULT_LIST_DIR_MAX_DEPTH: usize = 6;
+/// Entries returned by one `list_dir` before the listing is cut.
+const DEFAULT_LIST_DIR_MAX_ENTRIES: usize = 400;
+/// Byte ceiling on rendered `list_dir` output.
+const DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES: usize = 1_000_000;
+
+/// Directory levels `glob` walks; deeper than `list_dir` because a pattern is already selective.
+const DEFAULT_GLOB_MAX_DEPTH: usize = 20;
+/// Paths returned by one `glob` before the result set is cut.
+const DEFAULT_GLOB_MAX_RESULTS: usize = 400;
+/// Byte ceiling on rendered `glob` output.
+const DEFAULT_GLOB_OUTPUT_MAX_BYTES: usize = 1_000_000;
+
+/// Files a repository map may summarize.
+const DEFAULT_REPO_MAP_MAX_FILES: usize = 1_024;
+/// Directory levels a repository map descends.
+const DEFAULT_REPO_MAP_MAX_DEPTH: u8 = 8;
+/// Token budget a repository map is allowed to occupy in context.
+const DEFAULT_REPO_MAP_MAX_TOKENS: usize = 6_000;
+
+/// Response body `web_fetch` will read before truncating.
+const DEFAULT_WEB_FETCH_BODY_MAX_BYTES: usize = 1_000_000;
+/// Same-host redirects followed on one fetch; cross-host hops are returned, never followed.
+const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 5;
+/// Overall deadline for one fetch, connect phase included.
+const DEFAULT_WEB_FETCH_TIMEOUT_SECS: u64 = 60;
+/// Line ceiling on extracted page text.
+const DEFAULT_WEB_FETCH_MAX_LINES: usize = 15_000;
+
+/// Matches `grep` reports before the search is declared incomplete.
+const DEFAULT_GREP_MAX_MATCHES: usize = 1_000;
+/// Bytes retained per reported match.
+const DEFAULT_GREP_SNIPPET_MAX_BYTES: usize = 1_024;
+/// Byte ceiling on rendered `grep` output across all matches.
+const DEFAULT_GREP_OUTPUT_MAX_BYTES: usize = 512 * 1024;
+
+/// Deadline for one Git invocation, after which the child process group is torn down.
+const DEFAULT_GIT_TIMEOUT_SECS: u64 = 30;
+/// Byte ceiling on captured Git output.
+const DEFAULT_GIT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+/// Entries reported by `git_status` before the listing is cut.
+const DEFAULT_GIT_STATUS_MAX_ENTRIES: usize = 2_048;
+/// Commits reported by `git_log` before the listing is cut.
+const DEFAULT_GIT_LOG_MAX_ENTRIES: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadFilePolicy {
     pub source_max_bytes: usize,
@@ -78,30 +137,30 @@ impl Default for ObservationToolPolicy {
     fn default() -> Self {
         Self {
             read_file: ReadFilePolicy {
-                source_max_bytes: 8 * 1024 * 1024,
-                output_max_bytes: 400_000,
-                max_lines: 1_000_000,
+                source_max_bytes: DEFAULT_READ_FILE_SOURCE_MAX_BYTES,
+                output_max_bytes: DEFAULT_READ_FILE_OUTPUT_MAX_BYTES,
+                max_lines: DEFAULT_READ_FILE_MAX_LINES,
             },
             list_dir: DirectoryListPolicy {
-                max_depth: 6,
-                max_entries: 400,
-                output_max_bytes: 1_000_000,
+                max_depth: DEFAULT_LIST_DIR_MAX_DEPTH,
+                max_entries: DEFAULT_LIST_DIR_MAX_ENTRIES,
+                output_max_bytes: DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES,
             },
             glob: GlobPolicy {
-                max_depth: 20,
-                max_results: 400,
-                output_max_bytes: 1_000_000,
+                max_depth: DEFAULT_GLOB_MAX_DEPTH,
+                max_results: DEFAULT_GLOB_MAX_RESULTS,
+                output_max_bytes: DEFAULT_GLOB_OUTPUT_MAX_BYTES,
             },
             repo_map: RepoMapPolicy {
-                max_files: 1_024,
-                max_depth: 8,
-                max_tokens: 6_000,
+                max_files: DEFAULT_REPO_MAP_MAX_FILES,
+                max_depth: DEFAULT_REPO_MAP_MAX_DEPTH,
+                max_tokens: DEFAULT_REPO_MAP_MAX_TOKENS,
             },
             web_fetch: WebFetchPolicy {
-                body_max_bytes: 1_000_000,
-                max_redirects: 5,
-                timeout_seconds: 60,
-                max_lines: 15_000,
+                body_max_bytes: DEFAULT_WEB_FETCH_BODY_MAX_BYTES,
+                max_redirects: DEFAULT_WEB_FETCH_MAX_REDIRECTS,
+                timeout_seconds: DEFAULT_WEB_FETCH_TIMEOUT_SECS,
+                max_lines: DEFAULT_WEB_FETCH_MAX_LINES,
             },
             shell: ShellPolicy {
                 timeout_seconds: iteron_sandbox::Confinement::UNCONFINED_TIMEOUT_SECS,
@@ -109,15 +168,15 @@ impl Default for ObservationToolPolicy {
                 stderr_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
             },
             grep: GrepPolicy {
-                max_matches: 1_000,
-                snippet_max_bytes: 1_024,
-                output_max_bytes: 512 * 1024,
+                max_matches: DEFAULT_GREP_MAX_MATCHES,
+                snippet_max_bytes: DEFAULT_GREP_SNIPPET_MAX_BYTES,
+                output_max_bytes: DEFAULT_GREP_OUTPUT_MAX_BYTES,
             },
             git: GitPolicy {
-                timeout_seconds: 30,
-                output_max_bytes: 64 * 1024,
-                status_max_entries: 2_048,
-                log_max_entries: 100,
+                timeout_seconds: DEFAULT_GIT_TIMEOUT_SECS,
+                output_max_bytes: DEFAULT_GIT_OUTPUT_MAX_BYTES,
+                status_max_entries: DEFAULT_GIT_STATUS_MAX_ENTRIES,
+                log_max_entries: DEFAULT_GIT_LOG_MAX_ENTRIES,
             },
         }
     }

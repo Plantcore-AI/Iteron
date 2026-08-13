@@ -19,6 +19,12 @@
 
 use iteron_protocol::{Block, Message, Role, ToolSpec};
 
+/// Fallback admission trigger used when no model window is proven and no window-relative
+/// threshold can be derived.
+const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
+/// Trailing messages kept verbatim, so the turn in progress survives compaction intact.
+const DEFAULT_KEEP_RECENT: usize = 6;
+
 /// Provenance for the request-size number. This is never labelled as provider tokenization: it is
 /// a fast, deterministic admission estimate used before a request exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,8 +305,8 @@ impl Default for CompactionPolicy {
         // without context metadata must report the window as unknown rather than reverse-engineer
         // one from this value.
         CompactionPolicy {
-            trigger_tokens: 120_000,
-            keep_recent: 6,
+            trigger_tokens: DEFAULT_TRIGGER_TOKENS,
+            keep_recent: DEFAULT_KEEP_RECENT,
             enabled: true,
             hysteresis: crate::CompactionHysteresis::default(),
             summary_topology: crate::SummaryTopology::SingleStage,

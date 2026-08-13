@@ -1,5 +1,12 @@
 use super::*;
 
+/// Nanosecond stamp used to build a fork's run id when the clock reads before the UNIX epoch. The
+/// pid already in the id keeps it unique, so a degenerate clock costs ordering, never collision.
+const RUN_ID_FALLBACK_NANOS: u128 = 0;
+/// Characters kept from a session title in the picker row. A title longer than this wraps on a
+/// conventional terminal and pushes the sessions below it off the list.
+const PICKER_TITLE_MAX_CHARS: usize = 80;
+
 pub(super) fn session_picker_items(
     mut sessions: Vec<iteron_record::SessionMeta>,
     current_run: &str,
@@ -94,7 +101,7 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(80)
+        .take(PICKER_TITLE_MAX_CHARS)
         .collect()
 }
 
@@ -365,7 +372,7 @@ pub(super) async fn create_fresh_session(
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or(RUN_ID_FALLBACK_NANOS);
     let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
     let rollout =
         match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {

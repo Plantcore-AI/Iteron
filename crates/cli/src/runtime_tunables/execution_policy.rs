@@ -4,6 +4,10 @@ use iteron_protocol::{Budget, Effort, capability_set::CapabilitySet};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
+/// Parent-token stand-in that bounds decomposition output when the run declares no aggregate token
+/// budget. Must match the ceiling the execution-fact collectors clamp against.
+const ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING: u64 = 65_536;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteTopology {
     Direct,
@@ -454,9 +458,11 @@ impl ExecutionRuntimePolicy {
                 max_concurrency: run_limits.max_concurrency(),
             },
             decomposition: Some(DecompositionRuntimePolicy {
-                max_output_tokens: decomposition
-                    .max_output_tokens
-                    .min(budget.max_tokens.unwrap_or(65_536)),
+                max_output_tokens: decomposition.max_output_tokens.min(
+                    budget
+                        .max_tokens
+                        .unwrap_or(ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING),
+                ),
                 effort: decomposition.effort,
                 thinking_tokens: decomposition.thinking_tokens,
             }),

@@ -16,6 +16,11 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Whether a terminal whose metadata cannot be read counts as a pty slave. `false` because the
+/// ioctl capability is granted from this answer, and an unstatable path must fail closed.
+#[cfg(target_os = "macos")]
+const UNSTATABLE_TERMINAL_IS_PTY_SLAVE: bool = false;
+
 /// High-value user directories that build toolchains do not need to read. This is deliberately
 /// explicit rather than denying all of HOME: language runtimes commonly live in `.cargo`,
 /// `.rustup`, `.nvm`, virtualenvs, etc. A denylist cannot prove absence of every secret, but these
@@ -273,7 +278,7 @@ pub(crate) fn profile_with_terminal(
             .is_some_and(|name| name.starts_with("ttys"))
         && std::fs::symlink_metadata(terminal)
             .map(|metadata| metadata.file_type().is_char_device())
-            .unwrap_or(false);
+            .unwrap_or(UNSTATABLE_TERMINAL_IS_PTY_SLAVE);
     if !is_pty_slave {
         return Err(SandboxError::Profile(
             "terminal ioctl capability must name one live /dev/ttys* character device".into(),

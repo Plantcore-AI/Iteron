@@ -14,6 +14,9 @@ pub(crate) const TOOL_SEARCH: &str = "tool_search";
 /// Number of task-ranked schemas shown eagerly when the complete admitted catalog is larger.
 /// Every remaining schema stays reachable through [`TOOL_SEARCH`].
 pub const DEFAULT_DEFERRED_TOOL_EAGER_LIMIT: usize = 12;
+/// Schemas returned by one `tool_search` call when the model names no `limit`, kept well under
+/// [`MAX_SEARCH_RESULTS`] so an unscoped search cannot flood the next request.
+const DEFAULT_SEARCH_RESULTS: usize = 8;
 const MAX_QUERY_BYTES: usize = 256;
 const MAX_SEARCH_RESULTS: usize = 32;
 
@@ -146,7 +149,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<DeferredToolCatalog, T
                     .get("limit")
                     .and_then(serde_json::Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(8);
+                    .unwrap_or(DEFAULT_SEARCH_RESULTS);
                 match catalog.search(query, limit) {
                     Ok(content) => ok_result(call.id, content),
                     Err(reason) => err_result(call.id, reason.into()),

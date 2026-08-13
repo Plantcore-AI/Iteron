@@ -1,5 +1,10 @@
 use super::*;
 
+/// Ceiling applied to summary output and compaction effort when the run declares no aggregate
+/// parent-token budget. Absent means unbounded authority, so this only has to be large enough not
+/// to constrain any real effort tier.
+const UNBOUNDED_PARENT_TOKEN_CEILING: i64 = 1_000_000;
+
 pub(super) fn add_constraints(
     builder: &mut RuntimeResolutionBuilder,
     input: &CoreFactsInput<'_>,
@@ -213,7 +218,7 @@ fn add_token_constraints(
     }
     // Compaction is a local context operation. Parent tokens bound both its output and its local
     // reasoning effort; provider reasoning capability only controls outbound serialization.
-    let parent_token_ceiling = cap.unwrap_or(1_000_000);
+    let parent_token_ceiling = cap.unwrap_or(UNBOUNDED_PARENT_TOKEN_CEILING);
     upper(
         builder,
         "summary_profile",

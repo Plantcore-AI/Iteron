@@ -13,6 +13,10 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path};
 
+/// Verdict when the kernel cannot answer whether two descriptors name the same object. An
+/// unanswerable identity question is not proof of identity, so the binding is treated as no
+/// longer visible rather than silently accepted.
+const IDENTITY_UNPROVABLE: bool = false;
 const MAX_CAPABILITY_PATH_BYTES: usize = 4 * 1024;
 const MAX_CAPABILITY_COMPONENTS: usize = 128;
 
@@ -148,7 +152,7 @@ impl RootBinding {
             let Ok(reopened) = open_directory_at(&current, component) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(false) {
+            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
                 return false;
             }
             current = reopened;
@@ -181,7 +185,7 @@ impl SourceBinding {
             let Ok(reopened) = open_directory_at(&current, name) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(false) {
+            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
                 return false;
             }
             current = reopened;
@@ -189,7 +193,7 @@ impl SourceBinding {
         let Ok(leaf) = open_regular_nonblocking_at(&current, leaf_name) else {
             return false;
         };
-        same_file(&self.leaf, &leaf).unwrap_or(false)
+        same_file(&self.leaf, &leaf).unwrap_or(IDENTITY_UNPROVABLE)
             && FileStamp::capture(&leaf).is_ok_and(|stamp| stamp == self.stamp)
     }
 }

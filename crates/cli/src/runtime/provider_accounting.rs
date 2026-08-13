@@ -1,10 +1,18 @@
 use super::*;
 
+/// Wall-clock stamp reported when the host clock reads before the Unix epoch; accounting keeps an
+/// unusable stamp rather than failing the caller.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
+/// Byte ceiling on a provider notice surfaced into the transcript. Provider messages are
+/// untrusted and unbounded; only enough of one to identify the condition is kept.
+const PROVIDER_NOTICE_MAX_BYTES: usize = 512;
+
 pub(super) fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(CLOCK_BEFORE_EPOCH_SECS)
 }
 
 pub(super) fn elapsed_us(started: Instant) -> u64 {
@@ -16,7 +24,10 @@ pub(super) fn bounded_provider_notice(
     notice: &iteron_provider::ProviderNotice,
 ) -> String {
     let raw = format!("{label} [{}]: {}", notice.code, notice.message);
-    iteron_protocol::text::head(&iteron_record::redact::scrub(&raw), 512)
+    iteron_protocol::text::head(
+        &iteron_record::redact::scrub(&raw),
+        PROVIDER_NOTICE_MAX_BYTES,
+    )
 }
 
 pub(super) fn bounded_provider_run_notice(
@@ -27,7 +38,10 @@ pub(super) fn bounded_provider_run_notice(
         "{PROVIDER_RUN_NOTICE_LABEL} [key={key}; code={}]: {}",
         notice.code, notice.message
     );
-    iteron_protocol::text::head(&iteron_record::redact::scrub(&raw), 512)
+    iteron_protocol::text::head(
+        &iteron_record::redact::scrub(&raw),
+        PROVIDER_NOTICE_MAX_BYTES,
+    )
 }
 
 pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {

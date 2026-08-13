@@ -40,6 +40,18 @@ const DEFAULT_MAX_BYTES: usize = 1_000_000;
 #[cfg(test)]
 const MAX_LINES: usize = 15_000;
 const SEARCH_TIMEOUT_SECS: u64 = 60;
+/// Results requested when `web_search` is called without a `count`, below
+/// [`WEB_SEARCH_RESULT_CAP`] so the common query stays cheap in context.
+const DEFAULT_SEARCH_RESULT_COUNT: usize = 5;
+/// Port assumed when a URL carries no explicit port and the scheme is not one the parser knows a
+/// default for; the egress policy must decide against a concrete port, never against `None`.
+const DEFAULT_EGRESS_PORT: u16 = 443;
+/// Connect-phase bound for every egress client. Separate from the overall timeout so a black-holed
+/// host fails fast instead of consuming the whole request budget.
+const CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Whether input that ends immediately after a close-tag name still closes the tag. Truncated
+/// markup has no byte left to inspect, and refusing the match there would drop the whole tail.
+const TRUNCATED_CLOSE_TAG_IS_BOUNDARY: bool = true;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
     "iteron/",
@@ -164,7 +176,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .get("count")
                     .and_then(|x| x.as_u64())
                     .map(|v| (v as usize).clamp(1, WEB_SEARCH_RESULT_CAP))
-                    .unwrap_or(5);
+                    .unwrap_or(DEFAULT_SEARCH_RESULT_COUNT);
                 if query.is_empty() {
                     return err_result(id, "web_search: empty query".into());
                 }
@@ -215,7 +227,11 @@ type SharedEgressPolicy = std::sync::Arc<std::sync::OnceLock<Option<crate::Egres
 
 fn egress_permits_url(policy: &SharedEgressPolicy, url: &reqwest::Url) -> bool {
     url.host_str().is_some_and(|host| {
-        egress_permits_destination(policy, host, url.port_or_known_default().unwrap_or(443))
+        egress_permits_destination(
+            policy,
+            host,
+            url.port_or_known_default().unwrap_or(DEFAULT_EGRESS_PORT),
+        )
     })
 }
 
@@ -275,7 +291,7 @@ fn validate_url(raw: &str) -> Result<reqwest::Url, String> {
             ));
         }
     } else {
-        let port = url.port_or_known_default().unwrap_or(443);
+        let port = url.port_or_known_default().unwrap_or(DEFAULT_EGRESS_PORT);
         if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
             for a in addrs {
                 if is_forbidden_ip(a.ip()) {
@@ -343,7 +359,7 @@ async fn fetch_and_render_with_policy(
     // same-host policy ourselves. Overall + connect timeouts bound the call.
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(policy.timeout_seconds))
         .user_agent(USER_AGENT)
         .build()
@@ -476,7 +492,7 @@ async fn brave_search(key: &str, query: &str, count: usize) -> Result<String, St
     )
     .map_err(|e| format!("build query: {e}"))?;
     let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(
             crate::ObservationToolPolicy::default()
                 .web_fetch
@@ -584,7 +600,7 @@ impl SearchBackend {
 /// A shared HTTP client for the search backends (same bounds as the fetch path).
 fn search_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
@@ -762,7 +778,7 @@ fn parse_exa_results(json: &str, count: usize) -> Result<Vec<(String, String, St
 /// provider already needs. Snippets are bounded so a long article body cannot blow the output cap.
 async fn zhipu_search(key: &str, query: &str, count: usize) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
@@ -1045,7 +1061,7 @@ fn find_close_tag(hay: &str, name: &str) -> Option<usize> {
             .as_bytes()
             .get(after)
             .map(|&c| c == b'>' || c == b'/' || (c as char).is_ascii_whitespace())
-            .unwrap_or(true);
+            .unwrap_or(TRUNCATED_CLOSE_TAG_IS_BOUNDARY);
         if boundary {
             return Some(pos);
         }

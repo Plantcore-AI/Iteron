@@ -890,7 +890,7 @@ impl Picker {
         visible
             .iter()
             .position(|&index| index == self.sel)
-            .unwrap_or(0)
+            .unwrap_or(SELECTION_OFFSCREEN_ROW)
     }
 
     fn ancestor_breadcrumb(&self, index: usize) -> String {
@@ -1068,6 +1068,19 @@ const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_se
 const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
 recorded as an interrupted message, so a retry continues from it rather than from nothing.";
 const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Row a list falls back to when the selected item is not in the visible window. The first row,
+/// so a filtered view opens on something rather than on nothing.
+const SELECTION_OFFSCREEN_ROW: usize = 0;
+/// Slack added to `workflow::SHUTDOWN_GRACE` when waiting out the server task on a catchable
+/// termination, so the wait outlives the grace it is supposed to observe rather than racing it.
+const SHUTDOWN_WAIT_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long a clipboard-image capture subprocess may run before it is killed. Bounded because a
+/// wedged helper must not hang the paste path.
+const CLIPBOARD_CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+/// List height used when the row count does not fit a `u16` at all. Two rows keep the popup
+/// navigable, matching the upper end of the clamp the conversion is fed.
+const MIN_LIST_ROWS_ON_OVERFLOW: u16 = 2;
 
 /// Whether a silent provider is being described as slow or as stalled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2591,7 +2604,7 @@ pub async fn run(
         // forever. Bounded, because a signal must not be answered by hanging — with no live run
         // this resolves immediately, so the wait exists exactly when it is earning something.
         let stopped = tokio::time::timeout(
-            crate::workflow::SHUTDOWN_GRACE + std::time::Duration::from_secs(1),
+            crate::workflow::SHUTDOWN_GRACE + SHUTDOWN_WAIT_SLACK,
             server_task,
         )
         .await
@@ -2866,7 +2879,7 @@ async fn clipboard_image_bytes() -> Result<Option<Vec<u8>>, &'static str> {
                 .map_err(|_| "could not finish clipboard image capture")?;
             Ok::<_, &'static str>((status.success(), bytes))
         };
-        match tokio::time::timeout(Duration::from_secs(3), capture).await {
+        match tokio::time::timeout(CLIPBOARD_CAPTURE_TIMEOUT, capture).await {
             Ok(Ok((true, bytes))) if !bytes.is_empty() => return Ok(Some(bytes)),
             Ok(Ok(_)) => continue,
             Ok(Err(error)) => {
@@ -3010,7 +3023,7 @@ fn render_list_popup(
     // navigable row before selected detail so a short popup remains an actionable control.
     let footer_h = u16::from(inner_h.saturating_sub(query_h) >= 2);
     let min_list_h = u16::try_from(total.clamp(1, 2))
-        .unwrap_or(2)
+        .unwrap_or(MIN_LIST_ROWS_ON_OVERFLOW)
         .min(inner_h.saturating_sub(query_h).saturating_sub(footer_h));
     let detail_budget = if max_h >= 6 {
         inner_h

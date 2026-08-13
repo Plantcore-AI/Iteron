@@ -17,8 +17,12 @@
 mod benchmark_metadata;
 mod binding_metadata;
 mod canonical;
+mod export;
 mod families;
 mod metadata;
+mod modules;
+mod params;
+mod profile_io;
 mod requirements;
 mod resolution;
 mod resolution_constraints;
@@ -42,7 +46,20 @@ pub use canonical::{
     CanonicalArtifact, CanonicalDigest, CanonicalFamily, CanonicalPayload, canonical_artifact,
     canonical_artifact_json, canonical_payload_json, family_semantic_digest, registry_digest,
 };
+pub use export::{
+    PROMPT_ARTIFACTS, PromptArtifact, SURFACE_SCHEMA_VERSION, SurfaceExport, surface, surface_json,
+};
 pub use families::families;
+pub use modules::{ModuleId, ModuleKind, family_module};
+pub use params::{
+    PARAM_REGISTRY_ID, PARAM_SCHEMA_VERSION, Param, ParamClass, ParamDomain, ParamDomainViolation,
+    ParamType, param, param_count, param_registry_digest_sha256, params,
+};
+pub use profile_io::{
+    ArtifactOverride, MAX_ARTIFACT_TEXT_BYTES, MAX_PROFILE_BYTES, PROFILE_DOCUMENT_SCHEMA_VERSION,
+    ParamAssignment, ProfileDocument, ProfileLoadError, artifact_override, document_digest,
+    emit_profile, load_profile, render_profile, validate_profile,
+};
 pub use resolution::{resolve, resolve_json};
 pub use resolution_explain::{ExplainError, explain_entry_json, explain_text};
 pub use resolution_types::{
@@ -87,8 +104,10 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v4.
-pub const REGISTRY_REVISION: u16 = 16;
+/// Revision of the family set under schema v4. Revision 17 gives fifty-eight implemented
+/// families a `UserConfig` source binding: they were reachable by the runtime but by no operator,
+/// so the registry described a control nobody could exercise.
+pub const REGISTRY_REVISION: u16 = 17;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -97,6 +116,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 16; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 17; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "4f79c8296326a2b1b84ccf3bbea61a3f30095cc5b634c4ae0371efc9b0b51b55";
+    "fee22a629e6bb95f190c75ec25e63e198a2eb44a7dfb1bf839828e5c397d93db";

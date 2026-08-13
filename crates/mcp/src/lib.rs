@@ -388,6 +388,10 @@ pub(crate) fn encode_frame(value: &Value) -> Result<String, McpError> {
     String::from_utf8(writer.bytes).map_err(|_| McpError::InvalidUtf8)
 }
 
+/// Bytes reserved up front for one encoded frame. The limit itself is far larger than a typical
+/// frame, so reserving it eagerly would allocate megabytes for a request that serializes to a line.
+const FRAME_ENCODE_RESERVE_BYTES: usize = 4096;
+
 /// A serializer sink that refuses the write before its backing allocation can cross the limit.
 struct LimitedWriter {
     bytes: Vec<u8>,
@@ -398,7 +402,7 @@ struct LimitedWriter {
 impl LimitedWriter {
     fn new(limit: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(limit.min(4096)),
+            bytes: Vec::with_capacity(limit.min(FRAME_ENCODE_RESERVE_BYTES)),
             limit,
             exceeded: false,
         }
@@ -420,12 +424,19 @@ impl Write for LimitedWriter {
     }
 }
 
+/// JSON-RPC requires a numeric `code` on every error object; a server that omits one has told us
+/// nothing, so it is reported as an unclassified failure rather than mapped to a real code.
+const UNSPECIFIED_SERVER_ERROR_CODE: i64 = 0;
+
 /// Parse a JSON-RPC response line, returning the `result` or a typed server error.
 pub fn parse_response(line: &str) -> Result<Value, McpError> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(err) = v.get("error") {
         return Err(McpError::Server {
-            code: err.get("code").and_then(|x| x.as_i64()).unwrap_or(0),
+            code: err
+                .get("code")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(UNSPECIFIED_SERVER_ERROR_CODE),
             message: err
                 .get("message")
                 .and_then(|x| x.as_str())

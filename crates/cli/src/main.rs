@@ -70,6 +70,22 @@ const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
 /// must say so explicitly instead of reporting an unknown provider the operator never typed.
 const CLI_OVERRIDE_PROVIDER_ID: &str = "cli-override";
 
+/// Code execution when no operator-owned source says either way. Owner-directed 2026-08-05: on,
+/// because a coding agent whose `bash` is off by default fails its first useful instruction.
+const DEFAULT_ALLOW_CODE: bool = true;
+/// Unix millisecond stamp used when the clock reads before the epoch. Zero rather than a guess,
+/// so an erasure record carries an obviously-unset time instead of a fabricated one.
+const UNIX_MS_ON_UNUSABLE_CLOCK: u64 = 0;
+/// Unix second stamp used when the clock reads before the epoch. Zero resolves no rate card, so
+/// a priced run fails closed rather than billing against an invented instant.
+const UNIX_SECS_ON_UNUSABLE_CLOCK: u64 = 0;
+/// Unix nanosecond component of a generated run id when the clock reads before the epoch. The
+/// pid in the same id still separates concurrent runs.
+const UNIX_NANOS_ON_UNUSABLE_CLOCK: u128 = 0;
+/// Nanosecond component of a fresh run id when no fresh clock was sampled — only reachable on a
+/// resume, which does not mint an id at all. The pid still separates concurrent runs.
+const RUN_ID_NANOS_WITHOUT_FRESH_CLOCK: u128 = 0;
+
 struct StderrDiagnosticDrain {
     receiver: std::sync::mpsc::Receiver<iteron_kernel::diagnostics::KernelDiagnostic>,
 }
@@ -378,11 +394,25 @@ struct SystemPromptAssembly {
     bundle: iteron_ctx::InstructionBundle,
 }
 
+/// The base system prompt, after any operator-supplied artifact replacement.
+///
+/// A prompt artifact is model-visible text and only that: replacing it changes what the model
+/// reads and nothing about what the agent is permitted to do. The capability set, the tool schemas
+/// and the tool names are all resolved elsewhere and are not reachable from here — which is what
+/// makes it safe to let an outside optimizer rewrite this string.
+fn base_system_prompt(profile: Option<&iteron_tunables::ProfileDocument>) -> String {
+    profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/system@v1"))
+        .unwrap_or(SYSTEM_PROMPT)
+        .to_string()
+}
+
 fn assemble_system_prompt(
     home_core: Option<&std::path::Path>,
     repository_root: &std::path::Path,
     active_dir: &std::path::Path,
     policy: iteron_ctx::InstructionDiscoveryPolicy,
+    tunables_profile: Option<&iteron_tunables::ProfileDocument>,
 ) -> SystemPromptAssembly {
     let bundle =
         iteron_ctx::discover_hierarchy_with_policy(home_core, repository_root, active_dir, policy);
@@ -393,7 +423,7 @@ fn assemble_system_prompt(
         iteron_protocol::Trust::Untrusted
     };
     SystemPromptAssembly {
-        base_system: SYSTEM_PROMPT.to_string(),
+        base_system: base_system_prompt(tunables_profile),
         instruction_bytes,
         instruction_trust,
         bundle,
@@ -611,6 +641,25 @@ struct Cli {
     #[arg(long, value_enum)]
     harness_profile: Option<HarnessProfileArg>,
 
+    /// Print the whole machine-readable optimization surface as JSON and exit: every family,
+    /// every exposed parameter, the module axis and the addressable prompt artifacts. This is
+    /// what an external optimizer reads to construct a legal profile.
+    #[arg(long)]
+    tunables_export: bool,
+
+    /// Apply a tunables profile document to this run. Requires --tunables-profile-digest; a
+    /// candidate that can be swapped between digesting and applying is not pinned to anything.
+    #[arg(long, value_name = "PATH", requires = "tunables_profile_digest")]
+    tunables_profile: Option<PathBuf>,
+
+    /// The SHA-256 the profile file must have. Any mismatch refuses the run.
+    #[arg(long, value_name = "SHA256")]
+    tunables_profile_digest: Option<String>,
+
+    /// Write the profile that reproduces this run's effective tunables, then continue.
+    #[arg(long, value_name = "PATH")]
+    emit_tunables_profile: Option<PathBuf>,
+
     /// Resume a prior run by id: reconstruct its transcript from the rollout and continue
     /// (invariant #2, recoverable). When set, the task argument may be a follow-up instruction.
     #[arg(long)]
@@ -706,7 +755,7 @@ struct Cli {
 /// TIGHTEN this off and `--mode plan` hard-disables it — but the untouched default is now a grant,
 /// because a coding agent whose `bash` is off by default fails its first useful instruction.
 fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
-    cli_flag || user_config.unwrap_or(true)
+    cli_flag || user_config.unwrap_or(DEFAULT_ALLOW_CODE)
 }
 
 /// The permission mode a run starts in when `--mode` is absent.
@@ -755,7 +804,7 @@ fn erasure_now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .unwrap_or(UNIX_MS_ON_UNUSABLE_CLOCK)
 }
 
 fn local_erasure_request(
@@ -957,6 +1006,53 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     if let Some(tag) = cli.agent_definition_tag.as_deref() {
         session_view::validate_agent_definition_tag(tag)?;
+    }
+    let mut tunables_profile_document: Option<iteron_tunables::ProfileDocument> = None;
+    if cli.tunables_export {
+        print!("{}", iteron_tunables::surface_json()?);
+        return Ok(output::EXIT_SUCCESS);
+    }
+    if let Some(path) = cli.tunables_profile.as_deref() {
+        // Load and fully validate before anything else runs. Every refusal names its reason, so a
+        // tuner learns what to fix instead of only that it failed.
+        let digest = cli
+            .tunables_profile_digest
+            .as_deref()
+            .expect("clap requires the digest alongside the profile");
+        let bytes = std::fs::read(path).map_err(|error| {
+            anyhow::anyhow!("reading tunables profile {}: {error}", path.display())
+        })?;
+        let document = iteron_tunables::load_profile(&bytes, digest)
+            .map_err(|error| anyhow::anyhow!("tunables profile refused: {error}"))?;
+        tunables_profile_document = Some(document);
+    }
+    if let Some(path) = cli.emit_tunables_profile.as_deref() {
+        // Emit what reproduces this run. With no profile loaded the document is empty, which is
+        // the correct round-trip: an empty profile resolves to exactly the defaults this run used.
+        let document =
+            tunables_profile_document
+                .clone()
+                .unwrap_or_else(|| iteron_tunables::ProfileDocument {
+                    schema_version: iteron_tunables::PROFILE_DOCUMENT_SCHEMA_VERSION,
+                    profile_id: "emitted/effective".to_owned(),
+                    registry_revision: iteron_tunables::REGISTRY_REVISION,
+                    registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.to_owned(),
+                    param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+                    module_scope: None,
+                    values: Vec::new(),
+                    params: Vec::new(),
+                    artifacts: Vec::new(),
+                });
+        let rendered = iteron_tunables::render_profile(&document)
+            .map_err(|error| anyhow::anyhow!("rendering tunables profile: {error}"))?;
+        std::fs::write(path, &rendered).map_err(|error| {
+            anyhow::anyhow!("writing tunables profile {}: {error}", path.display())
+        })?;
+        eprintln!(
+            "wrote {} (sha256 {})",
+            path.display(),
+            iteron_tunables::document_digest(&rendered)
+        );
     }
     if cli.machine_contract {
         if cli.task.is_some()
@@ -1928,7 +2024,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK);
     let selected_rate_card = pricing_port
         .as_ref()
         .map(|port| port.resolve_rate_card(&pricing_route, now))
@@ -1965,7 +2061,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     let run = match resumed_run {
         Some(run) => run,
         None => {
-            let nanos = fresh_clock.map(|duration| duration.as_nanos()).unwrap_or(0);
+            let nanos = fresh_clock
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(RUN_ID_NANOS_WITHOUT_FRESH_CLOCK);
             RunId(format!("run-{}-{:x}", std::process::id(), nanos))
         }
     };
@@ -2106,6 +2204,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     let fresh_composition = if resumed_tunables_checkpoint.is_none() {
         Some(runtime_tunables::composition::resolve_fresh(
             runtime_tunables::composition::FreshCompositionInput {
+                tunables_profile: tunables_profile_document.as_ref(),
                 directory: &provider_directory,
                 selection: &selection,
                 model_capabilities: &model_capabilities,
@@ -2265,6 +2364,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         effective_settings
             .context_materialization
             .instruction_discovery,
+        tunables_profile_document.as_ref(),
     );
     for source in instruction_bundle.sources() {
         eprintln!(
@@ -3223,7 +3323,7 @@ async fn run_workflow_command(
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .unwrap_or(UNIX_NANOS_ON_UNUSABLE_CLOCK);
             let run_id = format!("wf_{}_{:x}", std::process::id(), nanos);
             (src, parse_workflow_args(args)?, run_id, None)
         }
@@ -3359,7 +3459,7 @@ async fn run_workflow_command(
     let workflow_pricing_now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK);
     let workflow_rate_card = workflow_pricing_port
         .as_ref()
         .map(|port| port.resolve_rate_card(&workflow_pricing_route, workflow_pricing_now))
@@ -3602,6 +3702,7 @@ async fn run_workflow_command(
         (None, None) => {
             let fresh = runtime_tunables::composition::resolve_fresh(
                 runtime_tunables::composition::FreshCompositionInput {
+                    tunables_profile: None,
                     directory: &provider_directory,
                     selection: &selection,
                     model_capabilities: &caps,
@@ -3758,7 +3859,7 @@ async fn run_workflow_command(
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
-                .unwrap_or(0),
+                .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK),
         };
         workflow::persist_inputs(&workflows_dir, &manifest, &src)?;
     }
@@ -4199,6 +4300,7 @@ mod tests {
             &repo,
             &active,
             iteron_ctx::InstructionDiscoveryPolicy::owner(),
+            None,
         );
         assert_eq!(
             assembly.instruction_trust,
@@ -4239,7 +4341,8 @@ mod tests {
 
         let checkpoint_policy = iteron_ctx::InstructionDiscoveryPolicy::try_new(8, 1, 1_024, 2_048)
             .expect("bounded checkpoint policy");
-        let resumed = assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy);
+        let resumed =
+            assemble_system_prompt(Some(&home_core), &repo, &active, checkpoint_policy, None);
         assert_eq!(
             resumed
                 .bundle

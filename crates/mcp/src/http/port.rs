@@ -13,6 +13,9 @@ pub const MCP_HTTP_ACCEPT: &str = "application/json, text/event-stream";
 pub const MCP_JSON_MEDIA_TYPE: &str = "application/json";
 pub const MCP_SSE_MEDIA_TYPE: &str = "text/event-stream";
 pub const MAX_MCP_SESSION_ID_BYTES: usize = 128;
+/// Ceiling on one outbound header value. Held well under what any server accepts for a whole
+/// header block, so a value assembled from peer-supplied parts cannot grow the request unbounded.
+pub const MAX_MCP_HEADER_VALUE_BYTES: usize = 8192;
 
 /// A session identity issued by the server.
 ///
@@ -61,14 +64,14 @@ impl McpHeaderValue {
     pub fn new(value: impl Into<String>) -> Result<Self, McpError> {
         let value = value.into();
         if value.is_empty()
-            || value.len() > 8192
+            || value.len() > MAX_MCP_HEADER_VALUE_BYTES
             || !value
                 .bytes()
                 .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte))
         {
             return Err(McpError::InvalidEndpoint {
                 field: "header_value",
-                limit: 8192,
+                limit: MAX_MCP_HEADER_VALUE_BYTES,
             });
         }
         Ok(Self(value))

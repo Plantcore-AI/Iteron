@@ -15,6 +15,26 @@ pub const MAX_REASON_BYTES: usize = 2_048;
 pub const MAX_GRAPH_ID_BYTES: usize = 128;
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Built-in task ceiling: a quarter of the hard bound, so an ordinary graph has headroom while a
+/// runaway planner is stopped long before the log-replay cost of `HARD_MAX_TASKS`.
+pub const DEFAULT_MAX_TASKS: usize = 256;
+/// Built-in edge ceiling, sized for the dense-ish dependency fan a few hundred tasks can declare.
+pub const DEFAULT_MAX_EDGES: usize = 2_048;
+/// Built-in message ceiling: several messages per task, which is what collaboration traffic costs
+/// before it stops being coordination and starts being a channel.
+pub const DEFAULT_MAX_MESSAGES: usize = 4_096;
+/// Built-in join ceiling, matched to the task ceiling since a join is per fan-in point.
+pub const DEFAULT_MAX_JOINS: usize = 256;
+/// Built-in event ceiling. Every state change is journaled, so this is the durable-log budget for
+/// one run rather than a graph-shape limit.
+pub const DEFAULT_MAX_EVENTS: usize = 32_768;
+/// Built-in dependency-chain ceiling. Depth is serial latency, so a chain this long is a planning
+/// defect rather than a graph the host should keep admitting.
+pub const DEFAULT_MAX_DEPENDENCY_DEPTH: usize = 32;
+/// Built-in parent/child nesting ceiling, kept well under the dependency ceiling because hierarchy
+/// depth multiplies supervision cost per level.
+pub const DEFAULT_MAX_HIERARCHY_DEPTH: usize = 16;
+
 pub const HARD_MAX_TURNS: u32 = 1_000_000;
 pub const HARD_MAX_TOKENS: u64 = 100_000_000_000;
 pub const HARD_MAX_COST_MICROUSD: u64 = 100_000_000_000_000;
@@ -83,13 +103,13 @@ impl Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_tasks: 256,
-            max_edges: 2_048,
-            max_messages: 4_096,
-            max_joins: 256,
-            max_events: 32_768,
-            max_dependency_depth: 32,
-            max_hierarchy_depth: 16,
+            max_tasks: DEFAULT_MAX_TASKS,
+            max_edges: DEFAULT_MAX_EDGES,
+            max_messages: DEFAULT_MAX_MESSAGES,
+            max_joins: DEFAULT_MAX_JOINS,
+            max_events: DEFAULT_MAX_EVENTS,
+            max_dependency_depth: DEFAULT_MAX_DEPENDENCY_DEPTH,
+            max_hierarchy_depth: DEFAULT_MAX_HIERARCHY_DEPTH,
         }
     }
 }

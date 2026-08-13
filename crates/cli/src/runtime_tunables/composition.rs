@@ -96,6 +96,10 @@ pub(crate) struct FreshCompositionInput<'a> {
     pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
     pub authority_ceiling: CapabilitySet,
     pub run_limits: iteron_workflow::RunLimits,
+    /// An operator-supplied tunables profile, already digest-verified and validated. Replayed
+    /// through the builder's own `profile_value`, so a loaded document goes through exactly the
+    /// admission checks an in-process profile would.
+    pub tunables_profile: Option<&'a iteron_tunables::ProfileDocument>,
 }
 
 pub(crate) struct FreshComposition {
@@ -218,6 +222,18 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         input.profile,
         authorities,
     )?;
+    if let Some(document) = input.tunables_profile {
+        for value in &document.values {
+            builder
+                .profile_value(&value.family, value.as_declared_source, value.value.clone())
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "tunables profile value for `{}` refused: {error:?}",
+                        value.family
+                    )
+                })?;
+        }
+    }
     let iteron = builder.with_owner(ProductionOwnerId::CoreFacts, |builder| {
         apply_core_facts(
             builder,
@@ -717,6 +733,7 @@ mod tests {
             provider_control_capabilities: &provider_controls,
             authority_ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
             run_limits,
+            tunables_profile: None,
         })
         .unwrap_or_else(|error| {
             panic!("fresh production composition must resolve and seal: {error:#?}")

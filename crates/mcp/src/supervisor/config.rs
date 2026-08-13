@@ -17,6 +17,16 @@ pub const MAX_MCP_ENV_NAME_BYTES: usize = 256;
 pub const MAX_MCP_DEADLINE_MS: u64 = crate::MAX_MCP_DEADLINE_MILLISECONDS;
 pub const DEFAULT_MCP_OPERATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_MCP_OPERATION_DEADLINE_MS: u64 = crate::MAX_MCP_DEADLINE_MILLISECONDS;
+/// Default handshake phase bound: `initialize` is one round trip, so it is held far tighter than
+/// the phases that follow it.
+const DEFAULT_HANDSHAKE_DEADLINE_SECS: u64 = 15;
+/// Default discovery phase bound: `tools/list` may paginate over many pages.
+const DEFAULT_DISCOVERY_DEADLINE_SECS: u64 = 60;
+/// Default per-request bound, covering one `tools/call` exchange.
+const DEFAULT_REQUEST_DEADLINE_SECS: u64 = 60;
+/// Smallest accepted deadline. Zero is refused outright because it would make every operation
+/// expire before it is dispatched.
+const MIN_MCP_DEADLINE_MS: u64 = 1;
 
 /// Immutable, bounded process binding. It intentionally has no `Debug` implementation because
 /// command arguments are operator configuration and may contain private paths or opaque values.
@@ -163,9 +173,9 @@ pub struct McpTimeouts {
 impl Default for McpTimeouts {
     fn default() -> Self {
         Self {
-            handshake: Duration::from_secs(15),
-            discovery: Duration::from_secs(60),
-            request: Duration::from_secs(60),
+            handshake: Duration::from_secs(DEFAULT_HANDSHAKE_DEADLINE_SECS),
+            discovery: Duration::from_secs(DEFAULT_DISCOVERY_DEADLINE_SECS),
+            request: Duration::from_secs(DEFAULT_REQUEST_DEADLINE_SECS),
             startup_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
             tool_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
         }
@@ -250,7 +260,9 @@ fn validate_deadline(
     deadline: Duration,
     maximum_ms: u64,
 ) -> Result<(), McpError> {
-    if deadline < Duration::from_millis(1) || deadline > Duration::from_millis(maximum_ms) {
+    if deadline < Duration::from_millis(MIN_MCP_DEADLINE_MS)
+        || deadline > Duration::from_millis(maximum_ms)
+    {
         return Err(McpError::InvalidLaunchConfiguration {
             field,
             limit: maximum_ms as usize,

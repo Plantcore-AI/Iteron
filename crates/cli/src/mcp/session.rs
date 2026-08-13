@@ -31,6 +31,10 @@ use std::{
 };
 use tokio::time::Instant;
 
+/// Result cap applied when a search call omits `limit`. Enough hits to answer a lookup, few enough
+/// that an unbounded server response cannot flood the transcript on the model's behalf.
+const RESOURCE_SEARCH_DEFAULT_LIMIT: usize = 8;
+
 #[derive(Clone)]
 pub(crate) struct McpRuntimeControl {
     servers: Arc<BTreeMap<String, Arc<ManagedServer>>>,
@@ -1429,7 +1433,7 @@ fn register_server_tools(
                     .get("limit")
                     .and_then(Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(8);
+                    .unwrap_or(RESOURCE_SEARCH_DEFAULT_LIMIT);
                 match server.search(query, limit).await {
                     Ok(content) => definite_result(call.id, content, false),
                     Err(error) => definite_result(

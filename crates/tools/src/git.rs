@@ -29,6 +29,10 @@ use std::time::Duration;
 #[cfg(test)]
 use std::{io, process::Stdio};
 
+/// Diff shape when the call omits `stat`: full patch, because a summary answers fewer questions
+/// than the hunks do and the output is bounded anyway.
+const DEFAULT_GIT_DIFF_STAT: bool = false;
+
 fn git_diff_args(
     stat: bool,
     path: Option<&Path>,
@@ -208,7 +212,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .input
                     .get("stat")
                     .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
+                    .unwrap_or(DEFAULT_GIT_DIFF_STAT);
                 let path = call
                     .input
                     .get("path")

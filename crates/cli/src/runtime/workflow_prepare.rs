@@ -1,5 +1,17 @@
 use super::*;
 
+/// Posture a `Workflow` call takes when the model omits `background`: detached, because the
+/// in-turn default froze the conversation behind every fan-out.
+const DEFAULT_WORKFLOW_BACKGROUND: bool = true;
+
+/// Manifest `created_at` written when the host clock reads before the Unix epoch; the manifest
+/// stays re-launchable with an unusable stamp rather than failing the tool call.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
+/// Cancellation poll cadence while the parent joins the workflow engine. Bounded so an operator
+/// interrupt reaches the run instead of blocking until the script finishes (invariant #1).
+const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
+
 impl Agent {
     /// Resolve, admit and record a `Workflow` tool call — everything up to, but not including,
     /// starting the run.
@@ -170,7 +182,7 @@ impl Agent {
         let background = input
             .get("background")
             .and_then(|value| value.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(DEFAULT_WORKFLOW_BACKGROUND);
 
         // Children re-record the parent's exact durable route byte-for-byte; a run before any route
         // selection cannot bind one.
@@ -431,7 +443,7 @@ impl Agent {
                     created_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|elapsed| elapsed.as_secs())
-                        .unwrap_or(0),
+                        .unwrap_or(CLOCK_BEFORE_EPOCH_SECS),
                 },
                 &script,
             )
@@ -550,7 +562,6 @@ impl Agent {
         // multi-minute run ignored Ctrl-C entirely: the operator interrupt reached the parent but
         // never the engine, and `join()` simply blocked the turn until the script finished.
         // Polling is fixed and bounded, exactly like `run_child_with_control`.
-        const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
         let report = {
             let mut joined = Box::pin(handle.join());
             loop {

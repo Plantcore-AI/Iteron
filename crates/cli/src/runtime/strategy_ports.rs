@@ -1,5 +1,9 @@
 use super::*;
 
+/// Byte ceiling on a benchmark memory scope identifier. Only its digest is retained, so the string
+/// itself only needs to hold a corpus identifier, never corpus content.
+const MAX_MEMORY_BENCHMARK_SCOPE_BYTES: usize = 1_024;
+
 impl Agent {
     /// Replace the world-facing context adapter before context becomes durable for this run.
     // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in strategies and
@@ -227,7 +231,7 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if scope.is_empty() || scope.len() > 1_024 {
+        if scope.is_empty() || scope.len() > MAX_MEMORY_BENCHMARK_SCOPE_BYTES {
             return Err(KernelError::ContextResolution(
                 "benchmark memory scope must contain 1..=1024 bytes".into(),
             ));

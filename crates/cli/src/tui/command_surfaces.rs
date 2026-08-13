@@ -1,5 +1,9 @@
 use super::*;
 
+/// Initial picker focus when no actionable, current, or enabled row exists at all. The first row is
+/// always in range for a non-empty list, so focus never lands outside the rendered items.
+const PICKER_FALLBACK_FOCUS: usize = 0;
+
 pub(super) fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
     open_tunables_picker_with_runtime_policy(app, session, argument, session.runtime_policy());
 }
@@ -185,7 +189,7 @@ pub(super) fn initial_picker_selection(items: &[PickItem]) -> usize {
         })
         .or_else(|| items.iter().position(|item| item.is_current))
         .or_else(|| items.iter().position(|item| item.enabled))
-        .unwrap_or(0)
+        .unwrap_or(PICKER_FALLBACK_FOCUS)
 }
 
 /// Make an initially focused hierarchical leaf visible before the first keypress. Without this,

@@ -1,5 +1,9 @@
 use super::*;
 
+/// Cancellation poll cadence while an oracle runs. Short enough that the ordered submission queue
+/// surfaces `Interrupt`/`Drain` during a long verification command.
+const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
+
 impl Agent {
     pub fn set_verification_policy(
         &mut self,
@@ -705,7 +709,6 @@ impl Agent {
         &mut self,
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
     ) -> VerifyDispatch {
-        const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
         let verifier_deadline = Instant::now()
             .checked_add(Duration::from_secs(
                 self.verification_policy.verifier_timeout_secs,

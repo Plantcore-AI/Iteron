@@ -41,6 +41,10 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--runs-dir <RUNS_DIR>` | Directory for the append-only rollout (the audit record). Default `.iteron/runs`. |
 | `--benchmark-attempt-scope <ATTEMPT>` | Internal eval-harness attempt identity. Activates strict parent-memory isolation and content-free contamination evidence; hidden because ordinary sessions must inherit memory. |
 | `--harness-profile <HARNESS_PROFILE>` | Immutable runtime-tunables profile. Benchmark attempts select `benchmark` automatically; ordinary runs select `interactive` unless this operator-owned flag says otherwise. |
+| `--tunables-export` | Print the whole machine-readable optimization surface as JSON and exit: every family, every exposed parameter, the module axis and the addressable prompt artifacts. This is what an external optimizer reads to construct a legal profile. |
+| `--tunables-profile <PATH>` | Apply a tunables profile document to this run. Requires --tunables-profile-digest; a candidate that can be swapped between digesting and applying is not pinned to anything. |
+| `--tunables-profile-digest <SHA256>` | The SHA-256 the profile file must have. Any mismatch refuses the run. |
+| `--emit-tunables-profile <PATH>` | Write the profile that reproduces this run's effective tunables, then continue. |
 | `--resume <RESUME>` | Resume a prior run by id: reconstruct its transcript from the rollout and continue (invariant #2, recoverable). When set, the task argument may be a follow-up instruction. |
 | `-c`, `--continue` | Continue the most recent session in this repo (like `claude --continue`). |
 | `--sessions` | List sessions in this repo (id, turns, model, cost, title) and exit. |

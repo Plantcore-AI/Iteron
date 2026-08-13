@@ -43,6 +43,15 @@ pub struct SnapshotInventory {
 }
 
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline checks are only as sharp as this poll, so a killed Git child is observed within one
+/// interval without spinning a core while it drains its pipes.
+const GIT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// A clock at or before the epoch still names a temp directory; uniqueness rests on the pid and
+/// the monotonic nonce, not on this component.
+const TEMP_NAME_NANOS_FALLBACK: u128 = 0;
+/// Snapshot metadata is operational, not part of the replay chain, so a pre-epoch clock records
+/// the epoch itself rather than failing the checkpoint.
+const PRE_EPOCH_TIMESTAMP_SECS: u64 = 0;
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const GIT_EXCLUDE_LIMIT: u64 = 1024 * 1024;
 const MAX_TEMP_ATTEMPTS: u64 = 32;
@@ -132,7 +141,7 @@ fn run_command_bounded(
                 format!("git command exceeded {} seconds", timeout.as_secs()),
             ));
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(GIT_WAIT_POLL_INTERVAL);
     };
     let stdout = stdout_thread
         .join()
@@ -508,7 +517,7 @@ fn create_private_temp_dir(run: &RunId, at: Seq) -> io::Result<PathBuf> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
+            .unwrap_or(TEMP_NAME_NANOS_FALLBACK);
         let path = std::env::temp_dir().join(format!(
             "core-ckpt-{}-{}-{}-{nanos:x}-{nonce:x}",
             sanitize(&run.0),
@@ -543,7 +552,7 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(PRE_EPOCH_TIMESTAMP_SECS)
 }
 
 fn nul_path_set(raw: &str) -> Result<HashSet<String>, RecordError> {

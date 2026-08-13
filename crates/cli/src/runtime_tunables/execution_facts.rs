@@ -27,6 +27,11 @@ use sha2::{Digest as _, Sha256};
 /// comment or status label.
 pub(crate) const KNOWN_SCHEMA_BLOCKERS: [&str; 0] = [];
 
+/// Parent-token stand-in used to bound the decomposition profile's output when the run declares no
+/// aggregate token budget. Constraint and value collectors must clamp against the same number, or
+/// the attested fixed value would fall outside its own declared ceiling.
+const ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING: u64 = 65_536;
+
 /// Exact composition-root inputs, all sampled before the immutable checkpoint is resolved.
 pub(crate) struct ExecutionFactsInput<'a> {
     /// Exact selected/admitted route used by activation and external ceilings. Fixed owner

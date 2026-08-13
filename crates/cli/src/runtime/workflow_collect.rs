@@ -1,5 +1,13 @@
 use super::*;
 
+/// Wall-clock seconds a child is admitted against when the parent run carries no deadline at all,
+/// so an unbounded parent still proves a bounded child budget (invariant #1).
+const DEADLINE_FREE_PARENT_REMAINING_WALL_SECS: u64 = 300;
+
+/// Child-genesis `created_at` written when the host clock reads before the Unix epoch; genesis is
+/// recorded with an unusable stamp rather than refused.
+const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
+
 impl Agent {
     /// Ask the installed owner about a run, or say plainly that there is no owner.
     ///
@@ -68,7 +76,7 @@ impl Agent {
         let remaining_wall = self
             .run_time_remaining()
             .map(|remaining| remaining.as_secs().max(1))
-            .unwrap_or(300);
+            .unwrap_or(DEADLINE_FREE_PARENT_REMAINING_WALL_SECS);
         let remaining_turns = self.remaining_inference_turns();
         if remaining_turns < self.execution_policy.admission.minimum_remaining_turns
             || remaining_wall
@@ -206,7 +214,7 @@ impl Agent {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
         let parent_run = self.rollout.run_id().clone();
         sub.record_child_genesis_with_tunables(
             &parent_run,

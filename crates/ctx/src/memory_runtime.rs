@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 
 pub const SCORE_SCALE: u32 = 1_000_000;
 
+/// Okapi BM25 k1 in thousandths. 1.2 is the standard term-saturation setting.
+const DEFAULT_BM25_K1_MILLI: u32 = 1_200;
+/// Okapi BM25 b in parts per million. 0.75 is the standard length-normalization setting.
+const DEFAULT_BM25_B_PPM: u32 = 750_000;
+/// Fact bodies one decision may select before the recall budget is the binding constraint.
+const DEFAULT_RECALL_LIMIT: u32 = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryRetrievalPolicy {
@@ -85,15 +92,15 @@ impl MemoryRetrievalPolicy {
 }
 
 const fn default_bm25_k1_milli() -> u32 {
-    1_200
+    DEFAULT_BM25_K1_MILLI
 }
 
 const fn default_bm25_b_ppm() -> u32 {
-    750_000
+    DEFAULT_BM25_B_PPM
 }
 
 const fn default_recall_limit() -> u32 {
-    32
+    DEFAULT_RECALL_LIMIT
 }
 
 #[cfg(test)]

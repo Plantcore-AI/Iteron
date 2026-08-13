@@ -24,6 +24,10 @@ enum TruncationCause {
 }
 const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 
+/// First line of a `read_file` window when the caller omits `offset`. Line numbering is 1-based,
+/// so an absent offset has to mean the start of the file, not line zero.
+const DEFAULT_READ_OFFSET_LINE: u64 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineEnding {
     Lf,
@@ -144,7 +148,7 @@ struct ReadWindow {
 
 impl ReadWindow {
     fn from_input(input: &serde_json::Value) -> Result<Self, String> {
-        let offset = positive_integer(input, "offset")?.unwrap_or(1);
+        let offset = positive_integer(input, "offset")?.unwrap_or(DEFAULT_READ_OFFSET_LINE);
         let limit = positive_integer(input, "limit")?;
         Ok(Self { offset, limit })
     }

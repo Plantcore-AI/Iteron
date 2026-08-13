@@ -37,6 +37,9 @@ const SKILL_LISTING_BYTES: i64 = 2_000;
 /// Canonical family-19 resolver fallback when selected-route metadata cannot attest an output
 /// ceiling. Every context/compaction fact collector must use this same execution value.
 pub(crate) const UNKNOWN_MODEL_OUTPUT_TOKENS: u32 = 8_192;
+/// Stand-in aggregate parent-token budget when the run declares none. An absent budget is
+/// unbounded authority, so the clamp must not shrink the attested output cap below this.
+const ABSENT_PARENT_TOKEN_CEILING: u64 = 1_000_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Sourced<T> {
@@ -506,7 +509,12 @@ fn add_internal_defaults(
             "request_output_cap",
             FixedAuthorityId::StrategyInvariant,
             int(i64v(
-                output_reserve.min(input.budget.max_tokens.unwrap_or(1_000_000)),
+                output_reserve.min(
+                    input
+                        .budget
+                        .max_tokens
+                        .unwrap_or(ABSENT_PARENT_TOKEN_CEILING),
+                ),
                 "request_output_cap",
             )?),
         )?;

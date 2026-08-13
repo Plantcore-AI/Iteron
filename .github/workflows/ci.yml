@@ -77,6 +77,16 @@ jobs:
       # (the permission bypass was one) is a red build, not a documentation backlog item.
       - name: enforce the generated CLI reference
         run: cargo run --locked -p iteron-xtask -- docs check
+      - name: enforce the tier-2 parameter catalog against the source declarations
+        # The catalog is generated, so it can go stale on any branch that adds or renames a
+        # constant. Regenerating is one command; discovering the drift months later is not.
+        run: cargo run --locked -p iteron-xtask -- tunables check-params
+      - name: enforce the whole optimization surface and its totality
+        # Asserts the module axis stays total and no module empties out, and that the export does
+        # not claim a surface the profile loader would refuse.
+        run: cargo run --locked -p iteron-xtask -- tunables surface
+      - name: enforce the constants census baseline
+        run: cargo run --locked -p iteron-xtask -- tunables census-check
       - name: verify captured client runtime evidence on main
         if: github.event_name == 'push'
         shell: bash

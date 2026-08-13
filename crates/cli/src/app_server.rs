@@ -116,6 +116,11 @@ pub(crate) const SQ_BYTE_CAPACITY: usize = SQ_ENTRY_OVERHEAD_BYTES
 /// burst between frames. It is a bound, not a buffer to be filled: see the drop policy above.
 pub(crate) const EQ_CAPACITY: usize = 1024;
 
+/// How long session teardown waits for the lifecycle-hook task to drain after the last event is
+/// published. Bounded, because a hook that never returns must not hold the session open; past it
+/// the task is aborted.
+const LIFECYCLE_HOOK_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The authoritative terminal facts needed by every non-interactive client.
 ///
 /// Keeping this projection on the server side is what lets one-shot and headless clients remain
@@ -2773,7 +2778,7 @@ impl AppServer {
         debug_assert!(session_lifecycle.is_terminal());
         events.record_lifecycle("session.stopped", None, None, LifecyclePayload::default());
         drop(events.lifecycle_hooks.take());
-        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut lifecycle_hook_task)
+        if tokio::time::timeout(LIFECYCLE_HOOK_DRAIN_GRACE, &mut lifecycle_hook_task)
             .await
             .is_err()
         {

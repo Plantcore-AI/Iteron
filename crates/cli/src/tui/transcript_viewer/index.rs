@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Result cursor used when the previously selected entry survived reindexing but no longer matches
+/// the query. Snapping to the newest result keeps the cursor inside the list without a wrap.
+const RESULT_RESET_POSITION: usize = 0;
+
 pub(super) struct IndexJob {
     generation: u64,
     authority_revision: u64,
@@ -399,7 +403,7 @@ impl Viewer {
             self.result_position = self
                 .selected_id
                 .and_then(|selected| self.results.iter().position(|id| *id == selected))
-                .unwrap_or(0);
+                .unwrap_or(RESULT_RESET_POSITION);
             self.selected_id = self.results.get(self.result_position).copied();
         }
         if let Some(authority_revision) = self.authority_revision {

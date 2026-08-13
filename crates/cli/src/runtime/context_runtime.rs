@@ -1,5 +1,11 @@
 use super::*;
 
+/// Active-task token count charged when the transcript holds no user text message to attribute.
+const NO_ACTIVE_TASK_TOKENS: usize = 0;
+
+/// Attachment token count charged when the turn carries no input-file evidence.
+const NO_ATTACHMENT_TOKENS: usize = 0;
+
 impl Agent {
     /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
     /// owned by this admitted request. The source evidence was captured when the immutable
@@ -69,11 +75,11 @@ impl Agent {
                     })
                     .fold(0usize, usize::saturating_add)
             })
-            .unwrap_or(0);
+            .unwrap_or(NO_ACTIVE_TASK_TOKENS);
         let attachment_tokens = self
             .input_file_evidence
             .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(0)
+            .unwrap_or(NO_ATTACHMENT_TOKENS)
             .min(active_task_with_attachments);
         let active_task_tokens = active_task_with_attachments.saturating_sub(attachment_tokens);
         let classified_system = instruction_tokens

@@ -9,6 +9,12 @@ use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(120);
 const HEAD_BYTES: usize = 48 * 1024;
 const TAIL_BYTES: usize = 16 * 1024;
+/// How long the last pipe drain may run after the process group was killed. The writers are already
+/// dead, so this only bounds a stuck reader; exceeding it costs partial output, never a hang.
+const POST_KILL_DRAIN: Duration = Duration::from_secs(1);
+/// Reported exit code when the process left no code of its own (signalled, or never reaped). `-1`
+/// is outside the 0..=255 wait-status range, so it cannot collide with a real exit status.
+const NO_EXIT_CODE: i32 = -1;
 
 #[derive(Debug)]
 pub(crate) struct ShellCompletion {
@@ -184,7 +190,7 @@ pub(super) async fn run_bash_inline(
     };
     if completed.is_none() {
         iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
-        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        let _ = tokio::time::timeout(POST_KILL_DRAIN, async {
             let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
         })
         .await;
@@ -198,7 +204,7 @@ pub(super) async fn run_bash_inline(
         Some(Err(_)) => {
             iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
             let status = child.try_wait().ok().flatten();
-            let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            let _ = tokio::time::timeout(POST_KILL_DRAIN, async {
                 let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err),);
             })
             .await;
@@ -207,7 +213,9 @@ pub(super) async fn run_bash_inline(
         None => unreachable!("cancelled returned above"),
     };
 
-    let code = status.and_then(|status| status.code()).unwrap_or(-1);
+    let code = status
+        .and_then(|status| status.code())
+        .unwrap_or(NO_EXIT_CODE);
     let mut body = out.finish("stdout");
     let stderr = err.finish("stderr");
     if !stderr.trim().is_empty() {

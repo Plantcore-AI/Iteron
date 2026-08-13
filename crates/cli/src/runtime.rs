@@ -177,6 +177,18 @@ const MAX_DELEGATION_DEPTH: u8 = 1;
 const EFFECT_REASON_MAX_BYTES: usize = 4 * 1024;
 const MAX_STEER_BYTES: usize = 64 * 1024;
 const MAX_INBOUND_OPS_PER_POLL: usize = 256;
+/// Usable parallelism assumed when the platform will not report a core count. One, so the fan
+/// degrades to sequential rather than guessing a machine's width.
+const USABLE_CORES_WHEN_UNREPORTED: usize = 1;
+/// Coverage verdict when the compaction-summary verifier itself errors. False, so an unverified
+/// summary is treated as not covering the turns it replaced.
+const COMPACTION_COVERED_ON_VERIFIER_ERROR: bool = false;
+/// Whether an approval projection counts as truncated when the tool input carries no
+/// `_truncated_for_ui` marker. False: absence means the operator saw the whole argument.
+const UI_PROJECTION_TRUNCATED_WHEN_UNMARKED: bool = false;
+/// How long the inbound-op drain blocks on the submission queue before re-checking the drain and
+/// interrupt flags. Bounds how long a shutdown waits on an idle queue.
+const INBOUND_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 const UNSUPPORTED_SUBMISSION_NOTICE: &str =
     "submission rejected: this Core build does not support that operation";
 const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
@@ -764,6 +776,11 @@ struct StreamTiming {
 /// Coalesced progress for internal provider turns whose text is consumed by the kernel rather than
 /// appended to the assistant transcript. A single latest update is enough for the UI; limiting
 /// sends to the draw cadence prevents a chatty SSE stream from filling the unbounded event bridge.
+/// Minimum spacing between coalesced internal-progress emissions. Matches the UI draw cadence: a
+/// faster rate would add events the frame loop cannot show, a slower one would make the kernel
+/// activity line visibly lag the stream.
+const INTERNAL_STREAM_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
 struct InternalStreamProgress {
     kind: crate::workflow::KernelActivityKind,
     tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
@@ -773,8 +790,6 @@ struct InternalStreamProgress {
 }
 
 impl InternalStreamProgress {
-    const INTERVAL: Duration = Duration::from_millis(100);
-
     fn new(
         kind: crate::workflow::KernelActivityKind,
         tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
@@ -817,7 +832,7 @@ impl InternalStreamProgress {
         let counts = (self.output_chars, self.thinking_chars);
         let due = self.last_emitted.is_none_or(|(output, thinking, at)| {
             counts != (output, thinking)
-                && (force || now.saturating_duration_since(at) >= Self::INTERVAL)
+                && (force || now.saturating_duration_since(at) >= INTERNAL_STREAM_PROGRESS_INTERVAL)
         });
         if !due && !force {
             return;
@@ -1129,7 +1144,7 @@ fn ultracode_investigator_prompt(
 fn fan_concurrency_permits(active_workers: usize) -> usize {
     let usable_cores = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(2))
-        .unwrap_or(1);
+        .unwrap_or(USABLE_CORES_WHEN_UNREPORTED);
     iteron_agents::FAN_CAP
         .min(usable_cores)
         .min(active_workers)
@@ -2702,7 +2717,7 @@ impl Agent {
                         let covered = if self.compaction.coverage_check {
                             self.verify_compaction_summary(&plan.to_summarize, &summary)
                                 .await
-                                .unwrap_or(false)
+                                .unwrap_or(COMPACTION_COVERED_ON_VERIFIER_ERROR)
                         } else {
                             true
                         };
@@ -4434,7 +4449,7 @@ impl Agent {
                     && ui_approval_arguments(&tu.input)
                         .get("_truncated_for_ui")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
+                        .unwrap_or(UI_PROJECTION_TRUNCATED_WHEN_UNMARKED);
                 let approved = match verdict {
                     Verdict::Auto => true,
                     Verdict::Deny => false,
@@ -5816,7 +5831,7 @@ impl Agent {
             {
                 break;
             }
-            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+            match tokio::time::timeout(INBOUND_DRAIN_POLL_INTERVAL, rx.recv()).await {
                 Ok(Some(envelope)) => {
                     let op = match envelope.into_current() {
                         Ok(op) => op,

@@ -23,6 +23,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
 
+/// Key-column width for a panel with no `KeyValue` rows at all. Zero, so a panel of plain lines
+/// gets no phantom indent.
+const EMPTY_KEY_COLUMN_WIDTH: usize = 0;
+/// Line number assumed when a hunk header carries no range. The `from_replacement` header
+/// (`@@ {path} @@`) has none, and its change is numbered sequentially from the top of the file.
+const HUNK_DEFAULT_START_LINE: u32 = 1;
+
 /// The spinner, shared by tool cards and the status line (unified — was duplicated at two different
 /// frame counts against the same counter, a latent drift bug). These are Claude Code's OWN macOS
 /// frames (`· ✢ ✳ ✶ ✻ ✽`) — every glyph is a guaranteed width-1 dingbat (TUI v3 §2).
@@ -1162,7 +1169,7 @@ fn render_panel(title: &str, rows: &[PanelRow], width: u16, theme: &Theme) -> Ve
             _ => None,
         })
         .max()
-        .unwrap_or(0)
+        .unwrap_or(EMPTY_KEY_COLUMN_WIDTH)
         .min(24);
     let row_lines: Vec<Vec<Span<'static>>> = rows
         .iter()
@@ -1581,21 +1588,21 @@ fn render_diff(diff: &FileDiff, width: u16, theme: &Theme) -> Vec<Line<'static>>
 /// `from_replacement` header (`@@ {path} @@`) has no ranges, so both default to 1 (sequential
 /// numbering from the top of the change). Never panics on a malformed header.
 fn hunk_start(header: &str) -> (u32, u32) {
-    let mut old = 1u32;
-    let mut new = 1u32;
+    let mut old = HUNK_DEFAULT_START_LINE;
+    let mut new = HUNK_DEFAULT_START_LINE;
     for tok in header.split_whitespace() {
         if let Some(n) = tok.strip_prefix('-') {
             old = n
                 .split(',')
                 .next()
                 .and_then(|x| x.parse().ok())
-                .unwrap_or(1);
+                .unwrap_or(HUNK_DEFAULT_START_LINE);
         } else if let Some(n) = tok.strip_prefix('+') {
             new = n
                 .split(',')
                 .next()
                 .and_then(|x| x.parse().ok())
-                .unwrap_or(1);
+                .unwrap_or(HUNK_DEFAULT_START_LINE);
         }
     }
     (old, new)

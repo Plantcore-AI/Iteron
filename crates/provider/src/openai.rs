@@ -27,10 +27,16 @@ const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 1024;
+/// Slot a streamed tool-call delta lands in when the provider omits `index`. Single-tool-call
+/// streams from compatible servers legitimately drop the field, and they mean the first slot.
+const DEFAULT_TOOL_CALL_INDEX: u64 = 0;
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ROUTE_SCOPE_BYTES: usize = 256;
 const MAX_REASONING_STATE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 const OPENAI_CHAT_REASONING_FORMAT: &str = "openai.chat.reasoning-content.v1";
+/// API root used when the caller names no endpoint. First-party OpenAI, version prefix included,
+/// because `ApiRoot` demands the complete path prefix rather than appending one.
+const DEFAULT_CHAT_API_ROOT: &str = "https://api.openai.com/v1";
 
 static NEXT_DIRECT_CHAT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
@@ -66,7 +72,7 @@ impl OpenAiCompat {
 
     /// Build against an exact API root, including its complete version/path prefix.
     pub fn try_new(key: String, api_root: Option<String>) -> Result<Self, ProviderError> {
-        let api_root = ApiRoot::parse(api_root.as_deref().unwrap_or("https://api.openai.com/v1"))?;
+        let api_root = ApiRoot::parse(api_root.as_deref().unwrap_or(DEFAULT_CHAT_API_ROOT))?;
         Self::with_root(key, api_root)
     }
 
@@ -1109,7 +1115,10 @@ impl Provider for OpenAiCompat {
                     .and_then(|x| x.as_array())
                 {
                     for tc in tcs {
-                        let raw_index = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let raw_index = tc
+                            .get("index")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(DEFAULT_TOOL_CALL_INDEX);
                         let idx = usize::try_from(raw_index).map_err(|_| {
                             ProviderError::Decode("tool call index exceeded platform bounds".into())
                         })?;

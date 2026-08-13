@@ -24,6 +24,18 @@ use std::path::{Component, Path};
 const MAX_REQUEST_PATH_BYTES: usize = 4_096;
 const MAX_REQUEST_COMPONENTS: usize = 128;
 const SAFE_LOAD_REFUSAL: &str = "request could not be loaded safely from this workspace";
+/// Rebinding verdict when the identity check itself errors. Fail-closed: an unprovable match keeps
+/// the loaded bytes from crossing the resolver boundary. Not a tunable.
+#[cfg(target_os = "linux")]
+const REBIND_UNPROVEN: bool = false;
+/// Leading hex characters of a digest shown in a detail row. Twelve separate every digest a single
+/// registry projection actually carries, while leaving the row wide enough for its label.
+const DIGEST_PREFIX_CHARS: usize = 12;
+/// Ceiling on the buffer reserved before the first byte of a request file is read. The resolver's
+/// input cap is 1 MiB, but almost every request is far smaller, so reserving the whole cap up
+/// front would charge every load for a size no real request reaches.
+#[cfg(target_os = "linux")]
+const REQUEST_READ_RESERVE_BYTES: usize = 64 * 1024;
 
 pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
@@ -262,7 +274,7 @@ fn format_microusd(value: u64) -> String {
 }
 
 fn short_digest(value: &str) -> &str {
-    value.get(..12).unwrap_or(value)
+    value.get(..DIGEST_PREFIX_CHARS).unwrap_or(value)
 }
 
 /// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
@@ -327,7 +339,7 @@ fn read_workspace_request_with_hook(
         .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
     acquired();
 
-    let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(64 * 1024));
+    let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(REQUEST_READ_RESERVE_BYTES));
     (&mut file)
         .take((RESOLUTION_INPUT_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
@@ -348,7 +360,7 @@ fn read_workspace_request_with_hook(
                 let current_leaf = capability_fs::open_regular_nonblocking(&current_parent, &leaf)?;
                 capability_fs::same_file(&file, &current_leaf)
             })
-            .unwrap_or(false)
+            .unwrap_or(REBIND_UNPROVEN)
         && binding.still_bound();
     if !rebound {
         return Err(LoadError(SAFE_LOAD_REFUSAL));

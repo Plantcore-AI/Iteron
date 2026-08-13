@@ -1,0 +1,262 @@
+//! The machine-readable optimization surface.
+//!
+//! One document that answers, for an outside process with no access to this source tree: what can
+//! I address, of what shape, within what bounds, and what may I not touch. Everything an optimizer
+//! needs to construct a legal profile is here, and nothing that is merely internal is.
+//!
+//! The honesty property that matters: every entry marked addressable must actually be settable by
+//! a profile the loader accepts. An export that overstates its surface is worse than no export,
+//! because a tuner will spend its whole budget proposing candidates that are refused.
+
+use crate::modules::{ModuleId, ModuleKind};
+use crate::params::ParamClass;
+use serde::Serialize;
+
+/// A model-visible text surface that can be replaced by a policy artifact.
+///
+/// These are not families: their value is natural language, they carry no capability, and the
+/// methods that optimize them are unrelated to the ones that search numbers. They are listed here
+/// so a prompt optimizer can discover them the same way a numeric optimizer discovers families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PromptArtifact {
+    /// Stable addressing id.
+    pub id: &'static str,
+    pub module: ModuleId,
+    /// Where the built-in default is declared.
+    pub decl: &'static str,
+    /// What replacing it changes, stated so a reader need not infer it from the id.
+    pub effect: &'static str,
+}
+
+/// The ten addressable text surfaces.
+pub const PROMPT_ARTIFACTS: [PromptArtifact; 10] = [
+    PromptArtifact {
+        id: "prompt/system@v1",
+        module: ModuleId::PromptSystem,
+        decl: "crates/cli/src/main.rs:SYSTEM_PROMPT",
+        effect: "the operator-facing agent's base system prompt",
+    },
+    PromptArtifact {
+        id: "prompt/tool_description@v1",
+        module: ModuleId::PromptToolDescription,
+        decl: "crates/tools/src/*.rs:ToolSpec::description",
+        effect: "the model-visible description of each registered tool; never its capability",
+    },
+    PromptArtifact {
+        id: "prompt/subagent@v1",
+        module: ModuleId::PromptSubagent,
+        decl: "crates/agents/src/def.rs",
+        effect: "the system prompt each spawned subagent runs under",
+    },
+    PromptArtifact {
+        id: "prompt/skill@v1",
+        module: ModuleId::PromptSkill,
+        decl: "crates/ctx/src/skills.rs",
+        effect: "skill and instruction text injected into context",
+    },
+    PromptArtifact {
+        id: "prompt/compaction@v1",
+        module: ModuleId::PromptCompaction,
+        decl: "crates/ctx/src/compact.rs",
+        effect: "the instruction that produces a conversation summary",
+    },
+    PromptArtifact {
+        id: "prompt/verification@v1",
+        module: ModuleId::PromptVerification,
+        decl: "crates/verify/src",
+        effect: "the instruction the verification pass runs under",
+    },
+    PromptArtifact {
+        id: "prompt/planner@v1",
+        module: ModuleId::PromptPlanner,
+        decl: "crates/agents/src/decompose.rs",
+        effect: "the instruction that decomposes a task into subtasks",
+    },
+    PromptArtifact {
+        id: "prompt/reduce@v1",
+        module: ModuleId::PromptReduce,
+        decl: "crates/agents/src/reduce.rs",
+        effect: "the instruction that merges child results",
+    },
+    PromptArtifact {
+        id: "prompt/memory_write@v1",
+        module: ModuleId::PromptMemoryWrite,
+        decl: "crates/ctx/src/memory.rs",
+        effect: "the instruction deciding what is persisted to memory",
+    },
+    PromptArtifact {
+        id: "prompt/recovery@v1",
+        module: ModuleId::PromptRecovery,
+        decl: "crates/workflow/src",
+        effect: "the escalation text used when an assignment ends without usable evidence",
+    },
+];
+
+#[derive(Debug, Serialize)]
+pub struct ModuleEntry {
+    pub id: &'static str,
+    pub kind: ModuleKind,
+    pub families: usize,
+    pub params: usize,
+    pub artifacts: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FamilyEntry {
+    pub ordinal: u16,
+    pub id: &'static str,
+    pub semantic_key: &'static str,
+    pub module: ModuleId,
+    pub domain: String,
+    pub implementation_status: String,
+    pub authority_class: String,
+    pub risk_class: String,
+    pub optimization_class: String,
+    pub search_phase: String,
+    pub pin_reason: Option<&'static str>,
+    pub source_kinds: Vec<String>,
+    /// Computed, never stored: does this family declare a source a profile may use. This is the
+    /// live dimensionality an optimizer should treat as its search space.
+    pub profile_addressable: bool,
+    pub summary: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SurfaceCounts {
+    pub families: usize,
+    pub families_full: usize,
+    pub families_fixed_hidden: usize,
+    pub families_profile_addressable: usize,
+    pub params: usize,
+    pub params_searchable: usize,
+    pub params_bounded: usize,
+    pub params_structural: usize,
+    pub modules: usize,
+    pub prompt_artifacts: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SurfaceExport {
+    pub schema_version: u16,
+    pub registry_id: &'static str,
+    pub registry_revision: u16,
+    pub registry_digest: &'static str,
+    pub param_registry_id: &'static str,
+    pub param_registry_digest: String,
+    pub counts: SurfaceCounts,
+    pub modules: Vec<ModuleEntry>,
+    pub families: Vec<FamilyEntry>,
+    pub params: &'static [crate::params::Param],
+    pub prompt_artifacts: &'static [PromptArtifact; 10],
+}
+
+/// Schema version of the export document.
+pub const SURFACE_SCHEMA_VERSION: u16 = 1;
+
+fn profile_addressable(family: &crate::Family) -> bool {
+    family.implementation_status != crate::ImplementationStatus::FixedHidden
+        && family.source.bindings.iter().any(|binding| {
+            matches!(
+                binding.kind,
+                crate::SourceKind::UserConfig | crate::SourceKind::ProjectConfig
+            )
+        })
+}
+
+/// Build the whole surface document.
+pub fn surface() -> SurfaceExport {
+    let families: Vec<FamilyEntry> = crate::families()
+        .iter()
+        .map(|family| FamilyEntry {
+            ordinal: family.ordinal,
+            id: family.id,
+            semantic_key: family.semantic_key,
+            module: crate::modules::module_for(family),
+            domain: format!("{:?}", family.domain),
+            implementation_status: format!("{:?}", family.implementation_status),
+            authority_class: format!("{:?}", family.authority_class),
+            risk_class: format!("{:?}", family.risk_class),
+            optimization_class: format!("{:?}", family.optimization.class),
+            search_phase: format!("{:?}", family.optimization.search_phase),
+            pin_reason: family.optimization.pin_reason,
+            source_kinds: family
+                .source
+                .bindings
+                .iter()
+                .map(|binding| format!("{:?}", binding.kind))
+                .collect(),
+            profile_addressable: profile_addressable(family),
+            summary: family.summary,
+        })
+        .collect();
+
+    let params = crate::params::params();
+    let modules = ModuleId::ALL
+        .into_iter()
+        .map(|module| ModuleEntry {
+            id: module.as_str(),
+            kind: module.kind(),
+            families: families
+                .iter()
+                .filter(|entry| entry.module == module)
+                .count(),
+            params: params.iter().filter(|param| param.module == module).count(),
+            artifacts: PROMPT_ARTIFACTS
+                .iter()
+                .filter(|artifact| artifact.module == module)
+                .count(),
+        })
+        .collect();
+
+    let counts = SurfaceCounts {
+        families: families.len(),
+        families_full: families
+            .iter()
+            .filter(|entry| entry.implementation_status == "Full")
+            .count(),
+        families_fixed_hidden: families
+            .iter()
+            .filter(|entry| entry.implementation_status == "FixedHidden")
+            .count(),
+        families_profile_addressable: families
+            .iter()
+            .filter(|entry| entry.profile_addressable)
+            .count(),
+        params: params.len(),
+        params_searchable: params
+            .iter()
+            .filter(|param| matches!(param.class, ParamClass::Searchable))
+            .count(),
+        params_bounded: params
+            .iter()
+            .filter(|param| matches!(param.class, ParamClass::Bounded))
+            .count(),
+        params_structural: params
+            .iter()
+            .filter(|param| matches!(param.class, ParamClass::Structural))
+            .count(),
+        modules: ModuleId::ALL.len(),
+        prompt_artifacts: PROMPT_ARTIFACTS.len(),
+    };
+
+    SurfaceExport {
+        schema_version: SURFACE_SCHEMA_VERSION,
+        registry_id: crate::REGISTRY_ID,
+        registry_revision: crate::REGISTRY_REVISION,
+        registry_digest: crate::REGISTRY_DIGEST_SHA256,
+        param_registry_id: crate::params::PARAM_REGISTRY_ID,
+        param_registry_digest: crate::params::param_registry_digest_sha256(),
+        counts,
+        modules,
+        families,
+        params,
+        prompt_artifacts: &PROMPT_ARTIFACTS,
+    }
+}
+
+/// Render the surface as stable JSON.
+pub fn surface_json() -> Result<String, serde_json::Error> {
+    let mut json = serde_json::to_string_pretty(&surface())?;
+    json.push('\n');
+    Ok(json)
+}

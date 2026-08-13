@@ -10,6 +10,10 @@ use std::io;
 use tokio::io::BufReader;
 use tokio_util::io::StreamReader;
 
+/// Idle connections kept per remote server. One binding drives at most a POST and its SSE stream
+/// concurrently, so a deeper pool would only hold sockets open against a server that is done.
+const POOL_MAX_IDLE_PER_HOST: usize = 2;
+
 /// The one admitted network edge for MCP streamable HTTP.
 ///
 /// Redirects and automatic retries are disabled at client construction. The body remains a
@@ -30,7 +34,7 @@ impl ReqwestMcpExchange {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(deadlines.startup())
             .timeout(deadlines.tool_call())
-            .pool_max_idle_per_host(2)
+            .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
             .user_agent(concat!("plantcore-core/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| transport_error("client"))?;

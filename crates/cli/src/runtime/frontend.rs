@@ -1,10 +1,14 @@
 use super::*;
 
+/// Byte ceiling for a workflow label on the frontend seam: one collapsed line a terminal can show
+/// without wrapping, not a transcript excerpt.
+const WORKFLOW_LABEL_MAX_BYTES: usize = 240;
+
 /// Collapse, redact, and bound a workflow label before it crosses the frontend seam.
 pub(super) fn ui_workflow_label(content: &str) -> String {
     let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
     let scrubbed = iteron_record::redact::scrub(&one_line);
-    strict_utf8_head(&scrubbed, 240)
+    strict_utf8_head(&scrubbed, WORKFLOW_LABEL_MAX_BYTES)
 }
 
 impl Agent {

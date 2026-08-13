@@ -845,13 +845,22 @@ pub struct MemBudget {
 impl Default for MemBudget {
     fn default() -> Self {
         MemBudget {
-            index_bytes: 25_000,
-            recall_bytes: 16_000,
-            instr_bytes: 8_000,
-            total: 49_000,
+            index_bytes: DEFAULT_MEM_INDEX_BYTES,
+            recall_bytes: DEFAULT_MEM_RECALL_BYTES,
+            instr_bytes: DEFAULT_MEM_INSTR_BYTES,
+            total: DEFAULT_MEM_TOTAL_BYTES,
         }
     }
 }
+
+/// Index segment ceiling, mirroring Claude Code's ~25 KB / 200-line memory index.
+const DEFAULT_MEM_INDEX_BYTES: usize = 25_000;
+/// Recalled fact bodies admitted on top of the index.
+const DEFAULT_MEM_RECALL_BYTES: usize = 16_000;
+/// Discovered instruction text carried alongside memory.
+const DEFAULT_MEM_INSTR_BYTES: usize = 8_000;
+/// Total memory-segment ceiling: below the sum of the parts, so the classes compete.
+const DEFAULT_MEM_TOTAL_BYTES: usize = 49_000;
 
 /// Errors from the memory strategy. Zero-dependency: `Display` + `std::error::Error` by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]

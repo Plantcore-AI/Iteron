@@ -10,6 +10,11 @@ use iteron_workflow::events::{self, WorkflowState};
 use crate::block;
 use crate::markdown::MarkdownDoc;
 
+/// Ceiling on the buffer reserved before any block text is appended. The caller's byte cap can be
+/// far larger than the block it bounds, so reserving the cap itself would charge every short block
+/// for the longest one the viewer tolerates.
+const TEXT_RESERVE_BYTES: usize = 64 * 1024;
+
 pub(super) fn markdown_text(
     document: &MarkdownDoc,
     max_bytes: usize,
@@ -356,7 +361,7 @@ struct BoundedText<'a> {
 impl<'a> BoundedText<'a> {
     fn new(max_bytes: usize, cancelled: &'a AtomicBool) -> Self {
         Self {
-            text: String::with_capacity(max_bytes.min(64 * 1024)),
+            text: String::with_capacity(max_bytes.min(TEXT_RESERVE_BYTES)),
             max_bytes,
             truncated: false,
             cancelled,

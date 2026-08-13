@@ -27,6 +27,10 @@ const MAX_SKILL_DIRS: usize = 1_024;
 const MAX_SKILL_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_CODEX_CONFIG_BYTES: usize = 256 * 1024;
 
+/// A matched Codex config entry with no `enabled` key leaves the skill enabled: the entry exists
+/// to carry other metadata, so absence is not a disable signal.
+const DEFAULT_CODEX_SKILL_ENABLED: bool = true;
+
 /// Where a skill was discovered — sets its trust (ADR-007).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillTier {
@@ -245,7 +249,7 @@ impl SkillCatalog {
                     enabled = table
                         .get("enabled")
                         .and_then(toml::Value::as_bool)
-                        .unwrap_or(true);
+                        .unwrap_or(DEFAULT_CODEX_SKILL_ENABLED);
                 }
             }
             enabled

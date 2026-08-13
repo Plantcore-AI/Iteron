@@ -63,6 +63,29 @@ pub use usage::{UsageIncompleteReason, UsageReport};
 /// unbounded allocation in the agent.
 pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Initial capacity for a captured error body. Provider error payloads are small JSON documents,
+/// so one page absorbs them without reserving anything near `MAX_ERROR_BODY_BYTES`.
+const ERROR_BODY_INITIAL_BYTES: usize = 4096;
+/// Longest provider error code kept after sanitizing. Codes are short identifiers; anything longer
+/// is payload smuggled into a diagnostic field.
+const MAX_ERROR_CODE_CHARS: usize = 128;
+/// Longest request id kept after sanitizing. Provider request ids are opaque but bounded, and this
+/// value is echoed into diagnostics.
+const MAX_REQUEST_ID_CHARS: usize = 256;
+
+/// TCP+TLS handshake budget. A peer that cannot complete a handshake this fast is unreachable
+/// for practical purposes, and failing early leaves the request deadline for the real work.
+const TRANSPORT_CONNECT_TLS_SECS: u64 = 30;
+/// Physical deadline for one provider request, long-running generations included. This is the
+/// outer bound the agent can never exceed, not an expected duration.
+const TRANSPORT_REQUEST_TOTAL_SECS: u64 = 15 * 60;
+/// Stream-idle watchdog: a stream that emits nothing for this long is treated as dead rather
+/// than held open until the total deadline.
+const TRANSPORT_STREAM_IDLE_SECS: u64 = 120;
+/// How long an idle pooled connection is kept for reuse before the pool drops it.
+const TRANSPORT_POOL_IDLE_SECS: u64 = 300;
+/// TCP keepalive interval, kept well under common NAT/idle-connection reaping windows.
+const TRANSPORT_TCP_KEEPALIVE_SECS: u64 = 30;
 
 /// One immutable owner for the physical request deadline and stream-idle watchdog used by every
 /// network adapter. Keeping these together prevents a newly added adapter from silently acquiring
@@ -79,11 +102,11 @@ pub struct ProviderTransportTimeoutPolicy {
 
 pub const fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
     ProviderTransportTimeoutPolicy {
-        connect_tls: Duration::from_secs(30),
-        request_total: Duration::from_secs(15 * 60),
-        stream_idle: Duration::from_secs(120),
-        pool_idle: Duration::from_secs(300),
-        tcp_keepalive: Duration::from_secs(30),
+        connect_tls: Duration::from_secs(TRANSPORT_CONNECT_TLS_SECS),
+        request_total: Duration::from_secs(TRANSPORT_REQUEST_TOTAL_SECS),
+        stream_idle: Duration::from_secs(TRANSPORT_STREAM_IDLE_SECS),
+        pool_idle: Duration::from_secs(TRANSPORT_POOL_IDLE_SECS),
+        tcp_keepalive: Duration::from_secs(TRANSPORT_TCP_KEEPALIVE_SECS),
         connection_reuse: true,
     }
 }
@@ -618,7 +641,7 @@ pub(crate) async fn api_error_from_response(
     let retry_after = retry_after_from_headers(response.headers());
     let request_id = request_id_from_headers(response.headers());
     let mut stream = response.bytes_stream();
-    let mut bytes = Vec::with_capacity(4096);
+    let mut bytes = Vec::with_capacity(ERROR_BODY_INITIAL_BYTES);
     let mut body_truncated = false;
     let deadline = tokio::time::Instant::now() + ERROR_BODY_TIMEOUT;
     loop {
@@ -859,7 +882,7 @@ fn sanitized_code(code: Option<String>) -> Option<String> {
     let code = code?;
     let clean: String = code
         .chars()
-        .take(128)
+        .take(MAX_ERROR_CODE_CHARS)
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })
@@ -1067,7 +1090,7 @@ fn portable_failure_kind(code: &str) -> Option<FailureKind> {
 fn sanitize_request_id(value: String) -> Option<String> {
     let clean: String = value
         .chars()
-        .take(256)
+        .take(MAX_REQUEST_ID_CHARS)
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })

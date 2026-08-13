@@ -14,6 +14,9 @@ const MAX_TARGET_BYTES: usize = 2 * 1024;
 const MAX_LINKS_PER_FRAME: usize = 512;
 const MAX_LINK_CELLS_PER_FRAME: usize = 16 * 1024;
 const MAX_OSC_BYTES_PER_FRAME: usize = 256 * 1024;
+/// Escape bytes an OSC 8 chunk spends on its own delimiters: the opening `ESC ] 8 ; ;` and closing
+/// `ESC ] 8 ; ;` are five bytes each, and each is terminated by a one-byte BEL.
+const OSC8_DELIMITER_BYTES: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Capability {
@@ -234,8 +237,11 @@ fn apply_to_buffer_with_chunk_width(
                 column = column.saturating_add(1);
                 continue;
             }
-            // Two OSC 8 delimiters contribute twelve bytes around the target and visible chunk.
-            let encoded_len = target.len().saturating_add(chunk.len()).saturating_add(12);
+            // Two OSC 8 delimiters wrap the target and the visible chunk.
+            let encoded_len = target
+                .len()
+                .saturating_add(chunk.len())
+                .saturating_add(OSC8_DELIMITER_BYTES);
             if osc_bytes.saturating_add(encoded_len) > MAX_OSC_BYTES_PER_FRAME {
                 break 'regions;
             }

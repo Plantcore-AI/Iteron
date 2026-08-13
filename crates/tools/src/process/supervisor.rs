@@ -22,6 +22,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
+/// Sequence value that marks the job-ID space as spent. Allocation wraps here on overflow instead
+/// of reusing a live ID, and the next request is refused rather than served a duplicate.
+const EXHAUSTED_JOB_SEQUENCE: u32 = 0;
+
 struct SupervisorState {
     next_sequence: u32,
     jobs: BTreeMap<JobId, Arc<Job>>,
@@ -256,14 +260,17 @@ impl Supervisor {
                 "active process limit reached ({max_active_jobs})"
             )));
         }
-        if state.next_sequence == 0 {
+        if state.next_sequence == EXHAUSTED_JOB_SEQUENCE {
             return Err(ActionError::Definite("job ID space exhausted".into()));
         }
         let id = JobId {
             instance: self.instance,
             sequence: state.next_sequence,
         };
-        state.next_sequence = state.next_sequence.checked_add(1).unwrap_or(0);
+        state.next_sequence = state
+            .next_sequence
+            .checked_add(1)
+            .unwrap_or(EXHAUSTED_JOB_SEQUENCE);
         Ok(id)
     }
 

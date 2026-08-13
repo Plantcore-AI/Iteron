@@ -3,6 +3,9 @@
 use super::*;
 use crate::file_input::ContextKind;
 
+/// Input tokens assumed for the context-window chip before any turn has reported a usage figure.
+/// Zero is the only honest floor here; guessing higher would understate the remaining window.
+const UNREPORTED_INPUT_TOKENS: u64 = 0;
 const PREVIEW_BYTES: usize = 4 * 1024;
 const PREVIEW_LINES: usize = 24;
 
@@ -371,7 +374,7 @@ fn show_stats(app: &mut App, session: &Session) {
             let estimated_input = app
                 .last_context
                 .map(|context| context.total_tokens as u64)
-                .unwrap_or(0);
+                .unwrap_or(UNREPORTED_INPUT_TOKENS);
             let reserve = u64::from(app.reserved_output_tokens.unwrap_or_default());
             let remaining = window.saturating_sub(estimated_input.saturating_add(reserve));
             let pct_left = remaining as f64 / window as f64 * 100.0;

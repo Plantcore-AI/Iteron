@@ -62,6 +62,9 @@ const STATIC_PROVIDER_METADATA_FILE: &str = "provider-metadata.json";
 /// a black-holed endpoint carries a 15 s discovery deadline plus a second one for its account
 /// probe, which is 30 s of black screen for one misconfigured entry.
 const EAGER_DISCOVERY_BUDGET: Duration = Duration::from_millis(1_500);
+/// Timestamp component of a cache temp-file name when the clock reads before the epoch. The pid,
+/// the atomic nonce and the attempt counter in the same name still keep it unique.
+const CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK: u128 = 0;
 const PROBE_CACHE_FILE: &str = "account-probes-v1.json";
 const PROBE_CACHE_VERSION: u32 = 1;
 /// A positive probe is evidence for minutes, not days: balance and suspension both move under the
@@ -543,7 +546,7 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or(CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK);
     for attempt in 0..16u8 {
         let candidate = parent.join(format!(
             ".{file_name}.tmp-{}-{timestamp:x}-{nonce:x}-{attempt}",
@@ -1282,7 +1285,7 @@ impl CatalogCacheScopeKey {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
+            .unwrap_or(CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK);
         let mut temporary = None;
         for attempt in 0..16u8 {
             let candidate = parent.join(format!(

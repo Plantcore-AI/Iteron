@@ -52,6 +52,10 @@ impl RouteObjectiveScores {
     }
 }
 
+/// How long a tripped circuit stays open before a half-open probe is allowed. Long enough for a
+/// transient provider incident to clear, short enough that a recovered route is not stranded.
+const CIRCUIT_OPEN_FOR_SECS: u64 = 30;
+
 pub const MAX_GOVERNED_ROUTES: usize = 32;
 pub const MAX_HEDGE_DUPLICATES: u8 = 8;
 
@@ -127,7 +131,7 @@ impl Default for CircuitPolicy {
     fn default() -> Self {
         Self {
             failure_threshold: 3,
-            open_for: Duration::from_secs(30),
+            open_for: Duration::from_secs(CIRCUIT_OPEN_FOR_SECS),
             half_open_probes: 1,
             success_threshold: 1,
         }

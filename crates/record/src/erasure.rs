@@ -18,6 +18,9 @@ const ERASURE_DIR: &str = ".erasure";
 const RECEIPTS_DIR: &str = "receipts";
 const LOCKS_DIR: &str = "locks";
 pub const MAX_ERASURE_RECEIPTS: usize = 4_096;
+/// A receipt timestamp is audit metadata, not a decision input, so a pre-epoch clock stamps the
+/// epoch rather than failing an erasure that already happened.
+const PRE_EPOCH_TIMESTAMP_MS: u64 = 0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErasureError {
@@ -612,7 +615,7 @@ fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .unwrap_or(PRE_EPOCH_TIMESTAMP_MS)
 }
 
 #[cfg(test)]

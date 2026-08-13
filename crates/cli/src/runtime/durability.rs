@@ -1,5 +1,9 @@
 use super::*;
 
+/// Lifecycle log/span count recorded in the export audit when the payload carries no lifecycle
+/// snapshot at all, so the audit argument stays present and content-free.
+const ABSENT_LIFECYCLE_COUNT: usize = 0;
+
 impl Agent {
     pub(super) fn emit(&mut self, turn: TurnId, kind: EventKind) {
         // The rollout assigns the real Seq on write; the placeholder here is overwritten.
@@ -595,8 +599,8 @@ impl Agent {
                 "endpoint": sink.endpoint(),
                 "spans": payload.spans.len(),
                 "metrics": payload.metrics.len(),
-                "lifecycle_logs": payload.lifecycle.as_ref().map(|snapshot| snapshot.logs.len()).unwrap_or(0),
-                "lifecycle_spans": payload.lifecycle.as_ref().map(|snapshot| snapshot.spans.len()).unwrap_or(0),
+                "lifecycle_logs": payload.lifecycle.as_ref().map(|snapshot| snapshot.logs.len()).unwrap_or(ABSENT_LIFECYCLE_COUNT),
+                "lifecycle_spans": payload.lifecycle.as_ref().map(|snapshot| snapshot.spans.len()).unwrap_or(ABSENT_LIFECYCLE_COUNT),
                 "dropped": payload.dropped,
             }),
             workspace: self.workspace.as_path(),

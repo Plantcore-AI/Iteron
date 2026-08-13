@@ -131,7 +131,9 @@ impl ConfinedPtyProcess {
             match self.child.try_wait() {
                 Ok(Some(status)) => return Some(status),
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        crate::BLOCKING_REAP_POLL_MS,
+                    ));
                 }
                 Ok(None) | Err(_) => return None,
             }

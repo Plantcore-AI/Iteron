@@ -8,6 +8,20 @@ use serde::Serialize;
 pub const MAX_SPECULATIVE_SIBLINGS: usize = 1_024;
 /// Maximum task attempts, including the first assigned worker.
 pub const MAX_TASK_ATTEMPTS: usize = 64;
+/// Shortest accepted loser-cleanup window. Below one second a cancelled sibling cannot be observed
+/// to have quit, so the reconciliation would report unknown effects on every run.
+const MIN_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+/// Longest accepted loser-cleanup window: one hour, past which a stuck loser is an operator problem
+/// rather than something the host should keep waiting on.
+const MAX_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3_600);
+/// Built-in duplicate-worker count: one extra sibling, the smallest amount of speculation that can
+/// win a race at all.
+const DEFAULT_SPECULATIVE_SIBLINGS: usize = 2;
+/// Built-in loser-cleanup window, sized for a cancelled child to unwind without holding the run.
+const DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Built-in task attempt ceiling: the assigned worker plus exactly one reassignment, so a transient
+/// negative terminal is retried once without letting a genuinely impossible task loop on budget.
+const DEFAULT_TASK_ATTEMPTS: usize = 2;
 
 /// Immutable recursion ceiling for workflow-launched agents. A child may run tools but may never
 /// become a second workflow composition root.
@@ -233,7 +247,9 @@ impl SpeculativeSiblingPolicy {
         if max_siblings > MAX_SPECULATIVE_SIBLINGS {
             return Err("speculative sibling ceiling exceeds 1024");
         }
-        if !(Duration::from_secs(1)..=Duration::from_secs(3_600)).contains(&cleanup_timeout) {
+        if !(MIN_SPECULATIVE_CLEANUP_TIMEOUT..=MAX_SPECULATIVE_CLEANUP_TIMEOUT)
+            .contains(&cleanup_timeout)
+        {
             return Err("speculative cleanup timeout must be in 1..=3600 seconds");
         }
         Ok(Self {
@@ -268,7 +284,11 @@ impl SpeculativeSiblingPolicy {
 
 impl Default for SpeculativeSiblingPolicy {
     fn default() -> Self {
-        Self::new(2, Duration::from_secs(5)).expect("built-in speculation policy is valid")
+        Self::new(
+            DEFAULT_SPECULATIVE_SIBLINGS,
+            DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT,
+        )
+        .expect("built-in speculation policy is valid")
     }
 }
 
@@ -329,7 +349,7 @@ impl TaskRetryPolicy {
 
 impl Default for TaskRetryPolicy {
     fn default() -> Self {
-        Self::new(2, TaskFailureAction::Reassign, true)
+        Self::new(DEFAULT_TASK_ATTEMPTS, TaskFailureAction::Reassign, true)
             .expect("built-in task retry policy is valid")
     }
 }

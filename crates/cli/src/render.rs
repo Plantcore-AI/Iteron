@@ -11,6 +11,10 @@ use crate::tui::char_width;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+/// Whether an exhausted row still has a trailing space to strip. False, so the trim loop stops
+/// at an empty row instead of popping past its start.
+const EMPTY_ROW_HAS_TRAILING_SPACE: bool = false;
+
 /// One OSC-8-capable region in an already-wrapped row. Coordinates are display cells, never byte
 /// offsets, so CJK and combining text keep the same geometry as the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,7 +126,11 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
         if cur_w.saturating_add(cw) > width && !cur.is_empty() {
             if let Some(sp) = last_space.filter(|&sp| sp > 0 && sp < cur.len()) {
                 let tail = cur.split_off(sp);
-                while cur.last().map(|(c, _)| *c == ' ').unwrap_or(false) {
+                while cur
+                    .last()
+                    .map(|(c, _)| *c == ' ')
+                    .unwrap_or(EMPTY_ROW_HAS_TRAILING_SPACE)
+                {
                     cur.pop();
                 }
                 rows.push(to_line(&cur));

@@ -1,5 +1,9 @@
 use super::*;
 
+/// Coverage verdict recorded when the coverage check itself failed to complete: an unproven summary
+/// counts as uncovered, never as covered.
+const COVERAGE_UNPROVEN: bool = false;
+
 impl Agent {
     /// One-shot summarization turn for compaction. No tools; the model just writes the note.
     pub(super) async fn summarize(
@@ -384,7 +388,7 @@ impl Agent {
                 let covered = if self.compaction.coverage_check {
                     self.verify_compaction_summary(&plan.to_summarize, &summary)
                         .await
-                        .unwrap_or(false)
+                        .unwrap_or(COVERAGE_UNPROVEN)
                 } else {
                     true
                 };

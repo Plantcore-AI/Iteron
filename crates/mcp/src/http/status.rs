@@ -12,6 +12,16 @@
 
 use crate::McpError;
 
+/// Longest `content-type` token accepted before parameters are stripped. A real media type is far
+/// shorter, so anything past this is a hostile header, not a type this client must understand.
+const MAX_MEDIA_TYPE_BYTES: usize = 128;
+/// Digits accepted in a `Retry-After` delta-seconds value. Bounding the text before `parse` keeps
+/// a long digit run from being parsed at all.
+const MAX_RETRY_AFTER_DIGITS: usize = 6;
+/// Longest honoured `Retry-After` delay. Beyond one hour the peer is effectively asking this
+/// client to stall forever, and the reconnect policy's own backoff is the better answer.
+const MAX_RETRY_AFTER_SECS: u64 = 3_600;
+
 /// Whether an effect may already exist on the far side.
 ///
 /// This is the same axis `McpToolOutcome::{FailedDefinite, Unknown}` carries. `Unknown` is the
@@ -110,7 +120,7 @@ impl McpHttpDisposition {
 pub fn parse_media_type(header: &str) -> Option<String> {
     let media_type = header.split(';').next()?.trim();
     if media_type.is_empty()
-        || media_type.len() > 128
+        || media_type.len() > MAX_MEDIA_TYPE_BYTES
         || !media_type.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'+' | b'.' | b'_')
         })
@@ -127,10 +137,16 @@ pub fn parse_media_type(header: &str) -> Option<String> {
 /// time. `None` falls back to the reconnect policy's own backoff, which is always safe.
 pub fn parse_retry_after(header: &str) -> Option<u64> {
     let value = header.trim();
-    if value.is_empty() || value.len() > 6 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if value.is_empty()
+        || value.len() > MAX_RETRY_AFTER_DIGITS
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
-    value.parse::<u64>().ok().filter(|secs| *secs <= 3_600)
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|secs| *secs <= MAX_RETRY_AFTER_SECS)
 }
 
 #[cfg(test)]

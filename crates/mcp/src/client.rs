@@ -26,6 +26,10 @@ use lifecycle::OwnedProcess;
 use transport::read_frame;
 use transport::{ResponseLimits, read_matching_response};
 
+/// A `tools/call` result that omits `isError` is a success: the field is optional in the protocol
+/// and absence must not be read as failure.
+const TOOL_RESULT_IS_ERROR_DEFAULT: bool = false;
+
 /// Certainty of one `tools/call` exchange. A matching server response is a completed attempt even
 /// when the server reports `isError`; transport/protocol loss after dispatch is `Unknown` because
 /// the remote process may already have applied the effect.
@@ -602,7 +606,7 @@ impl McpClient {
             is_error: result
                 .get("isError")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(TOOL_RESULT_IS_ERROR_DEFAULT),
             evidence,
         }
     }

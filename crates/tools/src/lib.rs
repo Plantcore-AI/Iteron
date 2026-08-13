@@ -67,6 +67,11 @@ pub use tool_policy::{
     ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,
 };
 
+/// Dispatch->terminal interval reported when the clock never observed a dispatch: a typed
+/// pre-dispatch rejection spent no time in the MCP transport, so the interval is empty rather
+/// than absent.
+const MCP_PRE_DISPATCH_TERMINAL_MS: u64 = 0;
+
 /// Shared hardened Git observation used by the registry tool and the operator `/diff` surface.
 /// It remains an observable process effect; callers outside the registry must provide their own
 /// operator/audit boundary.
@@ -926,7 +931,11 @@ impl Registry {
                     // `Some(0)` is intentional for a typed pre-dispatch MCP rejection: there is
                     // no dispatch->terminal interval, and the ordinary registry-wide fallback
                     // would incorrectly include local validation/serialization time.
-                    dispatch_to_terminal_ms: Some(clock.elapsed_to_terminal_ms().unwrap_or(0)),
+                    dispatch_to_terminal_ms: Some(
+                        clock
+                            .elapsed_to_terminal_ms()
+                            .unwrap_or(MCP_PRE_DISPATCH_TERMINAL_MS),
+                    ),
                 }
             })
         };

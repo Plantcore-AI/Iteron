@@ -13,6 +13,10 @@
 use crate::theme::{SynClass, Theme};
 use ratatui::text::Span;
 
+/// Whether a word with no first character counts as capitalized for the Type heuristic. False,
+/// so the degenerate case falls through to plain text rather than being mis-colored.
+const EMPTY_WORD_IS_CAPITALIZED: bool = false;
+
 /// Cross-line lexer state (R6). Bounded: only a small block-comment depth and an optional open
 /// triple-quote delimiter.
 #[derive(Debug, Clone, Default)]
@@ -642,7 +646,7 @@ pub fn code_spans(
                     .chars()
                     .next()
                     .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
+                    .unwrap_or(EMPTY_WORD_IS_CAPITALIZED)
             {
                 SynClass::Type
             } else {

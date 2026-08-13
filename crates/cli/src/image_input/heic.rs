@@ -100,6 +100,9 @@ mod platform {
 
     const SIPS: &str = "/usr/bin/sips";
     const CONVERSION_TIMEOUT: Duration = Duration::from_secs(8);
+    /// How often the reaper re-checks a running `sips`. Short enough that the timeout above is
+    /// honoured to roughly its own precision, long enough not to spin a core on `try_wait`.
+    const CONVERSION_POLL_INTERVAL: Duration = Duration::from_millis(10);
     const MAX_METADATA_BYTES: u64 = 4 * 1024;
 
     pub(super) fn transcode(bytes: &[u8]) -> Result<Vec<u8>, ImageInputErrorKind> {
@@ -218,7 +221,7 @@ mod platform {
                 let _ = child.wait();
                 return Err(ImageInputErrorKind::HeicConversionTimedOut);
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(CONVERSION_POLL_INTERVAL);
         }
     }
 
