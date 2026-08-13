@@ -258,6 +258,9 @@ jobs:
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$policy_sha" "$diff_base_sha"
           git merge-base --is-ancestor "$diff_base_sha" "$candidate_sha"
+          # This repository uses a persistent runner. Actions removes RUNNER_TEMP between jobs,
+          # but Git keeps the vanished auxiliary worktree registered in the checkout metadata.
+          git worktree prune --expire now
           git worktree add --detach "$POLICY_ROOT" "$policy_sha"
           {
             echo "diff-base-sha=$diff_base_sha"

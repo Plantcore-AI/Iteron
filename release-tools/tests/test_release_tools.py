@@ -7,6 +7,7 @@ import gzip
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -642,10 +643,8 @@ exit 1
         self.assertIn("contents: read", receipt)
         self.assertIn("id-token: write", receipt)
         self.assertNotIn("contents: write", receipt)
-        self.assertIn(
-            "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-            receipt,
-        )
+        checkout_uses = re.findall(r"actions/checkout@([0-9a-f]{40})(?:\s|$)", receipt)
+        self.assertEqual(len(checkout_uses), 4)
         self.assertIn("ref: ${{ inputs.builder-workflow-commit }}", receipt)
         self.assertIn("ref: ${{ inputs.tested-commit }}", receipt)
         self.assertIn("fetch-depth: 0", receipt)

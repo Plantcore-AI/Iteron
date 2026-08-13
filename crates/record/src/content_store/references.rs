@@ -63,6 +63,12 @@ pub fn guard_private_content_for_run(
 ) -> Result<u32, ContentStoreError> {
     crate::validate_run_id(run).map_err(|_| ContentStoreError::Corrupt)?;
     let layout = Layout::new(runs_dir, tenant);
+    // Legacy inline journals predate the private-content store. Replaying one is read-only and
+    // must not create a store or require a filesystem locking primitive merely to prove that no
+    // derivative lineage exists.
+    if !layout.store_exists()? {
+        return Ok(0);
+    }
     ensure_layout(&layout)?;
     let _owner_lock = lock_owner_shared(&layout, run)?;
     let run_dir = layout.run_reference_dir(run);
