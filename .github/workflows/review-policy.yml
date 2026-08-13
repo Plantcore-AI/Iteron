@@ -37,7 +37,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        run: |
+          test -x "$HOME/.cargo/bin/rustup"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: materialize trusted base policy
         id: policy
         shell: bash
