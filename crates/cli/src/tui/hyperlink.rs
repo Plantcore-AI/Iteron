@@ -4,8 +4,9 @@
 //! introduced here, after wrapping and scrolling, so they can never participate in width math.
 
 use crate::render::HyperlinkRegion;
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect;
+use std::num::NonZeroU16;
 use std::path::{Component, Path, PathBuf};
 use url::Url;
 
@@ -176,10 +177,10 @@ fn detect_with(mut get: impl FnMut(&str) -> Option<String>) -> Capability {
     }
 }
 
-/// Replace visible cells in admitted regions with self-contained OSC 8 chunks. Ratatui 0.29's
-/// buffer diff handles OSC-wrapped symbols reliably when chunks occupy at most two display cells
-/// (the upstream hyperlink workaround). Every chunk closes independently, so clipping or a partial
-/// redraw cannot leak hyperlink state into neighboring terminal output.
+/// Replace visible cells in admitted regions with self-contained OSC 8 chunks. Each chunk declares
+/// its exact terminal width so Ratatui's buffer diff does not count the control bytes as visible
+/// columns. Chunks occupy at most two display cells and close independently, so clipping or a
+/// partial redraw cannot leak hyperlink state into neighboring terminal output.
 pub(crate) fn apply_to_buffer(
     buffer: &mut Buffer,
     area: Rect,
@@ -274,7 +275,12 @@ fn apply_to_buffer_with_chunk_width(
                 break 'regions;
             }
             let osc = format!("\u{1b}]8;;{target}\u{7}{chunk}\u{1b}]8;;\u{7}");
-            buffer[(x, y)].set_symbol(&osc);
+            let Some(forced_width) = NonZeroU16::new(chunk_width) else {
+                continue;
+            };
+            buffer[(x, y)]
+                .set_symbol(&osc)
+                .set_diff_option(CellDiffOption::ForcedWidth(forced_width));
             column = scan;
             linked_cells = linked_cells.saturating_add(usize::from(chunk_width));
             osc_bytes = osc_bytes.saturating_add(encoded_len);
