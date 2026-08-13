@@ -48,12 +48,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full", "parsing", "visit"] }
+syn = { version = "3", features = ["full", "parsing", "visit"] }
 toml = "1.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
 zeroize = "1"
 hex = "0.4"
 thiserror = "2"
@@ -63,11 +63,11 @@ walkdir = "2"
 ignore = "0.4"
 regex = "1"
 # Terminal UI: the de-facto standard Rust stack (same as Codex), admitted at the standard-UI layer.
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.29"
 getrandom = "0.4"
 ring = "0.17"
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }
 # Raster decoders are admitted only for bounded frontend validation. Keep encoder,
 # SIMD, and unrelated image-processing features out of the CLI dependency graph.
