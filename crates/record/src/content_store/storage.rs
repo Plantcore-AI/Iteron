@@ -63,6 +63,10 @@ impl Layout {
             .join(hex::encode(Sha256::digest(run.0.as_bytes())))
     }
 
+    pub(super) fn store_exists(&self) -> Result<bool, ContentStoreError> {
+        self.scope.try_exists().map_err(ContentStoreError::from)
+    }
+
     fn owner_lock_path(&self, owner: &RunId) -> PathBuf {
         self.owner_locks
             .join(hex::encode(Sha256::digest(owner.0.as_bytes())))
@@ -288,7 +292,12 @@ pub(super) fn write_edge_locked(
         retention,
     };
     let bytes = serde_json::to_vec(&edge)?;
-    if bytes.len() > MAX_REFERENCE_EDGE_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "record.content_store.model.max_reference_edge_bytes",
+            MAX_REFERENCE_EDGE_BYTES,
+        )
+    {
         return Err(ContentStoreError::Corrupt);
     }
     let id = hex::encode(Sha256::digest(&bytes));
@@ -302,11 +311,24 @@ pub(super) fn write_edge_locked(
     let run_path = run_dir.join(format!("{id}.json"));
     if !run_path.exists() {
         let count = std::fs::read_dir(&run_dir)?
-            .take(MAX_CONTENT_REFERENCES + 1)
+            .take(
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ) + 1,
+            )
             .count();
-        if count >= MAX_CONTENT_REFERENCES {
+        if count
+            >= iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         private_replace(&run_path, &bytes)?;
@@ -314,11 +336,24 @@ pub(super) fn write_edge_locked(
     let path = dir.join(format!("{id}.json"));
     if !path.exists() {
         let count = std::fs::read_dir(&dir)?
-            .take(MAX_CONTENT_REFERENCES + 1)
+            .take(
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ) + 1,
+            )
             .count();
-        if count >= MAX_CONTENT_REFERENCES {
+        if count
+            >= iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         private_replace(&path, &bytes)?;
@@ -337,14 +372,33 @@ pub(super) fn read_edges(
         Err(error) => return Err(error.into()),
     };
     let mut edges = Vec::new();
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if edges.len() == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if edges.len()
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         let path = entry?.path();
-        let bytes = read_limited(&path, MAX_REFERENCE_EDGE_BYTES)?;
+        let bytes = read_limited(
+            &path,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?;
         let edge: ReferenceEdge = serde_json::from_slice(&bytes)?;
         if edge.version != STORE_VERSION || edge.digest != *digest {
             return Err(ContentStoreError::Corrupt);
@@ -359,7 +413,13 @@ pub(super) fn read_edges(
 }
 
 pub(super) fn read_state(layout: &Layout) -> Result<RevocationState, ContentStoreError> {
-    let bytes = match read_limited(&layout.state, MAX_REVOCATION_STATE_BYTES) {
+    let bytes = match read_limited(
+        &layout.state,
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_revocation_state_bytes",
+            MAX_REVOCATION_STATE_BYTES,
+        ),
+    ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(RevocationState::empty());
@@ -368,7 +428,11 @@ pub(super) fn read_state(layout: &Layout) -> Result<RevocationState, ContentStor
     };
     let state: RevocationState = serde_json::from_slice(&bytes)?;
     if state.version != STORE_VERSION
-        || state.tombstones.len() > MAX_CONTENT_REVOCATIONS
+        || state.tombstones.len()
+            > iteron_tunables::param_integer(
+                "record.content_store.model.max_content_revocations",
+                MAX_CONTENT_REVOCATIONS,
+            )
         || state
             .tombstones
             .windows(2)
@@ -387,15 +451,31 @@ pub(super) fn write_state(
     layout: &Layout,
     state: &RevocationState,
 ) -> Result<(), ContentStoreError> {
-    if state.tombstones.len() > MAX_CONTENT_REVOCATIONS {
+    if state.tombstones.len()
+        > iteron_tunables::param_integer(
+            "record.content_store.model.max_content_revocations",
+            MAX_CONTENT_REVOCATIONS,
+        )
+    {
         return Err(ContentStoreError::RevocationBound {
-            max: MAX_CONTENT_REVOCATIONS,
+            max: iteron_tunables::param_integer(
+                "record.content_store.model.max_content_revocations",
+                MAX_CONTENT_REVOCATIONS,
+            ),
         });
     }
     let bytes = serde_json::to_vec(state)?;
-    if bytes.len() > MAX_REVOCATION_STATE_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "record.content_store.model.max_revocation_state_bytes",
+            MAX_REVOCATION_STATE_BYTES,
+        )
+    {
         return Err(ContentStoreError::RevocationBound {
-            max: MAX_CONTENT_REVOCATIONS,
+            max: iteron_tunables::param_integer(
+                "record.content_store.model.max_content_revocations",
+                MAX_CONTENT_REVOCATIONS,
+            ),
         });
     }
     private_replace(&layout.state, &bytes)

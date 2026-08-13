@@ -59,10 +59,20 @@ impl ReferenceHarnessSpec {
         let file = std::fs::File::open(path)
             .map_err(|error| ReferenceHarnessError::SpecRead(error.to_string()))?;
         let mut bytes = Vec::new();
-        file.take(HARNESS_SPEC_LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| ReferenceHarnessError::SpecRead(error.to_string()))?;
-        if bytes.len() as u64 > HARNESS_SPEC_LIMIT {
+        file.take(
+            iteron_tunables::param_integer(
+                "eval.reference_harness.harness_spec_limit",
+                HARNESS_SPEC_LIMIT,
+            ) + 1,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| ReferenceHarnessError::SpecRead(error.to_string()))?;
+        if bytes.len() as u64
+            > iteron_tunables::param_integer(
+                "eval.reference_harness.harness_spec_limit",
+                HARNESS_SPEC_LIMIT,
+            )
+        {
             return Err(ReferenceHarnessError::InvalidSpec(
                 "reference-harness spec exceeds 256 KiB".into(),
             ));
@@ -80,7 +90,11 @@ impl ReferenceHarnessSpec {
             || self.launcher.len() > 1_024
             || self.entrypoint.trim().is_empty()
             || self.entrypoint.len() > 2_048
-            || self.arguments.len() > MAX_HARNESS_ARGUMENTS
+            || self.arguments.len()
+                > iteron_tunables::param_integer(
+                    "eval.reference_harness.max_harness_arguments",
+                    MAX_HARNESS_ARGUMENTS,
+                )
         {
             return Err(ReferenceHarnessError::InvalidSpec(
                 "name, launcher, entrypoint, or argument count is outside its bound".into(),
@@ -220,7 +234,10 @@ impl ReferenceHarnessAdapter {
             inherit_env: Vec::new(),
             env: clean_git_environment(),
             timeout,
-            max_output_bytes: HARNESS_OUTPUT_LIMIT,
+            max_output_bytes: iteron_tunables::param_integer(
+                "eval.reference_harness.harness_output_limit",
+                HARNESS_OUTPUT_LIMIT,
+            ),
         })
         .await
         .map_err(|error| ReferenceHarnessError::Execution(error.to_string()))?;
@@ -243,7 +260,10 @@ impl ReferenceHarnessAdapter {
             inherit_env: Vec::new(),
             env: clean_git_environment(),
             timeout,
-            max_output_bytes: HARNESS_OUTPUT_LIMIT,
+            max_output_bytes: iteron_tunables::param_integer(
+                "eval.reference_harness.harness_output_limit",
+                HARNESS_OUTPUT_LIMIT,
+            ),
         })
         .await
         .map_err(|error| ReferenceHarnessError::Execution(error.to_string()))?;
@@ -343,7 +363,10 @@ impl ReferenceHarnessAdapter {
             inherit_env: Vec::new(),
             env: Vec::new(),
             timeout,
-            max_output_bytes: HARNESS_OUTPUT_LIMIT,
+            max_output_bytes: iteron_tunables::param_integer(
+                "eval.reference_harness.harness_output_limit",
+                HARNESS_OUTPUT_LIMIT,
+            ),
         })
         .await
         .map_err(|error| ReferenceHarnessError::Execution(error.to_string()))?;
@@ -567,10 +590,21 @@ fn read_swe_agent_prediction(
     let file = std::fs::File::open(path)
         .map_err(|error| ReferenceHarnessError::Output(error.to_string()))?;
     let mut bytes = Vec::new();
-    file.take(HARNESS_OUTPUT_LIMIT as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| ReferenceHarnessError::Output(error.to_string()))?;
-    if bytes.len() > HARNESS_OUTPUT_LIMIT {
+    file.take(
+        iteron_tunables::param_integer(
+            "eval.reference_harness.harness_output_limit",
+            HARNESS_OUTPUT_LIMIT,
+        ) as u64
+            + 1,
+    )
+    .read_to_end(&mut bytes)
+    .map_err(|error| ReferenceHarnessError::Output(error.to_string()))?;
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "eval.reference_harness.harness_output_limit",
+            HARNESS_OUTPUT_LIMIT,
+        )
+    {
         return Err(ReferenceHarnessError::Output(
             "SWE-agent prediction exceeds 8 MiB".into(),
         ));

@@ -89,9 +89,17 @@ impl PromotionAuthority {
         )?;
         if authority_id.chars().any(char::is_control)
             || promotion_anchors.is_empty()
-            || promotion_anchors.len() > MAX_PROMOTION_TRUST_ANCHORS
+            || promotion_anchors.len()
+                > iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_trust_anchors",
+                    MAX_PROMOTION_TRUST_ANCHORS,
+                )
             || evaluator_anchors.is_empty()
-            || evaluator_anchors.len() > MAX_EVALUATOR_TRUST_ANCHORS
+            || evaluator_anchors.len()
+                > iteron_tunables::param_integer(
+                    "evolve.promotion.max_evaluator_trust_anchors",
+                    MAX_EVALUATOR_TRUST_ANCHORS,
+                )
         {
             return Err(PromotionAuthorityError::InvalidTrustConfiguration);
         }

@@ -74,7 +74,12 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
     reason = "the public contract returns the complete atomic failure report by value"
 )]
 pub fn resolve_json(bytes: &[u8]) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
-    if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
+    if bytes.len()
+        > crate::param_integer(
+            "tunables.resolution_types.resolution_input_max_bytes",
+            RESOLUTION_INPUT_MAX_BYTES,
+        )
+    {
         return Err(invalid_input(format!(
             "resolution input is {} bytes, the bound is {RESOLUTION_INPUT_MAX_BYTES}",
             bytes.len()

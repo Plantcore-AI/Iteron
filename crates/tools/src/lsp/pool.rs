@@ -86,9 +86,17 @@ impl Launcher {
         if let Some(slot) = pool.get(&key) {
             return Ok(Arc::clone(slot));
         }
-        if pool.len() >= MAX_LSP_POOL_SERVERS {
+        if pool.len()
+            >= iteron_tunables::param_integer(
+                "tools.lsp.policy.max_lsp_pool_servers",
+                MAX_LSP_POOL_SERVERS,
+            )
+        {
             return Err(LspToolError::PoolFull {
-                limit: MAX_LSP_POOL_SERVERS,
+                limit: iteron_tunables::param_integer(
+                    "tools.lsp.policy.max_lsp_pool_servers",
+                    MAX_LSP_POOL_SERVERS,
+                ),
             });
         }
         let slot = Arc::new(AsyncMutex::new(ServerSlot::default()));

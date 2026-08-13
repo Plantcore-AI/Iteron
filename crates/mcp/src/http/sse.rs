@@ -49,8 +49,14 @@ impl Default for SseLimits {
     fn default() -> Self {
         Self {
             event_bytes: MAX_FRAME_BYTES,
-            aggregate_bytes: MAX_RESPONSE_BYTES,
-            events: MAX_RESPONSE_FRAMES,
+            aggregate_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_response_bytes",
+                MAX_RESPONSE_BYTES,
+            ),
+            events: iteron_tunables::param_integer(
+                "mcp.lib.max_response_frames",
+                MAX_RESPONSE_FRAMES,
+            ),
         }
     }
 }
@@ -320,7 +326,10 @@ pub async fn read_json_response<R>(reader: &mut R, id: u64, limit: usize) -> Res
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut body: Vec<u8> = Vec::with_capacity(limit.min(READ_BUFFER_BYTES));
+    let mut body: Vec<u8> = Vec::with_capacity(limit.min(iteron_tunables::param_integer(
+        "mcp.http.sse.read_buffer_bytes",
+        READ_BUFFER_BYTES,
+    )));
     loop {
         let available = reader
             .fill_buf()

@@ -167,16 +167,21 @@ pub struct PendingRequests {
 impl PendingRequests {
     /// Construct a registry for one explicit host/document-session generation.
     pub fn new(server_generation: u64) -> Self {
-        Self::with_capacity(server_generation, MAX_IN_FLIGHT)
-            .expect("the crate's maximum in-flight capacity is valid")
+        Self::with_capacity(
+            server_generation,
+            iteron_tunables::param_integer("lsp.lib.max_in_flight", MAX_IN_FLIGHT),
+        )
+        .expect("the crate's maximum in-flight capacity is valid")
     }
 
     /// Construct a tighter registry without silently clamping capacity.
     pub fn with_capacity(server_generation: u64, capacity: usize) -> Result<Self, LspError> {
-        if !(1..=MAX_IN_FLIGHT).contains(&capacity) {
+        if !(1..=iteron_tunables::param_integer("lsp.lib.max_in_flight", MAX_IN_FLIGHT))
+            .contains(&capacity)
+        {
             return Err(LspError::InvalidPendingCapacity {
                 value: capacity,
-                max: MAX_IN_FLIGHT,
+                max: iteron_tunables::param_integer("lsp.lib.max_in_flight", MAX_IN_FLIGHT),
             });
         }
         Ok(Self {
@@ -263,13 +268,28 @@ impl PendingRequests {
         timeout_ms: u64,
     ) -> Result<RequestCorrelation, LspError> {
         self.observe_clock(now_ms)?;
-        if !(MIN_REQUEST_TIMEOUT_MS..=MAX_REQUEST_TIMEOUT_MS).contains(&timeout_ms) {
+        if !(iteron_tunables::param_integer(
+            "lsp.lib.min_request_timeout_ms",
+            MIN_REQUEST_TIMEOUT_MS,
+        )
+            ..=iteron_tunables::param_integer(
+                "lsp.lib.max_request_timeout_ms",
+                MAX_REQUEST_TIMEOUT_MS,
+            ))
+            .contains(&timeout_ms)
+        {
             self.rejected = self.rejected.saturating_add(1);
             return Err(LspError::InvalidTimeout {
                 kind: "request",
                 value_ms: timeout_ms,
-                min_ms: MIN_REQUEST_TIMEOUT_MS,
-                max_ms: MAX_REQUEST_TIMEOUT_MS,
+                min_ms: iteron_tunables::param_integer(
+                    "lsp.lib.min_request_timeout_ms",
+                    MIN_REQUEST_TIMEOUT_MS,
+                ),
+                max_ms: iteron_tunables::param_integer(
+                    "lsp.lib.max_request_timeout_ms",
+                    MAX_REQUEST_TIMEOUT_MS,
+                ),
             });
         }
         let deadline_ms = match now_ms.checked_add(timeout_ms) {

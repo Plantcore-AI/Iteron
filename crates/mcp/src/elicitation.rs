@@ -36,7 +36,11 @@ impl ElicitationRequest {
             .and_then(Value::as_str)
             .ok_or_else(|| protocol("elicitation message is required"))?;
         if message.trim().is_empty()
-            || message.len() > MAX_ELICITATION_MESSAGE_BYTES
+            || message.len()
+                > iteron_tunables::param_integer(
+                    "mcp.elicitation.max_elicitation_message_bytes",
+                    MAX_ELICITATION_MESSAGE_BYTES,
+                )
             || message.chars().any(char::is_control)
         {
             return Err(protocol("elicitation message is not display-safe"));
@@ -104,7 +108,12 @@ impl ElicitationResponse {
                 let content = self
                     .content
                     .ok_or_else(|| protocol("accepted elicitation has no content"))?;
-                if serde_json::to_vec(&content)?.len() > MAX_ELICITATION_CONTENT_BYTES {
+                if serde_json::to_vec(&content)?.len()
+                    > iteron_tunables::param_integer(
+                        "mcp.elicitation.max_elicitation_content_bytes",
+                        MAX_ELICITATION_CONTENT_BYTES,
+                    )
+                {
                     return Err(protocol("elicitation response exceeds its byte ceiling"));
                 }
                 validate_content(request.requested_schema(), &content)?;
@@ -127,7 +136,12 @@ pub trait McpElicitationHandler: Send + Sync {
 }
 
 fn validate_schema(schema: &Value) -> Result<(), McpError> {
-    if serde_json::to_vec(schema)?.len() > MAX_ELICITATION_SCHEMA_BYTES {
+    if serde_json::to_vec(schema)?.len()
+        > iteron_tunables::param_integer(
+            "mcp.elicitation.max_elicitation_schema_bytes",
+            MAX_ELICITATION_SCHEMA_BYTES,
+        )
+    {
         return Err(protocol("elicitation schema exceeds its byte ceiling"));
     }
     let object = schema
@@ -140,7 +154,12 @@ fn validate_schema(schema: &Value) -> Result<(), McpError> {
         .get("properties")
         .and_then(Value::as_object)
         .ok_or_else(|| protocol("elicitation schema properties are required"))?;
-    if properties.len() > MAX_ELICITATION_FIELDS {
+    if properties.len()
+        > iteron_tunables::param_integer(
+            "mcp.elicitation.max_elicitation_fields",
+            MAX_ELICITATION_FIELDS,
+        )
+    {
         return Err(protocol("elicitation schema has too many fields"));
     }
     for (name, property) in properties {
@@ -153,7 +172,12 @@ fn validate_schema(schema: &Value) -> Result<(), McpError> {
         let required = required
             .as_array()
             .ok_or_else(|| protocol("elicitation required must be an array"))?;
-        if required.len() > MAX_ELICITATION_FIELDS {
+        if required.len()
+            > iteron_tunables::param_integer(
+                "mcp.elicitation.max_elicitation_fields",
+                MAX_ELICITATION_FIELDS,
+            )
+        {
             return Err(protocol("elicitation required has too many fields"));
         }
         for field in required {
@@ -265,7 +289,11 @@ fn validate_value(schema: &Map<String, Value>, value: &Value) -> Result<(), McpE
 
 fn valid_field_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_ELICITATION_FIELD_NAME_BYTES
+        && name.len()
+            <= iteron_tunables::param_integer(
+                "mcp.elicitation.max_elicitation_field_name_bytes",
+                MAX_ELICITATION_FIELD_NAME_BYTES,
+            )
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))

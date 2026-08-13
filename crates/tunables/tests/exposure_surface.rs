@@ -159,6 +159,25 @@ fn a_structural_parameter_is_read_only() {
 }
 
 #[test]
+fn a_parameter_refuses_the_wrong_value_type_instead_of_dropping_it() {
+    let integer = params()
+        .iter()
+        .find(|param| {
+            param.is_settable() && matches!(param.ty, iteron_tunables::ParamType::Integer)
+        })
+        .expect("the catalog exposes a settable integer parameter");
+    let mut profile = document(Vec::new());
+    profile.params.push(iteron_tunables::ParamAssignment {
+        param: integer.id.clone(),
+        value: ResolutionValue::Boolean { value: true },
+    });
+    assert!(matches!(
+        validate_profile(&profile),
+        Err(ProfileLoadError::ParamType { .. })
+    ));
+}
+
+#[test]
 fn a_profile_is_pinned_to_the_bytes_it_was_computed_against() {
     let document = document(Vec::new());
     let rendered = iteron_tunables::render_profile(&document).expect("renders");
@@ -300,4 +319,62 @@ fn every_prompt_artifact_is_addressable_and_uniquely_identified() {
             artifact.id
         );
     }
+}
+
+/// Every addressable tier-2 parameter must actually move.
+///
+/// Both halves of this were learned the hard way. Tier-2 parameters and prompt artifacts were once
+/// published before all of their production reads existed. An optimizer cannot tell an inert knob
+/// from a live one by trying it — a value that changes nothing looks exactly like a value that did
+/// not help — so the export has to say which is which and this gate must require exact equality.
+#[test]
+fn every_settable_parameter_is_actually_applied() {
+    let surface = surface();
+
+    // Whatever the counts are, they must be derived from the entries rather than asserted
+    // independently, so the summary can never disagree with the rows it summarises.
+    assert_eq!(
+        surface.counts.params_applied,
+        surface.params.iter().filter(|param| param.applied).count()
+    );
+    assert_eq!(
+        surface.counts.prompt_artifacts_overridable,
+        iteron_tunables::PROMPT_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.overridable)
+            .count()
+    );
+
+    // The implication must hold in both directions. A structural value with a read site would be a
+    // bypass, while a settable value without one would be a fake optimization knob.
+    for param in surface.params {
+        assert!(
+            param.applied == param.is_settable(),
+            "`{}` disagrees: applied={}, settable={}",
+            param.id,
+            param.applied,
+            param.is_settable()
+        );
+    }
+    assert_eq!(
+        surface.counts.params_applied,
+        surface
+            .params
+            .iter()
+            .filter(|param| param.is_settable())
+            .count(),
+        "the live surface must have zero inert settable parameters"
+    );
+    assert!(
+        surface
+            .params
+            .iter()
+            .filter(|param| matches!(param.class, ParamClass::Bounded))
+            .all(|param| param.domain.max.is_some()),
+        "every tighten-only safety bound must publish its shipped ceiling"
+    );
+    assert_eq!(
+        surface.counts.prompt_artifacts_overridable, surface.counts.prompt_artifacts,
+        "every published prompt artifact must have a real runtime resolution site"
+    );
 }

@@ -7,6 +7,23 @@ use serde_json::Value;
 pub(crate) const MAX_FILES: usize = 16;
 pub(crate) const MAX_HUNKS_PER_FILE: usize = 32;
 const MAX_TOTAL_HUNKS: usize = 128;
+
+/// The advertised schema and the parser have to quote the same number, so both read the parameter
+/// through these two accessors rather than the constants directly. With no profile installed each
+/// returns its own compiled constant.
+pub(crate) fn max_files() -> usize {
+    iteron_tunables::param_usize("tools.multi_file_patch_input.max_files", MAX_FILES)
+}
+
+pub(crate) fn max_hunks_per_file() -> usize {
+    iteron_tunables::param_usize(
+        "tools.multi_file_patch_input.max_hunks_per_file",
+        iteron_tunables::param_integer(
+            "tools.multi_file_patch_input.max_hunks_per_file",
+            MAX_HUNKS_PER_FILE,
+        ),
+    )
+}
 const MAX_PATCH_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 4_096;
 
@@ -27,11 +44,12 @@ pub(crate) fn parse_requests(input: &Value) -> Result<Vec<FilePatch>, PatchFailu
         .ok_or_else(|| {
             PatchFailure::global("invalid_input", "parse", "`files` must be an array")
         })?;
-    if files.is_empty() || files.len() > MAX_FILES {
+    let max_files = max_files();
+    if files.is_empty() || files.len() > max_files {
         return Err(PatchFailure::global(
             "file_count_out_of_bounds",
             "parse",
-            format!("patch must contain 1..={MAX_FILES} files"),
+            format!("patch must contain 1..={max_files} files"),
         ));
     }
 
@@ -57,7 +75,12 @@ pub(crate) fn parse_requests(input: &Value) -> Result<Vec<FilePatch>, PatchFailu
                 "path must not be empty",
             ));
         }
-        if path.len() > MAX_PATH_BYTES {
+        if path.len()
+            > iteron_tunables::param_integer(
+                "tools.multi_file_patch_input.max_path_bytes",
+                MAX_PATH_BYTES,
+            )
+        {
             return Err(PatchFailure::file(
                 "invalid_path",
                 "parse",
@@ -85,23 +108,31 @@ pub(crate) fn parse_requests(input: &Value) -> Result<Vec<FilePatch>, PatchFailu
                 "`hunks` must be an array",
             )
         })?;
-        if hunks.is_empty() || hunks.len() > MAX_HUNKS_PER_FILE {
+        let max_hunks_per_file = max_hunks_per_file();
+        if hunks.is_empty() || hunks.len() > max_hunks_per_file {
             return Err(PatchFailure::file(
                 "hunk_count_out_of_bounds",
                 "parse",
                 file_index,
                 path,
-                format!("file must contain 1..={MAX_HUNKS_PER_FILE} hunks"),
+                format!("file must contain 1..={max_hunks_per_file} hunks"),
             ));
         }
         total_hunks = total_hunks.checked_add(hunks.len()).ok_or_else(|| {
             PatchFailure::global("patch_too_large", "parse", "hunk count overflow")
         })?;
-        if total_hunks > MAX_TOTAL_HUNKS {
+        let max_total_hunks = iteron_tunables::param_usize(
+            "tools.multi_file_patch_input.max_total_hunks",
+            iteron_tunables::param_integer(
+                "tools.multi_file_patch_input.max_total_hunks",
+                MAX_TOTAL_HUNKS,
+            ),
+        );
+        if total_hunks > max_total_hunks {
             return Err(PatchFailure::global(
                 "patch_too_large",
                 "parse",
-                format!("patch exceeds {MAX_TOTAL_HUNKS} total hunks"),
+                format!("patch exceeds {max_total_hunks} total hunks"),
             ));
         }
 
@@ -144,11 +175,18 @@ fn bounded_add(current: usize, added: usize) -> Result<usize, PatchFailure> {
     let total = current.checked_add(added).ok_or_else(|| {
         PatchFailure::global("patch_too_large", "parse", "patch byte count overflow")
     })?;
-    if total > MAX_PATCH_INPUT_BYTES {
+    let max_patch_input_bytes = iteron_tunables::param_usize(
+        "tools.multi_file_patch_input.max_patch_input_bytes",
+        iteron_tunables::param_integer(
+            "tools.multi_file_patch_input.max_patch_input_bytes",
+            MAX_PATCH_INPUT_BYTES,
+        ),
+    );
+    if total > max_patch_input_bytes {
         return Err(PatchFailure::global(
             "patch_too_large",
             "parse",
-            format!("patch input exceeds {MAX_PATCH_INPUT_BYTES} bytes"),
+            format!("patch input exceeds {max_patch_input_bytes} bytes"),
         ));
     }
     Ok(total)

@@ -107,9 +107,19 @@ impl ErasureTarget {
             if max_age_secs.is_none() && keep_last.is_none() {
                 return Err(ErasureValidationError::RetentionPolicy);
             }
-            if max_age_secs.is_some_and(|value| value > MAX_RETENTION_AGE_SECS)
-                || keep_last.is_some_and(|value| value > MAX_RETENTION_KEEP_LAST)
-            {
+            if max_age_secs.is_some_and(|value| {
+                value
+                    > iteron_tunables::param_integer(
+                        "protocol.erasure.max_retention_age_secs",
+                        MAX_RETENTION_AGE_SECS,
+                    )
+            }) || keep_last.is_some_and(|value| {
+                value
+                    > iteron_tunables::param_integer(
+                        "protocol.erasure.max_retention_keep_last",
+                        MAX_RETENTION_KEEP_LAST,
+                    )
+            }) {
                 return Err(ErasureValidationError::RetentionPolicy);
             }
         }

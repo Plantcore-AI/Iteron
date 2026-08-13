@@ -137,30 +137,130 @@ impl Default for ObservationToolPolicy {
     fn default() -> Self {
         Self {
             read_file: ReadFilePolicy {
-                source_max_bytes: DEFAULT_READ_FILE_SOURCE_MAX_BYTES,
-                output_max_bytes: DEFAULT_READ_FILE_OUTPUT_MAX_BYTES,
-                max_lines: DEFAULT_READ_FILE_MAX_LINES,
+                source_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_read_file_source_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_read_file_source_max_bytes",
+                        DEFAULT_READ_FILE_SOURCE_MAX_BYTES,
+                    ),
+                ),
+                output_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_read_file_output_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_read_file_output_max_bytes",
+                        DEFAULT_READ_FILE_OUTPUT_MAX_BYTES,
+                    ),
+                ),
+                max_lines: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_read_file_max_lines",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_read_file_max_lines",
+                        DEFAULT_READ_FILE_MAX_LINES,
+                    ),
+                ),
             },
             list_dir: DirectoryListPolicy {
-                max_depth: DEFAULT_LIST_DIR_MAX_DEPTH,
-                max_entries: DEFAULT_LIST_DIR_MAX_ENTRIES,
-                output_max_bytes: DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES,
+                max_depth: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_list_dir_max_depth",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_list_dir_max_depth",
+                        DEFAULT_LIST_DIR_MAX_DEPTH,
+                    ),
+                ),
+                max_entries: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_list_dir_max_entries",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_list_dir_max_entries",
+                        DEFAULT_LIST_DIR_MAX_ENTRIES,
+                    ),
+                ),
+                output_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_list_dir_output_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_list_dir_output_max_bytes",
+                        DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES,
+                    ),
+                ),
             },
             glob: GlobPolicy {
-                max_depth: DEFAULT_GLOB_MAX_DEPTH,
-                max_results: DEFAULT_GLOB_MAX_RESULTS,
-                output_max_bytes: DEFAULT_GLOB_OUTPUT_MAX_BYTES,
+                max_depth: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_glob_max_depth",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_glob_max_depth",
+                        DEFAULT_GLOB_MAX_DEPTH,
+                    ),
+                ),
+                max_results: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_glob_max_results",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_glob_max_results",
+                        DEFAULT_GLOB_MAX_RESULTS,
+                    ),
+                ),
+                output_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_glob_output_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_glob_output_max_bytes",
+                        DEFAULT_GLOB_OUTPUT_MAX_BYTES,
+                    ),
+                ),
             },
             repo_map: RepoMapPolicy {
-                max_files: DEFAULT_REPO_MAP_MAX_FILES,
-                max_depth: DEFAULT_REPO_MAP_MAX_DEPTH,
-                max_tokens: DEFAULT_REPO_MAP_MAX_TOKENS,
+                max_files: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_repo_map_max_files",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_repo_map_max_files",
+                        DEFAULT_REPO_MAP_MAX_FILES,
+                    ),
+                ),
+                max_depth: u8::try_from(iteron_tunables::param_i128(
+                    "tools.execution_policy.default_repo_map_max_depth",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_repo_map_max_depth",
+                        DEFAULT_REPO_MAP_MAX_DEPTH,
+                    ) as i128,
+                ))
+                .unwrap_or(iteron_tunables::param_integer(
+                    "tools.execution_policy.default_repo_map_max_depth",
+                    DEFAULT_REPO_MAP_MAX_DEPTH,
+                )),
+                max_tokens: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_repo_map_max_tokens",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_repo_map_max_tokens",
+                        DEFAULT_REPO_MAP_MAX_TOKENS,
+                    ),
+                ),
             },
             web_fetch: WebFetchPolicy {
-                body_max_bytes: DEFAULT_WEB_FETCH_BODY_MAX_BYTES,
-                max_redirects: DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-                timeout_seconds: DEFAULT_WEB_FETCH_TIMEOUT_SECS,
-                max_lines: DEFAULT_WEB_FETCH_MAX_LINES,
+                body_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_web_fetch_body_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_web_fetch_body_max_bytes",
+                        DEFAULT_WEB_FETCH_BODY_MAX_BYTES,
+                    ),
+                ),
+                max_redirects: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_web_fetch_max_redirects",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_web_fetch_max_redirects",
+                        DEFAULT_WEB_FETCH_MAX_REDIRECTS,
+                    ),
+                ),
+                timeout_seconds: iteron_tunables::param_u64(
+                    "tools.execution_policy.default_web_fetch_timeout_secs",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_web_fetch_timeout_secs",
+                        DEFAULT_WEB_FETCH_TIMEOUT_SECS,
+                    ),
+                ),
+                max_lines: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_web_fetch_max_lines",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_web_fetch_max_lines",
+                        DEFAULT_WEB_FETCH_MAX_LINES,
+                    ),
+                ),
             },
             shell: ShellPolicy {
                 timeout_seconds: iteron_sandbox::Confinement::UNCONFINED_TIMEOUT_SECS,
@@ -168,15 +268,57 @@ impl Default for ObservationToolPolicy {
                 stderr_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
             },
             grep: GrepPolicy {
-                max_matches: DEFAULT_GREP_MAX_MATCHES,
-                snippet_max_bytes: DEFAULT_GREP_SNIPPET_MAX_BYTES,
-                output_max_bytes: DEFAULT_GREP_OUTPUT_MAX_BYTES,
+                max_matches: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_grep_max_matches",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_grep_max_matches",
+                        DEFAULT_GREP_MAX_MATCHES,
+                    ),
+                ),
+                snippet_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_grep_snippet_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_grep_snippet_max_bytes",
+                        DEFAULT_GREP_SNIPPET_MAX_BYTES,
+                    ),
+                ),
+                output_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_grep_output_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_grep_output_max_bytes",
+                        DEFAULT_GREP_OUTPUT_MAX_BYTES,
+                    ),
+                ),
             },
             git: GitPolicy {
-                timeout_seconds: DEFAULT_GIT_TIMEOUT_SECS,
-                output_max_bytes: DEFAULT_GIT_OUTPUT_MAX_BYTES,
-                status_max_entries: DEFAULT_GIT_STATUS_MAX_ENTRIES,
-                log_max_entries: DEFAULT_GIT_LOG_MAX_ENTRIES,
+                timeout_seconds: iteron_tunables::param_u64(
+                    "tools.execution_policy.default_git_timeout_secs",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_git_timeout_secs",
+                        DEFAULT_GIT_TIMEOUT_SECS,
+                    ),
+                ),
+                output_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_git_output_max_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_git_output_max_bytes",
+                        DEFAULT_GIT_OUTPUT_MAX_BYTES,
+                    ),
+                ),
+                status_max_entries: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_git_status_max_entries",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_git_status_max_entries",
+                        DEFAULT_GIT_STATUS_MAX_ENTRIES,
+                    ),
+                ),
+                log_max_entries: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_git_log_max_entries",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_git_log_max_entries",
+                        DEFAULT_GIT_LOG_MAX_ENTRIES,
+                    ),
+                ),
             },
         }
     }

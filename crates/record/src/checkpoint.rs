@@ -141,7 +141,10 @@ fn run_command_bounded(
                 format!("git command exceeded {} seconds", timeout.as_secs()),
             ));
         }
-        std::thread::sleep(GIT_WAIT_POLL_INTERVAL);
+        std::thread::sleep(iteron_tunables::param_duration(
+            "record.checkpoint.git_wait_poll_interval",
+            GIT_WAIT_POLL_INTERVAL,
+        ));
     };
     let stdout = stdout_thread
         .join()
@@ -196,8 +199,12 @@ fn resolve_git_executable(path: Option<&OsStr>) -> Option<PathBuf> {
 /// which could launch a hook, fsmonitor, signer, pager, editor, or maintenance child is overridden.
 fn hardened_git_command() -> Command {
     let path = std::env::var_os("PATH");
-    let executable =
-        resolve_git_executable(path.as_deref()).unwrap_or_else(|| PathBuf::from(NULL_DEVICE));
+    let executable = resolve_git_executable(path.as_deref()).unwrap_or_else(|| {
+        PathBuf::from(iteron_tunables::param_str(
+            "record.checkpoint.null_device",
+            NULL_DEVICE,
+        ))
+    });
     let mut command = Command::new(executable);
     command.env_clear();
     if let Some(path) = path {
@@ -207,15 +214,30 @@ fn hardened_git_command() -> Command {
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", NULL_DEVICE)
-        .env("GIT_CONFIG_GLOBAL", NULL_DEVICE)
+        .env(
+            "GIT_CONFIG_SYSTEM",
+            iteron_tunables::param_str("record.checkpoint.null_device", NULL_DEVICE),
+        )
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            iteron_tunables::param_str("record.checkpoint.null_device", NULL_DEVICE),
+        )
         .env("GIT_ATTR_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", NULL_DEVICE)
-        .env("SSH_ASKPASS", NULL_DEVICE)
+        .env(
+            "GIT_ASKPASS",
+            iteron_tunables::param_str("record.checkpoint.null_device", NULL_DEVICE),
+        )
+        .env(
+            "SSH_ASKPASS",
+            iteron_tunables::param_str("record.checkpoint.null_device", NULL_DEVICE),
+        )
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")
-        .env("GIT_EDITOR", NULL_DEVICE)
+        .env(
+            "GIT_EDITOR",
+            iteron_tunables::param_str("record.checkpoint.null_device", NULL_DEVICE),
+        )
         .arg("-c")
         .arg(format!("core.hooksPath={NULL_DEVICE}"))
         .args([
@@ -240,7 +262,14 @@ fn hardened_git_command() -> Command {
 }
 
 fn finish_git(command: &mut Command, operation: &str) -> Result<String, RecordError> {
-    let captured = run_command_bounded(command, GIT_COMMAND_TIMEOUT, GIT_OUTPUT_LIMIT)?;
+    let captured = run_command_bounded(
+        command,
+        iteron_tunables::param_duration(
+            "record.checkpoint.git_command_timeout",
+            GIT_COMMAND_TIMEOUT,
+        ),
+        iteron_tunables::param_integer("record.checkpoint.git_output_limit", GIT_OUTPUT_LIMIT),
+    )?;
     if !captured.status.success() {
         let stderr = String::from_utf8_lossy(&captured.stderr.bytes);
         return Err(io::Error::other(format!("git {operation}: {}", stderr.trim())).into());
@@ -327,11 +356,22 @@ impl IsolatedGit {
         };
         let exclude_file = match std::fs::symlink_metadata(&exclude_file) {
             Ok(metadata)
-                if metadata.file_type().is_file() && metadata.len() <= GIT_EXCLUDE_LIMIT =>
+                if metadata.file_type().is_file()
+                    && metadata.len()
+                        <= iteron_tunables::param_integer(
+                            "record.checkpoint.git_exclude_limit",
+                            GIT_EXCLUDE_LIMIT,
+                        ) =>
             {
                 Some(exclude_file)
             }
-            Ok(metadata) if metadata.len() > GIT_EXCLUDE_LIMIT => {
+            Ok(metadata)
+                if metadata.len()
+                    > iteron_tunables::param_integer(
+                        "record.checkpoint.git_exclude_limit",
+                        GIT_EXCLUDE_LIMIT,
+                    ) =>
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::FileTooLarge,
                     "Git info/exclude exceeds the 1 MiB checkpoint limit",
@@ -380,7 +420,11 @@ impl IsolatedGit {
 
     fn run(&self, args: &[&str]) -> Result<String, RecordError> {
         let selective_checkout = args.len() >= 4
-            && args.len() <= 3 + SELECTIVE_RESTORE_CHUNK
+            && args.len()
+                <= 3 + iteron_tunables::param_integer(
+                    "record.checkpoint.selective_restore_chunk",
+                    SELECTIVE_RESTORE_CHUNK,
+                )
             && args[..3] == ["checkout-index", "-f", "--"]
             && args[3..].iter().all(|path| valid_restore_relative(path));
         let allowed = selective_checkout
@@ -512,12 +556,17 @@ fn runtime_state_relative(
 }
 
 fn create_private_temp_dir(run: &RunId, at: Seq) -> io::Result<PathBuf> {
-    for _ in 0..MAX_TEMP_ATTEMPTS {
+    for _ in
+        0..iteron_tunables::param_integer("record.checkpoint.max_temp_attempts", MAX_TEMP_ATTEMPTS)
+    {
         let nonce = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
-            .unwrap_or(TEMP_NAME_NANOS_FALLBACK);
+            .unwrap_or(iteron_tunables::param_integer(
+                "record.checkpoint.temp_name_nanos_fallback",
+                TEMP_NAME_NANOS_FALLBACK,
+            ));
         let path = std::env::temp_dir().join(format!(
             "core-ckpt-{}-{}-{}-{nanos:x}-{nonce:x}",
             sanitize(&run.0),
@@ -552,7 +601,10 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(PRE_EPOCH_TIMESTAMP_SECS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "record.checkpoint.pre_epoch_timestamp_secs",
+            PRE_EPOCH_TIMESTAMP_SECS,
+        ))
 }
 
 fn nul_path_set(raw: &str) -> Result<HashSet<String>, RecordError> {
@@ -789,7 +841,13 @@ pub fn rewind_workspace_paths(
         )
         .into());
     }
-    if paths.is_empty() || paths.len() > MAX_SELECTIVE_RESTORE_PATHS {
+    if paths.is_empty()
+        || paths.len()
+            > iteron_tunables::param_integer(
+                "record.checkpoint.max_selective_restore_paths",
+                MAX_SELECTIVE_RESTORE_PATHS,
+            )
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("selective restore requires 1..={MAX_SELECTIVE_RESTORE_PATHS} explicit paths"),
@@ -818,7 +876,10 @@ pub fn rewind_workspace_paths(
         .iter()
         .partition(|path| snap_files.contains(path.as_str()));
 
-    for chunk in present.chunks(SELECTIVE_RESTORE_CHUNK) {
+    for chunk in present.chunks(iteron_tunables::param_integer(
+        "record.checkpoint.selective_restore_chunk",
+        SELECTIVE_RESTORE_CHUNK,
+    )) {
         let mut args = Vec::with_capacity(3 + chunk.len());
         args.extend(["checkout-index", "-f", "--"]);
         args.extend(chunk.iter().map(|path| path.as_str()));

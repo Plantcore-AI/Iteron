@@ -54,7 +54,10 @@ impl Default for VerificationRetryPolicy {
     fn default() -> Self {
         Self {
             eligible_classes: vec![VerificationFailureClass::TestFailure],
-            max_attempts: DEFAULT_VERIFICATION_REPAIR_ATTEMPTS,
+            max_attempts: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_verification_repair_attempts",
+                DEFAULT_VERIFICATION_REPAIR_ATTEMPTS,
+            ),
             unknown: UnknownVerificationRetryAction::Stop,
         }
     }
@@ -235,7 +238,10 @@ pub struct VerificationRuntimePolicy {
 impl Default for VerificationRuntimePolicy {
     fn default() -> Self {
         Self {
-            verifier_timeout_secs: DEFAULT_VERIFIER_TIMEOUT_SECS,
+            verifier_timeout_secs: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_verifier_timeout_secs",
+                DEFAULT_VERIFIER_TIMEOUT_SECS,
+            ),
             selection: VerificationSelectionMode::Full,
             required_commands: Vec::new(),
             max_commands: 1,
@@ -300,9 +306,17 @@ impl VerificationRuntimePolicy {
         }
         let limit = usize::from(self.max_commands);
         if limit == 0
-            || limit > MAX_VERIFICATION_COMMANDS
+            || limit
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_verification_commands",
+                    MAX_VERIFICATION_COMMANDS,
+                )
             || self.required_commands.len() > limit
-            || self.required_commands.len() > MAX_VERIFICATION_COMMANDS
+            || self.required_commands.len()
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_verification_commands",
+                    MAX_VERIFICATION_COMMANDS,
+                )
         {
             return Err(VerificationPolicyError::TooManyCommands);
         }
@@ -313,11 +327,13 @@ impl VerificationRuntimePolicy {
         {
             return Err(VerificationPolicyError::EmptyCommand);
         }
-        if self
-            .required_commands
-            .iter()
-            .any(|command| command.len() > MAX_VERIFICATION_COMMAND_BYTES)
-        {
+        if self.required_commands.iter().any(|command| {
+            command.len()
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_verification_command_bytes",
+                    MAX_VERIFICATION_COMMAND_BYTES,
+                )
+        }) {
             return Err(VerificationPolicyError::CommandTooLarge);
         }
         if self.flaky.repeat_count == 0
@@ -338,7 +354,10 @@ impl VerificationRuntimePolicy {
                 .len()
                 .saturating_mul(usize::from(self.flaky.repeat_count))
                 .saturating_mul(usize::from(self.quorum.verifiers))
-                > MAX_PHYSICAL_VERIFIER_RUNS
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_physical_verifier_runs",
+                    MAX_PHYSICAL_VERIFIER_RUNS,
+                )
         {
             return Err(VerificationPolicyError::InvalidQuorum);
         }
@@ -348,15 +367,27 @@ impl VerificationRuntimePolicy {
         if self.feedback.command_output_bytes > 1_048_576
             || self.feedback.oracle_output_bytes > 1_048_576
             || self.feedback.total_bytes == 0
-            || self.feedback.total_bytes > MAX_VERIFICATION_FEEDBACK_BYTES
+            || self.feedback.total_bytes
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_verification_feedback_bytes",
+                    MAX_VERIFICATION_FEEDBACK_BYTES,
+                )
         {
             return Err(VerificationPolicyError::InvalidFeedbackPolicy);
         }
         if !self.restore.require_operator_confirmation
-            || self.restore.paths.len() > MAX_VERIFICATION_PATHS
+            || self.restore.paths.len()
+                > iteron_tunables::param_integer(
+                    "verify.runtime_policy.max_verification_paths",
+                    MAX_VERIFICATION_PATHS,
+                )
             || self.restore.paths.iter().any(|path| {
                 path.is_empty()
-                    || path.len() > MAX_VERIFICATION_COMMAND_BYTES
+                    || path.len()
+                        > iteron_tunables::param_integer(
+                            "verify.runtime_policy.max_verification_command_bytes",
+                            MAX_VERIFICATION_COMMAND_BYTES,
+                        )
                     || path.starts_with('/')
                     || path.split('/').any(|segment| segment == "..")
             })
@@ -379,8 +410,11 @@ impl VerificationRuntimePolicy {
     }
 }
 
-const fn default_verifier_timeout_secs() -> u64 {
-    DEFAULT_VERIFIER_TIMEOUT_SECS
+fn default_verifier_timeout_secs() -> u64 {
+    iteron_tunables::param_integer(
+        "verify.runtime_policy.default_verifier_timeout_secs",
+        DEFAULT_VERIFIER_TIMEOUT_SECS,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -65,7 +65,13 @@ printf '%s\n' '"}]}}'
     let tools = client.list_tools().await.unwrap();
     assert_eq!(tools.len(), 1);
     let description = &tools[0].description;
-    assert!(description.len() <= MAX_MCP_TOOL_DESCRIPTION_BYTES);
+    assert!(
+        description.len()
+            <= iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_description_bytes",
+                MAX_MCP_TOOL_DESCRIPTION_BYTES
+            )
+    );
     assert!(description.ends_with("[truncated]"));
     assert_ne!(description.len(), 50 * 1024);
 

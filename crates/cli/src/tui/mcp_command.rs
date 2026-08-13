@@ -9,7 +9,10 @@ pub(super) async fn handle(app: &mut App, session: &mut Session, argument: &str)
     let action = words.next().unwrap_or("status");
     let server = words.next();
     if words.next().is_some() {
-        app.note(block::NoticeLevel::Err, USAGE);
+        app.note(
+            block::NoticeLevel::Err,
+            iteron_tunables::param_str("cli.tui.mcp_command.usage", USAGE),
+        );
         return;
     }
 
@@ -25,7 +28,10 @@ pub(super) async fn handle(app: &mut App, session: &mut Session, argument: &str)
             server: server.to_owned(),
         },
         _ => {
-            app.note(block::NoticeLevel::Err, USAGE);
+            app.note(
+                block::NoticeLevel::Err,
+                iteron_tunables::param_str("cli.tui.mcp_command.usage", USAGE),
+            );
             return;
         }
     };

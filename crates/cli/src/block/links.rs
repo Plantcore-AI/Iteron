@@ -70,7 +70,12 @@ fn collect_typed_args(candidates: &mut Vec<Candidate>, args: &serde_json::Value,
         return;
     };
     for key in PATH_ARG_KEYS.into_iter().chain(URL_ARG_KEYS) {
-        if candidates.len() >= MAX_TYPED_LINKS_PER_BLOCK {
+        if candidates.len()
+            >= iteron_tunables::param_integer(
+                "cli.block.links.max_typed_links_per_block",
+                MAX_TYPED_LINKS_PER_BLOCK,
+            )
+        {
             return;
         }
         let Some(raw) = object.get(key).and_then(serde_json::Value::as_str) else {
@@ -96,9 +101,21 @@ fn collect_diff_path(candidates: &mut Vec<Candidate>, path: &str, policy: &Polic
 }
 
 fn collect_documentation_urls(candidates: &mut Vec<Candidate>, output: &str, policy: &Policy) {
-    let output = bounded_prefix(output, MAX_TOOL_OUTPUT_SCAN_BYTES);
+    let output = bounded_prefix(
+        output,
+        iteron_tunables::param_integer(
+            "cli.block.links.max_tool_output_scan_bytes",
+            MAX_TOOL_OUTPUT_SCAN_BYTES,
+        ),
+    );
     let mut cursor = 0usize;
-    while cursor < output.len() && candidates.len() < MAX_TYPED_LINKS_PER_BLOCK {
+    while cursor < output.len()
+        && candidates.len()
+            < iteron_tunables::param_integer(
+                "cli.block.links.max_typed_links_per_block",
+                MAX_TYPED_LINKS_PER_BLOCK,
+            )
+    {
         let rest = &output[cursor..];
         let Some(relative_start) = next_web_scheme(rest) else {
             break;
@@ -149,7 +166,13 @@ fn bounded_prefix(text: &str, max_bytes: usize) -> &str {
 }
 
 fn push_candidate(candidates: &mut Vec<Candidate>, label: &str, raw: &str, policy: &Policy) {
-    if candidates.len() >= MAX_TYPED_LINKS_PER_BLOCK || label.is_empty() {
+    if candidates.len()
+        >= iteron_tunables::param_integer(
+            "cli.block.links.max_typed_links_per_block",
+            MAX_TYPED_LINKS_PER_BLOCK,
+        )
+        || label.is_empty()
+    {
         return;
     }
     let Some(target) = policy.admit_target(raw) else {
@@ -159,7 +182,11 @@ fn push_candidate(candidates: &mut Vec<Candidate>, label: &str, raw: &str, polic
 }
 
 fn push_admitted_candidate(candidates: &mut Vec<Candidate>, label: &str, target: String) {
-    if candidates.len() >= MAX_TYPED_LINKS_PER_BLOCK
+    if candidates.len()
+        >= iteron_tunables::param_integer(
+            "cli.block.links.max_typed_links_per_block",
+            MAX_TYPED_LINKS_PER_BLOCK,
+        )
         || label.is_empty()
         || candidates
             .iter()
@@ -175,7 +202,10 @@ fn push_admitted_candidate(candidates: &mut Vec<Candidate>, label: &str, target:
 
 fn visible_regions(lines: &[Line<'static>], candidates: &[Candidate]) -> Vec<HyperlinkRegion> {
     let mut regions = Vec::new();
-    let mut remaining_scan_bytes = MAX_VISIBLE_LINK_SCAN_BYTES;
+    let mut remaining_scan_bytes = iteron_tunables::param_integer(
+        "cli.block.links.max_visible_link_scan_bytes",
+        MAX_VISIBLE_LINK_SCAN_BYTES,
+    );
     let mut candidate_order = (0..candidates.len()).collect::<Vec<_>>();
     candidate_order.sort_unstable_by(|left, right| {
         candidates[*right]
@@ -185,14 +215,26 @@ fn visible_regions(lines: &[Line<'static>], candidates: &[Candidate]) -> Vec<Hyp
             .then_with(|| left.cmp(right))
     });
     for (row, line) in lines.iter().enumerate() {
-        if regions.len() >= MAX_TYPED_LINKS_PER_BLOCK || remaining_scan_bytes == 0 {
+        if regions.len()
+            >= iteron_tunables::param_integer(
+                "cli.block.links.max_typed_links_per_block",
+                MAX_TYPED_LINKS_PER_BLOCK,
+            )
+            || remaining_scan_bytes == 0
+        {
             break;
         }
         let visible = bounded_line_text(line, remaining_scan_bytes);
         remaining_scan_bytes = remaining_scan_bytes.saturating_sub(visible.len());
         let mut offset = 0usize;
         let mut column = 0u16;
-        while offset < visible.len() && regions.len() < MAX_TYPED_LINKS_PER_BLOCK {
+        while offset < visible.len()
+            && regions.len()
+                < iteron_tunables::param_integer(
+                    "cli.block.links.max_typed_links_per_block",
+                    MAX_TYPED_LINKS_PER_BLOCK,
+                )
+        {
             let rest = &visible[offset..];
             let matched = candidate_order
                 .iter()

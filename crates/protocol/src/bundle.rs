@@ -107,7 +107,12 @@ impl ResolvedBundle {
     pub fn validate(&self) -> Result<(), BundleResolutionError> {
         validate_field("resolved_bundle.bundle_id", &self.bundle_id)?;
         validate_digest("resolved_bundle.digest", &self.digest)?;
-        if self.policies.len() > MAX_RESOLVED_BUNDLE_POLICIES {
+        if self.policies.len()
+            > iteron_tunables::param_integer(
+                "protocol.bundle.max_resolved_bundle_policies",
+                MAX_RESOLVED_BUNDLE_POLICIES,
+            )
+        {
             return Err(BundleResolutionError::Malformed(
                 "resolved_bundle.policies exceeds the bound",
             ));
@@ -137,7 +142,12 @@ fn validate_field(field: &'static str, value: &str) -> Result<(), BundleResoluti
     if value.trim().is_empty() {
         return Err(BundleResolutionError::Malformed(field));
     }
-    if value.len() > MAX_RESOLVED_BUNDLE_FIELD_BYTES {
+    if value.len()
+        > iteron_tunables::param_integer(
+            "protocol.bundle.max_resolved_bundle_field_bytes",
+            MAX_RESOLVED_BUNDLE_FIELD_BYTES,
+        )
+    {
         return Err(BundleResolutionError::Malformed(field));
     }
     Ok(())

@@ -101,7 +101,10 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(PICKER_TITLE_MAX_CHARS)
+        .take(iteron_tunables::param_integer(
+            "cli.tui.session_picker.picker_title_max_chars",
+            PICKER_TITLE_MAX_CHARS,
+        ))
         .collect()
 }
 

@@ -119,7 +119,10 @@ impl EffectiveCoreSettings {
             .transpose()?;
         let (allow_code, permission_rules) = decode_governance(view)?;
         let prompt_cache_enabled =
-            optional_boolean(view, "prompt_cache")?.unwrap_or(PROMPT_CACHE_DEFAULT_ENABLED);
+            optional_boolean(view, "prompt_cache")?.unwrap_or(iteron_tunables::param_bool(
+                "cli.runtime_tunables.effective_core.prompt_cache_default_enabled",
+                PROMPT_CACHE_DEFAULT_ENABLED,
+            ));
         let provider_governor = constrain_prompt_cache(
             super::effective_provider::decode(view)?,
             prompt_cache_enabled,
@@ -636,11 +639,17 @@ fn decode_context_policies(
     budget.multimodal_tokens = optional_integer(view, "multimodal_token_budget")?
         .map(|value| usizev(value, "multimodal_token_budget"))
         .transpose()?
-        .unwrap_or(ABSENT_MULTIMODAL_TOKEN_BUDGET);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.runtime_tunables.effective_core.absent_multimodal_token_budget",
+            ABSENT_MULTIMODAL_TOKEN_BUDGET,
+        ));
     budget.lsp_result_tokens = optional_integer(view, "lsp_result_context_budget")?
         .map(|value| usizev(value, "lsp_result_context_budget"))
         .transpose()?
-        .unwrap_or(ABSENT_LSP_RESULT_TOKEN_BUDGET);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.runtime_tunables.effective_core.absent_lsp_result_token_budget",
+            ABSENT_LSP_RESULT_TOKEN_BUDGET,
+        ));
 
     let memory = view.object("memory_budgets")?;
     let instruction_discovery = decode_instruction_discovery(view)?;
@@ -897,8 +906,11 @@ fn decode_compaction(
     let mut policy = iteron_ctx::CompactionPolicy::default();
     policy.trigger_tokens = fallback;
     policy.keep_recent = keep_recent;
-    policy.enabled = optional_boolean(view, "auto_compaction_enable")?
-        .unwrap_or(AUTO_COMPACTION_DEFAULT_ENABLED);
+    policy.enabled =
+        optional_boolean(view, "auto_compaction_enable")?.unwrap_or(iteron_tunables::param_bool(
+            "cli.runtime_tunables.effective_core.auto_compaction_default_enabled",
+            AUTO_COMPACTION_DEFAULT_ENABLED,
+        ));
     let summary = view.object("summary_profile")?;
     let summary_effort = enum_field(summary, "summary_profile", "effort")?;
     policy.summary_profile = iteron_ctx::SummaryProfile {
@@ -939,7 +951,10 @@ fn decode_compaction(
             .ok_or_else(|| unknown("multi_stage_summary_topology", topology))?;
     }
     policy.coverage_check = optional_boolean(view, "summary_consistency_coverage_check")?
-        .unwrap_or(SUMMARY_COVERAGE_CHECK_DEFAULT_ENABLED);
+        .unwrap_or(iteron_tunables::param_bool(
+            "cli.runtime_tunables.effective_core.summary_coverage_check_default_enabled",
+            SUMMARY_COVERAGE_CHECK_DEFAULT_ENABLED,
+        ));
     match mode {
         "adaptive" => {}
         "fixed" => policy.set_fixed_trigger_tokens(fallback),

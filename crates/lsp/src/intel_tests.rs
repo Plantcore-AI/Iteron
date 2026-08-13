@@ -100,16 +100,28 @@ fn output_and_input_limits_are_hard_and_observable() {
         })
     );
     assert_eq!(
-        parse_locations(&Value::Null, MAX_LOCATIONS + 1),
+        parse_locations(
+            &Value::Null,
+            iteron_tunables::param_integer("lsp.lib.max_locations", MAX_LOCATIONS) + 1
+        ),
         Err(LspError::InvalidLocationLimit {
             value: MAX_LOCATIONS + 1,
             max: MAX_LOCATIONS
         })
     );
 
-    let flood = Value::Array(vec![Value::Null; MAX_LOCATION_INPUTS + 7]);
+    let flood = Value::Array(vec![
+        Value::Null;
+        iteron_tunables::param_integer(
+            "lsp.lib.max_location_inputs",
+            MAX_LOCATION_INPUTS
+        ) + 7
+    ]);
     let parsed = parse_locations(&flood, 1).unwrap();
-    assert_eq!(parsed.malformed, MAX_LOCATION_INPUTS);
+    assert_eq!(
+        parsed.malformed,
+        iteron_tunables::param_integer("lsp.lib.max_location_inputs", MAX_LOCATION_INPUTS)
+    );
     assert_eq!(parsed.uninspected, 7);
 }
 
@@ -118,7 +130,12 @@ fn bad_coordinates_ranges_and_uris_are_malformed_not_wrapped_or_retained() {
     for bad in [
         json!(-1),
         json!(1.5),
-        json!(u64::from(MAX_LSP_POSITION) + 1),
+        json!(
+            u64::from(iteron_tunables::param_integer(
+                "lsp.lib.max_lsp_position",
+                MAX_LSP_POSITION
+            )) + 1
+        ),
     ] {
         let value = json!({
             "uri": "file:///a.rs",
@@ -133,7 +150,10 @@ fn bad_coordinates_ranges_and_uris_are_malformed_not_wrapped_or_retained() {
     });
     assert_eq!(parse_locations(&reversed, 10).unwrap().malformed, 1);
 
-    let long_uri = "u".repeat(MAX_DOCUMENT_URI_BYTES + 1);
+    let long_uri = "u".repeat(
+        iteron_tunables::param_integer("lsp.lib.max_document_uri_bytes", MAX_DOCUMENT_URI_BYTES)
+            + 1,
+    );
     assert_eq!(
         parse_locations(&loc(&long_uri, 1), 10).unwrap().malformed,
         1
@@ -155,7 +175,10 @@ fn query_params_are_exact_and_uri_bounded() {
     assert!(definition.get("context").is_none());
     assert_eq!(Query::Definition.method(), "textDocument/definition");
 
-    let long_uri = "u".repeat(MAX_DOCUMENT_URI_BYTES + 1);
+    let long_uri = "u".repeat(
+        iteron_tunables::param_integer("lsp.lib.max_document_uri_bytes", MAX_DOCUMENT_URI_BYTES)
+            + 1,
+    );
     assert!(matches!(
         Query::Hover.params(&long_uri, position),
         Err(LspError::DocumentUriTooLong { .. })
@@ -165,7 +188,10 @@ fn query_params_are_exact_and_uri_bounded() {
         Err(LspError::InvalidDocumentUri)
     );
     assert_eq!(
-        Position::new(MAX_LSP_POSITION + 1, 0),
+        Position::new(
+            iteron_tunables::param_integer("lsp.lib.max_lsp_position", MAX_LSP_POSITION) + 1,
+            0
+        ),
         Err(LspError::InvalidPosition {
             line: MAX_LSP_POSITION + 1,
             character: 0,
@@ -175,7 +201,7 @@ fn query_params_are_exact_and_uri_bounded() {
 
     assert!(
         serde_json::from_value::<Position>(json!({
-            "line": u64::from(MAX_LSP_POSITION) + 1,
+            "line": u64::from(iteron_tunables::param_integer("lsp.lib.max_lsp_position", MAX_LSP_POSITION)) + 1,
             "character": 0
         }))
         .is_err()
@@ -246,10 +272,14 @@ fn hover_handles_supported_union_shapes_and_reports_bad_fragments() {
 
 #[test]
 fn hover_bytes_and_fragments_are_bounded_without_splitting_utf8() {
-    let oversized = "界".repeat((MAX_HOVER_BYTES / 3) + 10);
+    let oversized = "界".repeat(
+        (iteron_tunables::param_integer("lsp.lib.max_hover_bytes", MAX_HOVER_BYTES) / 3) + 10,
+    );
     let parsed = parse_hover_text(&json!({"contents": oversized}));
     let text = parsed.text.unwrap();
-    assert!(text.len() <= MAX_HOVER_BYTES);
+    assert!(
+        text.len() <= iteron_tunables::param_integer("lsp.lib.max_hover_bytes", MAX_HOVER_BYTES)
+    );
     assert!(text.is_char_boundary(text.len()));
     assert!(parsed.truncated_bytes > 0);
     assert_eq!(
@@ -261,7 +291,13 @@ fn hover_bytes_and_fragments_are_bounded_without_splitting_utf8() {
         parsed.retained_source_bytes + parsed.separator_bytes
     );
 
-    let flood = Value::Array(vec![Value::String("x".into()); MAX_HOVER_FRAGMENTS + 3]);
+    let flood = Value::Array(vec![
+        Value::String("x".into());
+        iteron_tunables::param_integer(
+            "lsp.lib.max_hover_fragments",
+            MAX_HOVER_FRAGMENTS
+        ) + 3
+    ]);
     let parsed = parse_hover_text(&json!({"contents": flood}));
     assert_eq!(parsed.uninspected, 3);
 }
@@ -293,12 +329,21 @@ fn hover_validates_optional_range_and_accounts_only_source_as_truncated() {
     assert!(malformed.range.is_none());
     assert_eq!(malformed.malformed, 1);
 
-    let full = "x".repeat(MAX_HOVER_BYTES);
+    let full = "x".repeat(iteron_tunables::param_integer(
+        "lsp.lib.max_hover_bytes",
+        MAX_HOVER_BYTES,
+    ));
     let boundary = parse_hover_text(&json!({"contents": [full, "tail"]}));
-    assert_eq!(boundary.retained_source_bytes, MAX_HOVER_BYTES);
+    assert_eq!(
+        boundary.retained_source_bytes,
+        iteron_tunables::param_integer("lsp.lib.max_hover_bytes", MAX_HOVER_BYTES)
+    );
     assert_eq!(boundary.truncated_bytes, 4);
     assert_eq!(boundary.separator_bytes, 0);
-    assert_eq!(boundary.source_bytes, MAX_HOVER_BYTES + 4);
+    assert_eq!(
+        boundary.source_bytes,
+        iteron_tunables::param_integer("lsp.lib.max_hover_bytes", MAX_HOVER_BYTES) + 4
+    );
 }
 
 #[test]

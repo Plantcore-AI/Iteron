@@ -71,6 +71,38 @@ const RETRY_EVIDENCE_PREVIEW_MAX: usize = 512;
 /// assigned worker, so the call is still made once and the policy only ever adds reassignments.
 const MIN_TASK_ATTEMPTS: usize = 1;
 
+/// The escalation text handed to a fresh assignee after a read-only predecessor settled without
+/// usable evidence. This is the compiled default behind the `prompt/recovery@v1` artifact: an
+/// operator profile may replace the whole template, and with no profile the rendered bytes are
+/// exactly what the previous inline `format!` produced.
+///
+/// `{prompt}` is the original assignment text and `{evidence}` the bounded predecessor reason.
+/// Substitution is one left-to-right pass over the TEMPLATE only, so neither spliced value can be
+/// rescanned for placeholders; an unknown `{...}` is copied through verbatim.
+pub const RECOVERY_ESCALATION_PROMPT: &str = "{prompt}\n\nA prior read-only assignee ended without usable evidence: {evidence}\nIndependently complete the original task.";
+
+/// Render [`RECOVERY_ESCALATION_PROMPT`] (or its profile replacement) against one attempt.
+fn render_recovery_escalation(template: &str, prompt: &str, evidence: &str) -> String {
+    let mut rendered = String::with_capacity(template.len() + prompt.len() + evidence.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rendered.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        if let Some(remainder) = tail.strip_prefix("{prompt}") {
+            rendered.push_str(prompt);
+            rest = remainder;
+        } else if let Some(remainder) = tail.strip_prefix("{evidence}") {
+            rendered.push_str(evidence);
+            rest = remainder;
+        } else {
+            rendered.push('{');
+            rest = &tail['{'.len_utf8()..];
+        }
+    }
+    rendered.push_str(rest);
+    rendered
+}
+
 /// Fresh-per-run engine state. All fields are interior-mutable so the `Fn` host closures can share
 /// one `Arc<RunState>` without a `&mut`.
 pub struct RunState {
@@ -163,7 +195,13 @@ impl RunState {
 
 impl Default for RunState {
     fn default() -> Self {
-        Self::new(LIFETIME_CAP, crate::EarlyStopQuorumPolicy::default())
+        // `RunLimits::default()` already resolves this id, so reading the raw constant here made
+        // the two defaults disagree the moment a profile moved the cap. With no profile installed
+        // this is exactly `LIFETIME_CAP`.
+        Self::new(
+            iteron_tunables::param_usize("workflow.bindings.lifetime_cap", LIFETIME_CAP),
+            crate::EarlyStopQuorumPolicy::default(),
+        )
     }
 }
 
@@ -180,6 +218,10 @@ pub struct AgentEnv {
     pub speculative_siblings: crate::SpeculativeSiblingPolicy,
     pub task_retry: crate::TaskRetryPolicy,
     pub schema_retry: crate::SchemaRetryPolicy,
+    /// The operator profile this run was resolved under, when one was supplied. Read only for
+    /// prompt-artifact replacement: it carries model-visible text and reaches no capability,
+    /// budget, or tool decision from here.
+    pub tunables_profile: Option<Arc<iteron_tunables::ProfileDocument>>,
 }
 
 // ---- JS <-> Rust envelopes -----------------------------------------------------------------------
@@ -232,14 +274,28 @@ fn label_for(prompt: &str, idx: usize) -> String {
     if trimmed.is_empty() {
         return format!("agent {idx}");
     }
-    truncate_preview(trimmed, AGENT_LABEL_PREVIEW_MAX)
+    truncate_preview(
+        trimmed,
+        iteron_tunables::param_integer(
+            "workflow.bindings.agent_label_preview_max",
+            AGENT_LABEL_PREVIEW_MAX,
+        ),
+    )
 }
 
 /// Keep a refused call identifiable without allowing its label to become a multi-line or terminal
 /// control surface. Empty labels fall back to the same prompt-derived identity as admitted calls.
 fn refusal_label(label: Option<&str>, prompt: &str, idx: usize) -> String {
     label
-        .map(|label| truncate_preview(label, AGENT_LABEL_PREVIEW_MAX))
+        .map(|label| {
+            truncate_preview(
+                label,
+                iteron_tunables::param_integer(
+                    "workflow.bindings.agent_label_preview_max",
+                    AGENT_LABEL_PREVIEW_MAX,
+                ),
+            )
+        })
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| label_for(prompt, idx))
 }
@@ -256,12 +312,18 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
     let (state, result_preview, error) = match &record.outcome {
         Outcome::Structured { value } => (
             WorkflowState::Done,
-            Some(truncate_preview(&value.to_string(), PREVIEW_MAX)),
+            Some(truncate_preview(
+                &value.to_string(),
+                iteron_tunables::param_integer("workflow.events.preview_max", PREVIEW_MAX),
+            )),
             None,
         ),
         Outcome::Text { text } => (
             WorkflowState::Done,
-            Some(truncate_preview(text, PREVIEW_MAX)),
+            Some(truncate_preview(
+                text,
+                iteron_tunables::param_integer("workflow.events.preview_max", PREVIEW_MAX),
+            )),
             None,
         ),
         Outcome::Null { reason } => (
@@ -288,10 +350,15 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
         tool_calls: record.tool_calls,
         duration_ms,
         result_preview,
-        last_tool_summary: record
-            .last_tool_summary
-            .as_deref()
-            .map(|s| truncate_preview(s, TOOL_SUMMARY_MAX)),
+        last_tool_summary: record.last_tool_summary.as_deref().map(|s| {
+            truncate_preview(
+                s,
+                iteron_tunables::param_integer(
+                    "workflow.events.tool_summary_max",
+                    TOOL_SUMMARY_MAX,
+                ),
+            )
+        }),
         error,
     });
 }
@@ -444,8 +511,15 @@ async fn spawn_child(
     let mut child = tokio::spawn(async move { spawner.spawn_with_activity(call, activity).await });
     let started = Instant::now();
     let mut interval = tokio::time::interval_at(
-        tokio::time::Instant::now() + AGENT_ACTIVITY_INTERVAL,
-        AGENT_ACTIVITY_INTERVAL,
+        tokio::time::Instant::now()
+            + iteron_tunables::param_duration(
+                "workflow.bindings.agent_activity_interval",
+                AGENT_ACTIVITY_INTERVAL,
+            ),
+        iteron_tunables::param_duration(
+            "workflow.bindings.agent_activity_interval",
+            AGENT_ACTIVITY_INTERVAL,
+        ),
     );
     let mut last_emitted = None;
     loop {
@@ -874,7 +948,16 @@ async fn run_plain(
     task: TaskId,
     speculative_siblings: usize,
 ) -> (Record, String) {
-    let attempts = env.task_retry.max_attempts().max(MIN_TASK_ATTEMPTS);
+    let attempts = env
+        .task_retry
+        .max_attempts()
+        .max(iteron_tunables::param_usize(
+            "workflow.bindings.min_task_attempts",
+            iteron_tunables::param_integer(
+                "workflow.bindings.min_task_attempts",
+                MIN_TASK_ATTEMPTS,
+            ),
+        ));
     let mut assigned = call.clone();
     let mut lineage = AttemptLineage::initial();
     for attempt in 0..attempts {
@@ -916,7 +999,18 @@ async fn run_plain(
                 }
                 let evidence = reason
                     .as_deref()
-                    .map(|value| truncate_preview(value, RETRY_EVIDENCE_PREVIEW_MAX))
+                    .map(|value| {
+                        truncate_preview(
+                            value,
+                            iteron_tunables::param_usize(
+                                "workflow.bindings.retry_evidence_preview_max",
+                                iteron_tunables::param_integer(
+                                    "workflow.bindings.retry_evidence_preview_max",
+                                    RETRY_EVIDENCE_PREVIEW_MAX,
+                                ),
+                            ),
+                        )
+                    })
                     .unwrap_or_else(|| "definite negative terminal".into());
                 let assignment = match env.task_retry.on_failure() {
                     crate::TaskFailureAction::RetrySame => AttemptAssignment::RetrySame,
@@ -929,10 +1023,17 @@ async fn run_plain(
                 if env.task_retry.on_failure() == crate::TaskFailureAction::Reassign
                     && env.task_retry.preserve_evidence()
                 {
-                    assigned.prompt = format!(
-                        "{}\n\nA prior read-only assignee ended without usable evidence: {}\nIndependently complete the original task.",
-                        call.prompt, evidence
-                    );
+                    let template = env
+                        .tunables_profile
+                        .as_deref()
+                        .and_then(|document| {
+                            iteron_tunables::artifact_override(document, "prompt/recovery@v1")
+                        })
+                        .unwrap_or(iteron_tunables::param_str(
+                            "workflow.bindings.recovery_escalation_prompt",
+                            RECOVERY_ESCALATION_PROMPT,
+                        ));
+                    assigned.prompt = render_recovery_escalation(template, &call.prompt, &evidence);
                 }
             }
             Err(reason) => {
@@ -1139,7 +1240,13 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     };
     let speculative_siblings = raw
         .speculative_siblings
-        .unwrap_or(BINDING_ABSENT_SPECULATIVE_SIBLINGS);
+        .unwrap_or(iteron_tunables::param_usize(
+            "workflow.bindings.binding_absent_speculative_siblings",
+            iteron_tunables::param_integer(
+                "workflow.bindings.binding_absent_speculative_siblings",
+                BINDING_ABSENT_SPECULATIVE_SIBLINGS,
+            ),
+        ));
     if speculative_siblings > env.speculative_siblings.max_siblings() {
         if env
             .task_dag

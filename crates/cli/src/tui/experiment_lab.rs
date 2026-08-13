@@ -197,7 +197,9 @@ fn create_request(
     family_id: &str,
     raw_value: &str,
 ) -> Result<RequestReceipt, LabError> {
-    if raw_value.len() > MAX_VALUE_BYTES {
+    if raw_value.len()
+        > iteron_tunables::param_integer("cli.tui.experiment_lab.max_value_bytes", MAX_VALUE_BYTES)
+    {
         return Err(LabError::InvalidRequest("value exceeds 32 KiB".into()));
     }
     let family = iteron_tunables::families()
@@ -368,11 +370,21 @@ fn split_once_whitespace(value: &str) -> Option<(&str, &str)> {
 
 fn one_line_value(value: &serde_json::Value) -> String {
     let mut text = value.to_string().replace(['\n', '\r'], " ");
-    if text.chars().count() > ONE_LINE_VALUE_MAX_CHARS {
+    if text.chars().count()
+        > iteron_tunables::param_integer(
+            "cli.tui.experiment_lab.one_line_value_max_chars",
+            ONE_LINE_VALUE_MAX_CHARS,
+        )
+    {
         text = format!(
             "{}…",
             text.chars()
-                .take(ONE_LINE_VALUE_MAX_CHARS - 1)
+                .take(
+                    iteron_tunables::param_integer(
+                        "cli.tui.experiment_lab.one_line_value_max_chars",
+                        ONE_LINE_VALUE_MAX_CHARS
+                    ) - 1
+                )
                 .collect::<String>()
         );
     }

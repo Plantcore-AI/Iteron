@@ -231,8 +231,14 @@ impl Provisioner {
             clear_env: false,
             inherit_env: Vec::new(),
             env: Vec::new(),
-            timeout: IMAGE_PULL_TIMEOUT,
-            max_output_bytes: PROVISION_OUTPUT_LIMIT,
+            timeout: iteron_tunables::param_duration(
+                "eval.provisioner.image_pull_timeout",
+                IMAGE_PULL_TIMEOUT,
+            ),
+            max_output_bytes: iteron_tunables::param_integer(
+                "eval.provisioner.provision_output_limit",
+                PROVISION_OUTPUT_LIMIT,
+            ),
         })
         .await;
         if !pull.as_ref().is_ok_and(|output| output.success()) {
@@ -255,7 +261,10 @@ impl Provisioner {
             clear_env: false,
             inherit_env: Vec::new(),
             env: Vec::new(),
-            timeout: IMAGE_INSPECT_TIMEOUT,
+            timeout: iteron_tunables::param_duration(
+                "eval.provisioner.image_inspect_timeout",
+                IMAGE_INSPECT_TIMEOUT,
+            ),
             max_output_bytes: 4 * 1024,
         })
         .await
@@ -351,7 +360,10 @@ impl Provisioner {
             inherit_env: Vec::new(),
             env: Vec::new(),
             timeout,
-            max_output_bytes: PROVISION_OUTPUT_LIMIT,
+            max_output_bytes: iteron_tunables::param_integer(
+                "eval.provisioner.provision_output_limit",
+                PROVISION_OUTPUT_LIMIT,
+            ),
         })
         .await;
         process_receipt(
@@ -383,7 +395,10 @@ impl Provisioner {
         );
         let mut confinement = Confinement::egress_off(workspace);
         confinement.timeout_secs = timeout.as_secs().max(1);
-        confinement.max_output_bytes = PROVISION_OUTPUT_LIMIT;
+        confinement.max_output_bytes = iteron_tunables::param_integer(
+            "eval.provisioner.provision_output_limit",
+            PROVISION_OUTPUT_LIMIT,
+        );
         let output = iteron_sandbox::platform_sandbox()
             .run(&wrapped, &confinement)
             .await;

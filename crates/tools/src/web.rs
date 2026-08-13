@@ -175,7 +175,15 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .input
                     .get("count")
                     .and_then(|x| x.as_u64())
-                    .map(|v| (v as usize).clamp(1, WEB_SEARCH_RESULT_CAP))
+                    .map(|v| {
+                        (v as usize).clamp(
+                            1,
+                            iteron_tunables::param_usize(
+                                "tools.web.web_search_result_cap",
+                                iteron_tunables::param_integer("tools.web.web_search_result_cap", WEB_SEARCH_RESULT_CAP),
+                            ),
+                        )
+                    })
                     .unwrap_or(DEFAULT_SEARCH_RESULT_COUNT);
                 if query.is_empty() {
                     return err_result(id, "web_search: empty query".into());
@@ -185,7 +193,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         // Honest stub: no backend. Not an error (the model should adapt, e.g. use
                         // web_fetch on a known URL) — so failed-action dedup does not fire on it.
                         tool_use_id: id,
-                        content: NO_SEARCH_BACKEND.into(),
+                        content: iteron_tunables::param_str("tools.web.no_search_backend", NO_SEARCH_BACKEND).into(),
                         is_error: false,
                         trust: Trust::Workspace, // harness-generated notice, no web contact
                         latency_ms: 0,
@@ -230,7 +238,11 @@ fn egress_permits_url(policy: &SharedEgressPolicy, url: &reqwest::Url) -> bool {
         egress_permits_destination(
             policy,
             host,
-            url.port_or_known_default().unwrap_or(DEFAULT_EGRESS_PORT),
+            url.port_or_known_default()
+                .unwrap_or(iteron_tunables::param_integer(
+                    "tools.web.default_egress_port",
+                    DEFAULT_EGRESS_PORT,
+                )),
         )
     })
 }
@@ -291,7 +303,12 @@ fn validate_url(raw: &str) -> Result<reqwest::Url, String> {
             ));
         }
     } else {
-        let port = url.port_or_known_default().unwrap_or(DEFAULT_EGRESS_PORT);
+        let port = url
+            .port_or_known_default()
+            .unwrap_or(iteron_tunables::param_integer(
+                "tools.web.default_egress_port",
+                DEFAULT_EGRESS_PORT,
+            ));
         if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
             for a in addrs {
                 if is_forbidden_ip(a.ip()) {
@@ -359,9 +376,14 @@ async fn fetch_and_render_with_policy(
     // same-host policy ourselves. Overall + connect timeouts bound the call.
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .connect_timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
+        ))
         .timeout(std::time::Duration::from_secs(policy.timeout_seconds))
-        .user_agent(USER_AGENT)
+        .user_agent(iteron_tunables::param_str(
+            "tools.web.user_agent",
+            USER_AGENT,
+        ))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
 
@@ -492,13 +514,18 @@ async fn brave_search(key: &str, query: &str, count: usize) -> Result<String, St
     )
     .map_err(|e| format!("build query: {e}"))?;
     let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .connect_timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
+        ))
         .timeout(std::time::Duration::from_secs(
             crate::ObservationToolPolicy::default()
                 .web_fetch
                 .timeout_seconds,
         ))
-        .user_agent(USER_AGENT)
+        .user_agent(iteron_tunables::param_str(
+            "tools.web.user_agent",
+            USER_AGENT,
+        ))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let resp = client
@@ -600,9 +627,16 @@ impl SearchBackend {
 /// A shared HTTP client for the search backends (same bounds as the fetch path).
 fn search_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
+        ))
+        .timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.search_timeout_secs", SEARCH_TIMEOUT_SECS),
+        ))
+        .user_agent(iteron_tunables::param_str(
+            "tools.web.user_agent",
+            USER_AGENT,
+        ))
         .build()
         .map_err(|e| format!("http client: {e}"))
 }
@@ -778,9 +812,16 @@ fn parse_exa_results(json: &str, count: usize) -> Result<Vec<(String, String, St
 /// provider already needs. Snippets are bounded so a long article body cannot blow the output cap.
 async fn zhipu_search(key: &str, query: &str, count: usize) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .timeout(std::time::Duration::from_secs(SEARCH_TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
+        ))
+        .timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.search_timeout_secs", SEARCH_TIMEOUT_SECS),
+        ))
+        .user_agent(iteron_tunables::param_str(
+            "tools.web.user_agent",
+            USER_AGENT,
+        ))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let payload = serde_json::json!({
@@ -990,7 +1031,10 @@ fn html_to_text(html: &str) -> String {
                 None => break, // unterminated tag: stop
             };
 
-            if !is_close && SKIP_ELEMENTS.contains(&name.as_str()) {
+            if !is_close
+                && iteron_tunables::param_str_list("tools.web.skip_elements", SKIP_ELEMENTS)
+                    .contains(&name.as_str())
+            {
                 // Skip everything up to and including the matching close tag.
                 match find_close_tag(&html[tag_end + 1..], &name) {
                     Some(rel) => {

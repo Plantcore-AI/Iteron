@@ -482,7 +482,12 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
             if let StreamItem::RateLimit(snapshot) = &item {
                 rate_limit = Some(*snapshot);
             }
-            if items.len() < MAX_BUFFERED_HEDGE_ITEMS {
+            if items.len()
+                < iteron_tunables::param_integer(
+                    "cli.runtime.provider_hedge.max_buffered_hedge_items",
+                    MAX_BUFFERED_HEDGE_ITEMS,
+                )
+            {
                 items.push(item);
             }
         };

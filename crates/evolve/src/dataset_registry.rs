@@ -132,9 +132,17 @@ impl ConsentAwareDatasetRegistry {
                 Err(DatasetRegistryError::RunAlreadyRevoked)
             };
         }
-        if self.revocations.len() >= MAX_DATASET_REVOCATIONS {
+        if self.revocations.len()
+            >= iteron_tunables::param_integer(
+                "evolve.dataset_registry.max_dataset_revocations",
+                MAX_DATASET_REVOCATIONS,
+            )
+        {
             return Err(DatasetRegistryError::RevocationLimit {
-                max: MAX_DATASET_REVOCATIONS,
+                max: iteron_tunables::param_integer(
+                    "evolve.dataset_registry.max_dataset_revocations",
+                    MAX_DATASET_REVOCATIONS,
+                ),
             });
         }
         let seq = self.append_audit(DatasetAuditKind::ConsentRevoked {
@@ -331,9 +339,17 @@ impl ConsentAwareDatasetRegistry {
                 Err(DatasetRegistryError::DigestIdentityConflict)
             };
         }
-        if self.datasets.len() >= MAX_REGISTERED_DATASETS {
+        if self.datasets.len()
+            >= iteron_tunables::param_integer(
+                "evolve.dataset_registry.max_registered_datasets",
+                MAX_REGISTERED_DATASETS,
+            )
+        {
             return Err(DatasetRegistryError::DatasetLimit {
-                max: MAX_REGISTERED_DATASETS,
+                max: iteron_tunables::param_integer(
+                    "evolve.dataset_registry.max_registered_datasets",
+                    MAX_REGISTERED_DATASETS,
+                ),
             });
         }
         let seq = self.append_audit(DatasetAuditKind::DatasetRegistered {
@@ -353,9 +369,17 @@ impl ConsentAwareDatasetRegistry {
     }
 
     fn append_audit(&mut self, kind: DatasetAuditKind) -> Result<u64, DatasetRegistryError> {
-        if self.audit.len() >= MAX_DATASET_AUDIT_EVENTS {
+        if self.audit.len()
+            >= iteron_tunables::param_integer(
+                "evolve.dataset_registry.max_dataset_audit_events",
+                MAX_DATASET_AUDIT_EVENTS,
+            )
+        {
             return Err(DatasetRegistryError::AuditLimit {
-                max: MAX_DATASET_AUDIT_EVENTS,
+                max: iteron_tunables::param_integer(
+                    "evolve.dataset_registry.max_dataset_audit_events",
+                    MAX_DATASET_AUDIT_EVENTS,
+                ),
             });
         }
         let seq = self.next_seq;

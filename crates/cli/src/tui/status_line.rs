@@ -14,6 +14,10 @@ use unicode_width::UnicodeWidthStr as _;
 /// back to table-like vertical rules.
 pub(super) const SEPARATOR: &str = " · ";
 
+fn separator() -> &'static str {
+    iteron_tunables::param_str("cli.tui.status_line.separator", SEPARATOR)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Accent {
     Model,
@@ -88,7 +92,7 @@ impl Group {
             .iter()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
-            .join(SEPARATOR)
+            .join(separator())
     }
 }
 
@@ -102,7 +106,7 @@ pub(super) fn width(groups: &[Group]) -> u16 {
         .iter()
         .map(|group| group.segments.len())
         .sum::<usize>();
-    let separators = segment_count.saturating_sub(1) * SEPARATOR.width();
+    let separators = segment_count.saturating_sub(1) * separator().width();
     u16::try_from(text_width.saturating_add(separators)).unwrap_or(u16::MAX)
 }
 
@@ -111,7 +115,7 @@ pub(super) fn spans(groups: &[Group], theme: &Theme) -> Vec<Span<'static>> {
     for segment in groups.iter().flat_map(|group| group.segments.iter()) {
         if !spans.is_empty() {
             spans.push(Span::styled(
-                SEPARATOR,
+                separator(),
                 Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
             ));
         }

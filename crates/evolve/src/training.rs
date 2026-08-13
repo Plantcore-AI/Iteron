@@ -55,7 +55,10 @@ impl TrainingAdmissionPolicy {
         validate_collection(
             "training_admission.allowed_licenses",
             self.allowed_licenses.len(),
-            MAX_TRAINING_LICENSE_ALLOWLIST_ENTRIES,
+            iteron_tunables::param_integer(
+                "evolve.training.max_training_license_allowlist_entries",
+                MAX_TRAINING_LICENSE_ALLOWLIST_ENTRIES,
+            ),
         )?;
         for license in &self.allowed_licenses {
             validate_nonempty_string(
@@ -68,7 +71,10 @@ impl TrainingAdmissionPolicy {
         validate_collection(
             "training_admission.retention_policies",
             self.retention_policies.len(),
-            MAX_RETENTION_POLICY_TABLE_ENTRIES,
+            iteron_tunables::param_integer(
+                "evolve.training.max_retention_policy_table_entries",
+                MAX_RETENTION_POLICY_TABLE_ENTRIES,
+            ),
         )?;
         for retention_policy in self.retention_policies.keys() {
             validate_nonempty_string(

@@ -2,12 +2,10 @@
 # Run a CI lane off GitHub Actions and report the result as a commit status.
 #
 # The org's Actions minutes are a scarce shared resource, so the gates that do not need a
-# GitHub-hosted runner run on hardware we already own: the macOS lane on a developer Mac before
-# push, the Linux lane on the DGX box. The branch ruleset still requires the same status
-# contexts, and a ruleset matches a context by NAME rather than by producer, so reporting the
-# same names here keeps the protection intact without burning a runner minute.
+# GitHub-hosted runner run on hardware we already own: the Linux lane on the DGX Spark. The
+# branch ruleset still matches contexts by name, so this remains an emergency/manual evidence
+# path while the normal protected-base workflow runs on the same DGX runner.
 #
-#   ./release-tools/local_gate.sh macos                    # run + publish
 #   ./release-tools/local_gate.sh linux --emit out.json    # run, record, publish nothing
 #   ./release-tools/local_gate.sh --publish out.json       # publish a recorded run
 #   ./release-tools/local_gate.sh linux --dry-run          # run, publish nothing, record nothing
@@ -29,8 +27,8 @@
 #   2. A pull request nobody runs this for simply never acquires the contexts, so it stays
 #      blocked. That is deliberate, not a malfunction, and CONTRIBUTING says so.
 #
-# `review / required-humans` is intentionally NOT reported here: it reads the pull request's own
-# review state, which does not exist locally. It stays on GitHub, as does the Windows lane.
+# `review / required-humans` is intentionally NOT reported here: the protected-base GitHub
+# workflow reads current review state and runs that policy on DGX.
 
 set -euo pipefail
 
@@ -56,7 +54,7 @@ readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 usage() {
-  printf 'usage: %s <macos|linux> [--dry-run] [--emit FILE]\n' "${BASH_SOURCE[0]}" >&2
+  printf 'usage: %s linux [--dry-run] [--emit FILE]\n' "${BASH_SOURCE[0]}" >&2
   printf '       %s --publish FILE\n' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
@@ -67,7 +65,7 @@ emit=""
 publish=""
 while (( $# )); do
   case "$1" in
-    macos|linux) [[ -z "$lane" ]] || usage; lane="$1" ;;
+    linux) [[ -z "$lane" ]] || usage; lane="$1" ;;
     --dry-run) dry_run=1 ;;
     --emit) shift; emit="${1:-}"; [[ -n "$emit" ]] || usage ;;
     --publish) shift; publish="${1:-}"; [[ -n "$publish" ]] || usage ;;
@@ -176,10 +174,9 @@ fi
 # worktree and the docs virtualenv below have the same problem. `flock` makes the second run wait
 # rather than corrupt the first; if flock is unavailable the gate says so instead of pretending it
 # serialised anything.
-# macOS ships no flock(1), and macOS is where the pre-push hook runs, so a flock-only lock would
-# have left the busiest host unprotected while reporting that it was serialised. Python is already
-# a hard dependency of this directory, and `fcntl.flock` is the same advisory lock, released by the
-# kernel when the holder dies -- which a pid file or a `mkdir` lock cannot promise after a SIGKILL.
+# Python is already a hard dependency of this directory, and `fcntl.flock` is an advisory lock
+# released by the kernel when the holder dies -- which a pid file or a `mkdir` lock cannot promise
+# after a SIGKILL.
 # The lock is held by a background helper for exactly as long as this script lives.
 if [[ -z "${GATE_NO_LOCK:-}" ]]; then
   LOCK_PATH="$(git rev-parse --git-common-dir)/gate-${lane}.lock"
@@ -257,18 +254,13 @@ post_status() {
   fi
 }
 
-declare -a CONTEXTS
-if [[ "$lane" == macos ]]; then
-  CONTEXTS=("rust / macos-15")
-else
-  CONTEXTS=(
-    "rust / ubuntu-24.04"
-    "boundary / validate"
-    "supply / validate"
-    "docs / strict-build"
-    "supply / dependency audit"
-  )
-fi
+declare -a CONTEXTS=(
+  "rust / ubuntu-24.04"
+  "boundary / validate"
+  "supply / validate"
+  "docs / strict-build"
+  "supply / dependency audit"
+)
 
 printf '== gate lane=%s sha=%s host=%s\n' "$lane" "${SHA:0:8}" "$HOST"
 for context in "${CONTEXTS[@]}"; do
@@ -277,8 +269,7 @@ done
 
 # Each gate records its own outcome so one failure does not hide the rest.
 #
-# Deliberately an indexed array parallel to CONTEXTS rather than an associative one: macOS ships
-# bash 3.2, where `declare -A` is a syntax error, and the macOS lane has to run on the Mac.
+# Deliberately an indexed array parallel to CONTEXTS so emitted evidence has deterministic order.
 #
 # `run_gate` must ALWAYS succeed: the script runs under `set -e`, so a non-zero return here would
 # abort before the publishing loop and strand every context on `pending` — the exact opposite of
@@ -420,18 +411,12 @@ docs_lane() {
   NO_MKDOCS_2_WARNING=true PYTHONUTF8=1 "$venv/bin/mkdocs" build --strict --clean
 }
 
-if [[ "$lane" == macos ]]; then
-  run_gate "rust / macos-15" rust_lane
-else
-  run_gate "rust / ubuntu-24.04" rust_lane
-  run_gate "boundary / validate" boundary_lane
-  run_gate "supply / validate" bash release-tools/validate.sh
-  run_gate "docs / strict-build" docs_lane
-  # No host argument: the script detects its own. The workflow passes `linux-x86_64` because a
-  # GitHub runner is x86_64; naming that here would fetch an x86_64 `cargo-audit` onto whatever
-  # this box actually is, and it fails its own version pin rather than running.
-  run_gate "supply / dependency audit" bash release-tools/audit_dependencies.sh
-fi
+run_gate "rust / ubuntu-24.04" rust_lane
+run_gate "boundary / validate" boundary_lane
+run_gate "supply / validate" bash release-tools/validate.sh
+run_gate "docs / strict-build" docs_lane
+# No host argument: the script detects its own architecture. DGX Spark is ARM64.
+run_gate "supply / dependency audit" bash release-tools/audit_dependencies.sh
 
 printf '\n== results\n'
 failed=0

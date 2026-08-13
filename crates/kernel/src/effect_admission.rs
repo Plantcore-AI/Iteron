@@ -108,10 +108,18 @@ impl EffectAdmissions {
         }
         // A new turn cannot collide with an old one: the identity carries the turn.
         self.enter_turn(turn);
-        if self.ids.len() >= MAX_EFFECTS_PER_TURN {
+        if self.ids.len()
+            >= iteron_protocol::param_integer(
+                "kernel.effect_admission.max_effects_per_turn",
+                MAX_EFFECTS_PER_TURN,
+            )
+        {
             return Err(EffectAdmissionError::TooManyEffects {
                 turn: turn.0,
-                ceiling: MAX_EFFECTS_PER_TURN,
+                ceiling: iteron_protocol::param_integer(
+                    "kernel.effect_admission.max_effects_per_turn",
+                    MAX_EFFECTS_PER_TURN,
+                ),
             });
         }
         if !self.ids.insert(id.0.clone()) {

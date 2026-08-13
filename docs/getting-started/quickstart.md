@@ -14,14 +14,23 @@ cargo build --release --locked -p iteron-cli
 The examples below use `/path/to/Iteron/target/release/iteron`. Replace it with
 `iteron` if you installed the binary on `PATH`.
 
-## 2. Provide a credential to the process
+## 2. Set up a provider credential
 
 The built-in default provider is `glm`. Its credential environment variable is
-`GLM_API_KEY`; Iteron never expects the credential value in repository
-configuration. Make the variable available through your shell or secret manager
-without committing it.
+`GLM_API_KEY`. The supported BYOK wizard validates a key before writing it to a
+private operator-owned file:
 
-You can choose another [built-in or user-defined provider](providers.md).
+```sh
+iteron setup --byok glm
+```
+
+Iteron never writes credential values into repository configuration. An
+environment variable supplied by your shell or secret manager remains available
+as an alternative and takes precedence over the stored file.
+
+See [Setup and BYOK](setup-and-byok.md) for all six built-in providers,
+credential rotation, and status checks. You can also declare a
+[user-defined provider](providers.md).
 
 ## 3. Open the TUI
 

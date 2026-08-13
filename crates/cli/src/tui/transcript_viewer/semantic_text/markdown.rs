@@ -147,7 +147,10 @@ struct BoundedMarkdown<'a> {
 impl<'a> BoundedMarkdown<'a> {
     fn new(max_bytes: usize, cancelled: &'a AtomicBool) -> Self {
         Self {
-            text: String::with_capacity(max_bytes.min(MARKDOWN_RESERVE_BYTES)),
+            text: String::with_capacity(max_bytes.min(iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.semantic_text.markdown.markdown_reserve_bytes",
+                MARKDOWN_RESERVE_BYTES,
+            ))),
             max_bytes,
             truncated: false,
             cancelled,

@@ -348,9 +348,14 @@ fn validate_collection(
 
 fn add_action_size(total: &mut usize, amount: usize) -> Result<(), ContractError> {
     *total = total.saturating_add(amount);
-    if *total > MAX_ACTION_JSON_BYTES {
+    if *total
+        > iteron_tunables::param_integer("evolve.lib.max_action_json_bytes", MAX_ACTION_JSON_BYTES)
+    {
         Err(ContractError::ActionJsonTooLarge {
-            limit: MAX_ACTION_JSON_BYTES,
+            limit: iteron_tunables::param_integer(
+                "evolve.lib.max_action_json_bytes",
+                MAX_ACTION_JSON_BYTES,
+            ),
         })
     } else {
         Ok(())
@@ -367,15 +372,31 @@ fn validate_action_json(value: &serde_json::Value) -> Result<(), ContractError> 
     let mut logical_bytes = 0_usize;
 
     while let Some((value, depth)) = pending.pop() {
-        if depth > MAX_ACTION_JSON_DEPTH {
+        if depth
+            > iteron_tunables::param_integer(
+                "evolve.lib.max_action_json_depth",
+                MAX_ACTION_JSON_DEPTH,
+            )
+        {
             return Err(ContractError::ActionJsonTooDeep {
-                limit: MAX_ACTION_JSON_DEPTH,
+                limit: iteron_tunables::param_integer(
+                    "evolve.lib.max_action_json_depth",
+                    MAX_ACTION_JSON_DEPTH,
+                ),
             });
         }
         nodes = nodes.saturating_add(1);
-        if nodes > MAX_ACTION_JSON_NODES {
+        if nodes
+            > iteron_tunables::param_integer(
+                "evolve.lib.max_action_json_nodes",
+                MAX_ACTION_JSON_NODES,
+            )
+        {
             return Err(ContractError::ActionJsonTooManyNodes {
-                limit: MAX_ACTION_JSON_NODES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.lib.max_action_json_nodes",
+                    MAX_ACTION_JSON_NODES,
+                ),
             });
         }
 
@@ -392,10 +413,16 @@ fn validate_action_json(value: &serde_json::Value) -> Result<(), ContractError> 
                 if nodes
                     .saturating_add(pending.len())
                     .saturating_add(values.len())
-                    > MAX_ACTION_JSON_NODES
+                    > iteron_tunables::param_integer(
+                        "evolve.lib.max_action_json_nodes",
+                        MAX_ACTION_JSON_NODES,
+                    )
                 {
                     return Err(ContractError::ActionJsonTooManyNodes {
-                        limit: MAX_ACTION_JSON_NODES,
+                        limit: iteron_tunables::param_integer(
+                            "evolve.lib.max_action_json_nodes",
+                            MAX_ACTION_JSON_NODES,
+                        ),
                     });
                 }
                 pending.extend(values.iter().map(|value| (value, depth + 1)));
@@ -405,10 +432,16 @@ fn validate_action_json(value: &serde_json::Value) -> Result<(), ContractError> 
                 if nodes
                     .saturating_add(pending.len())
                     .saturating_add(values.len())
-                    > MAX_ACTION_JSON_NODES
+                    > iteron_tunables::param_integer(
+                        "evolve.lib.max_action_json_nodes",
+                        MAX_ACTION_JSON_NODES,
+                    )
                 {
                     return Err(ContractError::ActionJsonTooManyNodes {
-                        limit: MAX_ACTION_JSON_NODES,
+                        limit: iteron_tunables::param_integer(
+                            "evolve.lib.max_action_json_nodes",
+                            MAX_ACTION_JSON_NODES,
+                        ),
                     });
                 }
                 for (key, value) in values {
@@ -494,8 +527,22 @@ impl PolicyRef {
         if self.policy_id.trim().is_empty() || self.version.trim().is_empty() {
             return Err(ContractError::MissingIdentity);
         }
-        validate_string("policy.policy_id", &self.policy_id, MAX_SHORT_STRING_BYTES)?;
-        validate_string("policy.version", &self.version, MAX_SHORT_STRING_BYTES)?;
+        validate_string(
+            "policy.policy_id",
+            &self.policy_id,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
+        )?;
+        validate_string(
+            "policy.version",
+            &self.version,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
+        )?;
         validate_digest(&self.digest)
     }
 }
@@ -546,7 +593,10 @@ impl PolicyManifest {
         validate_string(
             "policy_manifest.artifact_locator",
             &self.artifact_locator,
-            MAX_ARTIFACT_LOCATOR_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_artifact_locator_bytes",
+                MAX_ARTIFACT_LOCATOR_BYTES,
+            ),
         )?;
         if self.protocol.min > self.protocol.max {
             return Err(ContractError::InvertedProtocolRange);
@@ -554,7 +604,10 @@ impl PolicyManifest {
         validate_collection(
             "policy_manifest.required_capabilities",
             self.required_capabilities.len(),
-            MAX_REQUIRED_CAPABILITIES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_required_capabilities",
+                MAX_REQUIRED_CAPABILITIES,
+            ),
         )?;
         if self.method.requires_training_data() && self.training_dataset_digest.is_none() {
             return Err(ContractError::MissingTrainingDataset(self.method));
@@ -597,18 +650,27 @@ impl PolicyBundle {
         validate_string(
             "policy_bundle.bundle_id",
             &self.bundle_id,
-            MAX_SHORT_STRING_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
         )?;
         validate_collection(
             "policy_bundle.policies",
             self.policies.len(),
-            MAX_POLICIES_PER_BUNDLE,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_policies_per_bundle",
+                MAX_POLICIES_PER_BUNDLE,
+            ),
         )?;
         if let Some(rollback_to) = &self.rollback_to {
             validate_nonempty_string(
                 "policy_bundle.rollback_to",
                 rollback_to,
-                MAX_SHORT_STRING_BYTES,
+                iteron_tunables::param_integer(
+                    "evolve.lib.max_short_string_bytes",
+                    MAX_SHORT_STRING_BYTES,
+                ),
             )?;
         }
         validate_digest(&self.digest)?;
@@ -695,7 +757,10 @@ impl StrategyDecision {
         validate_nonempty_string(
             "strategy_decision.decision_id",
             &self.decision_id,
-            MAX_SHORT_STRING_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
         )?;
         self.policy.validate()?;
         for digest in [
@@ -757,13 +822,19 @@ impl DataGovernance {
             validate_string(
                 "data_governance.content_license",
                 content_license,
-                MAX_SHORT_STRING_BYTES,
+                iteron_tunables::param_integer(
+                    "evolve.lib.max_short_string_bytes",
+                    MAX_SHORT_STRING_BYTES,
+                ),
             )?;
         }
         validate_nonempty_string(
             "data_governance.retention_policy",
             &self.retention_policy,
-            MAX_SHORT_STRING_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
         )
     }
 }
@@ -792,9 +863,20 @@ impl RewardVector {
         {
             return Err(ContractError::NonFiniteReward);
         }
-        validate_collection("reward.domain", self.domain.len(), MAX_DOMAIN_REWARDS)?;
+        validate_collection(
+            "reward.domain",
+            self.domain.len(),
+            iteron_tunables::param_integer("evolve.lib.max_domain_rewards", MAX_DOMAIN_REWARDS),
+        )?;
         for key in self.domain.keys() {
-            validate_nonempty_string("reward.domain key", key, MAX_SHORT_STRING_BYTES)?;
+            validate_nonempty_string(
+                "reward.domain key",
+                key,
+                iteron_tunables::param_integer(
+                    "evolve.lib.max_short_string_bytes",
+                    MAX_SHORT_STRING_BYTES,
+                ),
+            )?;
         }
         Ok(())
     }
@@ -823,23 +905,53 @@ impl TrajectoryEnvelope {
         if self.schema_version != EVOLUTION_SCHEMA_VERSION {
             return Err(ContractError::UnsupportedSchema(self.schema_version));
         }
-        validate_nonempty_string("trajectory.run_id", &self.run_id.0, MAX_SHORT_STRING_BYTES)?;
+        validate_nonempty_string(
+            "trajectory.run_id",
+            &self.run_id.0,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
+        )?;
         validate_nonempty_string(
             "trajectory.tenant_id",
             &self.tenant_id.0,
-            MAX_SHORT_STRING_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
         )?;
-        validate_nonempty_string("trajectory.task_id", &self.task_id, MAX_SHORT_STRING_BYTES)?;
-        validate_nonempty_string("trajectory.domain", &self.domain, MAX_SHORT_STRING_BYTES)?;
+        validate_nonempty_string(
+            "trajectory.task_id",
+            &self.task_id,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
+        )?;
+        validate_nonempty_string(
+            "trajectory.domain",
+            &self.domain,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
+        )?;
         validate_nonempty_string(
             "trajectory.terminal_outcome",
             &self.terminal_outcome,
-            MAX_SHORT_STRING_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_short_string_bytes",
+                MAX_SHORT_STRING_BYTES,
+            ),
         )?;
         validate_collection(
             "trajectory.decisions",
             self.decisions.len(),
-            MAX_DECISIONS_PER_TRAJECTORY,
+            iteron_tunables::param_integer(
+                "evolve.lib.max_decisions_per_trajectory",
+                MAX_DECISIONS_PER_TRAJECTORY,
+            ),
         )?;
         validate_digest(&self.environment_digest)?;
         self.bundle.validate()?;
@@ -947,13 +1059,16 @@ impl PromotionEvidence {
         validate_collection(
             "promotion_evidence.invariant_suites",
             self.invariant_suites.len(),
-            MAX_INVARIANT_SUITES,
+            iteron_tunables::param_integer("evolve.lib.max_invariant_suites", MAX_INVARIANT_SUITES),
         )?;
         for suite in self.invariant_suites.keys() {
             validate_nonempty_string(
                 "promotion_evidence.invariant_suite key",
                 suite,
-                MAX_SHORT_STRING_BYTES,
+                iteron_tunables::param_integer(
+                    "evolve.lib.max_short_string_bytes",
+                    MAX_SHORT_STRING_BYTES,
+                ),
             )?;
         }
         if !self.task_score_delta.finite_and_ordered()
@@ -1032,13 +1147,16 @@ impl PromotionGate {
         validate_collection(
             "promotion_gate.required_invariant_suites",
             self.required_invariant_suites.len(),
-            MAX_INVARIANT_SUITES,
+            iteron_tunables::param_integer("evolve.lib.max_invariant_suites", MAX_INVARIANT_SUITES),
         )?;
         for suite in &self.required_invariant_suites {
             validate_nonempty_string(
                 "promotion_gate.required_invariant_suite",
                 suite,
-                MAX_SHORT_STRING_BYTES,
+                iteron_tunables::param_integer(
+                    "evolve.lib.max_short_string_bytes",
+                    MAX_SHORT_STRING_BYTES,
+                ),
             )?;
         }
         Ok(())

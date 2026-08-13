@@ -26,66 +26,82 @@ pub struct PromptArtifact {
     pub decl: &'static str,
     /// What replacing it changes, stated so a reader need not infer it from the id.
     pub effect: &'static str,
+    /// Whether a use site actually consults `artifact_override` for this id.
+    ///
+    /// The exposure gate requires every checked-in artifact marked `overridable` to have a
+    /// production resolution site. Keeping the bit in the export lets outside harnesses verify the
+    /// contract without trusting that gate implicitly.
+    pub overridable: bool,
 }
 
 /// The ten addressable text surfaces.
 pub const PROMPT_ARTIFACTS: [PromptArtifact; 10] = [
     PromptArtifact {
         id: "prompt/system@v1",
+        overridable: true,
         module: ModuleId::PromptSystem,
         decl: "crates/cli/src/main.rs:SYSTEM_PROMPT",
         effect: "the operator-facing agent's base system prompt",
     },
     PromptArtifact {
         id: "prompt/tool_description@v1",
+        overridable: true,
         module: ModuleId::PromptToolDescription,
         decl: "crates/tools/src/*.rs:ToolSpec::description",
         effect: "the model-visible description of each registered tool; never its capability",
     },
     PromptArtifact {
         id: "prompt/subagent@v1",
+        overridable: true,
         module: ModuleId::PromptSubagent,
         decl: "crates/agents/src/def.rs",
         effect: "the system prompt each spawned subagent runs under",
     },
     PromptArtifact {
         id: "prompt/skill@v1",
+        overridable: true,
         module: ModuleId::PromptSkill,
         decl: "crates/ctx/src/skills.rs",
         effect: "skill and instruction text injected into context",
     },
     PromptArtifact {
         id: "prompt/compaction@v1",
+        overridable: true,
         module: ModuleId::PromptCompaction,
         decl: "crates/ctx/src/compact.rs",
         effect: "the instruction that produces a conversation summary",
     },
     PromptArtifact {
         id: "prompt/verification@v1",
+        overridable: true,
         module: ModuleId::PromptVerification,
         decl: "crates/verify/src",
-        effect: "the instruction the verification pass runs under",
+        effect: "operator-supplied model guidance appended for verification handling",
     },
     PromptArtifact {
         id: "prompt/planner@v1",
+        overridable: true,
         module: ModuleId::PromptPlanner,
         decl: "crates/agents/src/decompose.rs",
         effect: "the instruction that decomposes a task into subtasks",
     },
     PromptArtifact {
         id: "prompt/reduce@v1",
+        overridable: true,
         module: ModuleId::PromptReduce,
         decl: "crates/agents/src/reduce.rs",
         effect: "the instruction that merges child results",
     },
     PromptArtifact {
         id: "prompt/memory_write@v1",
+        overridable: true,
         module: ModuleId::PromptMemoryWrite,
         decl: "crates/ctx/src/memory.rs",
-        effect: "the instruction deciding what is persisted to memory",
+        effect: "operator-supplied model guidance appended for memory-write decisions",
     },
     PromptArtifact {
         id: "prompt/recovery@v1",
+        overridable: true,
         module: ModuleId::PromptRecovery,
         decl: "crates/workflow/src",
         effect: "the escalation text used when an assignment ends without usable evidence",
@@ -131,8 +147,14 @@ pub struct SurfaceCounts {
     pub params_searchable: usize,
     pub params_bounded: usize,
     pub params_structural: usize,
+    /// Parameters a production use site actually consults. The exposure gate requires this to
+    /// equal `params_searchable + params_bounded`; any advertised-but-inert gap fails the build.
+    pub params_applied: usize,
     pub modules: usize,
     pub prompt_artifacts: usize,
+    /// Artifacts a production use site actually consults. The exposure gate requires this to equal
+    /// `prompt_artifacts` for the checked-in surface.
+    pub prompt_artifacts_overridable: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,8 +257,13 @@ pub fn surface() -> SurfaceExport {
             .iter()
             .filter(|param| matches!(param.class, ParamClass::Structural))
             .count(),
+        params_applied: params.iter().filter(|param| param.applied).count(),
         modules: ModuleId::ALL.len(),
         prompt_artifacts: PROMPT_ARTIFACTS.len(),
+        prompt_artifacts_overridable: PROMPT_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.overridable)
+            .count(),
     };
 
     SurfaceExport {

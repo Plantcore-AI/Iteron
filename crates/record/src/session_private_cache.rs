@@ -50,10 +50,22 @@ impl StagedCache {
 fn retry_content_busy<T>(
     mut operation: impl FnMut() -> Result<T, ContentStoreError>,
 ) -> Result<T, ContentStoreError> {
-    for attempt in 0..CONTENT_BUSY_RETRY_ATTEMPTS {
+    for attempt in 0..iteron_tunables::param_integer(
+        "record.session_private_cache.content_busy_retry_attempts",
+        CONTENT_BUSY_RETRY_ATTEMPTS,
+    ) {
         match operation() {
-            Err(ContentStoreError::Busy) if attempt + 1 < CONTENT_BUSY_RETRY_ATTEMPTS => {
-                std::thread::sleep(CONTENT_BUSY_RETRY_DELAY);
+            Err(ContentStoreError::Busy)
+                if attempt + 1
+                    < iteron_tunables::param_integer(
+                        "record.session_private_cache.content_busy_retry_attempts",
+                        CONTENT_BUSY_RETRY_ATTEMPTS,
+                    ) =>
+            {
+                std::thread::sleep(iteron_tunables::param_duration(
+                    "record.session_private_cache.content_busy_retry_delay",
+                    CONTENT_BUSY_RETRY_DELAY,
+                ));
             }
             result => return result,
         }

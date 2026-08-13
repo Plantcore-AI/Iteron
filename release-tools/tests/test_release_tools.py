@@ -7,6 +7,7 @@ import gzip
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -391,8 +392,9 @@ exit 1
             self.assertEqual(entry["binary"], "cargo-audit")
         workflow = (repository / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("dependency-audit:", workflow)
-        self.assertIn("release-tools/audit_dependencies.sh linux-x86_64", workflow)
-        self.assertIn("needs: [boundary, dependency-audit, test]", workflow)
+        self.assertIn("run: release-tools/audit_dependencies.sh\n", workflow)
+        self.assertNotIn("audit_dependencies.sh linux-x86_64", workflow)
+        self.assertIn("needs: [route, boundary, dependency-audit, test]", workflow)
 
     def test_schema_release_selects_highest_semver_not_api_order(self) -> None:
         releases = [
@@ -579,6 +581,30 @@ exit 1
         )
         self.assertIn("github.event_name == 'merge_group'", ci)
 
+    def test_ci_inherits_an_unchanged_schema_from_the_trusted_base(self) -> None:
+        ci = (TOOLS.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        chronology = ci.split(
+            "- name: validate candidate against published schema chronology", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "candidate_schema=$CANDIDATE_ROOT/governance/schema-compatibility.json",
+            chronology,
+        )
+        self.assertIn(
+            "policy_schema=$POLICY_ROOT/governance/schema-compatibility.json",
+            chronology,
+        )
+        self.assertIn('test ! -L "$schema"', chronology)
+        self.assertIn('test -f "$schema"', chronology)
+        self.assertIn(
+            'if cmp -s "$policy_schema" "$candidate_schema"', chronology
+        )
+        guard = chronology.index(
+            'if cmp -s "$policy_schema" "$candidate_schema"'
+        )
+        self.assertLess(guard, chronology.index("gh api \\"))
+        self.assertLess(guard, chronology.index('gh release verify "$previous"'))
+
     def test_release_manual_dispatch_preserves_selected_ref_preflight_and_exports_tree(
         self,
     ) -> None:
@@ -641,10 +667,8 @@ exit 1
         self.assertIn("contents: read", receipt)
         self.assertIn("id-token: write", receipt)
         self.assertNotIn("contents: write", receipt)
-        self.assertIn(
-            "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-            receipt,
-        )
+        checkout_uses = re.findall(r"actions/checkout@([0-9a-f]{40})(?:\s|$)", receipt)
+        self.assertEqual(len(checkout_uses), 4)
         self.assertIn("ref: ${{ inputs.builder-workflow-commit }}", receipt)
         self.assertIn("ref: ${{ inputs.tested-commit }}", receipt)
         self.assertIn("fetch-depth: 0", receipt)
@@ -720,7 +744,7 @@ exit 1
             "- name: validate candidate against published schema chronology", 1
         )[0]
         self.assertIn(
-            "if: github.event_name == 'pull_request' || "
+            "if: github.event_name == 'pull_request_target' || "
             "github.event_name == 'merge_group'",
             verification,
         )

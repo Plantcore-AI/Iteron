@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+iteron-tunables = { path = "../tunables" }
 iteron-protocol = { path = "../protocol" }
 iteron-sandbox = { path = "../sandbox" }
 sha2 = { workspace = true }

@@ -124,14 +124,29 @@ fn await_worker_result(
 }
 
 fn await_cancellation_grace(receiver: &Receiver<std::io::Result<usize>>) -> bool {
-    let grace_deadline = Instant::now() + CANCEL_TIMEOUT;
+    let grace_deadline = Instant::now()
+        + iteron_tunables::param_duration(
+            "cli.tui.terminal_input.windows_query.cancel_timeout",
+            CANCEL_TIMEOUT,
+        );
     let mut retry_cancel = matches!(cancel_worker_write(), CancelAttempt::NoCurrentIo);
-    for retry in 0..=MAX_CANCEL_RETRIES {
+    for retry in 0..=iteron_tunables::param_integer(
+        "cli.tui.terminal_input.windows_query.max_cancel_retries",
+        MAX_CANCEL_RETRIES,
+    ) {
         let Some(remaining) = grace_deadline.checked_duration_since(Instant::now()) else {
             return false;
         };
-        let wait = if retry_cancel && retry < MAX_CANCEL_RETRIES {
-            remaining.min(CANCEL_RETRY_INTERVAL)
+        let wait = if retry_cancel
+            && retry
+                < iteron_tunables::param_integer(
+                    "cli.tui.terminal_input.windows_query.max_cancel_retries",
+                    MAX_CANCEL_RETRIES,
+                ) {
+            remaining.min(iteron_tunables::param_duration(
+                "cli.tui.terminal_input.windows_query.cancel_retry_interval",
+                CANCEL_RETRY_INTERVAL,
+            ))
         } else {
             remaining
         };
@@ -141,7 +156,13 @@ fn await_cancellation_grace(receiver: &Receiver<std::io::Result<usize>>) -> bool
                 if Instant::now() >= grace_deadline {
                     return false;
                 }
-                if retry_cancel && retry < MAX_CANCEL_RETRIES {
+                if retry_cancel
+                    && retry
+                        < iteron_tunables::param_integer(
+                            "cli.tui.terminal_input.windows_query.max_cancel_retries",
+                            MAX_CANCEL_RETRIES,
+                        )
+                {
                     retry_cancel = matches!(cancel_worker_write(), CancelAttempt::NoCurrentIo);
                 }
             }

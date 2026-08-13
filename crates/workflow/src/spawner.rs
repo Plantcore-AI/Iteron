@@ -80,7 +80,11 @@ impl AgentCall {
             return Ok(());
         };
         if agent_type.is_empty()
-            || agent_type.len() > MAX_AGENT_TYPE_BYTES
+            || agent_type.len()
+                > iteron_tunables::param_integer(
+                    "workflow.spawner.max_agent_type_bytes",
+                    MAX_AGENT_TYPE_BYTES,
+                )
             || !agent_type
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
@@ -96,7 +100,11 @@ impl AgentCall {
             return Ok(());
         };
         if model.trim().is_empty()
-            || model.len() > MAX_AGENT_MODEL_BYTES
+            || model.len()
+                > iteron_tunables::param_integer(
+                    "workflow.spawner.max_agent_model_bytes",
+                    MAX_AGENT_MODEL_BYTES,
+                )
             || model.chars().any(char::is_control)
         {
             return Err(AgentRequestMetadataError::Model);
@@ -163,9 +171,15 @@ impl AgentActivityReporter {
     /// Replace the latest cumulative snapshot. This is intentionally synchronous and non-blocking;
     /// the workflow engine owns presentation rate limiting.
     pub fn report(&self, tokens: u64, tool_calls: u64, last_tool_summary: Option<String>) {
-        let last_tool_summary = last_tool_summary
-            .as_deref()
-            .map(|summary| truncate_preview(summary, TOOL_SUMMARY_MAX));
+        let last_tool_summary = last_tool_summary.as_deref().map(|summary| {
+            truncate_preview(
+                summary,
+                iteron_tunables::param_integer(
+                    "workflow.events.tool_summary_max",
+                    TOOL_SUMMARY_MAX,
+                ),
+            )
+        });
         self.tx.send_replace(Some(AgentActivitySnapshot {
             tokens,
             tool_calls,

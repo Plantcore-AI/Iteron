@@ -100,7 +100,14 @@ impl Drop for FrameBytes {
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
     pub(super) fn new(inner: R, pending_budget: Arc<Semaphore>) -> Self {
-        Self::with_limit(inner, MAX_HELLO_FRAME_BYTES, pending_budget)
+        Self::with_limit(
+            inner,
+            iteron_tunables::param_integer(
+                "cli.tui.headless.input.max_hello_frame_bytes",
+                MAX_HELLO_FRAME_BYTES,
+            ),
+            pending_budget,
+        )
     }
 
     fn with_limit(inner: R, max_frame_bytes: usize, pending_budget: Arc<Semaphore>) -> Self {

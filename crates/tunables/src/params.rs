@@ -2,7 +2,7 @@
 //!
 //! The 160-entry family registry carries nineteen fields per entry and is hand-authored. That is
 //! the right cost for a control that the evolution plane may *promote*, and the wrong cost for the
-//! roughly 1,670 remaining compiled constants that shape behaviour: hand-authoring those would not
+//! much larger compiled-constant surface that shapes behaviour: hand-authoring those would not
 //! be a larger version of the same job, and it would multiply the surface every schema-compat
 //! fixture has to freeze by an order of magnitude.
 //!
@@ -13,10 +13,11 @@
 //! may change it. That asymmetry is what lets the whole surface be exposed without widening what a
 //! learned strategy is allowed to touch.
 //!
-//! The catalog is embedded as JSON rather than generated Rust. Sixteen hundred generated items
+//! The catalog is embedded as JSON rather than generated Rust. Thousands of generated items
 //! would be paid for on every build of this crate; the JSON is parsed once, on demand.
 
 use crate::modules::ModuleId;
+use crate::resolution_types::ResolutionValue;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
@@ -45,8 +46,37 @@ pub enum ParamType {
     Float,
     Boolean,
     Text,
+    Enum,
     Array,
+    Object,
     Duration,
+}
+
+/// Unit used by an integral duration override. It is derived from the declaration constructor and
+/// published so a harness never has to guess whether `5` means milliseconds or seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamUnit {
+    Nanoseconds,
+    Microseconds,
+    Milliseconds,
+    Seconds,
+}
+
+impl ParamType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Integer => "integer",
+            Self::Float => "float",
+            Self::Boolean => "boolean",
+            Self::Text => "text",
+            Self::Enum => "enum",
+            Self::Array => "array",
+            Self::Object => "object",
+            Self::Duration => "duration",
+        }
+    }
 }
 
 /// The admissible range. `min`/`max` are inclusive; absent means unbounded on that side, which is
@@ -71,6 +101,11 @@ pub struct Param {
     pub class: ParamClass,
     #[serde(rename = "type")]
     pub ty: ParamType,
+    /// Exact Rust declaration type. The coarse `type` drives profile shape; this field preserves
+    /// signed width, array element type and concrete object identity for a research harness.
+    pub rust_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<ParamUnit>,
     /// The declared default, rendered exactly as written in source.
     pub default: String,
     #[serde(default)]
@@ -79,6 +114,12 @@ pub struct Param {
     pub krate: String,
     /// Declaration site, so a reader can go straight to the source of truth.
     pub decl: String,
+    /// Whether a use site actually consults the override table for this parameter.
+    ///
+    /// This diagnostic field makes drift visible in exports. The checked-in exposure gate requires
+    /// every settable parameter to be applied, so a release cannot advertise an inert value.
+    #[serde(default)]
+    pub applied: bool,
 }
 
 impl Param {
@@ -101,6 +142,211 @@ impl Param {
             return Err(ParamDomainViolation::AboveClamp { max, value });
         }
         Ok(())
+    }
+
+    /// Validate the typed value at both profile admission and runtime installation boundaries.
+    /// Keeping the rule here prevents either boundary from accepting a value the other drops.
+    pub fn admits_value(&self, value: &ResolutionValue) -> Result<(), ParamValueViolation> {
+        let type_matches = matches!(
+            (self.ty, value),
+            (ParamType::Integer, ResolutionValue::Integer { .. })
+                | (ParamType::Float, ResolutionValue::Decimal { .. })
+                | (ParamType::Boolean, ResolutionValue::Boolean { .. })
+                | (ParamType::Text, ResolutionValue::Text { .. })
+                | (ParamType::Enum, ResolutionValue::Enum { .. })
+                | (ParamType::Array, ResolutionValue::List { .. })
+                | (ParamType::Object, ResolutionValue::Object { .. })
+                | (ParamType::Duration, ResolutionValue::Integer { .. })
+        );
+        if !type_matches {
+            return Err(ParamValueViolation::WrongType {
+                expected: self.ty,
+                actual: resolution_value_type(value),
+            });
+        }
+        if let ResolutionValue::Integer { value } = value {
+            self.admits_integer(i128::from(*value))
+                .map_err(ParamValueViolation::Domain)?;
+        }
+        if let ResolutionValue::List { items } = value {
+            self.admits_list(items)?;
+        }
+        if let ResolutionValue::Object { fields } = value
+            && self.rust_type.trim() == "LangSpec"
+        {
+            admits_lang_spec(fields)?;
+        }
+        Ok(())
+    }
+
+    fn admits_list(&self, items: &[ResolutionValue]) -> Result<(), ParamValueViolation> {
+        if self.id == "cli.theme.capabilities.ansi16" {
+            if items.len() != 16 || items.iter().any(|item| !is_ansi_color_entry(item)) {
+                return Err(ParamValueViolation::Shape(
+                    "expected 16 objects with `color` text and byte-valued `r`, `g`, `b` fields",
+                ));
+            }
+            return Ok(());
+        }
+        if let Some(length) = fixed_array_length(&self.rust_type)
+            && items.len() != length
+        {
+            return Err(ParamValueViolation::Shape(
+                "list length does not match the declared fixed Rust array length",
+            ));
+        }
+        if self.rust_type.contains("str")
+            && items
+                .iter()
+                .any(|item| !matches!(item, ResolutionValue::Text { .. }))
+        {
+            return Err(ParamValueViolation::Shape(
+                "expected every list item to be text",
+            ));
+        }
+        if self.rust_type.contains("u8")
+            && items.iter().any(|item| {
+                !matches!(item, ResolutionValue::Integer { value } if u8::try_from(*value).is_ok())
+            })
+        {
+            return Err(ParamValueViolation::Shape(
+                "expected every list item to be an integer from 0 through 255",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn fixed_array_length(rust_type: &str) -> Option<usize> {
+    let (_, suffix) = rust_type.rsplit_once(';')?;
+    suffix
+        .trim()
+        .strip_suffix(']')?
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
+fn is_ansi_color_entry(value: &ResolutionValue) -> bool {
+    let ResolutionValue::Object { fields } = value else {
+        return false;
+    };
+    fields.len() == 4
+        && matches!(fields.get("color"), Some(ResolutionValue::Text { value }) if ansi_color(value))
+        && ["r", "g", "b"].into_iter().all(|field| {
+            matches!(fields.get(field), Some(ResolutionValue::Integer { value }) if u8::try_from(*value).is_ok())
+        })
+}
+
+fn ansi_color(value: &str) -> bool {
+    matches!(
+        value,
+        "black"
+            | "red"
+            | "green"
+            | "yellow"
+            | "blue"
+            | "magenta"
+            | "cyan"
+            | "gray"
+            | "dark_gray"
+            | "light_red"
+            | "light_green"
+            | "light_yellow"
+            | "light_blue"
+            | "light_magenta"
+            | "light_cyan"
+            | "white"
+    )
+}
+
+fn admits_lang_spec(
+    fields: &std::collections::BTreeMap<String, ResolutionValue>,
+) -> Result<(), ParamValueViolation> {
+    const EXPECTED: [&str; 7] = [
+        "block",
+        "keywords",
+        "line_comments",
+        "nest_block",
+        "strings",
+        "triple",
+        "types_capitalized",
+    ];
+    if fields.len() != EXPECTED.len()
+        || EXPECTED
+            .into_iter()
+            .any(|field| !fields.contains_key(field))
+    {
+        return Err(ParamValueViolation::Shape(
+            "LangSpec requires exactly block, keywords, line_comments, nest_block, strings, triple, and types_capitalized",
+        ));
+    }
+    for field in ["line_comments", "keywords"] {
+        if !matches!(fields.get(field), Some(ResolutionValue::List { items }) if items.iter().all(|item| matches!(item, ResolutionValue::Text { .. })))
+        {
+            return Err(ParamValueViolation::Shape(
+                "LangSpec line_comments and keywords must be text lists",
+            ));
+        }
+    }
+    if !matches!(fields.get("block"), Some(ResolutionValue::List { items }) if (items.is_empty() || items.len() == 2) && items.iter().all(|item| matches!(item, ResolutionValue::Text { .. })))
+    {
+        return Err(ParamValueViolation::Shape(
+            "LangSpec block must be an empty or two-item text list",
+        ));
+    }
+    if !matches!(fields.get("strings"), Some(ResolutionValue::List { items }) if items.iter().all(|item| matches!(item, ResolutionValue::Text { value } if value.chars().count() == 1)))
+    {
+        return Err(ParamValueViolation::Shape(
+            "LangSpec strings must be a list of one-character text values",
+        ));
+    }
+    if ["nest_block", "triple", "types_capitalized"]
+        .into_iter()
+        .any(|field| !matches!(fields.get(field), Some(ResolutionValue::Boolean { .. })))
+    {
+        return Err(ParamValueViolation::Shape(
+            "LangSpec nest_block, triple, and types_capitalized must be boolean",
+        ));
+    }
+    Ok(())
+}
+
+fn resolution_value_type(value: &ResolutionValue) -> &'static str {
+    match value {
+        ResolutionValue::Boolean { .. } => "boolean",
+        ResolutionValue::Integer { .. } => "integer",
+        ResolutionValue::Decimal { .. } => "decimal",
+        ResolutionValue::Text { .. } => "text",
+        ResolutionValue::Enum { .. } => "enum",
+        ResolutionValue::List { .. } => "list",
+        ResolutionValue::Map { .. } => "map",
+        ResolutionValue::Object { .. } => "object",
+        ResolutionValue::CatalogRef { .. } => "catalog_ref",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamValueViolation {
+    WrongType {
+        expected: ParamType,
+        actual: &'static str,
+    },
+    Domain(ParamDomainViolation),
+    Shape(&'static str),
+}
+
+impl std::fmt::Display for ParamValueViolation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongType { expected, actual } => write!(
+                formatter,
+                "expected parameter type {}, got {actual}",
+                expected.as_str()
+            ),
+            Self::Domain(violation) => violation.fmt(formatter),
+            Self::Shape(reason) => formatter.write_str(reason),
+        }
     }
 }
 
@@ -138,14 +384,15 @@ struct ParamCatalog {
 }
 
 /// Schema version of the tier-2 catalog document.
-pub const PARAM_SCHEMA_VERSION: u16 = 1;
+pub const PARAM_SCHEMA_VERSION: u16 = 2;
 /// Logical identity of the tier-2 registry, distinct from the family registry.
 pub const PARAM_REGISTRY_ID: &str = "iteron-params";
 
 fn catalog() -> &'static ParamCatalog {
     static CATALOG: OnceLock<ParamCatalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        serde_json::from_str(PARAMS_JSON).expect("embedded tier-2 parameter catalog is valid")
+        serde_json::from_str(crate::param_str("tunables.params.params_json", PARAMS_JSON))
+            .expect("embedded tier-2 parameter catalog is valid")
     })
 }
 
@@ -163,7 +410,9 @@ pub fn param(id: &str) -> Option<&'static Param> {
 /// digest, so a candidate computed against one catalog cannot be silently applied to another.
 pub fn param_registry_digest_sha256() -> String {
     use sha2::Digest as _;
-    hex::encode(sha2::Sha256::digest(PARAMS_JSON.as_bytes()))
+    hex::encode(sha2::Sha256::digest(
+        crate::param_str("tunables.params.params_json", PARAMS_JSON).as_bytes(),
+    ))
 }
 
 /// Count of exposed parameters.

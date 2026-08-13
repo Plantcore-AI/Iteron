@@ -3,6 +3,9 @@
 Iteron resolves provider routing only from operator-controlled sources. A
 cloned repository cannot redirect your model traffic or credential to a new host.
 
+For a built-in provider, start with the [Setup and BYOK](setup-and-byok.md)
+wizard. This page covers route selection and advanced custom endpoints.
+
 ## Built-in providers
 
 | Provider id | Wire adapter | Credential environment variable |

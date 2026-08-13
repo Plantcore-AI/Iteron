@@ -176,7 +176,14 @@ fn format_microusd(value: u64) -> String {
 }
 
 fn short_status_digest(value: &str) -> &str {
-    value.get(..STATUS_DIGEST_PREFIX_CHARS).unwrap_or(value)
+    value
+        .get(
+            ..iteron_tunables::param_integer(
+                "cli.tui.status_command.status_digest_prefix_chars",
+                STATUS_DIGEST_PREFIX_CHARS,
+            ),
+        )
+        .unwrap_or(value)
 }
 
 fn append_budget(rows: &mut Vec<block::PanelRow>, budget: &crate::runtime::RuntimeBudgetHealth) {

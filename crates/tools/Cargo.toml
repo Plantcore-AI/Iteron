@@ -10,6 +10,7 @@ iteron-protocol = { path = "../protocol" }
 iteron-sandbox = { path = "../sandbox" }
 iteron-ctx = { path = "../ctx" }
 iteron-lsp = { path = "../lsp" }
+iteron-tunables = { path = "../tunables" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

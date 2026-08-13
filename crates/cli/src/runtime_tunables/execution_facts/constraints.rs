@@ -37,7 +37,10 @@ fn add_tool_and_verifier_constraints(
         "$",
         ExternalCeiling::ProcessBudget,
         int(i64u(
-            crate::runtime::DEFAULT_MAX_TOOL_CONCURRENCY,
+            iteron_tunables::param_integer(
+                "cli.runtime.default_max_tool_concurrency",
+                crate::runtime::DEFAULT_MAX_TOOL_CONCURRENCY,
+            ),
             "pure_concurrency",
         )?),
     )?;

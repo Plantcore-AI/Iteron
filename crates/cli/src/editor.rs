@@ -762,9 +762,13 @@ impl Editor {
                 .buf
                 .iter()
                 .try_fold(0_usize, |bytes, c| {
-                    bytes
-                        .checked_add(c.len_utf8())
-                        .filter(|next| *next <= MAX_RECOVERABLE_DRAFT_BYTES)
+                    bytes.checked_add(c.len_utf8()).filter(|next| {
+                        *next
+                            <= iteron_tunables::param_integer(
+                                "cli.editor.max_recoverable_draft_bytes",
+                                MAX_RECOVERABLE_DRAFT_BYTES,
+                            )
+                    })
                 })
                 .is_some();
             self.recently_cleared = fits.then(|| self.text());

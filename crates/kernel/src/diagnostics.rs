@@ -83,7 +83,10 @@ pub struct DiagnosticPort {
 /// Create the sole admitted diagnostic transport. Its capacity equals the shared emission bound,
 /// so a receiver that drains only after a run still observes every admitted diagnostic.
 pub fn bounded_channel() -> (DiagnosticPort, Receiver<KernelDiagnostic>) {
-    let (sender, receiver) = sync_channel(MAX_KERNEL_DIAGNOSTICS_PER_RUN as usize);
+    let (sender, receiver) = sync_channel(iteron_protocol::param_integer(
+        "kernel.diagnostics.max_kernel_diagnostics_per_run",
+        MAX_KERNEL_DIAGNOSTICS_PER_RUN,
+    ) as usize);
     (DiagnosticPort { sender }, receiver)
 }
 
@@ -129,7 +132,12 @@ impl DiagnosticEmitter {
         let admitted = self
             .emitted
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |emitted| {
-                (emitted < MAX_KERNEL_DIAGNOSTICS_PER_RUN).then_some(emitted.saturating_add(1))
+                (emitted
+                    < iteron_protocol::param_integer(
+                        "kernel.diagnostics.max_kernel_diagnostics_per_run",
+                        MAX_KERNEL_DIAGNOSTICS_PER_RUN,
+                    ))
+                .then_some(emitted.saturating_add(1))
             });
         if admitted.is_ok()
             && let Some(port) = &self.port

@@ -359,10 +359,14 @@ fn unknown_documents_are_counted_without_storage() {
 #[test]
 fn open_document_and_rfc3986_uri_bounds_are_hard() {
     let mut store = DocumentStore::new(reader_epoch());
-    for index in 0..MAX_OPEN_DOCUMENTS {
+    for index in 0..iteron_tunables::param_integer("lsp.lib.max_open_documents", MAX_OPEN_DOCUMENTS)
+    {
         store.open(&format!("file:///{index}"), 1).unwrap();
     }
-    assert_eq!(store.open_documents(), MAX_OPEN_DOCUMENTS);
+    assert_eq!(
+        store.open_documents(),
+        iteron_tunables::param_integer("lsp.lib.max_open_documents", MAX_OPEN_DOCUMENTS)
+    );
     assert_eq!(
         store.open("file:///one-too-many", 1),
         Err(LspError::DocumentLimit {
@@ -370,7 +374,10 @@ fn open_document_and_rfc3986_uri_bounds_are_hard() {
         })
     );
 
-    let uri = "u".repeat(MAX_DOCUMENT_URI_BYTES + 1);
+    let uri = "u".repeat(
+        iteron_tunables::param_integer("lsp.lib.max_document_uri_bytes", MAX_DOCUMENT_URI_BYTES)
+            + 1,
+    );
     assert_eq!(
         DocumentStore::new(reader_epoch()).open(&uri, 1),
         Err(LspError::DocumentUriTooLong {
@@ -478,8 +485,8 @@ fn full_diagnostic_shape_is_validated_before_storage() {
 
     let bad_position = json!({
         "range": {
-            "start": {"line": u64::from(MAX_LSP_POSITION) + 1, "character": 0},
-            "end": {"line": u64::from(MAX_LSP_POSITION) + 1, "character": 0}
+            "start": {"line": u64::from(iteron_tunables::param_integer("lsp.lib.max_lsp_position", MAX_LSP_POSITION)) + 1, "character": 0},
+            "end": {"line": u64::from(iteron_tunables::param_integer("lsp.lib.max_lsp_position", MAX_LSP_POSITION)) + 1, "character": 0}
         },
         "message": "bad"
     });
@@ -533,7 +540,13 @@ fn full_diagnostic_shape_is_validated_before_storage() {
 #[test]
 fn diagnostic_count_bytes_nodes_and_depth_are_bounded() {
     let (mut store, snapshot) = opened(1);
-    let too_many = vec![diag("x"); MAX_DIAGNOSTICS_PER_DOCUMENT + 1];
+    let too_many = vec![
+        diag("x");
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostics_per_document",
+            MAX_DIAGNOSTICS_PER_DOCUMENT
+        ) + 1
+    ];
     assert!(matches!(
         store.publish(
             reader_epoch(),
@@ -543,7 +556,10 @@ fn diagnostic_count_bytes_nodes_and_depth_are_bounded() {
         ),
         Err(LspError::DiagnosticsTooMany { .. })
     ));
-    let large_message = "x".repeat(MAX_DIAGNOSTIC_MESSAGE_BYTES);
+    let large_message = "x".repeat(iteron_tunables::param_integer(
+        "lsp.lib.max_diagnostic_message_bytes",
+        MAX_DIAGNOSTIC_MESSAGE_BYTES,
+    ));
     let too_large = vec![diag(large_message); 17];
     assert!(matches!(
         store.publish(
@@ -555,7 +571,13 @@ fn diagnostic_count_bytes_nodes_and_depth_are_bounded() {
         Err(LspError::DiagnosticsTooLarge { .. })
     ));
     let mut too_complex = diag("complex");
-    too_complex["data"] = Value::Array(vec![Value::Null; MAX_DIAGNOSTIC_JSON_NODES]);
+    too_complex["data"] = Value::Array(vec![
+        Value::Null;
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_json_nodes",
+            MAX_DIAGNOSTIC_JSON_NODES
+        )
+    ]);
     assert!(matches!(
         store.publish(
             reader_epoch(),
@@ -566,7 +588,10 @@ fn diagnostic_count_bytes_nodes_and_depth_are_bounded() {
         Err(LspError::DiagnosticsTooComplex { .. })
     ));
     let mut nested = Value::Null;
-    for _ in 0..=MAX_DIAGNOSTIC_JSON_DEPTH {
+    for _ in 0..=iteron_tunables::param_integer(
+        "lsp.lib.max_diagnostic_json_depth",
+        MAX_DIAGNOSTIC_JSON_DEPTH,
+    ) {
         nested = Value::Array(vec![nested]);
     }
     let mut too_deep = diag("deep");
@@ -591,17 +616,37 @@ fn related_information_and_diagnostic_strings_are_bounded() {
         "message": "here"
     });
     let mut too_many = diag("x");
-    too_many["relatedInformation"] =
-        Value::Array(vec![related; MAX_DIAGNOSTIC_RELATED_INFORMATION + 1]);
+    too_many["relatedInformation"] = Value::Array(vec![
+        related;
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_related_information",
+            MAX_DIAGNOSTIC_RELATED_INFORMATION
+        ) + 1
+    ]);
     let mut long_source = diag("x");
-    long_source["source"] = Value::String("s".repeat(MAX_DIAGNOSTIC_SOURCE_BYTES + 1));
+    long_source["source"] = Value::String("s".repeat(
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_source_bytes",
+            MAX_DIAGNOSTIC_SOURCE_BYTES,
+        ) + 1,
+    ));
     let mut long_code = diag("x");
-    long_code["code"] = Value::String("c".repeat(MAX_DIAGNOSTIC_CODE_BYTES + 1));
-    let long_message = diag("x".repeat(MAX_DIAGNOSTIC_MESSAGE_BYTES + 1));
+    long_code["code"] = Value::String("c".repeat(
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_code_bytes",
+            MAX_DIAGNOSTIC_CODE_BYTES,
+        ) + 1,
+    ));
+    let long_message = diag("x".repeat(
+        iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_message_bytes",
+            MAX_DIAGNOSTIC_MESSAGE_BYTES,
+        ) + 1,
+    ));
     let mut long_related = diag("x");
     long_related["relatedInformation"] = json!([{
         "location": {"uri": "file:///b.rs", "range": diag("x")["range"].clone()},
-        "message": "m".repeat(MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES + 1)
+        "message": "m".repeat(iteron_tunables::param_integer("lsp.lib.max_diagnostic_related_message_bytes", MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES) + 1)
     }]);
     for malformed in [too_many, long_source, long_code, long_message, long_related] {
         assert!(matches!(
@@ -619,7 +664,10 @@ fn related_information_and_diagnostic_strings_are_bounded() {
 #[test]
 fn global_diagnostic_budget_rejects_atomically() {
     let (mut store, snapshot) = opened(1);
-    store.diagnostic_bytes = MAX_DIAGNOSTIC_BYTES_TOTAL;
+    store.diagnostic_bytes = iteron_tunables::param_integer(
+        "lsp.lib.max_diagnostic_bytes_total",
+        MAX_DIAGNOSTIC_BYTES_TOTAL,
+    );
     assert!(matches!(
         store.publish(
             reader_epoch(),
@@ -631,7 +679,10 @@ fn global_diagnostic_budget_rejects_atomically() {
     ));
     assert!(store.diagnostic_set("file:///a.rs").is_none());
     store.diagnostic_bytes = 0;
-    store.diagnostic_nodes = MAX_DIAGNOSTIC_JSON_NODES_TOTAL;
+    store.diagnostic_nodes = iteron_tunables::param_integer(
+        "lsp.lib.max_diagnostic_json_nodes_total",
+        MAX_DIAGNOSTIC_JSON_NODES_TOTAL,
+    );
     assert!(matches!(
         store.publish(
             reader_epoch(),
@@ -645,7 +696,10 @@ fn global_diagnostic_budget_rejects_atomically() {
 
 #[test]
 fn accepted_values_are_canonicalized_before_retention() {
-    let mut oversized_capacity = String::with_capacity(MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT);
+    let mut oversized_capacity = String::with_capacity(iteron_tunables::param_integer(
+        "lsp.lib.max_diagnostic_bytes_per_document",
+        MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+    ));
     oversized_capacity.push('x');
     let (mut store, snapshot) = opened(1);
     store
@@ -661,5 +715,11 @@ fn accepted_values_are_canonicalized_before_retention() {
     else {
         panic!("expected string diagnostic fixture");
     };
-    assert!(stored.capacity() < MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT / 2);
+    assert!(
+        stored.capacity()
+            < iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_bytes_per_document",
+                MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT
+            ) / 2
+    );
 }

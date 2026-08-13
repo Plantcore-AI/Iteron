@@ -90,12 +90,25 @@ impl ProviderGovernor {
     ) -> Result<Self, GovernorPolicyError> {
         let policy = policy.validate()?;
         let ids = route_ids.into_iter().collect::<Vec<_>>();
-        if ids.is_empty() || ids.len() > MAX_GOVERNED_ROUTES {
+        if ids.is_empty()
+            || ids.len()
+                > iteron_tunables::param_usize(
+                    "provider.governor_policy.max_governed_routes",
+                    MAX_GOVERNED_ROUTES,
+                )
+        {
             return Err(GovernorPolicyError::RouteCount);
         }
         let mut routes = BTreeMap::new();
         for id in ids {
-            if id.is_empty() || id.len() > MAX_ROUTE_ID_BYTES || routes.contains_key(&id) {
+            if id.is_empty()
+                || id.len()
+                    > iteron_tunables::param_integer(
+                        "provider.governor.max_route_id_bytes",
+                        MAX_ROUTE_ID_BYTES,
+                    )
+                || routes.contains_key(&id)
+            {
                 return Err(GovernorPolicyError::RouteIdentity);
             }
             routes.insert(
@@ -152,7 +165,11 @@ impl ProviderGovernor {
     /// that append fails.
     pub fn register_route(&self, route_id: String) -> Result<bool, GovernorPolicyError> {
         if route_id.is_empty()
-            || route_id.len() > MAX_ROUTE_ID_BYTES
+            || route_id.len()
+                > iteron_tunables::param_integer(
+                    "provider.governor.max_route_id_bytes",
+                    MAX_ROUTE_ID_BYTES,
+                )
             || route_id.chars().any(char::is_control)
         {
             return Err(GovernorPolicyError::RouteIdentity);
@@ -165,7 +182,12 @@ impl ProviderGovernor {
         if routes.contains_key(&route_id) {
             return Ok(false);
         }
-        if routes.len() >= MAX_GOVERNED_ROUTES {
+        if routes.len()
+            >= iteron_tunables::param_usize(
+                "provider.governor_policy.max_governed_routes",
+                MAX_GOVERNED_ROUTES,
+            )
+        {
             return Err(GovernorPolicyError::RouteCount);
         }
         routes.insert(
@@ -425,7 +447,13 @@ fn quota_decision(
     let Some(rate) = &route.rate else {
         return match policy.unknown_quota {
             UnknownQuotaPolicy::Conservative => {
-                *ceiling = (*ceiling).min(PROBE_ADMISSION_CEILING);
+                *ceiling = (*ceiling).min(iteron_tunables::param_usize(
+                    "provider.governor.probe_admission_ceiling",
+                    iteron_tunables::param_integer(
+                        "provider.governor.probe_admission_ceiling",
+                        PROBE_ADMISSION_CEILING,
+                    ),
+                ));
                 None
             }
             UnknownQuotaPolicy::Reject => Some(Admission::Rejected(AdmissionReason::QuotaUnknown)),
@@ -442,15 +470,25 @@ fn quota_decision(
     // conservative probe so a successful response can refresh them; otherwise a zero snapshot
     // would deadlock the route forever.
     if advertised_reset.is_some_and(|reset| elapsed >= reset) {
-        *ceiling = (*ceiling).min(PROBE_ADMISSION_CEILING);
+        *ceiling = (*ceiling).min(iteron_tunables::param_usize(
+            "provider.governor.probe_admission_ceiling",
+            iteron_tunables::param_integer(
+                "provider.governor.probe_admission_ceiling",
+                PROBE_ADMISSION_CEILING,
+            ),
+        ));
         return None;
     }
     if let Some(remaining) = rate.snapshot.requests_remaining {
-        *ceiling = (*ceiling).min(
-            usize::try_from(remaining)
-                .unwrap_or(usize::MAX)
-                .max(MIN_ADMISSION_CEILING),
-        );
+        *ceiling = (*ceiling).min(usize::try_from(remaining).unwrap_or(usize::MAX).max(
+            iteron_tunables::param_usize(
+                "provider.governor.min_admission_ceiling",
+                iteron_tunables::param_integer(
+                    "provider.governor.min_admission_ceiling",
+                    MIN_ADMISSION_CEILING,
+                ),
+            ),
+        ));
     }
     let requests_low = rate
         .snapshot

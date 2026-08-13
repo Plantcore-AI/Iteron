@@ -139,7 +139,9 @@ fn is_known_color_term(term: &str) -> bool {
         "eterm",
         "cygwin",
     ];
-    KNOWN.iter().any(|k| term.starts_with(k))
+    iteron_tunables::param_str_list("statusline.terminal.known", KNOWN)
+        .iter()
+        .any(|k| term.starts_with(k))
 }
 
 /// sRGB colour, for contrast checking.
@@ -174,7 +176,8 @@ pub const MIN_CONTRAST_AA: f64 = 4.5;
 /// This is checked rather than assumed because a theme is chosen once by whoever wrote it and then
 /// read by everyone, including people the author cannot see.
 pub fn meets_aa(fg: Rgb, bg: Rgb) -> bool {
-    contrast_ratio(fg, bg) >= MIN_CONTRAST_AA
+    contrast_ratio(fg, bg)
+        >= iteron_tunables::param_f64("statusline.terminal.min_contrast_aa", MIN_CONTRAST_AA)
 }
 
 #[cfg(test)]

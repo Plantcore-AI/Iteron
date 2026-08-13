@@ -21,10 +21,18 @@ pub(crate) fn persist(
     };
     iteron_record::validate_tunables_snapshot_v2(snapshot)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
-    if bytes.len() > MAX_TUNABLES_CHECKPOINT_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+            MAX_TUNABLES_CHECKPOINT_BYTES,
+        )
+    {
         anyhow::bail!(
             "workflow tunables checkpoint exceeds the {} byte bound",
-            MAX_TUNABLES_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+                MAX_TUNABLES_CHECKPOINT_BYTES
+            )
         );
     }
 
@@ -74,20 +82,41 @@ pub(crate) fn load(workflows_dir: &Path, run_id: &str) -> anyhow::Result<Tunable
 fn load_path(path: &PathBuf) -> anyhow::Result<RunGenesisTunablesSnapshotV2> {
     let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
-    if metadata.len() > MAX_TUNABLES_CHECKPOINT_BYTES as u64 {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+            MAX_TUNABLES_CHECKPOINT_BYTES,
+        ) as u64
+    {
         anyhow::bail!(
             "tunables checkpoint exceeds the {} byte bound",
-            MAX_TUNABLES_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+                MAX_TUNABLES_CHECKPOINT_BYTES
+            )
         );
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     Read::by_ref(&mut file)
-        .take((MAX_TUNABLES_CHECKPOINT_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+                MAX_TUNABLES_CHECKPOINT_BYTES,
+            ) + 1) as u64,
+        )
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_TUNABLES_CHECKPOINT_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+            MAX_TUNABLES_CHECKPOINT_BYTES,
+        )
+    {
         anyhow::bail!(
             "tunables checkpoint exceeds the {} byte bound",
-            MAX_TUNABLES_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.tunables_checkpoint.max_tunables_checkpoint_bytes",
+                MAX_TUNABLES_CHECKPOINT_BYTES
+            )
         );
     }
     let snapshot: RunGenesisTunablesSnapshotV2 = serde_json::from_slice(&bytes)?;

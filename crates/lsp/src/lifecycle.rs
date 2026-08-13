@@ -85,10 +85,15 @@ impl RestartPolicy {
         base_backoff_ms: u64,
         max_backoff_ms: u64,
     ) -> Result<Self, LspError> {
-        if max_attempts > MAX_RESTART_ATTEMPTS {
+        if max_attempts
+            > iteron_tunables::param_integer("lsp.lib.max_restart_attempts", MAX_RESTART_ATTEMPTS)
+        {
             return Err(LspError::InvalidRestartAttempts {
                 value: max_attempts,
-                max: MAX_RESTART_ATTEMPTS,
+                max: iteron_tunables::param_integer(
+                    "lsp.lib.max_restart_attempts",
+                    MAX_RESTART_ATTEMPTS,
+                ),
             });
         }
         validate_backoff("base", base_backoff_ms)?;
@@ -128,12 +133,21 @@ impl RestartPolicy {
 }
 
 fn validate_backoff(field: &'static str, value_ms: u64) -> Result<(), LspError> {
-    if !(MIN_RESTART_BACKOFF_MS..=MAX_RESTART_BACKOFF_MS).contains(&value_ms) {
+    if !(iteron_tunables::param_integer("lsp.lib.min_restart_backoff_ms", MIN_RESTART_BACKOFF_MS)
+        ..=iteron_tunables::param_integer("lsp.lib.max_restart_backoff_ms", MAX_RESTART_BACKOFF_MS))
+        .contains(&value_ms)
+    {
         return Err(LspError::InvalidRestartBackoff {
             field,
             value_ms,
-            min_ms: MIN_RESTART_BACKOFF_MS,
-            max_ms: MAX_RESTART_BACKOFF_MS,
+            min_ms: iteron_tunables::param_integer(
+                "lsp.lib.min_restart_backoff_ms",
+                MIN_RESTART_BACKOFF_MS,
+            ),
+            max_ms: iteron_tunables::param_integer(
+                "lsp.lib.max_restart_backoff_ms",
+                MAX_RESTART_BACKOFF_MS,
+            ),
         });
     }
     Ok(())
@@ -164,9 +178,10 @@ impl Session {
             ready_since_ms: None,
             initializing_epoch: None,
             ready_epoch: None,
-            successful_requests: HashSet::with_capacity(
-                HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize,
-            ),
+            successful_requests: HashSet::with_capacity(iteron_tunables::param_integer(
+                "lsp.lib.healthy_restart_reset_after_successes",
+                HEALTHY_RESTART_RESET_AFTER_SUCCESSES,
+            ) as usize),
             last_success_id: 0,
         }
     }
@@ -318,12 +333,25 @@ impl Session {
             return Ok(false);
         }
         self.last_success_id = id;
-        if self.successful_requests.len() < HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize {
+        if self.successful_requests.len()
+            < iteron_tunables::param_integer(
+                "lsp.lib.healthy_restart_reset_after_successes",
+                HEALTHY_RESTART_RESET_AFTER_SUCCESSES,
+            ) as usize
+        {
             self.successful_requests.insert(id);
         }
         let ready_since = self.ready_since_ms.expect("ready state has an epoch");
-        let stable = now_ms.saturating_sub(ready_since) >= HEALTHY_RESTART_RESET_AFTER_MS
-            && self.successful_requests.len() >= HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize;
+        let stable = now_ms.saturating_sub(ready_since)
+            >= iteron_tunables::param_integer(
+                "lsp.lib.healthy_restart_reset_after_ms",
+                HEALTHY_RESTART_RESET_AFTER_MS,
+            )
+            && self.successful_requests.len()
+                >= iteron_tunables::param_integer(
+                    "lsp.lib.healthy_restart_reset_after_successes",
+                    HEALTHY_RESTART_RESET_AFTER_SUCCESSES,
+                ) as usize;
         if stable && self.restarts > 0 {
             self.restarts = 0;
             return Ok(true);

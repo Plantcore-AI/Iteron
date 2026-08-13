@@ -89,7 +89,12 @@ impl Agent {
         text: &str,
         superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
-        if self.pending_steers.len() >= MAX_INBOUND_OPS_PER_POLL {
+        if self.pending_steers.len()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.max_inbound_ops_per_poll",
+                MAX_INBOUND_OPS_PER_POLL,
+            )
+        {
             return Err("the bounded session refresh queue is full");
         }
         let source_turn = TurnId(self.seq_turn);
@@ -117,7 +122,11 @@ impl Agent {
         self.registry.invalidate_pure_cache();
         let fact = strict_utf8_head(
             text,
-            MAX_STEER_BYTES.saturating_sub(MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES),
+            iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES)
+                .saturating_sub(iteron_tunables::param_integer(
+                    "cli.runtime.decision_observability.memory_notification_prose_reserve_bytes",
+                    MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES,
+                )),
         );
         let notification = match superseded_id {
             Some(old_id) => format!(
@@ -301,7 +310,10 @@ impl Agent {
             .find(|trace| trace.turn_id == turn)
             .and_then(|trace| trace.injection)
             .map(|injection| u64::from(injection.fact_count))
-            .unwrap_or(NO_RECALLED_FACTS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.decision_observability.no_recalled_facts",
+                NO_RECALLED_FACTS,
+            ));
         count = count.saturating_add(recalled);
         if count > 0 {
             self.lifecycle_event(
@@ -518,11 +530,11 @@ impl Agent {
                                         .and_then(|stream| stream.get("text"))
                                         .and_then(serde_json::Value::as_str)
                                         .map(|text| u64::try_from(text.len()).unwrap_or(u64::MAX))
-                                        .unwrap_or(NO_TOOL_OUTPUT_BYTES),
+                                        .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES)),
                                 )
                             })
                     })
-                    .unwrap_or(NO_TOOL_OUTPUT_BYTES);
+                    .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES));
                 if output_bytes > 0 {
                     self.process_lifecycle_event(
                         "tool.output_chunk",
@@ -1079,7 +1091,10 @@ impl Agent {
                 },
             );
             if self.model_context_window.is_some_and(|window| {
-                headroom.saturating_mul(CONTEXT_HIGH_WATERMARK_DIVISOR) < window
+                headroom.saturating_mul(iteron_tunables::param_integer(
+                    "cli.runtime.decision_observability.context_high_watermark_divisor",
+                    CONTEXT_HIGH_WATERMARK_DIVISOR,
+                )) < window
             }) {
                 self.lifecycle_event(
                     "context.window.high_watermark",
@@ -1228,9 +1243,12 @@ impl Agent {
         let query = memory_audit
             .map(|audit| audit.rewritten_query.as_str())
             .unwrap_or(task);
-        let rewrite_count = memory_audit
-            .map(|audit| audit.rewrite_count)
-            .unwrap_or(NO_QUERY_REWRITES);
+        let rewrite_count = memory_audit.map(|audit| audit.rewrite_count).unwrap_or(
+            iteron_tunables::param_integer(
+                "cli.runtime.decision_observability.no_query_rewrites",
+                NO_QUERY_REWRITES,
+            ),
+        );
         let parent_access_rejections = memory_audit
             .map(|audit| {
                 audit
@@ -1242,7 +1260,10 @@ impl Agent {
                     .count()
             })
             .and_then(|count| u32::try_from(count).ok())
-            .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES)
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.decision_observability.uncounted_memory_candidates",
+                UNCOUNTED_MEMORY_CANDIDATES,
+            ))
             .saturating_add(benchmark_memory_rejections);
         let mut trace = MemoryDecisionTrace::new(
             turn,
@@ -1297,7 +1318,10 @@ impl Agent {
             opened: self.memory_workspace.is_some(),
             scanned_items: memory_audit
                 .map(|audit| u32::try_from(audit.observation.candidates.len()).unwrap_or(u32::MAX))
-                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES),
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.runtime.decision_observability.uncounted_memory_candidates",
+                    UNCOUNTED_MEMORY_CANDIDATES,
+                )),
             elapsed_us,
             failure_code: None,
         });
@@ -1402,12 +1426,12 @@ impl Agent {
                 } else if audit.novelty_deduplicated.contains(&candidate.slug) {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::Duplicate
-                } else if audit
-                    .scores_ppm
-                    .get(index)
-                    .copied()
-                    .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM)
-                    <= 0
+                } else if audit.scores_ppm.get(index).copied().unwrap_or(
+                    iteron_tunables::param_integer(
+                        "cli.runtime.decision_observability.absent_candidate_score_ppm",
+                        ABSENT_CANDIDATE_SCORE_PPM,
+                    ),
+                ) <= 0
                 {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::BelowThreshold
@@ -1423,23 +1447,24 @@ impl Agent {
                     store_id: 0,
                     tier: memory_tier(candidate.trust),
                     trust: candidate.trust,
-                    bm25_term_ppm: audit
-                        .lexical_scores_ppm
-                        .get(index)
-                        .copied()
-                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
-                    bm25_length_ppm: audit
-                        .structural_scores_ppm
-                        .get(index)
-                        .copied()
-                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
-                    semantic_ppm: Some(
-                        audit
-                            .structural_scores_ppm
-                            .get(index)
-                            .copied()
-                            .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
+                    bm25_term_ppm: audit.lexical_scores_ppm.get(index).copied().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "cli.runtime.decision_observability.absent_candidate_score_ppm",
+                            ABSENT_CANDIDATE_SCORE_PPM,
+                        ),
                     ),
+                    bm25_length_ppm: audit.structural_scores_ppm.get(index).copied().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "cli.runtime.decision_observability.absent_candidate_score_ppm",
+                            ABSENT_CANDIDATE_SCORE_PPM,
+                        ),
+                    ),
+                    semantic_ppm: Some(audit.structural_scores_ppm.get(index).copied().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "cli.runtime.decision_observability.absent_candidate_score_ppm",
+                            ABSENT_CANDIDATE_SCORE_PPM,
+                        ),
+                    )),
                     recency_ppm: i64::from(
                         audit
                             .recency_multipliers_ppm
@@ -1448,17 +1473,19 @@ impl Agent {
                             .unwrap_or(iteron_ctx::SCORE_SCALE),
                     ),
                     confidence_ppm: 0,
-                    combined_ppm: audit
-                        .scores_ppm
-                        .get(index)
-                        .copied()
-                        .unwrap_or(ABSENT_CANDIDATE_SCORE_PPM),
+                    combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "cli.runtime.decision_observability.absent_candidate_score_ppm",
+                            ABSENT_CANDIDATE_SCORE_PPM,
+                        ),
+                    ),
                     threshold_ppm: 1,
-                    rank: audit
-                        .ranks
-                        .get(index)
-                        .copied()
-                        .unwrap_or(ABSENT_CANDIDATE_RANK),
+                    rank: audit.ranks.get(index).copied().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "cli.runtime.decision_observability.absent_candidate_rank",
+                            ABSENT_CANDIDATE_RANK,
+                        ),
+                    ),
                     requested_bytes: candidate_bytes,
                     requested_tokens: candidate_tokens,
                     decision,
@@ -1638,7 +1665,10 @@ impl Agent {
                     )
                 })
                 .and_then(|count| u32::try_from(count).ok())
-                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES);
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.runtime.decision_observability.uncounted_memory_candidates",
+                    UNCOUNTED_MEMORY_CANDIDATES,
+                ));
             let rejected_candidates = memory_audit
                 .map(|audit| {
                     audit
@@ -1650,7 +1680,10 @@ impl Agent {
                         .count()
                 })
                 .and_then(|count| u32::try_from(count).ok())
-                .unwrap_or(UNCOUNTED_MEMORY_CANDIDATES)
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.runtime.decision_observability.uncounted_memory_candidates",
+                    UNCOUNTED_MEMORY_CANDIDATES,
+                ))
                 .saturating_add(benchmark_memory_rejections);
             let leaked = !memory_segments.is_empty()
                 || memory_audit.is_some_and(|audit| !audit.selected.is_empty());

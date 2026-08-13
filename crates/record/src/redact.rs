@@ -525,7 +525,11 @@ const CREDENTIAL_PREFIXES: &[&str] = &[
 /// characters, so this widens that existing gap rather than opening a new one.
 fn is_correlation_identifier(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_CORRELATION_IDENTIFIER_BYTES
+        && value.len()
+            <= iteron_tunables::param_integer(
+                "record.redact.max_correlation_identifier_bytes",
+                MAX_CORRELATION_IDENTIFIER_BYTES,
+            )
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')

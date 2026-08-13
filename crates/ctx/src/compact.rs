@@ -305,8 +305,20 @@ impl Default for CompactionPolicy {
         // without context metadata must report the window as unknown rather than reverse-engineer
         // one from this value.
         CompactionPolicy {
-            trigger_tokens: DEFAULT_TRIGGER_TOKENS,
-            keep_recent: DEFAULT_KEEP_RECENT,
+            trigger_tokens: iteron_tunables::param_usize(
+                "ctx.compact.default_trigger_tokens",
+                iteron_tunables::param_integer(
+                    "ctx.compact.default_trigger_tokens",
+                    DEFAULT_TRIGGER_TOKENS,
+                ),
+            ),
+            keep_recent: iteron_tunables::param_usize(
+                "ctx.compact.default_keep_recent",
+                iteron_tunables::param_integer(
+                    "ctx.compact.default_keep_recent",
+                    DEFAULT_KEEP_RECENT,
+                ),
+            ),
             enabled: true,
             hysteresis: crate::CompactionHysteresis::default(),
             summary_topology: crate::SummaryTopology::SingleStage,

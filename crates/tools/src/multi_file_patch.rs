@@ -6,7 +6,11 @@
 
 use crate::edit::{UniqueEditError, plan_unique_edit};
 use crate::multi_file_patch_error::PatchFailure;
-use crate::multi_file_patch_input::{FilePatch, MAX_FILES, MAX_HUNKS_PER_FILE, parse_requests};
+/// The tests in this module read the compiled ceilings directly through `use super::*`, which is
+/// what makes them a check on the accessors rather than a restatement of them.
+#[cfg(test)]
+use crate::multi_file_patch_input::MAX_FILES;
+use crate::multi_file_patch_input::{FilePatch, max_files, max_hunks_per_file, parse_requests};
 use crate::write_file::{StagedWrite, atomic_replace};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
@@ -56,19 +60,21 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(
         ToolSpec {
             name: "apply_patch".into(),
-            description: "Apply an all-or-nothing unique-anchor patch across up to 16 existing \
-                          UTF-8 files. Exact matching is tried first; an exact miss may use \
-                          deterministic line-edge whitespace/EOL normalization. Every anchor must \
-                          still have one candidate in its original snapshot, and overlapping hunks \
-                          are refused before any write. Errors identify the failing file and hunk."
-                .into(),
+            description: format!(
+                "Apply an all-or-nothing unique-anchor patch across up to {} existing UTF-8 \
+                 files. Exact matching is tried first; an exact miss may use deterministic \
+                 line-edge whitespace/EOL normalization. Every anchor must still have one \
+                 candidate in its original snapshot, and overlapping hunks are refused before any \
+                 write. Errors identify the failing file and hunk.",
+                max_files()
+            ),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "files": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": MAX_FILES,
+                        "maxItems": max_files(),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -76,7 +82,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                                 "hunks": {
                                     "type": "array",
                                     "minItems": 1,
-                                    "maxItems": MAX_HUNKS_PER_FILE,
+                                    "maxItems": max_hunks_per_file(),
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -171,11 +177,18 @@ async fn plan_patch(
             .ok_or_else(|| {
                 PatchFailure::global("patch_too_large", "read", "file byte count overflow")
             })?;
-        if total_file_bytes > MAX_TOTAL_FILE_BYTES {
+        let max_total_file_bytes = iteron_tunables::param_usize(
+            "tools.multi_file_patch.max_total_file_bytes",
+            iteron_tunables::param_integer(
+                "tools.multi_file_patch.max_total_file_bytes",
+                MAX_TOTAL_FILE_BYTES,
+            ),
+        );
+        if total_file_bytes > max_total_file_bytes {
             return Err(PatchFailure::global(
                 "patch_too_large",
                 "read",
-                format!("target files exceed {MAX_TOTAL_FILE_BYTES} total bytes"),
+                format!("target files exceed {max_total_file_bytes} total bytes"),
             ));
         }
         let original_text = String::from_utf8(snapshot.bytes.clone()).map_err(|_| {
@@ -259,12 +272,14 @@ fn spans_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
 }
 
 fn render_snapshot_edits(original: &str, mut edits: Vec<SnapshotEdit>) -> Result<String, usize> {
+    let max_file_bytes =
+        iteron_tunables::param_usize("tools.multi_file_patch.max_file_bytes", MAX_FILE_BYTES);
     let mut output_len = original.len();
     for edit in &edits {
         output_len = output_len
             .checked_sub(edit.span.len())
             .and_then(|length| length.checked_add(edit.replacement.len()))
-            .filter(|&length| length <= MAX_FILE_BYTES)
+            .filter(|&length| length <= max_file_bytes)
             .ok_or(edit.hunk_index)?;
     }
     edits.sort_by_key(|edit| edit.span.start);
@@ -290,17 +305,19 @@ async fn read_bounded(
         .metadata()
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
+    let max_file_bytes =
+        iteron_tunables::param_usize("tools.multi_file_patch.max_file_bytes", MAX_FILE_BYTES);
     let mut bytes = Vec::with_capacity(64 * 1024);
-    let mut limited = file.take((MAX_FILE_BYTES + 1) as u64);
+    let mut limited = file.take((max_file_bytes + 1) as u64);
     limited
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
     stats.file_reads += 1;
-    if bytes.len() > MAX_FILE_BYTES {
+    if bytes.len() > max_file_bytes {
         return Err((
             "file_too_large",
-            format!("target exceeds {MAX_FILE_BYTES} bytes"),
+            format!("target exceeds {max_file_bytes} bytes"),
         ));
     }
     let after = limited

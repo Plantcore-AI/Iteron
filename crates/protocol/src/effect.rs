@@ -139,13 +139,22 @@ impl EffectProposal {
                  new effect must carry a correlation id, harness-scoped if there is no model call",
             );
         }
-        if self.workspace.is_empty() || self.workspace.len() > MAX_EFFECT_WORKSPACE_BYTES {
+        if self.workspace.is_empty()
+            || self.workspace.len()
+                > iteron_tunables::param_integer(
+                    "protocol.effect.max_effect_workspace_bytes",
+                    MAX_EFFECT_WORKSPACE_BYTES,
+                )
+        {
             return Err("effect workspace must be 1..=4096 bytes");
         }
         if serde_json::to_vec(&self.arguments)
             .map(|bytes| bytes.len())
             .unwrap_or(usize::MAX)
-            > MAX_EFFECT_ARGUMENTS_BYTES
+            > iteron_tunables::param_integer(
+                "protocol.effect.max_effect_arguments_bytes",
+                MAX_EFFECT_ARGUMENTS_BYTES,
+            )
         {
             return Err("effect arguments projection exceeds its declared bound");
         }

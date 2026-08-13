@@ -21,26 +21,72 @@ struct Limits {
     bytes: usize,
 }
 
-const TITLE_LIMITS: Limits = Limits {
-    chars: MAX_DETAIL_TITLE_CHARS,
-    bytes: MAX_DETAIL_TITLE_BYTES,
-};
-const ID_LIMITS: Limits = Limits {
-    chars: MAX_DETAIL_ID_CHARS,
-    bytes: MAX_DETAIL_ID_BYTES,
-};
-const LABEL_LIMITS: Limits = Limits {
-    chars: MAX_DETAIL_LABEL_CHARS,
-    bytes: MAX_DETAIL_LABEL_BYTES,
-};
-const FIELD_LIMITS: Limits = Limits {
-    chars: MAX_DETAIL_FIELD_CHARS,
-    bytes: MAX_DETAIL_FIELD_BYTES,
-};
-const ROW_LABEL_LIMITS: Limits = Limits {
-    chars: MAX_DETAIL_ROW_LABEL_CHARS,
-    bytes: MAX_DETAIL_ROW_LABEL_BYTES,
-};
+fn limits(id_prefix: &str, chars: usize, bytes: usize) -> Limits {
+    Limits {
+        chars: iteron_tunables::param_integer(&format!("{id_prefix}_chars"), chars),
+        bytes: iteron_tunables::param_integer(&format!("{id_prefix}_bytes"), bytes),
+    }
+}
+
+fn title_limits() -> Limits {
+    Limits {
+        chars: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_title_chars",
+            MAX_DETAIL_TITLE_CHARS,
+        ),
+        bytes: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_title_bytes",
+            MAX_DETAIL_TITLE_BYTES,
+        ),
+    }
+}
+
+fn id_limits() -> Limits {
+    Limits {
+        chars: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_id_chars",
+            MAX_DETAIL_ID_CHARS,
+        ),
+        bytes: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_id_bytes",
+            MAX_DETAIL_ID_BYTES,
+        ),
+    }
+}
+
+fn label_limits() -> Limits {
+    Limits {
+        chars: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_label_chars",
+            MAX_DETAIL_LABEL_CHARS,
+        ),
+        bytes: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_label_bytes",
+            MAX_DETAIL_LABEL_BYTES,
+        ),
+    }
+}
+
+fn field_limits() -> Limits {
+    limits(
+        "cli.tui.tunables_view.format.max_detail_field",
+        MAX_DETAIL_FIELD_CHARS,
+        MAX_DETAIL_FIELD_BYTES,
+    )
+}
+
+fn row_label_limits() -> Limits {
+    Limits {
+        chars: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_row_label_chars",
+            MAX_DETAIL_ROW_LABEL_CHARS,
+        ),
+        bytes: iteron_tunables::param_integer(
+            "cli.tui.tunables_view.format.max_detail_row_label_bytes",
+            MAX_DETAIL_ROW_LABEL_BYTES,
+        ),
+    }
+}
 
 /// A formatting sink that sanitizes as it receives fragments and returns `fmt::Error` at its
 /// first char/byte limit. A hostile `Display` implementation therefore stops being called at the
@@ -63,7 +109,7 @@ impl BoundedText {
     }
 
     pub(super) fn field() -> Self {
-        Self::new(FIELD_LIMITS)
+        Self::new(field_limits())
     }
 
     /// Stream one display value. `false` means the sink reached its cap and already owns the
@@ -104,15 +150,24 @@ impl BoundedText {
     fn mark_ellipsis(&mut self) {
         const ELLIPSIS: char = '…';
         while (self.chars >= self.limits.chars
-            || self.output.len().saturating_add(ELLIPSIS.len_utf8()) > self.limits.bytes)
+            || self.output.len().saturating_add(
+                iteron_tunables::param_char("cli.tui.tunables_view.format.ellipsis", ELLIPSIS)
+                    .len_utf8(),
+            ) > self.limits.bytes)
             && self.output.pop().is_some()
         {
             self.chars = self.chars.saturating_sub(1);
         }
         if self.chars < self.limits.chars
-            && self.output.len().saturating_add(ELLIPSIS.len_utf8()) <= self.limits.bytes
+            && self.output.len().saturating_add(
+                iteron_tunables::param_char("cli.tui.tunables_view.format.ellipsis", ELLIPSIS)
+                    .len_utf8(),
+            ) <= self.limits.bytes
         {
-            self.output.push(ELLIPSIS);
+            self.output.push(iteron_tunables::param_char(
+                "cli.tui.tunables_view.format.ellipsis",
+                ELLIPSIS,
+            ));
             self.chars += 1;
         }
     }
@@ -150,15 +205,15 @@ fn render(value: impl Display, limits: Limits) -> String {
 }
 
 pub(super) fn bounded_title(value: impl Display) -> String {
-    render(value, TITLE_LIMITS)
+    render(value, title_limits())
 }
 
 pub(super) fn bounded_id(value: impl Display) -> String {
-    render(value, ID_LIMITS)
+    render(value, id_limits())
 }
 
 pub(super) fn bounded_label(value: impl Display) -> String {
-    render(value, LABEL_LIMITS)
+    render(value, label_limits())
 }
 
 pub(super) fn bounded_hint(value: impl Display) -> String {
@@ -166,7 +221,7 @@ pub(super) fn bounded_hint(value: impl Display) -> String {
 }
 
 pub(super) fn bounded_field(value: impl Display) -> String {
-    render(value, FIELD_LIMITS)
+    render(value, field_limits())
 }
 
 pub(super) struct DetailNote(String);
@@ -190,7 +245,10 @@ impl DetailRow {
 }
 
 pub(super) fn row(label: impl Display, value: impl Display) -> DetailRow {
-    DetailRow(render(label, ROW_LABEL_LIMITS), render(value, FIELD_LIMITS))
+    DetailRow(
+        render(label, row_label_limits()),
+        render(value, field_limits()),
+    )
 }
 
 pub(super) fn join_strs<I, S>(values: I, separator: &str) -> String
@@ -348,7 +406,10 @@ pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
 }
 
 pub(super) fn code<T: Serialize>(value: &T) -> String {
-    let mut writer = BoundedIo::new(MAX_DETAIL_FIELD_BYTES);
+    let mut writer = BoundedIo::new(iteron_tunables::param_integer(
+        "cli.tui.tunables_view.format.max_detail_field_bytes",
+        MAX_DETAIL_FIELD_BYTES,
+    ));
     if serde_json::to_writer(&mut writer, value).is_err() || writer.truncated {
         return bounded_field("invalid");
     }
@@ -359,7 +420,10 @@ pub(super) fn code<T: Serialize>(value: &T) -> String {
 }
 
 pub(super) fn compact_json<T: Serialize>(value: &T) -> String {
-    let mut writer = BoundedIo::new(MAX_DETAIL_FIELD_BYTES);
+    let mut writer = BoundedIo::new(iteron_tunables::param_integer(
+        "cli.tui.tunables_view.format.max_detail_field_bytes",
+        MAX_DETAIL_FIELD_BYTES,
+    ));
     let result = serde_json::to_writer(&mut writer, value);
     let partial = String::from_utf8_lossy(&writer.bytes);
     let mut output = BoundedText::field();

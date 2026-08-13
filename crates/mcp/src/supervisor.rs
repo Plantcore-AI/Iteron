@@ -384,9 +384,19 @@ impl McpSupervisor {
     fn note_healthy_call(&mut self, generation: ServerGeneration) {
         self.healthy_calls = self.healthy_calls.saturating_add(1);
         let stable = self.ready_since.is_some_and(|ready_since| {
-            ready_since.elapsed() >= Duration::from_millis(HEALTHY_RETRY_RESET_AFTER_MS)
+            ready_since.elapsed()
+                >= Duration::from_millis(iteron_tunables::param_integer(
+                    "mcp.supervisor.healthy_retry_reset_after_ms",
+                    HEALTHY_RETRY_RESET_AFTER_MS,
+                ))
         });
-        if stable && self.healthy_calls >= HEALTHY_RETRY_RESET_AFTER_CALLS {
+        if stable
+            && self.healthy_calls
+                >= iteron_tunables::param_integer(
+                    "mcp.supervisor.healthy_retry_reset_after_calls",
+                    HEALTHY_RETRY_RESET_AFTER_CALLS,
+                )
+        {
             let _ = self.lifecycle.reset_retry_budget(generation);
         }
     }

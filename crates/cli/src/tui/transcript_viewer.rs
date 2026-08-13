@@ -199,11 +199,24 @@ impl Viewer {
     }
 
     pub(crate) fn scroll_down(&mut self, rows: usize) {
-        self.scroll = self.scroll.saturating_add(rows).min(MAX_DETAIL_ROWS);
+        self.scroll = self
+            .scroll
+            .saturating_add(rows)
+            .min(iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_detail_rows",
+                MAX_DETAIL_ROWS,
+            ));
     }
 
     pub(crate) fn set_notice(&mut self, notice: impl AsRef<str>) {
-        self.notice = bounded_safe(notice.as_ref(), MAX_NOTICE_BYTES).0;
+        self.notice = bounded_safe(
+            notice.as_ref(),
+            iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_notice_bytes",
+                MAX_NOTICE_BYTES,
+            ),
+        )
+        .0;
     }
 
     pub(crate) fn begin_effect(&mut self, label: &'static str) {

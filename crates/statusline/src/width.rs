@@ -43,7 +43,10 @@ pub fn truncate_to_cells(s: &str, cells: usize) -> String {
         return s.to_owned();
     }
     const ELLIPSIS: char = '…';
-    let marker = char_cells(ELLIPSIS);
+    let marker = char_cells(iteron_tunables::param_char(
+        "statusline.width.ellipsis",
+        ELLIPSIS,
+    ));
     let budget = cells.saturating_sub(marker);
 
     let mut out = String::new();
@@ -58,7 +61,10 @@ pub fn truncate_to_cells(s: &str, cells: usize) -> String {
         out.push(ch);
         used += w;
     }
-    out.push(ELLIPSIS);
+    out.push(iteron_tunables::param_char(
+        "statusline.width.ellipsis",
+        ELLIPSIS,
+    ));
     out
 }
 

@@ -57,7 +57,12 @@ impl Agent {
         subtask: &str,
         ordinal: usize,
     ) -> Result<String, String> {
-        if self.delegation_depth >= MAX_DELEGATION_DEPTH {
+        if self.delegation_depth
+            >= iteron_tunables::param_integer(
+                "cli.runtime.max_delegation_depth",
+                MAX_DELEGATION_DEPTH,
+            )
+        {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
         if let Some(reason) = self
@@ -76,7 +81,10 @@ impl Agent {
         let remaining_wall = self
             .run_time_remaining()
             .map(|remaining| remaining.as_secs().max(1))
-            .unwrap_or(DEADLINE_FREE_PARENT_REMAINING_WALL_SECS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.workflow_collect.deadline_free_parent_remaining_wall_secs",
+                DEADLINE_FREE_PARENT_REMAINING_WALL_SECS,
+            ));
         let remaining_turns = self.remaining_inference_turns();
         if remaining_turns < self.execution_policy.admission.minimum_remaining_turns
             || remaining_wall
@@ -214,7 +222,10 @@ impl Agent {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.workflow_collect.clock_before_epoch_secs",
+                CLOCK_BEFORE_EPOCH_SECS,
+            ));
         let parent_run = self.rollout.run_id().clone();
         sub.record_child_genesis_with_tunables(
             &parent_run,

@@ -16,10 +16,13 @@ where
 {
     let body = serde_json::to_string(value).map_err(|_| LspToolError::Serialization)?;
     let frame = iteron_lsp::framing::encode(&body).map_err(LspToolError::Protocol)?;
-    tokio::time::timeout(WRITE_TIMEOUT, async {
-        writer.write_all(&frame).await?;
-        writer.flush().await
-    })
+    tokio::time::timeout(
+        iteron_tunables::param_duration("tools.lsp.wire.write_timeout", WRITE_TIMEOUT),
+        async {
+            writer.write_all(&frame).await?;
+            writer.flush().await
+        },
+    )
     .await
     .map_err(|_| LspToolError::WriteTimeout)?
     .map_err(|_| LspToolError::Transport)
@@ -50,7 +53,10 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut aggregate = 0usize;
-    for _ in 0..MAX_INTERLEAVED_MESSAGES {
+    for _ in 0..iteron_tunables::param_integer(
+        "tools.lsp.wire.max_interleaved_messages",
+        MAX_INTERLEAVED_MESSAGES,
+    ) {
         let Some((mut message, wire_bytes)) = iteron_lsp::framing::read_message_with_size(reader)
             .await
             .map_err(LspToolError::Protocol)?
@@ -61,11 +67,22 @@ where
             aggregate
                 .checked_add(wire_bytes)
                 .ok_or(LspToolError::InterleavedOutputTooLarge {
-                    limit: MAX_INTERLEAVED_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "tools.lsp.wire.max_interleaved_bytes",
+                        MAX_INTERLEAVED_BYTES,
+                    ),
                 })?;
-        if aggregate > MAX_INTERLEAVED_BYTES {
+        if aggregate
+            > iteron_tunables::param_integer(
+                "tools.lsp.wire.max_interleaved_bytes",
+                MAX_INTERLEAVED_BYTES,
+            )
+        {
             return Err(LspToolError::InterleavedOutputTooLarge {
-                limit: MAX_INTERLEAVED_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "tools.lsp.wire.max_interleaved_bytes",
+                    MAX_INTERLEAVED_BYTES,
+                ),
             });
         }
 
@@ -96,7 +113,11 @@ where
 
         if let Some(method) = object.get("method").and_then(Value::as_str) {
             if method.is_empty()
-                || method.len() > MAX_METHOD_BYTES
+                || method.len()
+                    > iteron_tunables::param_integer(
+                        "tools.lsp.wire.max_method_bytes",
+                        MAX_METHOD_BYTES,
+                    )
                 || method.chars().any(char::is_control)
             {
                 return Err(LspToolError::MalformedEnvelope);
@@ -122,7 +143,10 @@ where
         return Err(LspToolError::ForeignResponse);
     }
     Err(LspToolError::TooManyInterleavedMessages {
-        limit: MAX_INTERLEAVED_MESSAGES,
+        limit: iteron_tunables::param_integer(
+            "tools.lsp.wire.max_interleaved_messages",
+            MAX_INTERLEAVED_MESSAGES,
+        ),
     })
 }
 
@@ -135,7 +159,12 @@ fn safe_server_request_result(method: &str, params: Option<&Value>) -> Option<Va
         return None;
     }
     let items = params?.get("items")?.as_array()?;
-    if items.len() > MAX_CONFIGURATION_ITEMS {
+    if items.len()
+        > iteron_tunables::param_integer(
+            "tools.lsp.wire.max_configuration_items",
+            MAX_CONFIGURATION_ITEMS,
+        )
+    {
         return None;
     }
     Some(Value::Array(vec![Value::Null; items.len()]))
@@ -157,7 +186,11 @@ fn validate_server_request_id(value: &Value) -> Result<(), LspToolError> {
         }
         Value::String(value)
             if !value.is_empty()
-                && value.len() <= MAX_SERVER_STRING_ID_BYTES
+                && value.len()
+                    <= iteron_tunables::param_integer(
+                        "tools.lsp.wire.max_server_string_id_bytes",
+                        MAX_SERVER_STRING_ID_BYTES,
+                    )
                 && !value.chars().any(char::is_control) =>
         {
             Ok(())

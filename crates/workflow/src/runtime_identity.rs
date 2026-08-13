@@ -32,9 +32,17 @@ pub fn workflow_graph_runtime_identity() -> WorkflowGraphRuntimeIdentity {
         identity_version: "iteron-workflow-graph-runtime-v1",
         spawner_port_version: crate::AGENT_SPAWNER_PORT_VERSION,
         progress_port_version: crate::PROGRESS_SINK_PORT_VERSION,
-        schema_retry_max: usize::try_from(crate::schema::RETRY_MAX)
-            .expect("schema retry ceiling fits usize"),
-        lifetime_cap: crate::LIFETIME_CAP,
+        // The effective ceilings, not the compiled ones: a profile that moves them has moved the
+        // graph semantics this digest exists to pin, so a resume across that change must refuse.
+        schema_retry_max: usize::try_from(iteron_tunables::param_u64(
+            "workflow.schema.retry_max",
+            u64::from(crate::schema::RETRY_MAX),
+        ))
+        .expect("schema retry ceiling fits usize"),
+        lifetime_cap: iteron_tunables::param_usize(
+            "workflow.bindings.lifetime_cap",
+            crate::LIFETIME_CAP,
+        ),
         dag_limits: crate::task_dag::Limits::default(),
     })
     .expect("fixed workflow runtime descriptor is serializable");

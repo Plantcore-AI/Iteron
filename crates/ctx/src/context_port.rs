@@ -1,7 +1,6 @@
 //! Bounded materialization of a pure context plan.
 
 use crate::context_materialization::AuditedGrantBuilder;
-use crate::context_strategy::MAX_CONTEXT_OUTLINE_DEPTH;
 use crate::memory::{
     FileMemory, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy, MemoryStrategy,
 };
@@ -152,7 +151,12 @@ impl ContextPort for DefaultContextPort {
         plan.request
             .validate()
             .map_err(|reason| ContextPortError(reason.into()))?;
-        if input.transcript.len() > MAX_TRANSCRIPT_VALUES {
+        if input.transcript.len()
+            > iteron_tunables::param_integer(
+                "ctx.context_port.max_transcript_values",
+                MAX_TRANSCRIPT_VALUES,
+            )
+        {
             return Err(ContextPortError(format!(
                 "context transcript exceeds {MAX_TRANSCRIPT_VALUES} gathered values"
             )));
@@ -170,9 +174,10 @@ impl ContextPort for DefaultContextPort {
         for selector in &plan.request.selectors {
             match selector {
                 ContextSelector::RepoOutline { root, depth } => {
-                    if *depth > MAX_CONTEXT_OUTLINE_DEPTH {
+                    let max_depth = crate::context_strategy::max_context_outline_depth();
+                    if *depth > max_depth {
                         return Err(ContextPortError(format!(
-                            "context outline depth exceeds {MAX_CONTEXT_OUTLINE_DEPTH}"
+                            "context outline depth exceeds {max_depth}"
                         )));
                     }
                     let selected = confined_root(&workspace, root)?;

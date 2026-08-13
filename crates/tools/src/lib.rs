@@ -354,7 +354,10 @@ impl Registry {
     }
 
     /// Register a tool, checking the type rules (ADR-007 R16).
-    pub fn register(&mut self, tool: Tool) -> Result<(), ToolError> {
+    pub fn register(&mut self, mut tool: Tool) -> Result<(), ToolError> {
+        tool.spec.description =
+            iteron_tunables::prompt_artifact("prompt/tool_description@v1", &tool.spec.description)
+                .to_owned();
         let s = &tool.spec;
         // The load-bearing invariant: purity licenses early dispatch, so a Pure tool that can
         // egress or execute code is a contradiction we refuse at registration.
@@ -931,11 +934,12 @@ impl Registry {
                     // `Some(0)` is intentional for a typed pre-dispatch MCP rejection: there is
                     // no dispatch->terminal interval, and the ordinary registry-wide fallback
                     // would incorrectly include local validation/serialization time.
-                    dispatch_to_terminal_ms: Some(
-                        clock
-                            .elapsed_to_terminal_ms()
-                            .unwrap_or(MCP_PRE_DISPATCH_TERMINAL_MS),
-                    ),
+                    dispatch_to_terminal_ms: Some(clock.elapsed_to_terminal_ms().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "tools.lib.mcp_pre_dispatch_terminal_ms",
+                            MCP_PRE_DISPATCH_TERMINAL_MS,
+                        ),
+                    )),
                 }
             })
         };

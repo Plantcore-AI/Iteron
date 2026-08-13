@@ -606,7 +606,12 @@ pub fn parse_file_mentions(input: &str) -> Result<Vec<FileMention>, FileInputErr
         let Some(close) = inner
             .as_bytes()
             .iter()
-            .take(MAX_PATH_INPUT_BYTES + 1)
+            .take(
+                iteron_tunables::param_integer(
+                    "cli.file_input.max_path_input_bytes",
+                    MAX_PATH_INPUT_BYTES,
+                ) + 1,
+            )
             .position(|byte| *byte == b')')
         else {
             return Err(FileInputError::unnamed(
@@ -655,7 +660,11 @@ pub fn parse_dropped_file_path(workspace: &Path, pasted: &str) -> Option<PathBuf
         })
         .unwrap_or(trimmed);
     if unquoted.is_empty()
-        || unquoted.len() > MAX_PATH_INPUT_BYTES
+        || unquoted.len()
+            > iteron_tunables::param_integer(
+                "cli.file_input.max_path_input_bytes",
+                MAX_PATH_INPUT_BYTES,
+            )
         || unquoted.contains("://")
         || unquoted.chars().any(char::is_control)
     {
@@ -696,7 +705,14 @@ pub fn render_attached_files(text: &str, files: &[FileContent]) -> String {
         text.len()
             + files
                 .iter()
-                .map(|file| file.path.len() + file.text.len() + RENDER_FRAMING_BYTES)
+                .map(|file| {
+                    file.path.len()
+                        + file.text.len()
+                        + iteron_tunables::param_integer(
+                            "cli.file_input.render_framing_bytes",
+                            RENDER_FRAMING_BYTES,
+                        )
+                })
                 .sum::<usize>(),
     );
     for file in files {

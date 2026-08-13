@@ -70,7 +70,13 @@ pub(super) async fn connect(
     let mut client = McpClient {
         process: Some(process),
         stdin: Mutex::new(stdin),
-        stdout: Mutex::new(BufReader::with_capacity(READ_BUFFER_BYTES, stdout)),
+        stdout: Mutex::new(BufReader::with_capacity(
+            iteron_tunables::param_integer(
+                "mcp.client.managed_connect.read_buffer_bytes",
+                READ_BUFFER_BYTES,
+            ),
+            stdout,
+        )),
         calls: Mutex::new(()),
         next_id: std::sync::atomic::AtomicU64::new(1),
         request_timeout,

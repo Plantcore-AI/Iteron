@@ -84,7 +84,10 @@ fn safe_line_opt(text: Option<String>, max: usize) -> Option<String> {
 /// read straight out of the script's `export const meta`, so they are as untrusted as anything
 /// `ui_safe_progress` handles and get the identical treatment.
 pub fn ui_safe_label(text: &str) -> String {
-    safe_line(text, UI_LABEL_MAX)
+    safe_line(
+        text,
+        iteron_tunables::param_integer("cli.workflow.projection.ui_label_max", UI_LABEL_MAX),
+    )
 }
 
 /// Project one engine [`ProgressEvent`] onto the form the interactive TUI may retain.
@@ -102,7 +105,13 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
     match event {
         ProgressEvent::Phase { index, title } => ProgressEvent::Phase {
             index,
-            title: safe_line(&title, UI_LABEL_MAX),
+            title: safe_line(
+                &title,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
         },
         ProgressEvent::Log { message } => ProgressEvent::Log {
             message: safe_line(&message, PREVIEW_MAX),
@@ -114,9 +123,27 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
             model,
         } => ProgressEvent::AgentQueued {
             index,
-            label: safe_line(&label, UI_LABEL_MAX),
-            phase: safe_line_opt(phase, UI_LABEL_MAX),
-            model: safe_line_opt(model, UI_LABEL_MAX),
+            label: safe_line(
+                &label,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
+            phase: safe_line_opt(
+                phase,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
+            model: safe_line_opt(
+                model,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
         },
         ProgressEvent::AgentStarted {
             index,
@@ -125,9 +152,27 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
             model,
         } => ProgressEvent::AgentStarted {
             index,
-            label: safe_line(&label, UI_LABEL_MAX),
-            phase: safe_line_opt(phase, UI_LABEL_MAX),
-            model: safe_line_opt(model, UI_LABEL_MAX),
+            label: safe_line(
+                &label,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
+            phase: safe_line_opt(
+                phase,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
+            model: safe_line_opt(
+                model,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
         },
         ProgressEvent::AgentActivity {
             index,
@@ -152,7 +197,13 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
             error,
         } => ProgressEvent::AgentFinished {
             index,
-            label: safe_line(&label, UI_LABEL_MAX),
+            label: safe_line(
+                &label,
+                iteron_tunables::param_integer(
+                    "cli.workflow.projection.ui_label_max",
+                    UI_LABEL_MAX,
+                ),
+            ),
             state,
             tokens,
             tool_calls,

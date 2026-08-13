@@ -18,7 +18,8 @@ fn load_skill(id: String, name: &str, root: &Path, operator_home: Option<&Path>)
             let trust = skill.trust;
             ToolResult {
                 tool_use_id: id,
-                content: skill.framed(),
+                content: iteron_tunables::prompt_artifact("prompt/skill@v1", &skill.framed())
+                    .to_owned(),
                 // A skill below the user tier taints the turn (never elevate above Workspace).
                 trust: if trust == Trust::Trusted {
                     Trust::Workspace

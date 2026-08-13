@@ -238,7 +238,15 @@ pub fn subagent_budget(
     let child_turns = remaining_turns
         .saturating_sub(writer_reserve)
         .min(ceiling.max_turns);
-    if child_turns < MIN_SUBAGENT_TURNS
+    let min_subagent_turns = u32::try_from(iteron_tunables::param_i128(
+        "agents.def.min_subagent_turns",
+        iteron_tunables::param_integer("agents.def.min_subagent_turns", MIN_SUBAGENT_TURNS) as i128,
+    ))
+    .unwrap_or(iteron_tunables::param_integer(
+        "agents.def.min_subagent_turns",
+        MIN_SUBAGENT_TURNS,
+    ));
+    if child_turns < min_subagent_turns
         || remaining_wall_secs < 3
         || remaining_tokens.is_some_and(|tokens| tokens < 2)
     {
@@ -265,7 +273,11 @@ impl AgentDef {
                 confined Git observations, memory, and skills; returns a concise summary with \
                 file:line references. Cannot edit files or run code."
                     .into(),
-            system: SUBAGENT_SYSTEM.into(),
+            system: iteron_tunables::prompt_artifact(
+                "prompt/subagent@v1",
+                iteron_tunables::param_str("agents.def.subagent_system", SUBAGENT_SYSTEM),
+            )
+            .into(),
             tools: ToolFilter::All,
             model: None,
             budget: subagent_budget_ceiling(),
@@ -280,7 +292,14 @@ impl AgentDef {
         AgentDef {
             name: ULTRACODE_PLANNER_NAME.into(),
             description: "Internal one-turn planner for the built-in Ultracode workflow.".into(),
-            system: ULTRACODE_PLANNER_SYSTEM.into(),
+            system: iteron_tunables::prompt_artifact(
+                "prompt/planner@v1",
+                iteron_tunables::param_str(
+                    "agents.def.ultracode_planner_system",
+                    ULTRACODE_PLANNER_SYSTEM,
+                ),
+            )
+            .into(),
             tools: ToolFilter::Allow(Vec::new()),
             model: None,
             budget: Budget {
@@ -307,7 +326,11 @@ impl AgentDef {
             // `ToolFilter` remains the discovered-agent read-only language. The spawner admits the
             // exact fixed writer vocabulary only after this built-in digest matches.
             tools: ToolFilter::All,
-            system: ISOLATED_WRITER_SYSTEM.into(),
+            system: iteron_tunables::param_str(
+                "agents.def.isolated_writer_system",
+                ISOLATED_WRITER_SYSTEM,
+            )
+            .into(),
             model: None,
             budget: subagent_budget_ceiling(),
             trust: Trust::Trusted,
@@ -357,13 +380,24 @@ impl AgentDef {
     /// Refuse malformed programmatic definitions at the execution seam as well as at discovery.
     pub fn validate(&self) -> Result<(), String> {
         if !valid_agent_name(&self.name) {
+            let max_name_bytes = iteron_tunables::param_usize(
+                "agents.def.max_agent_name_bytes",
+                MAX_AGENT_NAME_BYTES,
+            );
             return Err(format!(
-                "agent name must be 1..={MAX_AGENT_NAME_BYTES} ASCII bytes from [A-Za-z0-9_.-]"
+                "agent name must be 1..={max_name_bytes} ASCII bytes from [A-Za-z0-9_.-]"
             ));
         }
-        if self.description.len() > MAX_AGENT_DESCRIPTION_BYTES {
+        let max_description_bytes = iteron_tunables::param_usize(
+            "agents.def.max_agent_description_bytes",
+            iteron_tunables::param_integer(
+                "agents.def.max_agent_description_bytes",
+                MAX_AGENT_DESCRIPTION_BYTES,
+            ),
+        );
+        if self.description.len() > max_description_bytes {
             return Err(format!(
-                "agent description exceeds {MAX_AGENT_DESCRIPTION_BYTES} bytes"
+                "agent description exceeds {max_description_bytes} bytes"
             ));
         }
         if self
@@ -373,9 +407,16 @@ impl AgentDef {
         {
             return Err("agent description must be control-free".into());
         }
-        if self.system.trim().is_empty() || self.system.len() > MAX_AGENT_SYSTEM_BYTES {
+        let max_system_bytes = iteron_tunables::param_usize(
+            "agents.def.max_agent_system_bytes",
+            iteron_tunables::param_integer(
+                "agents.def.max_agent_system_bytes",
+                MAX_AGENT_SYSTEM_BYTES,
+            ),
+        );
+        if self.system.trim().is_empty() || self.system.len() > max_system_bytes {
             return Err(format!(
-                "agent system prompt must be non-blank and at most {MAX_AGENT_SYSTEM_BYTES} bytes"
+                "agent system prompt must be non-blank and at most {max_system_bytes} bytes"
             ));
         }
         if self
@@ -389,16 +430,23 @@ impl AgentDef {
             ToolFilter::All => &[][..],
             ToolFilter::Allow(names) | ToolFilter::Deny(names) => names.as_slice(),
         };
-        if tool_names.len() > MAX_AGENT_TOOL_NAMES {
-            return Err(format!(
-                "agent tool policy exceeds {MAX_AGENT_TOOL_NAMES} names"
-            ));
+        let max_tool_names =
+            iteron_tunables::param_usize("agents.def.max_agent_tool_names", MAX_AGENT_TOOL_NAMES);
+        if tool_names.len() > max_tool_names {
+            return Err(format!("agent tool policy exceeds {max_tool_names} names"));
         }
+        let max_tool_name_bytes = iteron_tunables::param_usize(
+            "agents.def.max_agent_tool_name_bytes",
+            iteron_tunables::param_integer(
+                "agents.def.max_agent_tool_name_bytes",
+                MAX_AGENT_TOOL_NAME_BYTES,
+            ),
+        );
         let mut canonical_tool_names = std::collections::BTreeSet::new();
         for name in tool_names {
             let canonical = name.to_ascii_lowercase();
             if name.is_empty()
-                || name.len() > MAX_AGENT_TOOL_NAME_BYTES
+                || name.len() > max_tool_name_bytes
                 || name.chars().any(char::is_control)
                 || !canonical_tool_names.insert(canonical)
             {
@@ -407,13 +455,15 @@ impl AgentDef {
                 );
             }
         }
+        let max_model_bytes =
+            iteron_tunables::param_usize("agents.def.max_agent_model_bytes", MAX_AGENT_MODEL_BYTES);
         if let Some(model) = &self.model
             && (model.trim().is_empty()
-                || model.len() > MAX_AGENT_MODEL_BYTES
+                || model.len() > max_model_bytes
                 || model.chars().any(char::is_control))
         {
             return Err(format!(
-                "agent model must be non-blank, control-free, and at most {MAX_AGENT_MODEL_BYTES} bytes"
+                "agent model must be non-blank, control-free, and at most {max_model_bytes} bytes"
             ));
         }
         self.budget
@@ -432,7 +482,8 @@ impl AgentDef {
 
 fn valid_agent_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_AGENT_NAME_BYTES
+        && name.len()
+            <= iteron_tunables::param_usize("agents.def.max_agent_name_bytes", MAX_AGENT_NAME_BYTES)
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))

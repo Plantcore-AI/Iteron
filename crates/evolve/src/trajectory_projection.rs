@@ -58,9 +58,17 @@ pub struct RecordedRunFixture {
 
 impl RecordedRunFixture {
     pub fn from_json(bytes: &[u8]) -> Result<Self, RecordedRunProjectorError> {
-        if bytes.len() > MAX_RECORDED_RUN_FIXTURE_JSON_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.trajectory_projection.max_recorded_run_fixture_json_bytes",
+                MAX_RECORDED_RUN_FIXTURE_JSON_BYTES,
+            )
+        {
             return Err(RecordedRunProjectorError::FixtureTooLarge {
-                max: MAX_RECORDED_RUN_FIXTURE_JSON_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.trajectory_projection.max_recorded_run_fixture_json_bytes",
+                    MAX_RECORDED_RUN_FIXTURE_JSON_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }
@@ -231,9 +239,17 @@ impl RecordedRunProjector {
         training_policy: TrainingAdmissionPolicy,
     ) -> Result<Self, RecordedRunProjectorError> {
         training_policy.validate()?;
-        if fixtures.len() > MAX_RECORDED_RUN_FIXTURES {
+        if fixtures.len()
+            > iteron_tunables::param_integer(
+                "evolve.trajectory_projection.max_recorded_run_fixtures",
+                MAX_RECORDED_RUN_FIXTURES,
+            )
+        {
             return Err(RecordedRunProjectorError::FixtureLimit {
-                max: MAX_RECORDED_RUN_FIXTURES,
+                max: iteron_tunables::param_integer(
+                    "evolve.trajectory_projection.max_recorded_run_fixtures",
+                    MAX_RECORDED_RUN_FIXTURES,
+                ),
                 actual: fixtures.len(),
             });
         }

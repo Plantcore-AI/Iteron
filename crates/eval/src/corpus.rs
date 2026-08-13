@@ -146,13 +146,18 @@ impl CorpusManifest {
             source,
         })?;
         let mut bytes = Vec::new();
-        file.take(MAX_MANIFEST_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|source| CorpusError::Read {
-                path: path.display().to_string(),
-                source,
-            })?;
-        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        file.take(
+            iteron_tunables::param_integer("eval.corpus.max_manifest_bytes", MAX_MANIFEST_BYTES)
+                + 1,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|source| CorpusError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if bytes.len() as u64
+            > iteron_tunables::param_integer("eval.corpus.max_manifest_bytes", MAX_MANIFEST_BYTES)
+        {
             return Err(CorpusError::TooLarge);
         }
         let probe: SchemaProbe = serde_json::from_slice(&bytes).map_err(CorpusError::Json)?;
@@ -180,7 +185,9 @@ impl CorpusManifest {
         if self.corpus_version.trim().is_empty() {
             return Err(CorpusError::EmptyVersion);
         }
-        if self.tasks.is_empty() || self.tasks.len() > MAX_TASKS {
+        if self.tasks.is_empty()
+            || self.tasks.len() > iteron_tunables::param_integer("eval.corpus.max_tasks", MAX_TASKS)
+        {
             return Err(CorpusError::TaskCount);
         }
 
@@ -374,7 +381,10 @@ fn validate_task(task: &CorpusTask) -> Result<(), CorpusError> {
             "must not overlap FAIL_TO_PASS or contain duplicates",
         ));
     }
-    if task.test_cmd.is_empty() || task.test_cmd.len() > MAX_TEST_COMMANDS {
+    if task.test_cmd.is_empty()
+        || task.test_cmd.len()
+            > iteron_tunables::param_integer("eval.corpus.max_test_commands", MAX_TEST_COMMANDS)
+    {
         return Err(invalid(
             "test_cmd",
             &format!("must contain 1..={MAX_TEST_COMMANDS} language commands"),
@@ -413,7 +423,10 @@ fn validate_test_set(
         field,
         reason: reason.to_owned(),
     };
-    if (required && tests.is_empty()) || tests.len() > MAX_TESTS_PER_SET {
+    if (required && tests.is_empty())
+        || tests.len()
+            > iteron_tunables::param_integer("eval.corpus.max_tests_per_set", MAX_TESTS_PER_SET)
+    {
         return Err(invalid(&format!(
             "must contain {}..={MAX_TESTS_PER_SET} tests",
             usize::from(required)

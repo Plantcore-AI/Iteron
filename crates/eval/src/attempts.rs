@@ -116,7 +116,9 @@ impl AttemptLedger {
                 reason: "ledger must be a regular non-symlink file".into(),
             });
         }
-        if metadata.len() > MAX_LEDGER_BYTES {
+        if metadata.len()
+            > iteron_tunables::param_integer("eval.attempts.max_ledger_bytes", MAX_LEDGER_BYTES)
+        {
             return Err(AttemptLedgerError::TooLarge);
         }
         let reader =
@@ -129,7 +131,9 @@ impl AttemptLedger {
             if line.is_empty() {
                 continue;
             }
-            if line.len() > MAX_RECORD_BYTES {
+            if line.len()
+                > iteron_tunables::param_integer("eval.attempts.max_record_bytes", MAX_RECORD_BYTES)
+            {
                 return Err(AttemptLedgerError::Corrupt(next_sequence));
             }
             let record: LedgerRecord = serde_json::from_slice(&line)
@@ -176,7 +180,9 @@ impl AttemptLedger {
         };
         let bytes = serde_json::to_vec(&record)
             .map_err(|error| AttemptLedgerError::Json(error.to_string()))?;
-        if bytes.len() > MAX_RECORD_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer("eval.attempts.max_record_bytes", MAX_RECORD_BYTES)
+        {
             return Err(AttemptLedgerError::TooLarge);
         }
         let projected = self
@@ -185,7 +191,9 @@ impl AttemptLedger {
             .map_err(|error| io(&self.path, error))?
             .len()
             .saturating_add(bytes.len() as u64 + 1);
-        if projected > MAX_LEDGER_BYTES {
+        if projected
+            > iteron_tunables::param_integer("eval.attempts.max_ledger_bytes", MAX_LEDGER_BYTES)
+        {
             return Err(AttemptLedgerError::TooLarge);
         }
         self.file
@@ -217,7 +225,11 @@ fn apply_phase(
 ) -> Result<(), AttemptLedgerError> {
     let key = event.key().clone();
     if key.attempt == 0
-        || key.attempt > MAX_PHYSICAL_ATTEMPTS
+        || key.attempt
+            > iteron_tunables::param_integer(
+                "eval.attempts.max_physical_attempts",
+                MAX_PHYSICAL_ATTEMPTS,
+            )
         || key.task.is_empty()
         || key.config.is_empty()
         || key.task.len() > 512

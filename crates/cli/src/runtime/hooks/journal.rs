@@ -122,7 +122,9 @@ fn append(
     outcome: Option<&'static str>,
 ) -> Result<(), String> {
     let sequence = inner.next_sequence;
-    if sequence >= MAX_ENTRIES {
+    if sequence
+        >= iteron_tunables::param_integer("cli.runtime.hooks.journal.max_entries", MAX_ENTRIES)
+    {
         return Err("hook journal reached its fixed entry ceiling".into());
     }
     let body = HashBody {
@@ -218,7 +220,9 @@ fn replay(path: &Path) -> Result<(u64, String, u64), String> {
             .checked_add(1)
             .ok_or_else(|| "hook journal sequence exhausted".to_string())?;
     }
-    if expected_sequence > MAX_ENTRIES {
+    if expected_sequence
+        > iteron_tunables::param_integer("cli.runtime.hooks.journal.max_entries", MAX_ENTRIES)
+    {
         return Err("hook journal exceeds its fixed entry ceiling".into());
     }
     Ok((

@@ -28,11 +28,21 @@ impl FailedActionCache {
 
     pub(crate) fn insert(&mut self, signature: String, error: String) -> Option<String> {
         let key = digest(&signature);
-        let error = bounded_tail(&error, MAX_PRIOR_ERROR_BYTES);
+        let error = bounded_tail(
+            &error,
+            iteron_tunables::param_integer(
+                "cli.runtime.failed_action_cache.max_prior_error_bytes",
+                MAX_PRIOR_ERROR_BYTES,
+            ),
+        );
         if let Some(existing) = self.entries.get_mut(&key) {
             return Some(std::mem::replace(existing, error));
         }
-        if self.entries.len() == MAX_IDENTITIES
+        if self.entries.len()
+            == iteron_tunables::param_integer(
+                "cli.runtime.failed_action_cache.max_identities",
+                MAX_IDENTITIES,
+            )
             && let Some(oldest) = self.order.pop_front()
         {
             self.entries.remove(&oldest);
@@ -62,7 +72,10 @@ impl FailedActionCache {
                 (
                     "max_identities".to_owned(),
                     iteron_tunables::ResolutionValue::Integer {
-                        value: MAX_IDENTITIES as i64,
+                        value: iteron_tunables::param_integer(
+                            "cli.runtime.failed_action_cache.max_identities",
+                            MAX_IDENTITIES,
+                        ) as i64,
                     },
                 ),
                 (

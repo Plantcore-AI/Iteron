@@ -357,8 +357,16 @@ fn result_preview_line(
         return None;
     }
     let preview = agent.result_preview.as_deref()?;
-    let budget = width.saturating_sub(PREVIEW_STEM_COLS);
-    if budget < PREVIEW_MIN_COLS {
+    let budget = width.saturating_sub(iteron_tunables::param_integer(
+        "cli.block.workflow_run.preview_stem_cols",
+        PREVIEW_STEM_COLS,
+    ));
+    if budget
+        < iteron_tunables::param_integer(
+            "cli.block.workflow_run.preview_min_cols",
+            PREVIEW_MIN_COLS,
+        )
+    {
         return None;
     }
     // Already sanitized at ingest; this only fits it to the columns actually available, so a 400-char
@@ -432,10 +440,16 @@ fn agent_row_lines(
     let hidden = if verbose {
         0
     } else {
-        visible.len().saturating_sub(MAX_LIVE_ROWS)
+        visible.len().saturating_sub(iteron_tunables::param_integer(
+            "cli.block.workflow_run.max_live_rows",
+            MAX_LIVE_ROWS,
+        ))
     };
     if hidden > 0 {
-        visible.truncate(MAX_LIVE_ROWS);
+        visible.truncate(iteron_tunables::param_integer(
+            "cli.block.workflow_run.max_live_rows",
+            MAX_LIVE_ROWS,
+        ));
     }
     // Branch glyph, state glyph and the trailing meta all take columns before the label does.
     let label_budget = width.saturating_sub(28).max(24);

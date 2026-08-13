@@ -32,7 +32,11 @@ impl AppServerQueuePolicy {
         cosmetic_overflow: CosmeticOverflow,
         authoritative_overflow: AuthoritativeOverflow,
     ) -> Result<Self, &'static str> {
-        if submission_entries <= super::SQ_PRIORITY_CAPACITY
+        if submission_entries
+            <= iteron_tunables::param_integer(
+                "cli.app_server.sq_priority_capacity",
+                super::SQ_PRIORITY_CAPACITY,
+            )
             || submission_entries > 65_536
             || submission_bytes == 0
             || submission_bytes > 268_435_456
@@ -53,9 +57,9 @@ impl AppServerQueuePolicy {
 
     pub(crate) fn owner() -> Self {
         Self::new(
-            super::SQ_CAPACITY,
-            super::SQ_BYTE_CAPACITY,
-            super::EQ_CAPACITY,
+            iteron_tunables::param_integer("cli.app_server.sq_capacity", super::SQ_CAPACITY),
+            super::sq_byte_capacity(),
+            iteron_tunables::param_integer("cli.app_server.eq_capacity", super::EQ_CAPACITY),
             CosmeticOverflow::Coalesce,
             AuthoritativeOverflow::Wait,
         )
@@ -74,12 +78,19 @@ impl AppServerQueuePolicy {
         self.event_entries
     }
 
-    pub(crate) const fn data_entries(self) -> usize {
-        self.submission_entries - super::SQ_PRIORITY_CAPACITY
+    pub(crate) fn data_entries(self) -> usize {
+        self.submission_entries
+            - iteron_tunables::param_integer(
+                "cli.app_server.sq_priority_capacity",
+                super::SQ_PRIORITY_CAPACITY,
+            )
     }
 
-    pub(crate) const fn priority_entries(self) -> usize {
-        super::SQ_PRIORITY_CAPACITY
+    pub(crate) fn priority_entries(self) -> usize {
+        iteron_tunables::param_integer(
+            "cli.app_server.sq_priority_capacity",
+            super::SQ_PRIORITY_CAPACITY,
+        )
     }
 
     pub(crate) const fn cosmetic_overflow(self) -> CosmeticOverflow {

@@ -763,14 +763,26 @@ impl Agent {
             let _ = self.emit_durable(
                 turn,
                 EventKind::Thinking {
-                    delta: strict_utf8_head(thinking, INTERRUPTED_STREAM_MAX_BYTES),
+                    delta: strict_utf8_head(
+                        thinking,
+                        iteron_tunables::param_integer(
+                            "cli.runtime.interrupted_stream_max_bytes",
+                            INTERRUPTED_STREAM_MAX_BYTES,
+                        ),
+                    ),
                 },
             );
         }
         if text.is_empty() {
             return;
         }
-        let delta = strict_utf8_head(text, INTERRUPTED_STREAM_MAX_BYTES);
+        let delta = strict_utf8_head(
+            text,
+            iteron_tunables::param_integer(
+                "cli.runtime.interrupted_stream_max_bytes",
+                INTERRUPTED_STREAM_MAX_BYTES,
+            ),
+        );
         let _ = self.emit_durable(
             turn,
             EventKind::Text {

@@ -83,7 +83,14 @@ fn deserialize_job_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_nonempty(deserializer, "job_id", MAX_JOB_ID_BYTES)
+    deserialize_bounded_nonempty(
+        deserializer,
+        "job_id",
+        iteron_tunables::param_integer(
+            "cli.tui.headless.control.max_job_id_bytes",
+            MAX_JOB_ID_BYTES,
+        ),
+    )
 }
 
 fn deserialize_bounded_nonempty<'de, D>(
@@ -111,7 +118,12 @@ where
     D: Deserializer<'de>,
 {
     let input = String::deserialize(deserializer)?;
-    if input.len() > MAX_JOB_INPUT_BYTES {
+    if input.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.headless.control.max_job_input_bytes",
+            MAX_JOB_INPUT_BYTES,
+        )
+    {
         return Err(de::Error::custom(format_args!(
             "job input exceeds {MAX_JOB_INPUT_BYTES} bytes"
         )));

@@ -68,22 +68,50 @@ fn bounded_output_dimensions(
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
     if width == 0
         || height == 0
-        || width > HEIC_SOURCE_MAX_DIMENSION
-        || height > HEIC_SOURCE_MAX_DIMENSION
-        || pixels > HEIC_SOURCE_MAX_PIXELS
+        || width
+            > iteron_tunables::param_integer(
+                "cli.image_input.heic.heic_source_max_dimension",
+                HEIC_SOURCE_MAX_DIMENSION,
+            )
+        || height
+            > iteron_tunables::param_integer(
+                "cli.image_input.heic.heic_source_max_dimension",
+                HEIC_SOURCE_MAX_DIMENSION,
+            )
+        || pixels
+            > iteron_tunables::param_integer(
+                "cli.image_input.heic.heic_source_max_pixels",
+                HEIC_SOURCE_MAX_PIXELS,
+            )
     {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
-    if width <= super::decode::MAX_IMAGE_DIMENSION
-        && height <= super::decode::MAX_IMAGE_DIMENSION
+    if width
+        <= iteron_tunables::param_integer(
+            "cli.image_input.decode.max_image_dimension",
+            super::decode::MAX_IMAGE_DIMENSION,
+        )
+        && height
+            <= iteron_tunables::param_integer(
+                "cli.image_input.decode.max_image_dimension",
+                super::decode::MAX_IMAGE_DIMENSION,
+            )
         && pixels <= super::decode::MAX_IMAGE_PIXELS
     {
         return Ok(None);
     }
 
     let pixel_scale = (super::decode::MAX_IMAGE_PIXELS as f64 / pixels as f64).sqrt();
-    let width_scale = super::decode::MAX_IMAGE_DIMENSION as f64 / f64::from(width);
-    let height_scale = super::decode::MAX_IMAGE_DIMENSION as f64 / f64::from(height);
+    let width_scale = iteron_tunables::param_integer(
+        "cli.image_input.decode.max_image_dimension",
+        super::decode::MAX_IMAGE_DIMENSION,
+    ) as f64
+        / f64::from(width);
+    let height_scale = iteron_tunables::param_integer(
+        "cli.image_input.decode.max_image_dimension",
+        super::decode::MAX_IMAGE_DIMENSION,
+    ) as f64
+        / f64::from(height);
     let scale = pixel_scale.min(width_scale).min(height_scale);
     let mut target_width = (f64::from(width) * scale).floor().max(1.0) as u32;
     let mut target_height = (f64::from(height) * scale).floor().max(1.0) as u32;
@@ -182,7 +210,10 @@ mod platform {
         temp: &Path,
         capture_stdout: bool,
     ) -> Result<Vec<u8>, ImageInputErrorKind> {
-        let mut command = Command::new(SIPS);
+        let mut command = Command::new(iteron_tunables::param_str(
+            "cli.image_input.heic.sips",
+            SIPS,
+        ));
         command
             .args(args)
             .env_clear()
@@ -210,17 +241,31 @@ mod platform {
             .stdout
             .take()
             .ok_or(ImageInputErrorKind::HeicConversionFailed)?
-            .take(MAX_METADATA_BYTES + 1)
+            .take(
+                iteron_tunables::param_integer(
+                    "cli.image_input.heic.max_metadata_bytes",
+                    MAX_METADATA_BYTES,
+                ) + 1,
+            )
             .read_to_end(&mut output)
             .map_err(|_| ImageInputErrorKind::HeicConversionFailed)?;
-        if output.len() as u64 > MAX_METADATA_BYTES {
+        if output.len() as u64
+            > iteron_tunables::param_integer(
+                "cli.image_input.heic.max_metadata_bytes",
+                MAX_METADATA_BYTES,
+            )
+        {
             return Err(ImageInputErrorKind::HeicConversionFailed);
         }
         Ok(output)
     }
 
     fn wait_bounded(child: &mut Child) -> Result<ExitStatus, ImageInputErrorKind> {
-        let deadline = Instant::now() + CONVERSION_TIMEOUT;
+        let deadline = Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.image_input.heic.conversion_timeout",
+                CONVERSION_TIMEOUT,
+            );
         loop {
             if let Some(status) = child
                 .try_wait()
@@ -233,7 +278,10 @@ mod platform {
                 let _ = child.wait();
                 return Err(ImageInputErrorKind::HeicConversionTimedOut);
             }
-            std::thread::sleep(CONVERSION_POLL_INTERVAL);
+            std::thread::sleep(iteron_tunables::param_duration(
+                "cli.image_input.heic.conversion_poll_interval",
+                CONVERSION_POLL_INTERVAL,
+            ));
         }
     }
 

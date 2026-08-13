@@ -1,10 +1,8 @@
 name: docs
 
 on:
-  # The strict docs build is still a required check, but pull requests no longer build it here:
-  # `release-tools/local_gate.sh linux` runs `mkdocs build --strict --clean` against the same
-  # hash-locked `requirements-docs.lock` and publishes the `docs / strict-build` context itself.
-  # The main-branch build and Pages deployment run through the repository-scoped DGX runner.
+  # Pull requests build docs through the change-aware `ci.yml` entry workflow. This workflow is
+  # only the trusted-main Pages build/deployment path, on the same repository-scoped DGX runner.
   # Pages publication still uses GitHub's short-lived GITHUB_TOKEN and OIDC deployment identity.
   push:
     branches: [main]

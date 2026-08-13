@@ -359,7 +359,13 @@ fn toolchain_home_mount_plan(home: Option<&Path>) -> (Vec<PathBuf>, Vec<(PathBuf
     };
 
     let component_count = home.components().count();
-    if component_count == 0 || component_count > MAX_HOME_COMPONENTS {
+    if component_count == 0
+        || component_count
+            > iteron_tunables::param_integer(
+                "sandbox.bubblewrap.max_home_components",
+                MAX_HOME_COMPONENTS,
+            )
+    {
         return (Vec::new(), Vec::new());
     }
 

@@ -73,7 +73,10 @@ pub(super) fn apply(
         boolv(input.registry.pure_overlap_enabled()),
     )?;
     let pure_concurrency = int(i64u(
-        crate::runtime::DEFAULT_MAX_TOOL_CONCURRENCY,
+        iteron_tunables::param_integer(
+            "cli.runtime.default_max_tool_concurrency",
+            crate::runtime::DEFAULT_MAX_TOOL_CONCURRENCY,
+        ),
         "pure_concurrency",
     )?);
     observe_fixed(

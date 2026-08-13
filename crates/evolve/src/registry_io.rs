@@ -86,15 +86,28 @@ pub(super) fn read_bounded_line<R: BufRead>(
     reader: &mut R,
 ) -> Result<Option<(Vec<u8>, bool, usize)>, TrajectoryRegistryError> {
     let mut bytes = Vec::new();
-    let mut bounded = reader.take((MAX_TRAJECTORY_REGISTRY_RECORD_BYTES + 1) as u64);
+    let mut bounded = reader.take(
+        (iteron_tunables::param_integer(
+            "evolve.registry.max_trajectory_registry_record_bytes",
+            MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+        ) + 1) as u64,
+    );
     let consumed = bounded.read_until(b'\n', &mut bytes)?;
     if consumed == 0 {
         return Ok(None);
     }
-    if consumed > MAX_TRAJECTORY_REGISTRY_RECORD_BYTES {
+    if consumed
+        > iteron_tunables::param_integer(
+            "evolve.registry.max_trajectory_registry_record_bytes",
+            MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+        )
+    {
         return Err(TrajectoryRegistryError::RecordTooLarge {
             bytes: consumed,
-            limit: MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+            limit: iteron_tunables::param_integer(
+                "evolve.registry.max_trajectory_registry_record_bytes",
+                MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+            ),
         });
     }
     let terminated = bytes.last() == Some(&b'\n');
@@ -170,12 +183,23 @@ pub(super) fn encode_envelope(
 pub(super) fn encode_record<T: Serialize>(record: &T) -> Result<Vec<u8>, TrajectoryRegistryError> {
     match bounded_json(
         record,
-        MAX_TRAJECTORY_REGISTRY_RECORD_BYTES.saturating_sub(1),
+        iteron_tunables::param_integer(
+            "evolve.registry.max_trajectory_registry_record_bytes",
+            MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+        )
+        .saturating_sub(1),
     ) {
         Ok(bytes) => Ok(bytes),
         Err(BoundedJsonError::TooLarge) => Err(TrajectoryRegistryError::RecordTooLarge {
-            bytes: MAX_TRAJECTORY_REGISTRY_RECORD_BYTES.saturating_add(1),
-            limit: MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+            bytes: iteron_tunables::param_integer(
+                "evolve.registry.max_trajectory_registry_record_bytes",
+                MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+            )
+            .saturating_add(1),
+            limit: iteron_tunables::param_integer(
+                "evolve.registry.max_trajectory_registry_record_bytes",
+                MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+            ),
         }),
         Err(BoundedJsonError::Json(error)) => Err(error.into()),
     }

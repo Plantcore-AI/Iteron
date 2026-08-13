@@ -148,8 +148,11 @@ impl StaticProviderMetadata {
         VALUE
             .get_or_init(|| {
                 Arc::new(
-                    Self::parse_document(EMBEDDED.as_bytes())
-                        .expect("embedded provider metadata must be valid"),
+                    Self::parse_document(
+                        iteron_tunables::param_str("provider.static_metadata.embedded", EMBEDDED)
+                            .as_bytes(),
+                    )
+                    .expect("embedded provider metadata must be valid"),
                 )
             })
             .clone()
@@ -196,7 +199,12 @@ impl StaticProviderMetadata {
     }
 
     fn parse_document(bytes: &[u8]) -> Result<Self, ProviderError> {
-        if bytes.len() > MAX_DOCUMENT_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "provider.static_metadata.max_document_bytes",
+                MAX_DOCUMENT_BYTES,
+            )
+        {
             return Err(configuration("provider metadata exceeds the 256 KiB bound"));
         }
         let value: Self = serde_json::from_slice(bytes)
@@ -253,16 +261,32 @@ impl StaticProviderMetadata {
             .metadata()
             .map_err(|_| configuration("provider metadata file cannot be inspected"))?;
         validate_operator_file_metadata(&named, &metadata, &file)?;
-        if !metadata.is_file() || metadata.len() > MAX_DOCUMENT_BYTES as u64 {
+        if !metadata.is_file()
+            || metadata.len()
+                > iteron_tunables::param_integer(
+                    "provider.static_metadata.max_document_bytes",
+                    MAX_DOCUMENT_BYTES,
+                ) as u64
+        {
             return Err(configuration(
                 "provider metadata must resolve to a regular file within the 256 KiB bound",
             ));
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
-        file.take((MAX_DOCUMENT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| configuration("provider metadata file cannot be read"))?;
-        if bytes.len() > MAX_DOCUMENT_BYTES {
+        file.take(
+            (iteron_tunables::param_integer(
+                "provider.static_metadata.max_document_bytes",
+                MAX_DOCUMENT_BYTES,
+            ) + 1) as u64,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|_| configuration("provider metadata file cannot be read"))?;
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "provider.static_metadata.max_document_bytes",
+                MAX_DOCUMENT_BYTES,
+            )
+        {
             return Err(configuration("provider metadata exceeds the 256 KiB bound"));
         }
         let value = Self::from_slice(&bytes)?;
@@ -343,7 +367,10 @@ impl StaticProviderMetadata {
     /// small skew allowance covers ordinary host drift; future-dated facts never authorize a
     /// capability or wire header in the production composition path.
     pub fn validate_capture_times(&self, now_unix_secs: u64) -> Result<(), ProviderError> {
-        let latest = now_unix_secs.saturating_add(MAX_FUTURE_SKEW_SECS);
+        let latest = now_unix_secs.saturating_add(iteron_tunables::param_integer(
+            "provider.static_metadata.max_future_skew_secs",
+            MAX_FUTURE_SKEW_SECS,
+        ));
         let mut captures = vec![self.glm_standard_chat.captured_at_unix_secs];
         captures.extend(
             self.glm_standard_chat
@@ -461,7 +488,14 @@ impl StaticProviderMetadata {
         if self.schema_version != SCHEMA_VERSION {
             return Err(configuration("provider metadata schema_version must be 1"));
         }
-        validate_identifier(&self.bundle_revision, MAX_REVISION_BYTES, "bundle revision")?;
+        validate_identifier(
+            &self.bundle_revision,
+            iteron_tunables::param_integer(
+                "provider.static_metadata.max_revision_bytes",
+                MAX_REVISION_BYTES,
+            ),
+            "bundle revision",
+        )?;
         let glm = &self.glm_standard_chat;
         validate_snapshot(&glm.version, &glm.source, glm.captured_at_unix_secs)?;
         if glm.api_root != GLM_STANDARD_ROOT {
@@ -475,7 +509,9 @@ impl StaticProviderMetadata {
                 "GLM default model is absent from its manifest",
             ));
         }
-        if glm.capabilities.len() > MAX_MODELS {
+        if glm.capabilities.len()
+            > iteron_tunables::param_integer("provider.static_metadata.max_models", MAX_MODELS)
+        {
             return Err(configuration("GLM capability map exceeds its model bound"));
         }
         for (model, capability) in &glm.capabilities {
@@ -513,7 +549,10 @@ impl StaticProviderMetadata {
         }
         validate_identifier(
             &effort.beta_header,
-            MAX_HEADER_BYTES,
+            iteron_tunables::param_integer(
+                "provider.static_metadata.max_header_bytes",
+                MAX_HEADER_BYTES,
+            ),
             "Anthropic beta header",
         )?;
         reqwest::header::HeaderValue::from_str(&effort.beta_header)
@@ -524,13 +563,25 @@ impl StaticProviderMetadata {
     }
 
     fn validate_route_capabilities(&self) -> Result<(), ProviderError> {
-        if self.model_capabilities.len() > MAX_CAPABILITY_ROUTES {
+        if self.model_capabilities.len()
+            > iteron_tunables::param_integer(
+                "provider.static_metadata.max_capability_routes",
+                MAX_CAPABILITY_ROUTES,
+            )
+        {
             return Err(configuration(
                 "provider metadata declares too many capability routes",
             ));
         }
         for (route, capabilities) in &self.model_capabilities {
-            validate_identifier(route, MAX_REVISION_BYTES, "capability route label")?;
+            validate_identifier(
+                route,
+                iteron_tunables::param_integer(
+                    "provider.static_metadata.max_revision_bytes",
+                    MAX_REVISION_BYTES,
+                ),
+                "capability route label",
+            )?;
             let url = reqwest::Url::parse(&capabilities.api_root)
                 .map_err(|_| configuration("capability route API root must be a URL"))?;
             if url.scheme() != "https" || url.host_str().is_none() {
@@ -538,13 +589,26 @@ impl StaticProviderMetadata {
                     "capability route API root must be an HTTPS URL",
                 ));
             }
-            if capabilities.families.is_empty() || capabilities.families.len() > MAX_MODELS {
+            if capabilities.families.is_empty()
+                || capabilities.families.len()
+                    > iteron_tunables::param_integer(
+                        "provider.static_metadata.max_models",
+                        MAX_MODELS,
+                    )
+            {
                 return Err(configuration(
                     "capability route family map is empty or exceeds its bound",
                 ));
             }
             for (family, capability) in &capabilities.families {
-                validate_identifier(family, MAX_MODEL_ID_BYTES, "capability family")?;
+                validate_identifier(
+                    family,
+                    iteron_tunables::param_integer(
+                        "provider.static_metadata.max_model_id_bytes",
+                        MAX_MODEL_ID_BYTES,
+                    ),
+                    "capability family",
+                )?;
                 validate_snapshot(
                     &capability.version,
                     &capability.source,

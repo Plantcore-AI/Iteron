@@ -194,7 +194,13 @@ fn windows_file_security_is_safe(file: &std::fs::File) -> bool {
                         return false;
                     }
                     let ace = &*raw_ace.cast::<ACCESS_ALLOWED_ACE>();
-                    if ace.Mask & MUTATING_RIGHTS == 0 {
+                    if ace.Mask
+                        & iteron_tunables::param_integer(
+                            "provider.static_metadata.support.mutating_rights",
+                            MUTATING_RIGHTS,
+                        )
+                        == 0
+                    {
                         continue;
                     }
                     let sid = std::ptr::addr_of!(ace.SidStart).cast_mut().cast::<c_void>();
@@ -299,7 +305,14 @@ pub(super) fn validate_snapshot(
     captured: u64,
 ) -> Result<(), ProviderError> {
     validate_identifier(version, MAX_REVISION_BYTES, "snapshot version")?;
-    validate_label(source, MAX_SOURCE_BYTES, "snapshot source")?;
+    validate_label(
+        source,
+        iteron_tunables::param_integer(
+            "provider.static_metadata.max_source_bytes",
+            MAX_SOURCE_BYTES,
+        ),
+        "snapshot source",
+    )?;
     let url = Url::parse(source).map_err(|_| configuration("snapshot source must be a URL"))?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -367,13 +380,22 @@ pub(super) fn format_notice(
     let mut revision_changed = bundle_changed;
     for (kind, version, captured, baseline) in snapshots {
         if *captured > now {
-            let days = captured.saturating_sub(now).saturating_add(DAY_SECS - 1) / DAY_SECS;
+            let days =
+                captured.saturating_sub(now).saturating_add(
+                    iteron_tunables::param_integer("provider.static_metadata.day_secs", DAY_SECS)
+                        - 1,
+                ) / iteron_tunables::param_integer("provider.static_metadata.day_secs", DAY_SECS);
             ages.push(format!(
                 "{kind} capture time is {days} days in the future (invalid)"
             ));
         } else {
-            let days = now.saturating_sub(*captured) / DAY_SECS;
-            let state = if days > STALE_AFTER_DAYS {
+            let days = now.saturating_sub(*captured)
+                / iteron_tunables::param_integer("provider.static_metadata.day_secs", DAY_SECS);
+            let state = if days
+                > iteron_tunables::param_integer(
+                    "provider.static_metadata.stale_after_days",
+                    STALE_AFTER_DAYS,
+                ) {
                 "stale"
             } else {
                 "fresh"
@@ -397,15 +419,27 @@ pub(super) fn format_notice(
 
 fn truncate_notice(mut message: String) -> String {
     const ELLIPSIS: &str = "…";
-    if message.len() <= MAX_NOTICE_BYTES {
+    if message.len()
+        <= iteron_tunables::param_integer(
+            "provider.static_metadata.max_notice_bytes",
+            MAX_NOTICE_BYTES,
+        )
+    {
         return message;
     }
-    let mut end = MAX_NOTICE_BYTES - ELLIPSIS.len();
+    let mut end =
+        iteron_tunables::param_integer(
+            "provider.static_metadata.max_notice_bytes",
+            MAX_NOTICE_BYTES,
+        ) - iteron_tunables::param_str("provider.static_metadata.support.ellipsis", ELLIPSIS).len();
     while !message.is_char_boundary(end) {
         end -= 1;
     }
     message.truncate(end);
-    message.push_str(ELLIPSIS);
+    message.push_str(iteron_tunables::param_str(
+        "provider.static_metadata.support.ellipsis",
+        ELLIPSIS,
+    ));
     message
 }
 

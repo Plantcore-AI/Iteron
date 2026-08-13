@@ -131,9 +131,17 @@ impl OfflineRuleSearchSpec {
         if candidates.is_empty() {
             return Err(OfflineProducerError::EmptyRuleSearchSpace);
         }
-        if candidates.len() > MAX_OFFLINE_RULE_CANDIDATES {
+        if candidates.len()
+            > iteron_tunables::param_integer(
+                "evolve.producer.max_offline_rule_candidates",
+                MAX_OFFLINE_RULE_CANDIDATES,
+            )
+        {
             return Err(OfflineProducerError::TooManyRuleCandidates {
-                limit: MAX_OFFLINE_RULE_CANDIDATES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.producer.max_offline_rule_candidates",
+                    MAX_OFFLINE_RULE_CANDIDATES,
+                ),
                 actual: candidates.len(),
             });
         }
@@ -217,9 +225,17 @@ impl OfflineRuleSearchProducer {
         let matched_trajectories = rule_score(dataset, selected);
         let search_space_bytes =
             serde_json::to_vec(&spec.candidates).map_err(OfflineProducerError::Encoding)?;
-        if search_space_bytes.len() > MAX_OFFLINE_RULE_SEARCH_SPACE_BYTES {
+        if search_space_bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.producer.max_offline_rule_search_space_bytes",
+                MAX_OFFLINE_RULE_SEARCH_SPACE_BYTES,
+            )
+        {
             return Err(OfflineProducerError::SearchSpaceTooLarge {
-                limit: MAX_OFFLINE_RULE_SEARCH_SPACE_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.producer.max_offline_rule_search_space_bytes",
+                    MAX_OFFLINE_RULE_SEARCH_SPACE_BYTES,
+                ),
             });
         }
         let search_space_digest = sha256_hex(&search_space_bytes);
@@ -236,9 +252,17 @@ impl OfflineRuleSearchProducer {
         };
         let artifact_bytes =
             serde_json::to_vec(&artifact).map_err(OfflineProducerError::Encoding)?;
-        if artifact_bytes.len() > MAX_INERT_RULE_ARTIFACT_BYTES {
+        if artifact_bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.producer.max_inert_rule_artifact_bytes",
+                MAX_INERT_RULE_ARTIFACT_BYTES,
+            )
+        {
             return Err(OfflineProducerError::ArtifactTooLarge {
-                limit: MAX_INERT_RULE_ARTIFACT_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.producer.max_inert_rule_artifact_bytes",
+                    MAX_INERT_RULE_ARTIFACT_BYTES,
+                ),
             });
         }
         let artifact_digest = sha256_hex(&artifact_bytes);

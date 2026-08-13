@@ -156,7 +156,8 @@ impl Freshness {
 
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_NAME_BYTES
+        && name.len()
+            <= iteron_tunables::param_integer("marketplace.lib.max_name_bytes", MAX_NAME_BYTES)
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))

@@ -528,9 +528,17 @@ pub fn validate(root: &Path) -> Result<(), ConformanceError> {
 }
 
 fn validate_rows(root: &Path) -> Result<(), ConformanceError> {
-    if EVOLUTION_MATRIX.len() > MAX_EVOLUTION_ROWS {
+    if EVOLUTION_MATRIX.len()
+        > iteron_tunables::param_integer(
+            "evolve.conformance.max_evolution_rows",
+            MAX_EVOLUTION_ROWS,
+        )
+    {
         return Err(ConformanceError::TooManyRows {
-            max: MAX_EVOLUTION_ROWS,
+            max: iteron_tunables::param_integer(
+                "evolve.conformance.max_evolution_rows",
+                MAX_EVOLUTION_ROWS,
+            ),
             actual: EVOLUTION_MATRIX.len(),
         });
     }
@@ -549,10 +557,18 @@ fn validate_rows(root: &Path) -> Result<(), ConformanceError> {
         if row.evidence.is_empty() {
             return Err(ConformanceError::EmptyEvidence(row.class.to_owned()));
         }
-        if row.evidence.len() > MAX_EVIDENCE_PER_ROW {
+        if row.evidence.len()
+            > iteron_tunables::param_integer(
+                "evolve.conformance.max_evidence_per_row",
+                MAX_EVIDENCE_PER_ROW,
+            )
+        {
             return Err(ConformanceError::TooMuchEvidence {
                 class: row.class.to_owned(),
-                max: MAX_EVIDENCE_PER_ROW,
+                max: iteron_tunables::param_integer(
+                    "evolve.conformance.max_evidence_per_row",
+                    MAX_EVIDENCE_PER_ROW,
+                ),
                 actual: row.evidence.len(),
             });
         }
@@ -735,10 +751,18 @@ fn read_bounded_path(path: &Path) -> Result<String, ConformanceError> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(ConformanceError::InvalidPath(path.to_path_buf()));
     }
-    if metadata.len() > MAX_EVIDENCE_SOURCE_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "evolve.conformance.max_evidence_source_bytes",
+            MAX_EVIDENCE_SOURCE_BYTES,
+        )
+    {
         return Err(ConformanceError::SourceTooLarge {
             path: path.to_path_buf(),
-            max: MAX_EVIDENCE_SOURCE_BYTES,
+            max: iteron_tunables::param_integer(
+                "evolve.conformance.max_evidence_source_bytes",
+                MAX_EVIDENCE_SOURCE_BYTES,
+            ),
             actual: metadata.len(),
         });
     }

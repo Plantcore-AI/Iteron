@@ -45,16 +45,15 @@ failure ownership are documented.
 
 ## Platform evidence
 
-macOS and Linux required jobs run the full workspace Rust gate. Linux CI installs
-bubblewrap and loads a path-specific AppArmor user-namespace profile so the live
-network-denial test must execute rather than skip. macOS runs live Seatbelt
-confinement tests.
+Pull-request CI runs the full workspace Rust gate on Linux through DGX Spark.
+The runner administrator installs bubblewrap and loads a path-specific AppArmor
+user-namespace profile once, so the live network-denial test executes rather
+than skips. macOS PR CI is paused; native macOS evidence belongs to the protected
+release workflow when that workflow is explicitly invoked.
 
-Windows is unsupported. The only always-on Windows lane is the non-blocking
-`windows / check` job on `windows-latest`, which runs
-`cargo check --workspace --locked --target x86_64-pc-windows-msvc`. It keeps
-compile drift visible but is not native runtime, ConPTY, sandbox, installer, or
-release evidence.
+Windows is unsupported and its former advisory cross-compilation runner is
+paused. There is no native runtime, ConPTY, sandbox, installer, or release
+evidence for Windows.
 
 Do not treat a local macOS or DGX Linux pass as native Windows evidence, or any
 one operating-system pass as evidence for another.

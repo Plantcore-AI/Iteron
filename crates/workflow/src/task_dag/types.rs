@@ -40,6 +40,87 @@ pub const HARD_MAX_TOKENS: u64 = 100_000_000_000;
 pub const HARD_MAX_COST_MICROUSD: u64 = 100_000_000_000_000;
 pub const HARD_MAX_WALL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 
+// The hard ceilings are read in more than one place — the reducer validates against them and the
+// runtime seeds a run's `Limits` from them — so the tier-2 lookup lives in one accessor per
+// ceiling. Two use sites reading the same id independently would still agree, but a single
+// accessor makes it impossible for a later edit to convert one and forget the other. With no
+// profile installed each of these returns exactly its compiled constant.
+
+#[must_use]
+pub fn hard_max_tasks() -> usize {
+    iteron_tunables::param_usize("workflow.task_dag.types.hard_max_tasks", HARD_MAX_TASKS)
+}
+
+#[must_use]
+pub fn hard_max_edges() -> usize {
+    iteron_tunables::param_usize("workflow.task_dag.types.hard_max_edges", HARD_MAX_EDGES)
+}
+
+#[must_use]
+pub fn hard_max_messages() -> usize {
+    iteron_tunables::param_usize(
+        "workflow.task_dag.types.hard_max_messages",
+        iteron_tunables::param_integer(
+            "workflow.task_dag.types.hard_max_messages",
+            HARD_MAX_MESSAGES,
+        ),
+    )
+}
+
+#[must_use]
+pub fn hard_max_events() -> usize {
+    iteron_tunables::param_usize("workflow.task_dag.types.hard_max_events", HARD_MAX_EVENTS)
+}
+
+#[must_use]
+pub fn hard_max_depth() -> usize {
+    iteron_tunables::param_usize("workflow.task_dag.types.hard_max_depth", HARD_MAX_DEPTH)
+}
+
+#[must_use]
+pub fn hard_max_attempts() -> usize {
+    iteron_tunables::param_usize(
+        "workflow.task_dag.types.hard_max_attempts",
+        iteron_tunables::param_integer(
+            "workflow.task_dag.types.hard_max_attempts",
+            HARD_MAX_ATTEMPTS,
+        ),
+    )
+}
+
+// The payload ceilings are read from the shape pre-check, the reducer's validation pass and the
+// store, so they get accessors for the same reason the hard ceilings do: one lookup site per
+// ceiling means a later edit cannot convert one reader and leave another on the raw constant,
+// which would let the two disagree about the same limit. With no profile installed each returns
+// exactly its compiled constant.
+
+/// Ceiling on one inter-task message payload. Raising it lets tasks hand each other more context
+/// per message; lowering it forces coordination back into the graph shape.
+#[must_use]
+pub fn max_message_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "workflow.task_dag.types.max_message_bytes",
+        iteron_tunables::param_integer(
+            "workflow.task_dag.types.max_message_bytes",
+            MAX_MESSAGE_BYTES,
+        ),
+    )
+}
+
+/// Ceiling on operator- and child-visible diagnostic text: cancel reasons, failure details and
+/// unknown-effect reasons. It trades cancellation/failure diagnostic fidelity against the size of
+/// the durable log an untrusted child can grow.
+#[must_use]
+pub fn max_reason_bytes() -> usize {
+    iteron_tunables::param_usize("workflow.task_dag.types.max_reason_bytes", MAX_REASON_BYTES)
+}
+
+/// Whole-run durable task-DAG log budget, enforced on open and on every append.
+#[must_use]
+pub fn max_log_bytes() -> u64 {
+    iteron_tunables::param_u64("workflow.task_dag.types.max_log_bytes", MAX_LOG_BYTES)
+}
+
 macro_rules! numeric_id {
     ($name:ident) => {
         #[derive(
@@ -85,17 +166,25 @@ pub struct Limits {
 
 impl Limits {
     pub fn validate(&self) -> Result<(), &'static str> {
-        validate_limit(self.max_tasks, HARD_MAX_TASKS, "task")?;
-        validate_limit(self.max_edges, HARD_MAX_EDGES, "edge")?;
-        validate_limit(self.max_messages, HARD_MAX_MESSAGES, "message")?;
-        validate_limit(self.max_joins, HARD_MAX_JOINS, "join")?;
-        validate_limit(self.max_events, HARD_MAX_EVENTS, "event")?;
+        validate_limit(self.max_tasks, hard_max_tasks(), "task")?;
+        validate_limit(self.max_edges, hard_max_edges(), "edge")?;
+        validate_limit(self.max_messages, hard_max_messages(), "message")?;
+        validate_limit(
+            self.max_joins,
+            iteron_tunables::param_usize("workflow.task_dag.types.hard_max_joins", HARD_MAX_JOINS),
+            "join",
+        )?;
+        validate_limit(self.max_events, hard_max_events(), "event")?;
         validate_limit(
             self.max_dependency_depth,
-            HARD_MAX_DEPTH,
+            hard_max_depth(),
             "dependency depth",
         )?;
-        validate_limit(self.max_hierarchy_depth, HARD_MAX_DEPTH, "hierarchy depth")?;
+        validate_limit(
+            self.max_hierarchy_depth,
+            hard_max_depth(),
+            "hierarchy depth",
+        )?;
         Ok(())
     }
 }
@@ -103,13 +192,55 @@ impl Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_tasks: DEFAULT_MAX_TASKS,
-            max_edges: DEFAULT_MAX_EDGES,
-            max_messages: DEFAULT_MAX_MESSAGES,
-            max_joins: DEFAULT_MAX_JOINS,
-            max_events: DEFAULT_MAX_EVENTS,
-            max_dependency_depth: DEFAULT_MAX_DEPENDENCY_DEPTH,
-            max_hierarchy_depth: DEFAULT_MAX_HIERARCHY_DEPTH,
+            max_tasks: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_tasks",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_tasks",
+                    DEFAULT_MAX_TASKS,
+                ),
+            ),
+            max_edges: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_edges",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_edges",
+                    DEFAULT_MAX_EDGES,
+                ),
+            ),
+            max_messages: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_messages",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_messages",
+                    DEFAULT_MAX_MESSAGES,
+                ),
+            ),
+            max_joins: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_joins",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_joins",
+                    DEFAULT_MAX_JOINS,
+                ),
+            ),
+            max_events: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_events",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_events",
+                    DEFAULT_MAX_EVENTS,
+                ),
+            ),
+            max_dependency_depth: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_dependency_depth",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_dependency_depth",
+                    DEFAULT_MAX_DEPENDENCY_DEPTH,
+                ),
+            ),
+            max_hierarchy_depth: iteron_tunables::param_usize(
+                "workflow.task_dag.types.default_max_hierarchy_depth",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.default_max_hierarchy_depth",
+                    DEFAULT_MAX_HIERARCHY_DEPTH,
+                ),
+            ),
         }
     }
 }
@@ -153,16 +284,42 @@ pub struct TaskBudget {
 
 impl TaskBudget {
     pub fn validate(self) -> Result<(), &'static str> {
-        if self.max_turns > HARD_MAX_TURNS {
+        if u64::from(self.max_turns)
+            > iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_turns",
+                u64::from(iteron_tunables::param_integer(
+                    "workflow.task_dag.types.hard_max_turns",
+                    HARD_MAX_TURNS,
+                )),
+            )
+        {
             return Err("turn budget exceeds the hard ceiling");
         }
-        if self.max_tokens > HARD_MAX_TOKENS {
+        if self.max_tokens
+            > iteron_tunables::param_u64("workflow.task_dag.types.hard_max_tokens", HARD_MAX_TOKENS)
+        {
             return Err("token budget exceeds the hard ceiling");
         }
-        if self.max_cost_microusd > HARD_MAX_COST_MICROUSD {
+        if self.max_cost_microusd
+            > iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_cost_microusd",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.hard_max_cost_microusd",
+                    HARD_MAX_COST_MICROUSD,
+                ),
+            )
+        {
             return Err("cost budget exceeds the hard ceiling");
         }
-        if self.max_wall_ms > HARD_MAX_WALL_MS {
+        if self.max_wall_ms
+            > iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_wall_ms",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.types.hard_max_wall_ms",
+                    HARD_MAX_WALL_MS,
+                ),
+            )
+        {
             return Err("wall-clock budget exceeds the hard ceiling");
         }
         Ok(())
@@ -560,7 +717,14 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        validate_identifier(&self.graph_id, MAX_GRAPH_ID_BYTES, "graph id")?;
+        validate_identifier(
+            &self.graph_id,
+            iteron_tunables::param_integer(
+                "workflow.task_dag.types.max_graph_id_bytes",
+                MAX_GRAPH_ID_BYTES,
+            ),
+            "graph id",
+        )?;
         self.limits.validate()?;
         self.budget.validate()
     }

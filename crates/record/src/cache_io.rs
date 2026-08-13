@@ -62,7 +62,12 @@ pub(crate) fn scan_index_lines(path: &Path, max_lines: usize) -> io::Result<Boun
 
     loop {
         let mut bytes = Vec::new();
-        let mut bounded = (&mut reader).take((MAX_INDEX_LINE_BYTES + 1) as u64);
+        let mut bounded = (&mut reader).take(
+            (iteron_tunables::param_integer(
+                "record.cache_io.max_index_line_bytes",
+                MAX_INDEX_LINE_BYTES,
+            ) + 1) as u64,
+        );
         let consumed = bounded.read_until(b'\n', &mut bytes)?;
         if consumed == 0 {
             return Ok(BoundedLineScan {
@@ -72,7 +77,13 @@ pub(crate) fn scan_index_lines(path: &Path, max_lines: usize) -> io::Result<Boun
             });
         }
         lines_examined = lines_examined.saturating_add(1);
-        if consumed > MAX_INDEX_LINE_BYTES || bytes.last() != Some(&b'\n') {
+        if consumed
+            > iteron_tunables::param_integer(
+                "record.cache_io.max_index_line_bytes",
+                MAX_INDEX_LINE_BYTES,
+            )
+            || bytes.last() != Some(&b'\n')
+        {
             return Ok(BoundedLineScan::degraded(lines_examined));
         }
         if lines.len() == max_lines {
@@ -109,7 +120,14 @@ pub(crate) fn with_session_index_lock<T, F>(runs_dir: &Path, operation: F) -> io
 where
     F: FnOnce() -> io::Result<T>,
 {
-    with_session_index_lock_timeout(runs_dir, SESSION_INDEX_LOCK_TIMEOUT, operation)
+    with_session_index_lock_timeout(
+        runs_dir,
+        iteron_tunables::param_duration(
+            "record.cache_io.session_index_lock_timeout",
+            SESSION_INDEX_LOCK_TIMEOUT,
+        ),
+        operation,
+    )
 }
 
 fn with_session_index_lock_timeout<T, F>(
@@ -130,7 +148,10 @@ where
         .open(&lock_path)?;
     let started = Instant::now();
 
-    for attempt in 0..MAX_SESSION_INDEX_LOCK_ATTEMPTS {
+    for attempt in 0..iteron_tunables::param_integer(
+        "record.cache_io.max_session_index_lock_attempts",
+        MAX_SESSION_INDEX_LOCK_ATTEMPTS,
+    ) {
         match file.try_lock() {
             Ok(()) => {
                 let _lock = SessionIndexLock(file);
@@ -138,7 +159,13 @@ where
             }
             Err(TryLockError::WouldBlock) => {
                 let elapsed = started.elapsed();
-                if elapsed >= timeout || attempt + 1 == MAX_SESSION_INDEX_LOCK_ATTEMPTS {
+                if elapsed >= timeout
+                    || attempt + 1
+                        == iteron_tunables::param_integer(
+                            "record.cache_io.max_session_index_lock_attempts",
+                            MAX_SESSION_INDEX_LOCK_ATTEMPTS,
+                        )
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!(
@@ -147,7 +174,13 @@ where
                         ),
                     ));
                 }
-                std::thread::sleep(SESSION_INDEX_LOCK_RETRY_DELAY.min(timeout - elapsed));
+                std::thread::sleep(
+                    iteron_tunables::param_duration(
+                        "record.cache_io.session_index_lock_retry_delay",
+                        SESSION_INDEX_LOCK_RETRY_DELAY,
+                    )
+                    .min(timeout - elapsed),
+                );
             }
             Err(TryLockError::Error(error)) => return Err(error),
         }
@@ -223,9 +256,14 @@ where
 }
 
 fn create_temp(parent: &Path) -> io::Result<(File, PathBuf)> {
-    let first = NEXT_TEMP.fetch_add(MAX_TEMP_ATTEMPTS, Ordering::Relaxed);
+    let first = NEXT_TEMP.fetch_add(
+        iteron_tunables::param_integer("record.cache_io.max_temp_attempts", MAX_TEMP_ATTEMPTS),
+        Ordering::Relaxed,
+    );
     let mut last_collision = None;
-    for offset in 0..MAX_TEMP_ATTEMPTS {
+    for offset in
+        0..iteron_tunables::param_integer("record.cache_io.max_temp_attempts", MAX_TEMP_ATTEMPTS)
+    {
         let path = parent.join(format!(
             ".core-session-cache-{}-{}.tmp",
             std::process::id(),

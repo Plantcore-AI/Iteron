@@ -34,12 +34,22 @@ const EXPORT_STORE_BUSY_RETRY_DELAY: std::time::Duration = std::time::Duration::
 fn retry_export_store_busy<T>(
     mut operation: impl FnMut() -> Result<T, iteron_record::ContentStoreError>,
 ) -> Result<T, iteron_record::ContentStoreError> {
-    for attempt in 0..EXPORT_STORE_BUSY_RETRY_ATTEMPTS {
+    for attempt in 0..iteron_tunables::param_integer(
+        "cli.tui.transcript_effect.export_store_busy_retry_attempts",
+        EXPORT_STORE_BUSY_RETRY_ATTEMPTS,
+    ) {
         match operation() {
             Err(iteron_record::ContentStoreError::Busy)
-                if attempt + 1 < EXPORT_STORE_BUSY_RETRY_ATTEMPTS =>
+                if attempt + 1
+                    < iteron_tunables::param_integer(
+                        "cli.tui.transcript_effect.export_store_busy_retry_attempts",
+                        EXPORT_STORE_BUSY_RETRY_ATTEMPTS,
+                    ) =>
             {
-                std::thread::sleep(EXPORT_STORE_BUSY_RETRY_DELAY);
+                std::thread::sleep(iteron_tunables::param_duration(
+                    "cli.tui.transcript_effect.export_store_busy_retry_delay",
+                    EXPORT_STORE_BUSY_RETRY_DELAY,
+                ));
             }
             result => return result,
         }

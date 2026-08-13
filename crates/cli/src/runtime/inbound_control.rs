@@ -9,7 +9,10 @@ impl Agent {
         let mut version_mismatch = 0usize;
         let mut control = InboundControl::None;
         if let Some(rx) = self.approvals_rx.as_mut() {
-            for _ in 0..MAX_INBOUND_OPS_PER_POLL {
+            for _ in 0..iteron_tunables::param_integer(
+                "cli.runtime.max_inbound_ops_per_poll",
+                MAX_INBOUND_OPS_PER_POLL,
+            ) {
                 let Ok(envelope) = rx.try_recv() else {
                     break;
                 };
@@ -73,7 +76,13 @@ impl Agent {
         reason: SubmissionRejectionReason,
         notice: &'static str,
     ) {
-        debug_assert!(count <= MAX_INBOUND_OPS_PER_POLL);
+        debug_assert!(
+            count
+                <= iteron_tunables::param_integer(
+                    "cli.runtime.max_inbound_ops_per_poll",
+                    MAX_INBOUND_OPS_PER_POLL
+                )
+        );
         for _ in 0..count {
             if self
                 .emit_durable(turn, EventKind::SubmissionRejected { reason })
@@ -93,7 +102,10 @@ impl Agent {
         let mut unknown = 0usize;
         let mut version_mismatch = 0usize;
         if let Some(rx) = self.approvals_rx.as_mut() {
-            for _ in 0..MAX_INBOUND_OPS_PER_POLL {
+            for _ in 0..iteron_tunables::param_integer(
+                "cli.runtime.max_inbound_ops_per_poll",
+                MAX_INBOUND_OPS_PER_POLL,
+            ) {
                 let Ok(envelope) = rx.try_recv() else {
                     break;
                 };
@@ -140,7 +152,10 @@ impl Agent {
             if text.trim().is_empty() {
                 continue;
             }
-            let text = strict_utf8_head(&text, MAX_STEER_BYTES);
+            let text = strict_utf8_head(
+                &text,
+                iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES),
+            );
             let runtime_notification = text.starts_with(RUNTIME_NOTIFICATION_PREFIX);
             let memory_added = text.starts_with(MEMORY_ADDED_NOTIFICATION_PREFIX);
             if memory_added {

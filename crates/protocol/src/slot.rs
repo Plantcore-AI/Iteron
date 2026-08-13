@@ -67,7 +67,13 @@ impl SlotId {
     /// turns an identity into a near-identity. Better to refuse it at the boundary.
     pub fn validate(&self) -> Result<(), &'static str> {
         let raw = &self.0;
-        if raw.is_empty() || raw.len() > MAX_SLOT_ID_BYTES {
+        if raw.is_empty()
+            || raw.len()
+                > iteron_tunables::param_integer(
+                    "protocol.slot.max_slot_id_bytes",
+                    MAX_SLOT_ID_BYTES,
+                )
+        {
             return Err("slot id must be 1..=128 bytes");
         }
         let mut halves = raw.split('/');

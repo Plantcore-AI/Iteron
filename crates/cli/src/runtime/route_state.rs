@@ -235,7 +235,10 @@ impl Agent {
                 self.record_model_router_abstention(turn, source, "governor_route_refused")?;
                 Err(error)
             })?
-            .unwrap_or(GOVERNOR_ROUTE_BOUND_ABSENT);
+            .unwrap_or(iteron_tunables::param_bool(
+                "cli.runtime.route_state.governor_route_bound_absent",
+                GOVERNOR_ROUTE_BOUND_ABSENT,
+            ));
 
         if let Err(error) = self.record_model_router_selection(
             turn,

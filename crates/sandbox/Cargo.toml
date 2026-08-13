@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+iteron-tunables = { path = "../tunables" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"

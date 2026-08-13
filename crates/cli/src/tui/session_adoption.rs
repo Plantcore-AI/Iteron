@@ -124,7 +124,10 @@ pub(super) fn adopted_transcript_blocks(
                             },
                             ui_safe_text(&bounded_prefix(
                                 &result.content,
-                                MAX_ADOPTED_TOOL_OUTPUT_BYTES,
+                                iteron_tunables::param_integer(
+                                    "cli.tui.session_adoption.max_adopted_tool_output_bytes",
+                                    MAX_ADOPTED_TOOL_OUTPUT_BYTES,
+                                ),
                             )),
                             Some(Duration::from_millis(result.latency_ms)),
                         ),
@@ -154,8 +157,19 @@ pub(super) fn adopted_transcript_blocks(
     }
 
     let total = blocks.len();
-    if total > MAX_ADOPTED_BLOCKS {
-        blocks.drain(..total - MAX_ADOPTED_BLOCKS);
+    if total
+        > iteron_tunables::param_integer(
+            "cli.tui.session_adoption.max_adopted_blocks",
+            MAX_ADOPTED_BLOCKS,
+        )
+    {
+        blocks.drain(
+            ..total
+                - iteron_tunables::param_integer(
+                    "cli.tui.session_adoption.max_adopted_blocks",
+                    MAX_ADOPTED_BLOCKS,
+                ),
+        );
     }
     (blocks, total)
 }

@@ -46,7 +46,12 @@ fn decode_inner(
         "agent_catalog",
         AGENT_CATALOG_ID,
     )?;
-    if agent_entry_count > MAX_AGENT_CATALOG_ENTRIES {
+    if agent_entry_count
+        > iteron_tunables::param_integer(
+            "cli.runtime_tunables.effective_content.max_agent_catalog_entries",
+            MAX_AGENT_CATALOG_ENTRIES,
+        )
+    {
         return Err(EffectiveContentError::Range("agent_catalog", "entry_count"));
     }
     let environment = environment(view.object("environment_snapshot")?)?;

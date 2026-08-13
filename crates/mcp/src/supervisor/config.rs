@@ -42,27 +42,51 @@ impl McpLaunchConfig {
     pub fn new(command: String, args: Vec<String>, server_name: String) -> Result<Self, McpError> {
         validate_server_name(&server_name)?;
         if command.is_empty()
-            || command.len() > MAX_MCP_COMMAND_BYTES
+            || command.len()
+                > iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_command_bytes",
+                    MAX_MCP_COMMAND_BYTES,
+                )
             || command.contains('\0')
             || !std::path::Path::new(&command).is_absolute()
         {
             return Err(McpError::InvalidLaunchConfiguration {
                 field: "absolute_command",
-                limit: MAX_MCP_COMMAND_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_command_bytes",
+                    MAX_MCP_COMMAND_BYTES,
+                ),
             });
         }
-        if args.len() > MAX_MCP_LAUNCH_ARGS {
+        if args.len()
+            > iteron_tunables::param_integer(
+                "mcp.supervisor.config.max_mcp_launch_args",
+                MAX_MCP_LAUNCH_ARGS,
+            )
+        {
             return Err(McpError::InvalidLaunchConfiguration {
                 field: "args",
-                limit: MAX_MCP_LAUNCH_ARGS,
+                limit: iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_launch_args",
+                    MAX_MCP_LAUNCH_ARGS,
+                ),
             });
         }
         let mut aggregate = command.len();
         for arg in &args {
-            if arg.len() > MAX_MCP_LAUNCH_ARG_BYTES || arg.contains('\0') {
+            if arg.len()
+                > iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_launch_arg_bytes",
+                    MAX_MCP_LAUNCH_ARG_BYTES,
+                )
+                || arg.contains('\0')
+            {
                 return Err(McpError::InvalidLaunchConfiguration {
                     field: "arg",
-                    limit: MAX_MCP_LAUNCH_ARG_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.supervisor.config.max_mcp_launch_arg_bytes",
+                        MAX_MCP_LAUNCH_ARG_BYTES,
+                    ),
                 });
             }
             aggregate =
@@ -70,13 +94,24 @@ impl McpLaunchConfig {
                     .checked_add(arg.len())
                     .ok_or(McpError::InvalidLaunchConfiguration {
                         field: "launch_bytes",
-                        limit: MAX_MCP_LAUNCH_BYTES,
+                        limit: iteron_tunables::param_integer(
+                            "mcp.supervisor.config.max_mcp_launch_bytes",
+                            MAX_MCP_LAUNCH_BYTES,
+                        ),
                     })?;
         }
-        if aggregate > MAX_MCP_LAUNCH_BYTES {
+        if aggregate
+            > iteron_tunables::param_integer(
+                "mcp.supervisor.config.max_mcp_launch_bytes",
+                MAX_MCP_LAUNCH_BYTES,
+            )
+        {
             return Err(McpError::InvalidLaunchConfiguration {
                 field: "launch_bytes",
-                limit: MAX_MCP_LAUNCH_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_launch_bytes",
+                    MAX_MCP_LAUNCH_BYTES,
+                ),
             });
         }
         let mut config = Self {
@@ -93,16 +128,28 @@ impl McpLaunchConfig {
     /// Remove additional exact environment names before process spawn. Names, counts, and total
     /// bytes are bounded; values are never accepted or retained by this type.
     pub fn with_sensitive_env_names(mut self, names: Vec<String>) -> Result<Self, McpError> {
-        if names.len() > MAX_MCP_SENSITIVE_ENV_NAMES {
+        if names.len()
+            > iteron_tunables::param_integer(
+                "mcp.supervisor.config.max_mcp_sensitive_env_names",
+                MAX_MCP_SENSITIVE_ENV_NAMES,
+            )
+        {
             return Err(McpError::InvalidLaunchConfiguration {
                 field: "sensitive_env_names",
-                limit: MAX_MCP_SENSITIVE_ENV_NAMES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.supervisor.config.max_mcp_sensitive_env_names",
+                    MAX_MCP_SENSITIVE_ENV_NAMES,
+                ),
             });
         }
         let mut seen = std::collections::BTreeSet::new();
         for name in &names {
             if name.is_empty()
-                || name.len() > MAX_MCP_ENV_NAME_BYTES
+                || name.len()
+                    > iteron_tunables::param_integer(
+                        "mcp.supervisor.config.max_mcp_env_name_bytes",
+                        MAX_MCP_ENV_NAME_BYTES,
+                    )
                 || !name
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -110,7 +157,10 @@ impl McpLaunchConfig {
             {
                 return Err(McpError::InvalidLaunchConfiguration {
                     field: "sensitive_env_name",
-                    limit: MAX_MCP_ENV_NAME_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.supervisor.config.max_mcp_env_name_bytes",
+                        MAX_MCP_ENV_NAME_BYTES,
+                    ),
                 });
             }
         }
@@ -173,11 +223,26 @@ pub struct McpTimeouts {
 impl Default for McpTimeouts {
     fn default() -> Self {
         Self {
-            handshake: Duration::from_secs(DEFAULT_HANDSHAKE_DEADLINE_SECS),
-            discovery: Duration::from_secs(DEFAULT_DISCOVERY_DEADLINE_SECS),
-            request: Duration::from_secs(DEFAULT_REQUEST_DEADLINE_SECS),
-            startup_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
-            tool_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            handshake: Duration::from_secs(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_handshake_deadline_secs",
+                DEFAULT_HANDSHAKE_DEADLINE_SECS,
+            )),
+            discovery: Duration::from_secs(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_discovery_deadline_secs",
+                DEFAULT_DISCOVERY_DEADLINE_SECS,
+            )),
+            request: Duration::from_secs(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_request_deadline_secs",
+                DEFAULT_REQUEST_DEADLINE_SECS,
+            )),
+            startup_operation: Duration::from_millis(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_mcp_operation_deadline_ms",
+                DEFAULT_MCP_OPERATION_DEADLINE_MS,
+            )),
+            tool_operation: Duration::from_millis(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_mcp_operation_deadline_ms",
+                DEFAULT_MCP_OPERATION_DEADLINE_MS,
+            )),
         }
     }
 }
@@ -195,8 +260,14 @@ impl McpTimeouts {
             handshake,
             discovery,
             request,
-            startup_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
-            tool_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            startup_operation: Duration::from_millis(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_mcp_operation_deadline_ms",
+                DEFAULT_MCP_OPERATION_DEADLINE_MS,
+            )),
+            tool_operation: Duration::from_millis(iteron_tunables::param_integer(
+                "mcp.supervisor.config.default_mcp_operation_deadline_ms",
+                DEFAULT_MCP_OPERATION_DEADLINE_MS,
+            )),
         })
     }
 
@@ -260,7 +331,11 @@ fn validate_deadline(
     deadline: Duration,
     maximum_ms: u64,
 ) -> Result<(), McpError> {
-    if deadline < Duration::from_millis(MIN_MCP_DEADLINE_MS)
+    if deadline
+        < Duration::from_millis(iteron_tunables::param_integer(
+            "mcp.supervisor.config.min_mcp_deadline_ms",
+            MIN_MCP_DEADLINE_MS,
+        ))
         || deadline > Duration::from_millis(maximum_ms)
     {
         return Err(McpError::InvalidLaunchConfiguration {

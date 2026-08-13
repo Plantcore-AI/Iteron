@@ -143,7 +143,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 // Everything already streamed is on the record as an interrupted message, so a
                 // retry continues from evidence rather than from nothing (I-39).
                 let detail = if app.retryable_task.is_some() {
-                    format!("{detail}\n\n{RETRY_HINT}")
+                    format!("{detail}\n\n{}", retry_hint())
                 } else {
                     detail
                 };

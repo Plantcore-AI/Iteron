@@ -1655,14 +1655,20 @@ fn d13_14_future_event_tag_is_a_content_free_replay_sentinel() {
         "hash": hash_line(ZERO_HASH, 0, &payload),
         "payload": payload
     });
-    let path = std::env::temp_dir().join(format!(
-        "core-d13-14-future-event-{}-{}.jsonl",
+    let root = std::env::temp_dir().join(format!(
+        "core-d13-14-future-event-{}-{}",
         std::process::id(),
         TEMP_ID.fetch_add(1, Ordering::Relaxed)
     ));
+    std::fs::create_dir(&root).expect("future-event fixture directory creates");
+    let path = root.join("legacy.jsonl");
     std::fs::write(&path, format!("{line}\n")).expect("future-event rollout fixture writes");
     let replayed = replay(&path).expect("a future top-level event tag must not fail replay");
-    std::fs::remove_file(&path).ok();
+    assert!(
+        !root.join(".content").exists(),
+        "legacy replay must not create a private-content store"
+    );
+    std::fs::remove_dir_all(&root).ok();
 
     assert_eq!(replayed.len(), 1);
     assert!(matches!(replayed[0].kind, EventKind::Unknown));

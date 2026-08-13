@@ -557,7 +557,13 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
 }
 
 fn display_notice_on_stderr(message: &str) {
-    let message = iteron_protocol::text::head(&scrub(message), MAX_STDERR_NOTICE_BYTES);
+    let message = iteron_protocol::text::head(
+        &scrub(message),
+        iteron_tunables::param_integer(
+            "cli.output.max_stderr_notice_bytes",
+            MAX_STDERR_NOTICE_BYTES,
+        ),
+    );
     // Notices are observational. A closed stderr must not suppress the final JSON result or alter
     // provider dispatch; stdout failures remain separately tracked by the emitter contract.
     let _ = writeln!(std::io::stderr().lock(), "notice: {message}");

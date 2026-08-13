@@ -56,7 +56,17 @@ impl WindowSize {
                 "terminal window must have a non-zero row and column count",
             ));
         }
-        if rows > MAX_WINDOW_DIMENSION || cols > MAX_WINDOW_DIMENSION {
+        if rows
+            > iteron_tunables::param_integer(
+                "sandbox.pty.max_window_dimension",
+                MAX_WINDOW_DIMENSION,
+            )
+            || cols
+                > iteron_tunables::param_integer(
+                    "sandbox.pty.max_window_dimension",
+                    MAX_WINDOW_DIMENSION,
+                )
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("terminal window exceeds the fixed {MAX_WINDOW_DIMENSION}-cell bound"),

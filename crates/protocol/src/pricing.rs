@@ -39,10 +39,18 @@ where
             let capacity = sequence
                 .size_hint()
                 .unwrap_or(0)
-                .min(MAX_WORKFLOW_COST_PROJECTIONS);
+                .min(iteron_tunables::param_integer(
+                    "protocol.pricing.max_workflow_cost_projections",
+                    MAX_WORKFLOW_COST_PROJECTIONS,
+                ));
             let mut projections = Vec::with_capacity(capacity);
             while let Some(projection) = sequence.next_element()? {
-                if projections.len() == MAX_WORKFLOW_COST_PROJECTIONS {
+                if projections.len()
+                    == iteron_tunables::param_integer(
+                        "protocol.pricing.max_workflow_cost_projections",
+                        MAX_WORKFLOW_COST_PROJECTIONS,
+                    )
+                {
                     return Err(de::Error::invalid_length(
                         projections.len().saturating_add(1),
                         &self,

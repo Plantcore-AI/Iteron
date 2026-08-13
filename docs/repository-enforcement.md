@@ -8,12 +8,14 @@ identities and the protected `main` ruleset have both been verified.
 
 Protect these stable check names:
 
-- `boundary / validate`
-- `docs / strict-build`
+- `ci / required`
 - `review / required-humans`
-- `rust / ubuntu-24.04`
-- `rust / macos-15`
-- `supply / validate`
+
+`ci / required` is an executed aggregate, not an unconditional success shim. It
+fails if routing fails, if a routed lane is skipped, if an unrouted lane runs, or
+if any required Linux lane fails. The ruleset does not require individual routed
+jobs because GitHub treats skipped jobs as acceptable required checks; the
+aggregate closes that ambiguity.
 
 For pull requests, the boundary job builds the validator from the exact base
 commit and uses that trusted binary to inspect the candidate tree as data. It
@@ -31,8 +33,8 @@ never occurs from the main-branch smoke build. Only an Owner-created version tag
 can invoke the protected release workflow that packages the project license,
 audited third-party notices, SBOMs, provenance, and installer canaries.
 
-The review-policy workflow reads GitHub's current review records with a read-only
-token. For every affected primary boundary, base and candidate boundary-reviewer
+The protected-base CI workflow calls the reusable review-policy lane on DGX with
+a read-only token. For every affected primary boundary, base and candidate boundary-reviewer
 set, and per-boundary base and candidate invariant-overlay set, it requires a
 registered human approval on the current head commit. Base and candidate sets are
 separate AND-groups, so a newly named reviewer cannot replace the previous policy's
@@ -71,7 +73,7 @@ Configure a repository ruleset targeting the default branch with:
 - stale approvals dismissed after a new commit;
 - approval of the most recent reviewable push required;
 - all review conversations resolved;
-- the six status checks above required and up to date with the target branch;
+- the two status checks above required and up to date with the target branch;
 - force pushes and branch deletion blocked.
 
 In bootstrap, every CODEOWNERS pattern falls back to the public Owner. This permits
@@ -116,7 +118,7 @@ request change the registry schema, generated views, or enforcement contract. Do
 not weaken the base-policy check to make a one-pull-request migration pass.
 
 Merge queue is not currently supported: `review / required-humans` is evaluated on
-pull-request and review events, not on `merge_group` commits. Do not enable a merge
+pull-request-target and review events, not on `merge_group` commits. Do not enable a merge
 queue or require this check for merge-group SHAs until the review-policy workflow
 has an explicit merge-group design and a queue canary proves all required
 checks report on the queued commit.

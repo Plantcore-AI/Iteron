@@ -78,7 +78,11 @@ impl BaseModelId {
     /// a base model, so there is nothing to recover and nothing to trust.
     pub fn unspecified() -> Self {
         Self {
-            model_family: UNSPECIFIED_FAMILY.to_owned(),
+            model_family: iteron_tunables::param_str(
+                "evolve.base_model.unspecified_family",
+                UNSPECIFIED_FAMILY,
+            )
+            .to_owned(),
             model_id: String::new(),
             model_digest: String::new(),
         }
@@ -86,7 +90,11 @@ impl BaseModelId {
 
     /// Is this the migration sentinel?
     pub fn is_unspecified(&self) -> bool {
-        self.model_family == UNSPECIFIED_FAMILY
+        self.model_family
+            == iteron_tunables::param_str(
+                "evolve.base_model.unspecified_family",
+                UNSPECIFIED_FAMILY,
+            )
     }
 
     /// Is this well-formed? The sentinel passes: a migrated document is still a document.
@@ -113,7 +121,12 @@ impl BaseModelId {
                     _ => "base model digest must not be empty",
                 }));
             }
-            if part.len() > MAX_BASE_MODEL_PART_BYTES {
+            if part.len()
+                > iteron_tunables::param_integer(
+                    "evolve.base_model.max_base_model_part_bytes",
+                    MAX_BASE_MODEL_PART_BYTES,
+                )
+            {
                 return Err(ContractError::InvalidBaseModel(
                     "base model component exceeds its declared bound",
                 ));

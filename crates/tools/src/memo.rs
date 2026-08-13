@@ -36,10 +36,13 @@ pub struct PureMemoCachePolicy {
 impl PureMemoCachePolicy {
     /// Immutable production owner used by every non-test registry. Resume admission can sample
     /// this value without constructing a registry or reading the checkpoint it is validating.
-    pub const fn production_owner() -> Self {
+    pub fn production_owner() -> Self {
         Self {
             max_entries: DEFAULT_CAPACITY,
-            max_key_bytes: MAX_INPUT_BYTES,
+            max_key_bytes: iteron_tunables::param_integer(
+                "tools.memo.max_input_bytes",
+                MAX_INPUT_BYTES,
+            ),
             generation_scoped: true,
         }
     }
@@ -55,7 +58,7 @@ impl Write for BoundedDigestWriter<'_> {
         let Some(total) = self.written.checked_add(bytes.len()) else {
             return Err(io::Error::other("memo input byte count overflow"));
         };
-        if total > MAX_INPUT_BYTES {
+        if total > iteron_tunables::param_integer("tools.memo.max_input_bytes", MAX_INPUT_BYTES) {
             return Err(io::Error::other("memo input exceeds byte ceiling"));
         }
         self.digest.update(bytes);
@@ -69,25 +72,42 @@ impl Write for BoundedDigestWriter<'_> {
 }
 
 fn input_is_keyable(value: &Value, depth: usize, remaining_nodes: &mut usize) -> bool {
-    if depth > MAX_INPUT_DEPTH || *remaining_nodes == 0 {
+    if depth > iteron_tunables::param_integer("tools.memo.max_input_depth", MAX_INPUT_DEPTH)
+        || *remaining_nodes == 0
+    {
         return false;
     }
     *remaining_nodes -= 1;
     match value {
         Value::Array(values) => {
-            values.len() <= MAX_CONTAINER_ITEMS
+            values.len()
+                <= iteron_tunables::param_integer(
+                    "tools.memo.max_container_items",
+                    MAX_CONTAINER_ITEMS,
+                )
                 && values
                     .iter()
                     .all(|value| input_is_keyable(value, depth + 1, remaining_nodes))
         }
         Value::Object(values) => {
-            values.len() <= MAX_CONTAINER_ITEMS
+            values.len()
+                <= iteron_tunables::param_integer(
+                    "tools.memo.max_container_items",
+                    MAX_CONTAINER_ITEMS,
+                )
                 && values.iter().all(|(key, value)| {
-                    key.len() <= MAX_INPUT_BYTES
+                    key.len()
+                        <= iteron_tunables::param_integer(
+                            "tools.memo.max_input_bytes",
+                            MAX_INPUT_BYTES,
+                        )
                         && input_is_keyable(value, depth + 1, remaining_nodes)
                 })
         }
-        Value::String(value) => value.len() <= MAX_INPUT_BYTES,
+        Value::String(value) => {
+            value.len()
+                <= iteron_tunables::param_integer("tools.memo.max_input_bytes", MAX_INPUT_BYTES)
+        }
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
     }
 }
@@ -132,7 +152,13 @@ impl State {
             insertion_order: VecDeque::with_capacity(capacity),
             hits: 0,
             misses: 0,
-            ttl: Duration::from_secs(DEFAULT_TTL_SECONDS),
+            ttl: Duration::from_secs(iteron_tunables::param_u64(
+                "tools.memo.default_ttl_seconds",
+                iteron_tunables::param_integer(
+                    "tools.memo.default_ttl_seconds",
+                    DEFAULT_TTL_SECONDS,
+                ),
+            )),
             policy_installed: false,
             activated: false,
         }
@@ -153,10 +179,13 @@ impl Memo {
     }
 
     pub(crate) fn key(tool_name: &str, input: &Value) -> Option<MemoKey> {
-        if tool_name.len() > MAX_TOOL_NAME_BYTES {
+        if tool_name.len()
+            > iteron_tunables::param_integer("tools.memo.max_tool_name_bytes", MAX_TOOL_NAME_BYTES)
+        {
             return None;
         }
-        let mut remaining_nodes = MAX_INPUT_NODES;
+        let mut remaining_nodes =
+            iteron_tunables::param_integer("tools.memo.max_input_nodes", MAX_INPUT_NODES);
         if !input_is_keyable(input, 0, &mut remaining_nodes) {
             return None;
         }
@@ -243,7 +272,7 @@ impl Memo {
     }
 
     pub(crate) fn install_ttl_seconds(&self, ttl_seconds: u64) -> Result<(), &'static str> {
-        if ttl_seconds > MAX_TTL_SECONDS {
+        if ttl_seconds > iteron_tunables::param_u64("tools.memo.max_ttl_seconds", MAX_TTL_SECONDS) {
             return Err("tool-result cache TTL exceeds 86400 seconds");
         }
         let mut state = self.state.lock().unwrap();
@@ -297,9 +326,11 @@ impl Memo {
 
 impl Default for Memo {
     fn default() -> Self {
+        let capacity =
+            iteron_tunables::param_usize("tools.memo.default_capacity", DEFAULT_CAPACITY);
         Self {
-            state: Mutex::new(State::new(DEFAULT_CAPACITY)),
-            capacity: DEFAULT_CAPACITY,
+            state: Mutex::new(State::new(capacity)),
+            capacity,
         }
     }
 }

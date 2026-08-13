@@ -1,6 +1,6 @@
 use super::DagError;
 use super::reducer::TaskDag;
-use super::types::{Command, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES};
+use super::types::{Command, MAX_LABEL_BYTES, max_message_bytes, max_reason_bytes};
 
 impl TaskDag {
     pub(super) fn validate_command_shape(&self, command: &Command) -> Result<(), DagError> {
@@ -9,13 +9,18 @@ impl TaskDag {
                 if spec.dependencies.len() > self.config.limits.max_edges {
                     return Err(DagError::Capacity { kind: "edge" });
                 }
-                if spec.label.len() > MAX_LABEL_BYTES {
+                if spec.label.len()
+                    > iteron_tunables::param_integer(
+                        "workflow.task_dag.types.max_label_bytes",
+                        MAX_LABEL_BYTES,
+                    )
+                {
                     return Err(DagError::Invalid("task label is over its byte limit"));
                 }
                 spec.budget.validate().map_err(DagError::Budget)
             }
             Command::SendMessage { message, .. } => {
-                if message.payload.len() > MAX_MESSAGE_BYTES {
+                if message.payload.len() > max_message_bytes() {
                     return Err(DagError::Invalid("message is over its byte limit"));
                 }
                 Ok(())
@@ -29,7 +34,7 @@ impl TaskDag {
                 Ok(())
             }
             Command::RequestCancel { reason, .. } => {
-                if reason.len() > MAX_REASON_BYTES {
+                if reason.len() > max_reason_bytes() {
                     return Err(DagError::Invalid("cancel reason is over its byte limit"));
                 }
                 Ok(())
@@ -48,7 +53,7 @@ impl TaskDag {
                 }
                 if detail
                     .as_ref()
-                    .is_some_and(|value| value.len() > MAX_REASON_BYTES)
+                    .is_some_and(|value| value.len() > max_reason_bytes())
                 {
                     return Err(DagError::Invalid(
                         "completion detail is over its byte limit",
@@ -95,7 +100,7 @@ impl TaskDag {
                 }
                 if detail
                     .as_ref()
-                    .is_some_and(|value| value.len() > MAX_REASON_BYTES)
+                    .is_some_and(|value| value.len() > max_reason_bytes())
                 {
                     return Err(DagError::Invalid(
                         "attempt completion detail is over its byte limit",

@@ -134,7 +134,12 @@ pub(crate) struct ImplementationRegistry {
 
 impl ImplementationRegistry {
     fn build() -> Result<Self, RejectionCode> {
-        if DESCRIPTORS.len() > MAX_REGISTERED_IMPLEMENTATIONS {
+        if DESCRIPTORS.len()
+            > iteron_tunables::param_integer(
+                "cli.bundle_adapter.schema.max_registered_implementations",
+                MAX_REGISTERED_IMPLEMENTATIONS,
+            )
+        {
             return Err(RejectionCode::RegistryBoundExceeded);
         }
         let mut entries = Vec::with_capacity(DESCRIPTORS.len());
@@ -150,7 +155,12 @@ impl ImplementationRegistry {
             validate_artifact(&artifact)?;
             let bytes =
                 serde_json::to_vec(&artifact).map_err(|_| RejectionCode::MalformedArtifact)?;
-            if bytes.len() > MAX_IMPLEMENTATION_ARTIFACT_BYTES {
+            if bytes.len()
+                > iteron_tunables::param_integer(
+                    "cli.bundle_adapter.schema.max_implementation_artifact_bytes",
+                    MAX_IMPLEMENTATION_ARTIFACT_BYTES,
+                )
+            {
                 return Err(RejectionCode::MalformedArtifact);
             }
             let round_trip: ImplementationArtifact =

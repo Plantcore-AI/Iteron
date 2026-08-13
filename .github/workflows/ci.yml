@@ -1,65 +1,175 @@
 name: ci
-# These lanes no longer run automatically. They need no GitHub-hosted runner, so they run on
-# hardware we already own and publish the same status contexts from there:
-#
-#   rust / macos-15      developer Mac, pre-push
-#   rust / ubuntu-24.04  DGX box
-#   boundary / validate  DGX box
-#   supply / validate    DGX box
-#   docs / strict-build  DGX box  (see docs.yml)
-#
-# all via `release-tools/local_gate.sh <macos|linux>`. A branch ruleset matches a required check
-# by context NAME, not by producer, so the protection is unchanged. What changes is that a status
-# is now executor-attested rather than machine-enforced, and a pull request nobody gates stays
-# blocked; both are documented in CONTRIBUTING.md.
-#
-# `review / required-humans` stays on Actions because it reads the pull request's own review
-# state, which has no local equivalent. So does `windows / check` (see `windows.yml`): Windows is
-# the one platform we cannot self-host. That lane is NON-BLOCKING and reports compilation only —
-# there is no Windows sandbox backend, no Windows release target, and no Windows support. Its
-# tracking issues are closed with nothing delivered, so the lane exists to keep the gap visible.
-#
-# This workflow is kept, in full, behind manual dispatch: it is the fallback when Actions
-# capacity is available again and the reference definition these local lanes mirror.
+# The protected base workflow is the only pull-request CI entry point. It classifies the diff,
+# fans out only the required Linux lanes, and runs them on the repository-scoped DGX Spark.
+# `pull_request_target` is intentional: an external fork cannot replace this workflow before the
+# trusted-base guard refuses execution. Persistent self-hosted runners never execute fork code.
 on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review, converted_to_draft]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Validation depth for a trusted manual run
+        required: true
+        type: choice
+        default: full
+        options: [full, docs, dependencies, infrastructure]
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 env:
+  GH_CLI_LINUX_ARM64_SHA256: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+  GH_CLI_VERSION: 2.97.0
   RUSTUP_TOOLCHAIN: 1.90.0
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ci-${{ github.event.pull_request.number || github.ref }}-${{
+      github.event_name == 'pull_request_review' && 'review' || 'validation'
+    }}
   cancel-in-progress: true
 
 jobs:
+  route:
+    name: ci / route
+    runs-on: [self-hosted, Linux, ARM64, dgx]
+    timeout-minutes: 5
+    outputs:
+      audit: ${{ steps.classify.outputs.audit }}
+      boundary: ${{ steps.classify.outputs.boundary }}
+      change_class: ${{ steps.classify.outputs.change_class }}
+      dependency_check: ${{ steps.classify.outputs.dependency_check }}
+      docs: ${{ steps.classify.outputs.docs }}
+      evolution: ${{ steps.classify.outputs.evolution }}
+      perf: ${{ steps.classify.outputs.perf }}
+      release_build: ${{ steps.classify.outputs.release_build }}
+      rust: ${{ steps.classify.outputs.rust }}
+      supply: ${{ steps.classify.outputs.supply }}
+    steps:
+      - name: check out trusted base router
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - name: classify trusted change
+        id: classify
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const path = require("node:path");
+            const {classify} = require(
+              path.join(process.env.GITHUB_WORKSPACE, "release-tools/ci_route.js")
+            );
+            const event = context.eventName;
+            const pr = context.payload.pull_request;
+            const manual = context.payload.inputs?.profile;
+
+            if (pr && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed(
+                "External fork code is not permitted on the persistent DGX runner. " +
+                "A maintainer must provision an isolated ephemeral runner first."
+              );
+              return;
+            }
+
+            let files = [];
+            if (pr) {
+              const rows = await github.paginate(github.rest.pulls.listFiles, {
+                ...context.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              files = rows.map((row) => row.filename);
+            }
+            const actor = pr?.user?.login || context.actor;
+            const outputs = classify({
+              event,
+              files,
+              actor,
+              draft: Boolean(pr?.draft),
+              manual,
+            });
+            const changeClass = outputs.change_class;
+            for (const [name, value] of Object.entries(outputs)) {
+              core.setOutput(name, String(value));
+            }
+            await core.summary
+              .addHeading("CI routing")
+              .addTable([
+                [{data: "Class", header: true}, {data: changeClass, header: false}],
+                [{data: "Changed files", header: true}, {data: String(files.length), header: false}],
+                [{data: "Linux lanes", header: true}, {
+                  data: Object.entries(outputs)
+                    .filter(([name, value]) => name !== "change_class" && value === true)
+                    .map(([name]) => name)
+                    .join(", ") || "review only",
+                  header: false,
+                }],
+              ])
+              .write();
+
   supply:
     name: supply / validate
-    runs-on: ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.supply == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: validate installer, release helpers, and workflows
         run: release-tools/validate.sh
 
   dependency-audit:
     name: supply / dependency audit
-    runs-on: ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.audit == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: audit locked dependencies against the pinned RustSec database
-        run: release-tools/audit_dependencies.sh linux-x86_64
+        run: release-tools/audit_dependencies.sh
+
+  dependency-check:
+    name: rust / dependency-check
+    needs: route
+    if: needs.route.outputs.dependency_check == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
+    timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: /var/tmp/iteron-ci-target
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+      - name: check grouped dependency update on Linux
+        run: cargo check --workspace --all-targets --locked
 
   boundary:
     name: boundary / validate
-    runs-on: ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.boundary == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 15
     permissions:
       attestations: read
@@ -67,10 +177,30 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+      - name: install pinned GitHub CLI with release-attestation support
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root=$(mktemp -d "$RUNNER_TEMP/iteron-gh-cli.XXXXXX")
+          archive=$tool_root/gh.tar.gz
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_arm64.tar.gz"
+          printf '%s  %s\n' "$GH_CLI_LINUX_ARM64_SHA256" "$archive" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$archive" --directory "$tool_root"
+          gh_root=$tool_root/gh_${GH_CLI_VERSION}_linux_arm64
+          test -x "$gh_root/bin/gh"
+          "$gh_root/bin/gh" release verify --help >/dev/null
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
       - name: enforce the complete microkernel conformance matrix
         run: cargo run --locked -p iteron-xtask -- conformance kernel
       # The CLI reference is generated from the argument parser. A shipped flag with no doc entry
@@ -117,7 +247,7 @@ jobs:
         run: cargo run --locked -p iteron-xtask -- boundaries check
       - name: materialize trusted base policy
         id: policy
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -127,7 +257,7 @@ jobs:
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == pull_request ]]; then
+          if [[ "$EVENT_NAME" == pull_request_target ]]; then
             diff_base_sha=$PR_BASE_SHA
             policy_sha=$PR_BASE_SHA
           else
@@ -147,6 +277,9 @@ jobs:
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$policy_sha" "$diff_base_sha"
           git merge-base --is-ancestor "$diff_base_sha" "$candidate_sha"
+          # This repository uses a persistent runner. Actions removes RUNNER_TEMP between jobs,
+          # but Git keeps the vanished auxiliary worktree registered in the checkout metadata.
+          git worktree prune --expire now
           git worktree add --detach "$POLICY_ROOT" "$policy_sha"
           {
             echo "diff-base-sha=$diff_base_sha"
@@ -154,7 +287,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: materialize one-time trusted-policy compatibility projection
         id: compatibility
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         shell: bash
         env:
           LEGACY_POLICY_ANCHOR_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
@@ -273,11 +406,11 @@ jobs:
             echo "candidate-root=$candidate_root"
           } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
         run: cargo build --locked -p iteron-xtask
       - name: verify captured client runtime evidence with trusted base policy
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         shell: bash
         env:
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
@@ -350,7 +483,7 @@ jobs:
           fi
           python3 -I "$verifier" "${arguments[@]}"
       - name: validate candidate against published schema chronology
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -361,6 +494,17 @@ jobs:
           set -euo pipefail
           if [[ ! -f "$POLICY_ROOT/release-tools/schema_release.py" ]]; then
             printf 'published schema chronology activates after the bootstrap policy lands\n'
+            exit 0
+          fi
+
+          candidate_schema=$CANDIDATE_ROOT/governance/schema-compatibility.json
+          policy_schema=$POLICY_ROOT/governance/schema-compatibility.json
+          for schema in "$candidate_schema" "$policy_schema"; do
+            test ! -L "$schema"
+            test -f "$schema"
+          done
+          if cmp -s "$policy_schema" "$candidate_schema"; then
+            printf 'schema contract is unchanged from trusted base\n'
             exit 0
           fi
 
@@ -424,7 +568,7 @@ jobs:
             --repo "$CANDIDATE_ROOT" \
             schema-compat check-release --base "$previous_commit"
       - name: validate candidate against its immediate trusted base
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         env:
           DIFF_BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
@@ -448,20 +592,20 @@ jobs:
             printf 'one-time schema compatibility bootstrap; no trusted contract exists yet\n'
           fi
       - name: validate candidate with trusted base policy
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         env:
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: summarize pull request boundary impact
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/iteron-xtask
         run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
       - name: validate pull request responsibility contract
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
@@ -480,19 +624,42 @@ jobs:
           "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
           boundaries check
 
+  docs:
+    name: docs / strict-build
+    needs: route
+    if: needs.route.outputs.docs == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-docs.lock
+      - name: validate documentation sources
+        run: release-tools/check_docs.sh
+      - name: install hash-locked documentation dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          -r requirements-docs.lock
+      - name: build documentation with warnings denied
+        env:
+          NO_MKDOCS_2_WARNING: "true"
+          PYTHONUTF8: "1"
+        run: mkdocs build --strict --clean
+
   test:
-    name: rust / ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            advisory: false
-          - os: macos-15
-            advisory: false
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.advisory }}
+    name: rust / ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.rust == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 50
+    env:
+      CARGO_TARGET_DIR: /var/tmp/iteron-ci-target
     defaults:
       run:
         shell: bash
@@ -504,30 +671,20 @@ jobs:
       # the same reason.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        shell: bash
-        run: >-
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-          --component clippy --component rustfmt
-      # Ubuntu 24.04 restricts unprivileged user namespaces unless the invoking program has an
-      # explicit AppArmor profile. Install bwrap, attach permission only to its fixed system path,
-      # and let the live test fail if the namespace boundary still cannot be created.
-      - name: install and authorize bubblewrap boundary (linux)
-        if: runner.os == 'Linux'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          components: clippy,rustfmt
+      # The runner administrator provisions this host boundary once. CI verifies it instead of
+      # mutating the persistent DGX with passwordless sudo on every pull request.
+      - name: verify bubblewrap boundary is provisioned
         run: |
-          sudo apt-get update
-          sudo apt-get install -y apparmor apparmor-utils bubblewrap
-          sudo tee /etc/apparmor.d/core-ci-bwrap >/dev/null <<'PROFILE'
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile core-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          PROFILE
-          sudo apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
+          command -v bwrap
+          bwrap --version
       - name: format
         shell: bash
         run: cargo fmt --all -- --check
@@ -550,15 +707,22 @@ jobs:
   # does not. `ITERON_HARNESS_TAX_BUDGET_US` re-bases it if this runner is simply slower.
   harness-latency:
     name: perf / harness latency
-    runs-on: ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.perf == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
     continue-on-error: true
+    env:
+      CARGO_TARGET_DIR: /var/tmp/iteron-ci-target
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       # `--ignored` is the whole gate: the merge lane never spends wall-clock time on timing, and
       # this job never blocks a merge on a runner having a bad minute.
       - name: harness-attributable latency budget
@@ -568,17 +732,24 @@ jobs:
 
   evolution-gate:
     name: gate / evolution
-    runs-on: ubuntu-24.04
+    needs: route
+    if: needs.route.outputs.evolution == 'true'
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: /var/tmp/iteron-ci-target
     steps:
       # The evolution rows cite tests in crates/agents and crates/cli as well as crates/evolve, and
       # the row validator resolves every citation against the checkout. It reads files, not git
       # history, so a shallow checkout is sufficient here.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       # Fails on any row that names no plane placement, cites a test that does not exist, names a
       # world module that is not on disk, or leaves a proven module or algebra operator unclaimed.
       # There is no target-only state to suppress: an unbacked row is a red gate.
@@ -597,24 +768,152 @@ jobs:
         run: cargo test --locked -p iteron-evolve --all-targets
 
   release-build:
-    name: release build / ${{ matrix.os }}
-    if: github.event_name == 'push'
-    needs: [boundary, dependency-audit, test]
-    runs-on: ${{ matrix.os }}
+    name: release build / linux-arm64
+    if: needs.route.outputs.release_build == 'true'
+    needs: [route, boundary, dependency-audit, test]
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
+    env:
+      CARGO_TARGET_DIR: /var/tmp/iteron-ci-target
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        shell: bash
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       - name: build release
         shell: bash
         run: cargo build --release -p iteron-cli --locked
       # This main-branch smoke build never distributes a naked binary. Only the
       # protected tag workflow packages licenses, notices, SBOMs, and provenance.
+
+  review-policy:
+    name: review / required-humans
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      github.event_name == 'pull_request_review'
+    uses: ./.github/workflows/review-policy.yml
+
+  required:
+    name: ${{ github.event_name == 'pull_request_review' && 'ci / review-event' || 'ci / required' }}
+    if: always()
+    needs:
+      - route
+      - supply
+      - dependency-audit
+      - dependency-check
+      - boundary
+      - docs
+      - test
+      - harness-latency
+      - evolution-gate
+      - release-build
+    runs-on: [self-hosted, Linux, ARM64, dgx]
+    timeout-minutes: 5
+    steps:
+      - name: prove every routed lane executed successfully
+        shell: bash
+        env:
+          AUDIT_EXPECTED: ${{ needs.route.outputs.audit }}
+          AUDIT_RESULT: ${{ needs.dependency-audit.result }}
+          BOUNDARY_EXPECTED: ${{ needs.route.outputs.boundary }}
+          BOUNDARY_RESULT: ${{ needs.boundary.result }}
+          CHANGE_CLASS: ${{ needs.route.outputs.change_class }}
+          DEPENDENCY_CHECK_EXPECTED: ${{ needs.route.outputs.dependency_check }}
+          DEPENDENCY_CHECK_RESULT: ${{ needs.dependency-check.result }}
+          DOCS_EXPECTED: ${{ needs.route.outputs.docs }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          EVOLUTION_EXPECTED: ${{ needs.route.outputs.evolution }}
+          EVOLUTION_RESULT: ${{ needs.evolution-gate.result }}
+          PERF_EXPECTED: ${{ needs.route.outputs.perf }}
+          PERF_RESULT: ${{ needs.harness-latency.result }}
+          RELEASE_EXPECTED: ${{ needs.route.outputs.release_build }}
+          RELEASE_RESULT: ${{ needs.release-build.result }}
+          ROUTE_RESULT: ${{ needs.route.result }}
+          RUST_EXPECTED: ${{ needs.route.outputs.rust }}
+          RUST_RESULT: ${{ needs.test.result }}
+          SUPPLY_EXPECTED: ${{ needs.route.outputs.supply }}
+          SUPPLY_RESULT: ${{ needs.supply.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          rows=()
+
+          require_result() {
+            local name=$1 expected=$2 result=$3
+            rows+=("| $name | $expected | $result |")
+            if [[ "$expected" == true ]]; then
+              if [[ "$result" != success ]]; then
+                echo "required lane $name did not execute successfully: $result" >&2
+                failed=1
+              fi
+            elif [[ "$result" != skipped ]]; then
+              echo "unrouted lane $name unexpectedly executed: $result" >&2
+              failed=1
+            fi
+          }
+
+          if [[ "$ROUTE_RESULT" != success ]]; then
+            echo "route did not execute successfully: $ROUTE_RESULT" >&2
+            failed=1
+          fi
+          require_result supply "$SUPPLY_EXPECTED" "$SUPPLY_RESULT"
+          require_result dependency-audit "$AUDIT_EXPECTED" "$AUDIT_RESULT"
+          require_result dependency-check "$DEPENDENCY_CHECK_EXPECTED" "$DEPENDENCY_CHECK_RESULT"
+          require_result boundary "$BOUNDARY_EXPECTED" "$BOUNDARY_RESULT"
+          require_result docs "$DOCS_EXPECTED" "$DOCS_RESULT"
+          require_result rust "$RUST_EXPECTED" "$RUST_RESULT"
+          require_result perf "$PERF_EXPECTED" "$PERF_RESULT"
+          require_result evolution "$EVOLUTION_EXPECTED" "$EVOLUTION_RESULT"
+          require_result release-build "$RELEASE_EXPECTED" "$RELEASE_RESULT"
+
+          {
+            echo "## Required CI result"
+            echo
+            echo "Change class: \`$CHANGE_CLASS\`"
+            echo
+            echo "| Lane | Routed | Result |"
+            echo "| --- | --- | --- |"
+            printf '%s\n' "${rows[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$failed"
+      - name: report executed minutes by lane
+        if: always()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {...context.repo, run_id: context.runId, per_page: 100}
+            );
+            const completed = jobs.filter((job) => job.started_at && job.completed_at);
+            const rows = completed.map((job) => {
+              const milliseconds =
+                new Date(job.completed_at).getTime() - new Date(job.started_at).getTime();
+              return [
+                job.name,
+                job.conclusion || job.status,
+                (milliseconds / 60000).toFixed(2),
+              ];
+            });
+            const total = completed.reduce((sum, job) => {
+              return sum +
+                (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime());
+            }, 0);
+            await core.summary
+              .addHeading("Executed CI minutes")
+              .addTable([
+                [
+                  {data: "Lane", header: true},
+                  {data: "Result", header: true},
+                  {data: "Minutes", header: true},
+                ],
+                ...rows,
+              ])
+              .addRaw(`\nTotal completed job minutes: ${(total / 60000).toFixed(2)}\n`)
+              .write();

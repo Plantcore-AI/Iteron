@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 
 use super::hash::digest_json;
 use super::types::{
-    HARD_MAX_EDGES, HARD_MAX_EVENTS, HARD_MAX_MESSAGES, HARD_MAX_TASKS, valid_digest,
+    HARD_MAX_COST_MICROUSD, HARD_MAX_TOKENS, HARD_MAX_TURNS, hard_max_edges, hard_max_events,
+    hard_max_messages, hard_max_tasks, valid_digest,
 };
 use super::{
     Actor, AttemptAssignment, AttemptCompletion, AttemptDisposition, AttemptId, AttemptRetryCause,
@@ -32,6 +33,18 @@ const TASK_WALL_CEILING_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 /// Characters retained from a recovery reason before it is journaled. A reason is diagnostic text
 /// from an untrusted child, so it is truncated rather than allowed to size the durable log.
 const BOUNDED_REASON_CHARS: usize = 1_024;
+
+/// Read twice in `open` (graph budget and task budget), so the tier-2 lookup is centralised here
+/// rather than duplicated. With no profile it returns the compiled constant.
+fn task_wall_ceiling_ms() -> u64 {
+    iteron_tunables::param_u64(
+        "workflow.task_dag.runtime.task_wall_ceiling_ms",
+        iteron_tunables::param_integer(
+            "workflow.task_dag.runtime.task_wall_ceiling_ms",
+            TASK_WALL_CEILING_MS,
+        ),
+    )
+}
 
 struct Backend(TaskDagStore);
 
@@ -110,10 +123,10 @@ impl ExecutionLedger {
             // already-admitted unrelated work. The reducer's immutable hard ceilings bound the
             // evidence plane, while `RunState::admit_agent_call` remains the exact authority
             // boundary for real child effects.
-            max_tasks: HARD_MAX_TASKS,
-            max_edges: HARD_MAX_EDGES,
-            max_messages: HARD_MAX_MESSAGES,
-            max_events: HARD_MAX_EVENTS,
+            max_tasks: hard_max_tasks(),
+            max_edges: hard_max_edges(),
+            max_messages: hard_max_messages(),
+            max_events: hard_max_events(),
             ..Default::default()
         };
         limits.validate().map_err(DagError::InvalidConfig)?;
@@ -121,17 +134,43 @@ impl ExecutionLedger {
         // These are accounting ceilings, not new authority: the kernel spawner still owns the
         // real model/tool/cost limits. The values exactly fit the reducer's hard root ceilings at
         // the maximum supported 1,000 logical calls.
+        // These were hand-copied literals of the reducer's hard root ceilings. Naming the ceilings
+        // instead keeps the two in step once a profile can move them: a lowered ceiling now lowers
+        // the graph budget rather than making `Config::new` reject its own defaults. The compiled
+        // values are byte-for-byte the literals they replace.
         let graph_budget = TaskBudget {
-            max_turns: 1_000_000,
-            max_tokens: 100_000_000_000,
-            max_cost_microusd: 100_000_000_000_000,
-            max_wall_ms: TASK_WALL_CEILING_MS,
+            max_turns: u32::try_from(iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_turns",
+                u64::from(HARD_MAX_TURNS),
+            ))
+            .unwrap_or(HARD_MAX_TURNS),
+            max_tokens: iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_tokens",
+                HARD_MAX_TOKENS,
+            ),
+            max_cost_microusd: iteron_tunables::param_u64(
+                "workflow.task_dag.types.hard_max_cost_microusd",
+                HARD_MAX_COST_MICROUSD,
+            ),
+            max_wall_ms: task_wall_ceiling_ms(),
         };
         let task_budget = TaskBudget {
             max_turns: u32::try_from(max_calls).unwrap_or(u32::MAX),
-            max_tokens: ATTEMPT_TOKEN_CEILING,
-            max_cost_microusd: TASK_COST_CEILING_MICROUSD,
-            max_wall_ms: TASK_WALL_CEILING_MS,
+            max_tokens: iteron_tunables::param_u64(
+                "workflow.task_dag.runtime.attempt_token_ceiling",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.runtime.attempt_token_ceiling",
+                    ATTEMPT_TOKEN_CEILING,
+                ),
+            ),
+            max_cost_microusd: iteron_tunables::param_u64(
+                "workflow.task_dag.runtime.task_cost_ceiling_microusd",
+                iteron_tunables::param_integer(
+                    "workflow.task_dag.runtime.task_cost_ceiling_microusd",
+                    TASK_COST_CEILING_MICROUSD,
+                ),
+            ),
+            max_wall_ms: task_wall_ceiling_ms(),
         };
         let config =
             Config::new(run_id.as_str(), limits, graph_budget).map_err(DagError::InvalidConfig)?;
@@ -151,21 +190,30 @@ impl ExecutionLedger {
                 .iter()
                 .map(|task| task.spec.id.0)
                 .max()
-                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
+                .unwrap_or(iteron_tunables::param_integer(
+                    "workflow.task_dag.runtime.empty_snapshot_max_id",
+                    EMPTY_SNAPSHOT_MAX_ID,
+                ))
                 .saturating_add(1);
             let next_attempt = snapshot
                 .attempts
                 .iter()
                 .map(|attempt| attempt.spec.id.0)
                 .max()
-                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
+                .unwrap_or(iteron_tunables::param_integer(
+                    "workflow.task_dag.runtime.empty_snapshot_max_id",
+                    EMPTY_SNAPSHOT_MAX_ID,
+                ))
                 .saturating_add(1);
             let next_message = snapshot
                 .messages
                 .iter()
                 .map(|message| message.id.0)
                 .max()
-                .unwrap_or(EMPTY_SNAPSHOT_MAX_ID)
+                .unwrap_or(iteron_tunables::param_integer(
+                    "workflow.task_dag.runtime.empty_snapshot_max_id",
+                    EMPTY_SNAPSHOT_MAX_ID,
+                ))
                 .saturating_add(1);
             let mut declaration_tasks = BTreeMap::new();
             for task in &snapshot.tasks {
@@ -679,7 +727,13 @@ fn bounded_reason(value: &str) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
-        .take(BOUNDED_REASON_CHARS)
+        .take(iteron_tunables::param_usize(
+            "workflow.task_dag.runtime.bounded_reason_chars",
+            iteron_tunables::param_integer(
+                "workflow.task_dag.runtime.bounded_reason_chars",
+                BOUNDED_REASON_CHARS,
+            ),
+        ))
         .collect()
 }
 

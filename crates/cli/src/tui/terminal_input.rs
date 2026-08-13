@@ -69,7 +69,10 @@ impl TerminalInput {
             };
 
             let mut supported = false;
-            for _ in 0..MAX_STARTUP_REPLAY_EVENTS {
+            for _ in 0..iteron_tunables::param_integer(
+                "cli.tui.terminal_input.max_startup_replay_events",
+                MAX_STARTUP_REPLAY_EVENTS,
+            ) {
                 let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                     return supported;
                 };
@@ -89,8 +92,12 @@ impl TerminalInput {
         }
         #[cfg(unix)]
         {
-            crossterm::terminal::supports_keyboard_enhancement()
-                .unwrap_or(KEYBOARD_ENHANCEMENT_UNKNOWN)
+            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(
+                iteron_tunables::param_bool(
+                    "cli.tui.terminal_input.keyboard_enhancement_unknown",
+                    KEYBOARD_ENHANCEMENT_UNKNOWN,
+                ),
+            )
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -108,7 +115,12 @@ impl TerminalInput {
         let deadline = self.begin_query(write_query_until)?;
 
         loop {
-            if self.queued.len() >= MAX_STARTUP_REPLAY_EVENTS {
+            if self.queued.len()
+                >= iteron_tunables::param_integer(
+                    "cli.tui.terminal_input.max_startup_replay_events",
+                    MAX_STARTUP_REPLAY_EVENTS,
+                )
+            {
                 return None;
             }
             let remaining = deadline.checked_duration_since(Instant::now())?;
@@ -192,7 +204,11 @@ impl TerminalInput {
         write: impl FnOnce(Instant) -> std::io::Result<()>,
     ) -> Option<Instant> {
         self.osc11.arm();
-        let deadline = Instant::now() + OSC11_TIMEOUT;
+        let deadline = Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.tui.terminal_input.osc11_timeout",
+                OSC11_TIMEOUT,
+            );
         // Even a failed write may have emitted a query prefix. Stay armed so a terminal response to
         // that partial write can never become synthetic operator input.
         write(deadline).ok().map(|()| deadline)
@@ -245,11 +261,13 @@ impl KeyboardResponseDemux {
     }
 
     fn expire(&mut self, now: Instant, forwarded: &mut VecDeque<Event>) {
-        if self
-            .candidate
-            .as_ref()
-            .is_some_and(|candidate| now.duration_since(candidate.started) >= CANDIDATE_TIMEOUT)
-        {
+        if self.candidate.as_ref().is_some_and(|candidate| {
+            now.duration_since(candidate.started)
+                >= iteron_tunables::param_duration(
+                    "cli.tui.terminal_input.candidate_timeout",
+                    CANDIDATE_TIMEOUT,
+                )
+        }) {
             self.replay_candidate(forwarded);
         }
     }
@@ -262,7 +280,12 @@ impl KeyboardResponseDemux {
         self.candidate
             .as_ref()
             .and_then(|candidate| {
-                (candidate.started + CANDIDATE_TIMEOUT).checked_duration_since(now)
+                (candidate.started
+                    + iteron_tunables::param_duration(
+                        "cli.tui.terminal_input.candidate_timeout",
+                        CANDIDATE_TIMEOUT,
+                    ))
+                .checked_duration_since(now)
             })
             .map_or(requested, |candidate_wait| requested.min(candidate_wait))
     }
@@ -296,7 +319,12 @@ impl KeyboardResponseDemux {
             return None;
         };
         if is_key_release(&event) {
-            if candidate.events.len() >= MAX_KEYBOARD_RESPONSE_EVENTS {
+            if candidate.events.len()
+                >= iteron_tunables::param_integer(
+                    "cli.tui.terminal_input.max_keyboard_response_events",
+                    MAX_KEYBOARD_RESPONSE_EVENTS,
+                )
+            {
                 self.replay_candidate(forwarded);
                 forwarded.push_back(event);
             } else {
@@ -313,8 +341,17 @@ impl KeyboardResponseDemux {
         candidate.text.push(character);
 
         const PREFIX: &str = "\x1b[?";
-        if candidate.events.len() > MAX_KEYBOARD_RESPONSE_EVENTS
-            || candidate.text.len() > PREFIX.len() + MAX_KEYBOARD_RESPONSE_CHARS
+        if candidate.events.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.terminal_input.max_keyboard_response_events",
+                MAX_KEYBOARD_RESPONSE_EVENTS,
+            )
+            || candidate.text.len()
+                > PREFIX.len()
+                    + iteron_tunables::param_integer(
+                        "cli.tui.terminal_input.max_keyboard_response_chars",
+                        MAX_KEYBOARD_RESPONSE_CHARS,
+                    )
             || (candidate.text.len() <= PREFIX.len() && !PREFIX.starts_with(&candidate.text))
         {
             self.replay_candidate(forwarded);
@@ -352,7 +389,11 @@ impl KeyboardResponseDemux {
 
 fn valid_csi_parameters(parameters: &str) -> bool {
     !parameters.is_empty()
-        && parameters.len() <= MAX_KEYBOARD_RESPONSE_CHARS
+        && parameters.len()
+            <= iteron_tunables::param_integer(
+                "cli.tui.terminal_input.max_keyboard_response_chars",
+                MAX_KEYBOARD_RESPONSE_CHARS,
+            )
         && parameters.split(';').all(|parameter| {
             !parameter.is_empty() && parameter.bytes().all(|byte| byte.is_ascii_digit())
         })
@@ -412,17 +453,24 @@ impl Osc11Demux {
         self.candidate
             .as_ref()
             .and_then(|candidate| {
-                (candidate.started + CANDIDATE_TIMEOUT).checked_duration_since(now)
+                (candidate.started
+                    + iteron_tunables::param_duration(
+                        "cli.tui.terminal_input.candidate_timeout",
+                        CANDIDATE_TIMEOUT,
+                    ))
+                .checked_duration_since(now)
             })
             .map_or(requested, |candidate_wait| requested.min(candidate_wait))
     }
 
     fn expire(&mut self, now: Instant, queued: &mut VecDeque<Event>) {
-        if self
-            .candidate
-            .as_ref()
-            .is_some_and(|candidate| now.duration_since(candidate.started) >= CANDIDATE_TIMEOUT)
-        {
+        if self.candidate.as_ref().is_some_and(|candidate| {
+            now.duration_since(candidate.started)
+                >= iteron_tunables::param_duration(
+                    "cli.tui.terminal_input.candidate_timeout",
+                    CANDIDATE_TIMEOUT,
+                )
+        }) {
             self.replay_candidate(queued);
         }
     }
@@ -485,7 +533,13 @@ impl Osc11Demux {
                 || character == 'g'
                 || character == 'b'
         };
-        if !valid || candidate.text.len() >= 3 + MAX_OSC11_BODY_CHARS {
+        if !valid
+            || candidate.text.len()
+                >= 3 + iteron_tunables::param_integer(
+                    "cli.tui.terminal_input.max_osc11_body_chars",
+                    MAX_OSC11_BODY_CHARS,
+                )
+        {
             self.replay_candidate(queued);
             queued.push_back(event);
             return None;

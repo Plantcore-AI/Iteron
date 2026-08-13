@@ -293,7 +293,12 @@ impl RoleSpecificModelMapIdentity {
     pub(crate) fn from_routes(routes: &BTreeMap<String, String>) -> Result<Self, &'static str> {
         let entry_count = u16::try_from(routes.len())
             .map_err(|_| "role-specific model map exceeds its runtime entry range")?;
-        if routes.len() > Self::MAX_ENTRIES {
+        if routes.len()
+            > iteron_tunables::param_integer(
+                "cli.runtime_tunables.execution_policy.max_entries",
+                Self::MAX_ENTRIES,
+            )
+        {
             return Err("role-specific model map exceeds the 256-entry owner envelope");
         }
         let mut digest = Sha256::new();
@@ -461,7 +466,7 @@ impl ExecutionRuntimePolicy {
                 max_output_tokens: decomposition.max_output_tokens.min(
                     budget
                         .max_tokens
-                        .unwrap_or(ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING),
+                        .unwrap_or(iteron_tunables::param_integer("cli.runtime_tunables.execution_policy.absent_budget_decomposition_token_ceiling", ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING)),
                 ),
                 effort: decomposition.effort,
                 thinking_tokens: decomposition.thinking_tokens,

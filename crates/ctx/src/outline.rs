@@ -66,7 +66,9 @@ fn is_decl(line: &str) -> bool {
         "async def ",
         "module ",
     ];
-    KWS.iter().any(|k| t.starts_with(k))
+    iteron_tunables::param_str_list("ctx.outline.kws", KWS)
+        .iter()
+        .any(|k| t.starts_with(k))
 }
 
 #[derive(Debug)]
@@ -81,15 +83,19 @@ struct OutlineFile {
 fn query_identifiers(query: &str) -> Vec<String> {
     const MAX_IDENTIFIERS: usize = 64;
     const MAX_IDENTIFIER_CHARS: usize = 128;
+    let max_identifiers =
+        iteron_tunables::param_usize("ctx.outline.max_identifiers", MAX_IDENTIFIERS);
+    let max_identifier_chars =
+        iteron_tunables::param_usize("ctx.outline.max_identifier_chars", MAX_IDENTIFIER_CHARS);
     let mut identifiers = Vec::new();
     for token in query
         .split(|character: char| !(character.is_alphanumeric() || character == '_'))
         .filter(|token| token.chars().count() >= 3)
-        .take(MAX_IDENTIFIERS)
+        .take(max_identifiers)
     {
         let identifier: String = token
             .chars()
-            .take(MAX_IDENTIFIER_CHARS)
+            .take(max_identifier_chars)
             .flat_map(char::to_lowercase)
             .collect();
         if !identifiers.contains(&identifier) {
@@ -185,7 +191,13 @@ pub(crate) fn repo_outline_for_task_at_depth(
     token_budget: usize,
     query: &str,
 ) -> String {
-    repo_outline_for_task_at_limits(root, MAX_OUTLINE_CODE_FILES, depth, token_budget, query)
+    repo_outline_for_task_at_limits(
+        root,
+        iteron_tunables::param_usize("ctx.outline.max_outline_code_files", MAX_OUTLINE_CODE_FILES),
+        depth,
+        token_budget,
+        query,
+    )
 }
 
 fn repo_outline_for_task_at_limits(
@@ -195,8 +207,32 @@ fn repo_outline_for_task_at_limits(
     token_budget: usize,
     query: &str,
 ) -> String {
-    let max_files = max_files.min(MAX_OUTLINE_CODE_FILES);
-    let bounded_query = iteron_protocol::text::head(query, MAX_OUTLINE_QUERY_BYTES);
+    let max_outline_code_files =
+        iteron_tunables::param_usize("ctx.outline.max_outline_code_files", MAX_OUTLINE_CODE_FILES);
+    let max_outline_entries =
+        iteron_tunables::param_usize("ctx.outline.max_outline_entries", MAX_OUTLINE_ENTRIES);
+    let max_outline_source_bytes = iteron_tunables::param_usize(
+        "ctx.outline.max_outline_source_bytes",
+        iteron_tunables::param_integer(
+            "ctx.outline.max_outline_source_bytes",
+            MAX_OUTLINE_SOURCE_BYTES,
+        ),
+    );
+    let max_outline_total_source_bytes = iteron_tunables::param_usize(
+        "ctx.outline.max_outline_total_source_bytes",
+        iteron_tunables::param_integer(
+            "ctx.outline.max_outline_total_source_bytes",
+            MAX_OUTLINE_TOTAL_SOURCE_BYTES,
+        ),
+    );
+    let max_files = max_files.min(max_outline_code_files);
+    let bounded_query = iteron_protocol::text::head(
+        query,
+        iteron_tunables::param_integer(
+            "ctx.outline.max_outline_query_bytes",
+            MAX_OUTLINE_QUERY_BYTES,
+        ),
+    );
     let identifiers = query_identifiers(&bounded_query);
     let mut files: Vec<OutlineFile> = Vec::new();
     let mut rejected = 0usize;
@@ -208,11 +244,11 @@ fn repo_outline_for_task_at_limits(
         .max_depth(usize::from(depth))
         .into_iter()
         .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")));
-    for entry_index in 0..=MAX_OUTLINE_ENTRIES {
+    for entry_index in 0..=max_outline_entries {
         let Some(entry) = entries.next() else {
             break;
         };
-        if entry_index == MAX_OUTLINE_ENTRIES {
+        if entry_index == max_outline_entries {
             traversal_limited = true;
             break;
         }
@@ -247,7 +283,7 @@ fn repo_outline_for_task_at_limits(
         let content = match read_bounded_utf8(
             root,
             entry.path(),
-            MAX_OUTLINE_SOURCE_BYTES,
+            max_outline_source_bytes,
             SourceScope::Repository,
         ) {
             Ok(Some(content)) => content,
@@ -256,7 +292,7 @@ fn repo_outline_for_task_at_limits(
                 continue;
             }
         };
-        if content.len() > MAX_OUTLINE_TOTAL_SOURCE_BYTES.saturating_sub(total_source_bytes) {
+        if content.len() > max_outline_total_source_bytes.saturating_sub(total_source_bytes) {
             source_budget_exhausted = true;
             bounded_omitted = bounded_omitted.saturating_add(1);
             continue;
@@ -318,17 +354,17 @@ fn repo_outline_for_task_at_limits(
     }
     if rejected > 0 {
         out.push_str(&format!(
-            "\n[{rejected} code files omitted as unsafe, unreadable, non-UTF-8, symlinked, or over the {MAX_OUTLINE_SOURCE_BYTES}-byte source limit]\n"
+            "\n[{rejected} code files omitted as unsafe, unreadable, non-UTF-8, symlinked, or over the {max_outline_source_bytes}-byte source limit]\n"
         ));
     }
     if bounded_omitted > 0 {
         out.push_str(&format!(
-            "\n[{bounded_omitted} code files omitted at the {max_files}-file / {MAX_OUTLINE_TOTAL_SOURCE_BYTES}-total-source-byte repo-map limits]\n"
+            "\n[{bounded_omitted} code files omitted at the {max_files}-file / {max_outline_total_source_bytes}-total-source-byte repo-map limits]\n"
         ));
     }
     if traversal_limited {
         out.push_str(&format!(
-            "\n[additional repository entries omitted after the {MAX_OUTLINE_ENTRIES}-entry traversal limit]\n"
+            "\n[additional repository entries omitted after the {max_outline_entries}-entry traversal limit]\n"
         ));
     }
     out

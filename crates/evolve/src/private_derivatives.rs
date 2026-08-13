@@ -212,7 +212,12 @@ impl EvolutionPrivateContent {
         let directory = self.kind_directory(manifest.kind)?;
         let path = directory.join(format!("{}.json", manifest.key_digest));
         let bytes = serde_json::to_vec(manifest)?;
-        if bytes.len() > MAX_MANIFEST_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.private_derivatives.max_manifest_bytes",
+                MAX_MANIFEST_BYTES,
+            )
+        {
             return Err(EvolutionPrivateContentError::InvalidManifest);
         }
         if path.exists() {
@@ -364,16 +369,32 @@ fn reject_symlink(path: &Path) -> Result<(), EvolutionPrivateContentError> {
 fn read_limited(path: &Path) -> Result<Vec<u8>, EvolutionPrivateContentError> {
     reject_symlink(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.len() > MAX_MANIFEST_BYTES as u64 {
+    if !metadata.is_file()
+        || metadata.len()
+            > iteron_tunables::param_integer(
+                "evolve.private_derivatives.max_manifest_bytes",
+                MAX_MANIFEST_BYTES,
+            ) as u64
+    {
         return Err(EvolutionPrivateContentError::InvalidPath(
             path.to_path_buf(),
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     File::open(path)?
-        .take((MAX_MANIFEST_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "evolve.private_derivatives.max_manifest_bytes",
+                MAX_MANIFEST_BYTES,
+            ) + 1) as u64,
+        )
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_MANIFEST_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "evolve.private_derivatives.max_manifest_bytes",
+            MAX_MANIFEST_BYTES,
+        )
+    {
         return Err(EvolutionPrivateContentError::InvalidManifest);
     }
     Ok(bytes)

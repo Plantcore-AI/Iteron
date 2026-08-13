@@ -244,10 +244,25 @@ pub struct SpeculativeSiblingPolicy {
 
 impl SpeculativeSiblingPolicy {
     pub fn new(max_siblings: usize, cleanup_timeout: Duration) -> Result<Self, &'static str> {
-        if max_siblings > MAX_SPECULATIVE_SIBLINGS {
+        if max_siblings
+            > iteron_tunables::param_usize(
+                "workflow.execution_policy.max_speculative_siblings",
+                iteron_tunables::param_integer(
+                    "workflow.execution_policy.max_speculative_siblings",
+                    MAX_SPECULATIVE_SIBLINGS,
+                ),
+            )
+        {
             return Err("speculative sibling ceiling exceeds 1024");
         }
-        if !(MIN_SPECULATIVE_CLEANUP_TIMEOUT..=MAX_SPECULATIVE_CLEANUP_TIMEOUT)
+        if !(iteron_tunables::param_duration(
+            "workflow.execution_policy.min_speculative_cleanup_timeout",
+            MIN_SPECULATIVE_CLEANUP_TIMEOUT,
+        )
+            ..=iteron_tunables::param_duration(
+                "workflow.execution_policy.max_speculative_cleanup_timeout",
+                MAX_SPECULATIVE_CLEANUP_TIMEOUT,
+            ))
             .contains(&cleanup_timeout)
         {
             return Err("speculative cleanup timeout must be in 1..=3600 seconds");
@@ -285,8 +300,17 @@ impl SpeculativeSiblingPolicy {
 impl Default for SpeculativeSiblingPolicy {
     fn default() -> Self {
         Self::new(
-            DEFAULT_SPECULATIVE_SIBLINGS,
-            DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT,
+            iteron_tunables::param_usize(
+                "workflow.execution_policy.default_speculative_siblings",
+                iteron_tunables::param_integer(
+                    "workflow.execution_policy.default_speculative_siblings",
+                    DEFAULT_SPECULATIVE_SIBLINGS,
+                ),
+            ),
+            iteron_tunables::param_duration(
+                "workflow.execution_policy.default_speculative_cleanup_timeout",
+                DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT,
+            ),
         )
         .expect("built-in speculation policy is valid")
     }
@@ -324,7 +348,15 @@ impl TaskRetryPolicy {
         on_failure: TaskFailureAction,
         preserve_evidence: bool,
     ) -> Result<Self, &'static str> {
-        if max_attempts > MAX_TASK_ATTEMPTS {
+        if max_attempts
+            > iteron_tunables::param_usize(
+                "workflow.execution_policy.max_task_attempts",
+                iteron_tunables::param_integer(
+                    "workflow.execution_policy.max_task_attempts",
+                    MAX_TASK_ATTEMPTS,
+                ),
+            )
+        {
             return Err("task attempt ceiling exceeds 64");
         }
         Ok(Self {
@@ -349,7 +381,17 @@ impl TaskRetryPolicy {
 
 impl Default for TaskRetryPolicy {
     fn default() -> Self {
-        Self::new(DEFAULT_TASK_ATTEMPTS, TaskFailureAction::Reassign, true)
-            .expect("built-in task retry policy is valid")
+        Self::new(
+            iteron_tunables::param_usize(
+                "workflow.execution_policy.default_task_attempts",
+                iteron_tunables::param_integer(
+                    "workflow.execution_policy.default_task_attempts",
+                    DEFAULT_TASK_ATTEMPTS,
+                ),
+            ),
+            TaskFailureAction::Reassign,
+            true,
+        )
+        .expect("built-in task retry policy is valid")
     }
 }

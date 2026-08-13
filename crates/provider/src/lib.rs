@@ -100,13 +100,43 @@ pub struct ProviderTransportTimeoutPolicy {
     pub connection_reuse: bool,
 }
 
-pub const fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
+pub fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
     ProviderTransportTimeoutPolicy {
-        connect_tls: Duration::from_secs(TRANSPORT_CONNECT_TLS_SECS),
-        request_total: Duration::from_secs(TRANSPORT_REQUEST_TOTAL_SECS),
-        stream_idle: Duration::from_secs(TRANSPORT_STREAM_IDLE_SECS),
-        pool_idle: Duration::from_secs(TRANSPORT_POOL_IDLE_SECS),
-        tcp_keepalive: Duration::from_secs(TRANSPORT_TCP_KEEPALIVE_SECS),
+        connect_tls: Duration::from_secs(iteron_tunables::param_u64(
+            "provider.lib.transport_connect_tls_secs",
+            iteron_tunables::param_integer(
+                "provider.lib.transport_connect_tls_secs",
+                TRANSPORT_CONNECT_TLS_SECS,
+            ),
+        )),
+        request_total: Duration::from_secs(iteron_tunables::param_u64(
+            "provider.lib.transport_request_total_secs",
+            iteron_tunables::param_integer(
+                "provider.lib.transport_request_total_secs",
+                TRANSPORT_REQUEST_TOTAL_SECS,
+            ),
+        )),
+        stream_idle: Duration::from_secs(iteron_tunables::param_u64(
+            "provider.lib.transport_stream_idle_secs",
+            iteron_tunables::param_integer(
+                "provider.lib.transport_stream_idle_secs",
+                TRANSPORT_STREAM_IDLE_SECS,
+            ),
+        )),
+        pool_idle: Duration::from_secs(iteron_tunables::param_u64(
+            "provider.lib.transport_pool_idle_secs",
+            iteron_tunables::param_integer(
+                "provider.lib.transport_pool_idle_secs",
+                TRANSPORT_POOL_IDLE_SECS,
+            ),
+        )),
+        tcp_keepalive: Duration::from_secs(iteron_tunables::param_u64(
+            "provider.lib.transport_tcp_keepalive_secs",
+            iteron_tunables::param_integer(
+                "provider.lib.transport_tcp_keepalive_secs",
+                TRANSPORT_TCP_KEEPALIVE_SECS,
+            ),
+        )),
         connection_reuse: true,
     }
 }
@@ -641,9 +671,13 @@ pub(crate) async fn api_error_from_response(
     let retry_after = retry_after_from_headers(response.headers());
     let request_id = request_id_from_headers(response.headers());
     let mut stream = response.bytes_stream();
-    let mut bytes = Vec::with_capacity(ERROR_BODY_INITIAL_BYTES);
+    let mut bytes = Vec::with_capacity(iteron_tunables::param_integer(
+        "provider.lib.error_body_initial_bytes",
+        ERROR_BODY_INITIAL_BYTES,
+    ));
     let mut body_truncated = false;
-    let deadline = tokio::time::Instant::now() + ERROR_BODY_TIMEOUT;
+    let deadline = tokio::time::Instant::now()
+        + iteron_tunables::param_duration("provider.lib.error_body_timeout", ERROR_BODY_TIMEOUT);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -666,7 +700,12 @@ pub(crate) async fn api_error_from_response(
             body_truncated = true;
             break;
         }
-        if bytes.len() == MAX_ERROR_BODY_BYTES {
+        if bytes.len()
+            == iteron_tunables::param_integer(
+                "provider.lib.max_error_body_bytes",
+                MAX_ERROR_BODY_BYTES,
+            )
+        {
             // Exactly-at-limit bodies are retained. If there is another chunk, the next
             // iteration marks truncation without extending the allocation.
             continue;
@@ -686,8 +725,13 @@ pub(crate) async fn api_error_from_response(
 
 fn bounded_lossy_error_body(bytes: &[u8]) -> String {
     let mut body = String::from_utf8_lossy(bytes).into_owned();
-    if body.len() > MAX_ERROR_BODY_BYTES {
-        let mut end = MAX_ERROR_BODY_BYTES;
+    if body.len()
+        > iteron_tunables::param_integer("provider.lib.max_error_body_bytes", MAX_ERROR_BODY_BYTES)
+    {
+        let mut end = iteron_tunables::param_integer(
+            "provider.lib.max_error_body_bytes",
+            MAX_ERROR_BODY_BYTES,
+        );
         while !body.is_char_boundary(end) {
             end -= 1;
         }
@@ -698,7 +742,9 @@ fn bounded_lossy_error_body(bytes: &[u8]) -> String {
 
 /// Append one transport chunk, returning true when bytes had to be discarded.
 fn extend_bounded_error_body(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
-    let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+    let remaining =
+        iteron_tunables::param_integer("provider.lib.max_error_body_bytes", MAX_ERROR_BODY_BYTES)
+            .saturating_sub(body.len());
     if chunk.len() > remaining {
         body.extend_from_slice(&chunk[..remaining]);
         true
@@ -868,10 +914,13 @@ pub(crate) fn decode_stream_error_for(
 
 fn bounded_diagnostic(value: &str) -> String {
     const MAX_DIAGNOSTIC_BYTES: usize = 1024;
-    if value.len() <= MAX_DIAGNOSTIC_BYTES {
+    if value.len()
+        <= iteron_tunables::param_integer("provider.lib.max_diagnostic_bytes", MAX_DIAGNOSTIC_BYTES)
+    {
         return value.to_string();
     }
-    let mut end = MAX_DIAGNOSTIC_BYTES;
+    let mut end =
+        iteron_tunables::param_integer("provider.lib.max_diagnostic_bytes", MAX_DIAGNOSTIC_BYTES);
     while !value.is_char_boundary(end) {
         end -= 1;
     }
@@ -882,7 +931,10 @@ fn sanitized_code(code: Option<String>) -> Option<String> {
     let code = code?;
     let clean: String = code
         .chars()
-        .take(MAX_ERROR_CODE_CHARS)
+        .take(iteron_tunables::param_integer(
+            "provider.lib.max_error_code_chars",
+            MAX_ERROR_CODE_CHARS,
+        ))
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })
@@ -1090,7 +1142,10 @@ fn portable_failure_kind(code: &str) -> Option<FailureKind> {
 fn sanitize_request_id(value: String) -> Option<String> {
     let clean: String = value
         .chars()
-        .take(MAX_REQUEST_ID_CHARS)
+        .take(iteron_tunables::param_integer(
+            "provider.lib.max_request_id_chars",
+            MAX_REQUEST_ID_CHARS,
+        ))
         .filter(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })

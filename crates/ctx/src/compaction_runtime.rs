@@ -23,18 +23,25 @@ impl Default for CompactionHysteresis {
 
 impl CompactionHysteresis {
     pub fn validate(self) -> Result<Self, &'static str> {
-        if self.enter_ratio_ppm > RATIO_SCALE || self.exit_ratio_ppm > self.enter_ratio_ppm {
+        if self.enter_ratio_ppm
+            > iteron_tunables::param_integer("ctx.compaction_runtime.ratio_scale", RATIO_SCALE)
+            || self.exit_ratio_ppm > self.enter_ratio_ppm
+        {
             return Err("compaction hysteresis requires exit <= enter <= 1");
         }
         Ok(self)
     }
 
     pub fn enter_threshold(self, trigger: usize) -> usize {
-        trigger.saturating_mul(self.enter_ratio_ppm as usize) / RATIO_SCALE as usize
+        trigger.saturating_mul(self.enter_ratio_ppm as usize)
+            / iteron_tunables::param_integer("ctx.compaction_runtime.ratio_scale", RATIO_SCALE)
+                as usize
     }
 
     pub fn exit_threshold(self, trigger: usize) -> usize {
-        trigger.saturating_mul(self.exit_ratio_ppm as usize) / RATIO_SCALE as usize
+        trigger.saturating_mul(self.exit_ratio_ppm as usize)
+            / iteron_tunables::param_integer("ctx.compaction_runtime.ratio_scale", RATIO_SCALE)
+                as usize
     }
 
     pub fn cooldown_allows(self, current_turn: u64, last_compaction_turn: Option<u64>) -> bool {

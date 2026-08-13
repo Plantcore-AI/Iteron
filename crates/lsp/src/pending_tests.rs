@@ -14,7 +14,11 @@ fn construction_and_admission_have_hard_bounds() {
         }
     );
     assert_eq!(
-        PendingRequests::with_capacity(7, MAX_IN_FLIGHT + 1).unwrap_err(),
+        PendingRequests::with_capacity(
+            7,
+            iteron_tunables::param_integer("lsp.lib.max_in_flight", MAX_IN_FLIGHT) + 1
+        )
+        .unwrap_err(),
         LspError::InvalidPendingCapacity {
             value: MAX_IN_FLIGHT + 1,
             max: MAX_IN_FLIGHT
@@ -114,7 +118,14 @@ fn request_deadlines_cannot_be_disabled_or_made_effectively_infinite() {
         })
     ));
     assert!(matches!(
-        pending.issue("hover", 0, MAX_REQUEST_TIMEOUT_MS + 1),
+        pending.issue(
+            "hover",
+            0,
+            iteron_tunables::param_integer(
+                "lsp.lib.max_request_timeout_ms",
+                MAX_REQUEST_TIMEOUT_MS
+            ) + 1
+        ),
         Err(LspError::InvalidTimeout {
             kind: "request",
             ..
@@ -230,7 +241,14 @@ fn a_regressed_clock_is_typed_and_does_not_expire_early() {
 fn deadline_overflow_is_typed_and_does_not_admit_a_shortened_request() {
     let mut pending = PendingRequests::new(1);
     assert_eq!(
-        pending.issue("hover", u64::MAX - 1, MAX_REQUEST_TIMEOUT_MS),
+        pending.issue(
+            "hover",
+            u64::MAX - 1,
+            iteron_tunables::param_integer(
+                "lsp.lib.max_request_timeout_ms",
+                MAX_REQUEST_TIMEOUT_MS
+            )
+        ),
         Err(LspError::TimeOverflow {
             operation: "request deadline",
             base_ms: u64::MAX - 1,
@@ -244,9 +262,15 @@ fn deadline_overflow_is_typed_and_does_not_admit_a_shortened_request() {
 #[test]
 fn allocated_wire_ids_never_exceed_the_signed_lsp_integer_domain() {
     let mut pending = PendingRequests::new(1);
-    pending.next_id = Some(MAX_JSONRPC_NUMERIC_ID);
+    pending.next_id = Some(iteron_tunables::param_integer(
+        "lsp.lib.max_jsonrpc_numeric_id",
+        MAX_JSONRPC_NUMERIC_ID,
+    ));
     let last = pending.issue("hover", 0, 10).unwrap();
-    assert_eq!(last.id, MAX_JSONRPC_NUMERIC_ID);
+    assert_eq!(
+        last.id,
+        iteron_tunables::param_integer("lsp.lib.max_jsonrpc_numeric_id", MAX_JSONRPC_NUMERIC_ID)
+    );
     assert_eq!(last.wire_id(), serde_json::json!(i32::MAX));
     pending.resolve(1, last.id, 1).unwrap();
     assert_eq!(

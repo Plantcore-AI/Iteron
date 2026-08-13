@@ -162,10 +162,14 @@ fn parse_header(line: &str) -> Option<(u32, u32, u32, u32)> {
               in exactly one place."
 )]
 pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffError> {
-    if diff.len() > MAX_DIFF_BYTES {
+    if diff.len() > iteron_tunables::param_integer("changeset.hunks.max_diff_bytes", MAX_DIFF_BYTES)
+    {
         return Err(DiffError::DiffTooLarge { len: diff.len() });
     }
-    let limit = limit.min(MAX_ENTRIES);
+    let limit = limit.min(iteron_tunables::param_integer(
+        "changeset.lib.max_entries",
+        MAX_ENTRIES,
+    ));
 
     let mut files: Vec<FileDiff> = Vec::new();
     let mut path: Option<String> = None;
@@ -211,7 +215,9 @@ pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffErro
     }
 
     for line in diff.lines() {
-        if line.len() > MAX_LINE_BYTES {
+        if line.len()
+            > iteron_tunables::param_integer("changeset.hunks.max_line_bytes", MAX_LINE_BYTES)
+        {
             return Err(DiffError::LineTooLong { len: line.len() });
         }
         if let Some(rest) = line.strip_prefix("diff --git ") {
@@ -252,7 +258,12 @@ pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffErro
                 verify(&h)?;
                 hunks.push(h);
             }
-            if hunks.len() >= MAX_HUNKS_PER_FILE {
+            if hunks.len()
+                >= iteron_tunables::param_integer(
+                    "changeset.hunks.max_hunks_per_file",
+                    MAX_HUNKS_PER_FILE,
+                )
+            {
                 return Err(DiffError::TooManyHunks {
                     path: path.clone().unwrap_or_default(),
                 });
@@ -278,7 +289,12 @@ pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffErro
                 continue;
             }
             if line.starts_with(' ') || line.starts_with('+') || line.starts_with('-') {
-                if h.body.len() >= MAX_BODY_LINES_PER_HUNK {
+                if h.body.len()
+                    >= iteron_tunables::param_integer(
+                        "changeset.hunks.max_body_lines_per_hunk",
+                        MAX_BODY_LINES_PER_HUNK,
+                    )
+                {
                     return Err(DiffError::TooManyBodyLines {
                         header: h.header.clone(),
                     });
@@ -347,7 +363,10 @@ fn verify(h: &Hunk) -> Result<(), DiffError> {
 }
 
 pub fn parse_unified_default(diff: &str) -> Result<Vec<FileDiff>, DiffError> {
-    parse_unified(diff, MAX_ENTRIES)
+    parse_unified(
+        diff,
+        iteron_tunables::param_integer("changeset.lib.max_entries", MAX_ENTRIES),
+    )
 }
 
 #[cfg(test)]

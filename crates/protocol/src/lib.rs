@@ -12,6 +12,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Immutable process-level parameter lookup shared with low-level crates that already depend on
+/// the protocol vocabulary. In particular, this preserves the kernel's deliberately narrow
+/// dependency boundary while giving its bounded resource controls the same resolved profile.
+#[doc(hidden)]
+pub use iteron_tunables::param_integer;
+
 pub mod artifact;
 pub mod bundle;
 pub mod capability_set;

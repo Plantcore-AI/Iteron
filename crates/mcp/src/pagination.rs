@@ -13,9 +13,18 @@ pub(crate) struct ToolListLimits {
 impl Default for ToolListLimits {
     fn default() -> Self {
         Self {
-            pages: MAX_TOOL_LIST_PAGES,
-            tools: MAX_TOOL_LIST_TOOLS,
-            bytes: MAX_TOOL_LIST_BYTES,
+            pages: iteron_tunables::param_integer(
+                "mcp.lib.max_tool_list_pages",
+                MAX_TOOL_LIST_PAGES,
+            ),
+            tools: iteron_tunables::param_integer(
+                "mcp.lib.max_tool_list_tools",
+                MAX_TOOL_LIST_TOOLS,
+            ),
+            bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_tool_list_bytes",
+                MAX_TOOL_LIST_BYTES,
+            ),
         }
     }
 }

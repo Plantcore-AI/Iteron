@@ -420,7 +420,10 @@ fn leading_indent_columns(line: &str) -> usize {
 fn list_depth(indent_columns: usize) -> u8 {
     u8::try_from(indent_columns / 2)
         .unwrap_or(u8::MAX)
-        .min(MAX_LIST_NESTING)
+        .min(iteron_tunables::param_integer(
+            "cli.markdown.max_list_nesting",
+            MAX_LIST_NESTING,
+        ))
 }
 
 fn bullet_item(s: &str) -> Option<&str> {
@@ -465,7 +468,13 @@ fn collect_indented_continuations(
     item_indent: usize,
 ) -> Vec<Vec<Inline>> {
     let mut continuation = Vec::new();
-    while *next < lines.len() && continuation.len() < MAX_LIST_CONTINUATION_LINES {
+    while *next < lines.len()
+        && continuation.len()
+            < iteron_tunables::param_integer(
+                "cli.markdown.max_list_continuation_lines",
+                MAX_LIST_CONTINUATION_LINES,
+            )
+    {
         let candidate = lines[*next];
         let trimmed = candidate.trim_start();
         if trimmed.is_empty()
@@ -963,10 +972,16 @@ fn render_table(
                 .map(|r| {
                     r.get(c)
                         .map(|x| cell_w(x))
-                        .unwrap_or(ABSENT_TABLE_CELL_WIDTH)
+                        .unwrap_or(iteron_tunables::param_integer(
+                            "cli.markdown.absent_table_cell_width",
+                            ABSENT_TABLE_CELL_WIDTH,
+                        ))
                 })
                 .max()
-                .unwrap_or(ABSENT_TABLE_CELL_WIDTH);
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.markdown.absent_table_cell_width",
+                    ABSENT_TABLE_CELL_WIDTH,
+                ));
             h.max(b).max(1)
         })
         .collect();

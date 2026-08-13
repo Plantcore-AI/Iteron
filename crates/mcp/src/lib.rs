@@ -376,11 +376,14 @@ pub fn request(id: u64, method: &str, params: Value) -> Result<String, McpError>
 
 /// Serialize one outbound frame without ever retaining more than [`MAX_FRAME_BYTES`].
 pub(crate) fn encode_frame(value: &Value) -> Result<String, McpError> {
-    let mut writer = LimitedWriter::new(MAX_FRAME_BYTES);
+    let mut writer = LimitedWriter::new(iteron_tunables::param_integer(
+        "mcp.lib.max_frame_bytes",
+        MAX_FRAME_BYTES,
+    ));
     if let Err(error) = serde_json::to_writer(&mut writer, value) {
         if writer.exceeded {
             return Err(McpError::FrameTooLarge {
-                limit: MAX_FRAME_BYTES,
+                limit: iteron_tunables::param_integer("mcp.lib.max_frame_bytes", MAX_FRAME_BYTES),
             });
         }
         return Err(McpError::Json(error));
@@ -402,7 +405,10 @@ struct LimitedWriter {
 impl LimitedWriter {
     fn new(limit: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(limit.min(FRAME_ENCODE_RESERVE_BYTES)),
+            bytes: Vec::with_capacity(limit.min(iteron_tunables::param_integer(
+                "mcp.lib.frame_encode_reserve_bytes",
+                FRAME_ENCODE_RESERVE_BYTES,
+            ))),
             limit,
             exceeded: false,
         }
@@ -433,10 +439,12 @@ pub fn parse_response(line: &str) -> Result<Value, McpError> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(err) = v.get("error") {
         return Err(McpError::Server {
-            code: err
-                .get("code")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(UNSPECIFIED_SERVER_ERROR_CODE),
+            code: err.get("code").and_then(|x| x.as_i64()).unwrap_or(
+                iteron_tunables::param_integer(
+                    "mcp.lib.unspecified_server_error_code",
+                    UNSPECIFIED_SERVER_ERROR_CODE,
+                ),
+            ),
             message: err
                 .get("message")
                 .and_then(|x| x.as_str())

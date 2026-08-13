@@ -93,12 +93,25 @@ pub(crate) struct ProviderDiscoveryPolicy {
 }
 
 impl ProviderDiscoveryPolicy {
-    pub(crate) const fn owner() -> Self {
+    pub(crate) fn owner() -> Self {
         Self {
-            eager_budget_milliseconds: EAGER_DISCOVERY_BUDGET.as_millis() as u64,
-            positive_ttl_seconds: PROBE_CACHE_TTL_SECS,
-            failure_backoff_base_seconds: PROBE_BACKOFF_BASE_SECS,
-            failure_backoff_cap_seconds: PROBE_BACKOFF_CAP_SECS,
+            eager_budget_milliseconds: iteron_tunables::param_duration(
+                "cli.providers.eager_discovery_budget",
+                EAGER_DISCOVERY_BUDGET,
+            )
+            .as_millis() as u64,
+            positive_ttl_seconds: iteron_tunables::param_integer(
+                "cli.providers.probe_cache_ttl_secs",
+                PROBE_CACHE_TTL_SECS,
+            ),
+            failure_backoff_base_seconds: iteron_tunables::param_integer(
+                "cli.providers.probe_backoff_base_secs",
+                PROBE_BACKOFF_BASE_SECS,
+            ),
+            failure_backoff_cap_seconds: iteron_tunables::param_integer(
+                "cli.providers.probe_backoff_cap_secs",
+                PROBE_BACKOFF_CAP_SECS,
+            ),
         }
     }
 
@@ -417,7 +430,11 @@ impl CatalogCache {
         };
         if metadata.file_type().is_symlink()
             || !metadata.is_file()
-            || metadata.len() > MAX_CATALOG_CACHE_BYTES as u64
+            || metadata.len()
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_catalog_cache_bytes",
+                    MAX_CATALOG_CACHE_BYTES,
+                ) as u64
         {
             return Self::default();
         }
@@ -441,12 +458,22 @@ impl CatalogCache {
         // check. `take(MAX + 1)` makes the actual allocation/read bound authoritative.
         let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
         let Ok(_) = file
-            .take((MAX_CATALOG_CACHE_BYTES + 1) as u64)
+            .take(
+                (iteron_tunables::param_integer(
+                    "cli.providers.max_catalog_cache_bytes",
+                    MAX_CATALOG_CACHE_BYTES,
+                ) + 1) as u64,
+            )
             .read_to_end(&mut bytes)
         else {
             return Self::default();
         };
-        if bytes.len() > MAX_CATALOG_CACHE_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "cli.providers.max_catalog_cache_bytes",
+                MAX_CATALOG_CACHE_BYTES,
+            )
+        {
             return Self::default();
         }
         serde_json::from_slice::<Self>(&bytes)
@@ -469,7 +496,12 @@ impl CatalogCache {
                 return false;
             };
             total_models = next;
-            if total_models > MAX_CACHED_MODELS_TOTAL {
+            if total_models
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_cached_models_total",
+                    MAX_CACHED_MODELS_TOTAL,
+                )
+            {
                 return false;
             }
         }
@@ -499,7 +531,11 @@ impl CatalogCache {
             .retain(|existing| existing.provider_id != cached.provider_id);
         self.entries.push(cached);
         while self.entries.len() > MAX_CATALOG_CACHE_ENTRIES
-            || self.total_models() > MAX_CACHED_MODELS_TOTAL
+            || self.total_models()
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_cached_models_total",
+                    MAX_CACHED_MODELS_TOTAL,
+                )
         {
             self.entries.remove(0);
         }
@@ -514,7 +550,12 @@ impl CatalogCache {
         self.version = CATALOG_CACHE_VERSION;
         let bytes = loop {
             let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
-            if bytes.len() <= MAX_CATALOG_CACHE_BYTES {
+            if bytes.len()
+                <= iteron_tunables::param_integer(
+                    "cli.providers.max_catalog_cache_bytes",
+                    MAX_CATALOG_CACHE_BYTES,
+                )
+            {
                 break bytes;
             }
             if self.entries.len() <= 1 {
@@ -546,7 +587,10 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.providers.cache_temp_timestamp_on_unusable_clock",
+            CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK,
+        ));
     for attempt in 0..16u8 {
         let candidate = parent.join(format!(
             ".{file_name}.tmp-{}-{timestamp:x}-{nonce:x}-{attempt}",
@@ -743,7 +787,11 @@ impl ProbeCache {
         };
         if metadata.file_type().is_symlink()
             || !metadata.is_file()
-            || metadata.len() > MAX_PROBE_CACHE_BYTES as u64
+            || metadata.len()
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_probe_cache_bytes",
+                    MAX_PROBE_CACHE_BYTES,
+                ) as u64
         {
             return Self::default();
         }
@@ -767,12 +815,22 @@ impl ProbeCache {
         // what actually caps the allocation.
         let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
         let Ok(_) = file
-            .take((MAX_PROBE_CACHE_BYTES + 1) as u64)
+            .take(
+                (iteron_tunables::param_integer(
+                    "cli.providers.max_probe_cache_bytes",
+                    MAX_PROBE_CACHE_BYTES,
+                ) + 1) as u64,
+            )
             .read_to_end(&mut bytes)
         else {
             return Self::default();
         };
-        if bytes.len() > MAX_PROBE_CACHE_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "cli.providers.max_probe_cache_bytes",
+                MAX_PROBE_CACHE_BYTES,
+            )
+        {
             return Self::default();
         }
         serde_json::from_slice::<Self>(&bytes)
@@ -848,7 +906,12 @@ impl ProbeCache {
         self.version = PROBE_CACHE_VERSION;
         let bytes = loop {
             let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
-            if bytes.len() <= MAX_PROBE_CACHE_BYTES {
+            if bytes.len()
+                <= iteron_tunables::param_integer(
+                    "cli.providers.max_probe_cache_bytes",
+                    MAX_PROBE_CACHE_BYTES,
+                )
+            {
                 break bytes;
             }
             if self.entries.len() <= 1 {
@@ -886,7 +949,10 @@ fn probe_backoff_secs(policy: ProviderDiscoveryPolicy, consecutive_failures: u32
     if consecutive_failures == 0 {
         return 0;
     }
-    let exponent = (consecutive_failures - 1).min(MAX_PROBE_FAILURE_EXPONENT);
+    let exponent = (consecutive_failures - 1).min(iteron_tunables::param_integer(
+        "cli.providers.max_probe_failure_exponent",
+        MAX_PROBE_FAILURE_EXPONENT,
+    ));
     policy
         .failure_backoff_base_seconds()
         .checked_shl(exponent)
@@ -1028,22 +1094,52 @@ impl CachedCatalog {
             || self.fetched_at_unix_secs == 0
             || self.classifier_version != CATALOG_CLASSIFIER_VERSION
             || current_unix_secs().is_none_or(|now| {
-                self.fetched_at_unix_secs > now.saturating_add(CATALOG_CACHE_FUTURE_SKEW_SECS)
+                self.fetched_at_unix_secs
+                    > now.saturating_add(iteron_tunables::param_integer(
+                        "cli.providers.catalog_cache_future_skew_secs",
+                        CATALOG_CACHE_FUTURE_SKEW_SECS,
+                    ))
             })
-            || self.families.len() > MAX_CACHED_FAMILIES_PER_ENTRY
-            || self.model_count() > MAX_CACHED_MODELS_PER_ENTRY
+            || self.families.len()
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_cached_families_per_entry",
+                    MAX_CACHED_FAMILIES_PER_ENTRY,
+                )
+            || self.model_count()
+                > iteron_tunables::param_integer(
+                    "cli.providers.max_cached_models_per_entry",
+                    MAX_CACHED_MODELS_PER_ENTRY,
+                )
         {
             return false;
         }
         let mut family_ids = BTreeSet::new();
         let mut model_ids = BTreeSet::new();
         self.families.iter().all(|family| {
-            valid_cached_text(&family.id, MAX_CACHED_TEXT_BYTES, false)
-                && valid_cached_text(&family.display_name, MAX_CACHED_TEXT_BYTES, false)
-                && family_ids.insert(family.id.as_str())
+            valid_cached_text(
+                &family.id,
+                iteron_tunables::param_integer(
+                    "cli.providers.max_cached_text_bytes",
+                    MAX_CACHED_TEXT_BYTES,
+                ),
+                false,
+            ) && valid_cached_text(
+                &family.display_name,
+                iteron_tunables::param_integer(
+                    "cli.providers.max_cached_text_bytes",
+                    MAX_CACHED_TEXT_BYTES,
+                ),
+                false,
+            ) && family_ids.insert(family.id.as_str())
                 && family.models.iter().all(|model| {
-                    valid_cached_text(&model.id, MAX_CACHED_TEXT_BYTES, false)
-                        && valid_cached_optional_text(model.display_name.as_deref())
+                    valid_cached_text(
+                        &model.id,
+                        iteron_tunables::param_integer(
+                            "cli.providers.max_cached_text_bytes",
+                            MAX_CACHED_TEXT_BYTES,
+                        ),
+                        false,
+                    ) && valid_cached_optional_text(model.display_name.as_deref())
                         && valid_cached_optional_text(model.created_at.as_deref())
                         && valid_cached_optional_text(model.owned_by.as_deref())
                         && model_ids.insert(model.id.as_str())
@@ -1067,8 +1163,16 @@ impl CachedCatalog {
 
     fn is_fresh(&self) -> bool {
         current_unix_secs().is_some_and(|now| {
-            now.saturating_sub(self.fetched_at_unix_secs) <= CATALOG_CACHE_TTL_SECS
-                && self.fetched_at_unix_secs <= now.saturating_add(CATALOG_CACHE_FUTURE_SKEW_SECS)
+            now.saturating_sub(self.fetched_at_unix_secs)
+                <= iteron_tunables::param_integer(
+                    "cli.providers.catalog_cache_ttl_secs",
+                    CATALOG_CACHE_TTL_SECS,
+                )
+                && self.fetched_at_unix_secs
+                    <= now.saturating_add(iteron_tunables::param_integer(
+                        "cli.providers.catalog_cache_future_skew_secs",
+                        CATALOG_CACHE_FUTURE_SKEW_SECS,
+                    ))
         })
     }
 
@@ -1138,7 +1242,16 @@ fn valid_cached_text(value: &str, max_bytes: usize, allow_empty: bool) -> bool {
 }
 
 fn valid_cached_optional_text(value: Option<&str>) -> bool {
-    value.is_none_or(|value| valid_cached_text(value, MAX_CACHED_TEXT_BYTES, false))
+    value.is_none_or(|value| {
+        valid_cached_text(
+            value,
+            iteron_tunables::param_integer(
+                "cli.providers.max_cached_text_bytes",
+                MAX_CACHED_TEXT_BYTES,
+            ),
+            false,
+        )
+    })
 }
 
 fn credential_scope(
@@ -1285,7 +1398,10 @@ impl CatalogCacheScopeKey {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
-            .unwrap_or(CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.providers.cache_temp_timestamp_on_unusable_clock",
+                CACHE_TEMP_TIMESTAMP_ON_UNUSABLE_CLOCK,
+            ));
         let mut temporary = None;
         for attempt in 0..16u8 {
             let candidate = parent.join(format!(
@@ -1886,7 +2002,12 @@ impl ProviderDirectory {
                 static_metadata.clone(),
             )?);
         }
-        if entries.len() > MAX_PROVIDER_INSTANCES {
+        if entries.len()
+            > iteron_tunables::param_integer(
+                "cli.providers.max_provider_instances",
+                MAX_PROVIDER_INSTANCES,
+            )
+        {
             anyhow::bail!("provider directory exceeds {MAX_PROVIDER_INSTANCES} instances");
         }
         Ok(entries)
@@ -1906,10 +2027,18 @@ impl ProviderDirectory {
         cache_path: Option<PathBuf>,
         eager: Option<&[String]>,
     ) -> anyhow::Result<Self> {
-        if entries.len() > MAX_PROVIDER_INSTANCES {
+        if entries.len()
+            > iteron_tunables::param_integer(
+                "cli.providers.max_provider_instances",
+                MAX_PROVIDER_INSTANCES,
+            )
+        {
             anyhow::bail!("provider directory exceeds {MAX_PROVIDER_INSTANCES} instances");
         }
-        let health = ProviderHealthStore::new(MAX_PROVIDER_INSTANCES);
+        let health = ProviderHealthStore::new(iteron_tunables::param_integer(
+            "cli.providers.max_provider_instances",
+            MAX_PROVIDER_INSTANCES,
+        ));
         let cache_scope_key = cache_path.as_deref().and_then(|path| {
             CatalogCacheScopeKey::load_or_create(path)
                 .map_err(|_| {

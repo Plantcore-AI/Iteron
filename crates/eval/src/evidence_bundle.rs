@@ -21,6 +21,10 @@ const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_BUNDLE_FILES: usize = 16;
 const MAX_BUNDLE_BYTES: u64 = 600 * 1024 * 1024;
 
+fn max_bundle_bytes() -> u64 {
+    iteron_tunables::param_integer("eval.evidence_bundle.max_bundle_bytes", MAX_BUNDLE_BYTES)
+}
+
 mod verify;
 pub use verify::verify_evidence_bundle;
 
@@ -146,14 +150,36 @@ pub fn compile_evidence_bundle(
             "destination already exists".into(),
         ));
     }
-    let baseline_bytes = read_regular(input.baseline_result, MAX_MANIFEST_BYTES)?;
-    let candidate_bytes = read_regular(input.candidate_result, MAX_MANIFEST_BYTES)?;
+    let baseline_bytes = read_regular(
+        input.baseline_result,
+        iteron_tunables::param_integer(
+            "eval.evidence_bundle.max_manifest_bytes",
+            MAX_MANIFEST_BYTES,
+        ),
+    )?;
+    let candidate_bytes = read_regular(
+        input.candidate_result,
+        iteron_tunables::param_integer(
+            "eval.evidence_bundle.max_manifest_bytes",
+            MAX_MANIFEST_BYTES,
+        ),
+    )?;
     let baseline: EvaluationManifest = decode(&baseline_bytes)?;
     let candidate: EvaluationManifest = decode(&candidate_bytes)?;
-    let baseline_attestation_bytes =
-        read_regular(input.baseline_attestation, MAX_ATTESTATION_BYTES)?;
-    let candidate_attestation_bytes =
-        read_regular(input.candidate_attestation, MAX_ATTESTATION_BYTES)?;
+    let baseline_attestation_bytes = read_regular(
+        input.baseline_attestation,
+        iteron_tunables::param_integer(
+            "eval.evidence_bundle.max_attestation_bytes",
+            MAX_ATTESTATION_BYTES,
+        ),
+    )?;
+    let candidate_attestation_bytes = read_regular(
+        input.candidate_attestation,
+        iteron_tunables::param_integer(
+            "eval.evidence_bundle.max_attestation_bytes",
+            MAX_ATTESTATION_BYTES,
+        ),
+    )?;
     let baseline_attestation: RunAttestation = decode(&baseline_attestation_bytes)?;
     let candidate_attestation: RunAttestation = decode(&candidate_attestation_bytes)?;
     validate_attestation(&baseline_attestation, &baseline, &baseline_bytes)?;
@@ -375,7 +401,12 @@ fn pretty_json(value: &impl Serialize) -> Result<Vec<u8>, EvidenceBundleError> {
     let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| EvidenceBundleError::Json(error.to_string()))?;
     bytes.push(b'\n');
-    if bytes.len() as u64 > MAX_GENERATED_BYTES {
+    if bytes.len() as u64
+        > iteron_tunables::param_integer(
+            "eval.evidence_bundle.max_generated_bytes",
+            MAX_GENERATED_BYTES,
+        )
+    {
         return Err(EvidenceBundleError::InvalidInput(
             "generated evidence exceeds its fixed size limit".into(),
         ));

@@ -12,6 +12,8 @@
 
 use crate::theme::{SynClass, Theme};
 use ratatui::text::Span;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 /// Whether a word with no first character counts as capitalized for the Type heuristic. False,
 /// so the degenerate case falls through to plain text rather than being mis-colored.
@@ -31,6 +33,7 @@ impl LexState {
     }
 }
 
+#[derive(Clone, Copy)]
 struct LangSpec {
     line_comments: &'static [&'static str],
     block: Option<(&'static str, &'static str)>,
@@ -50,6 +53,76 @@ const GENERIC: LangSpec = LangSpec {
     keywords: &[],
     types_capitalized: false,
 };
+
+static GENERIC_OVERRIDE: OnceLock<LangSpec> = OnceLock::new();
+
+fn generic_spec() -> LangSpec {
+    let Some(iteron_tunables::ResolutionValue::Object { fields }) =
+        iteron_tunables::param_value("cli.highlight.generic")
+    else {
+        return GENERIC;
+    };
+    *GENERIC_OVERRIDE.get_or_init(|| lang_spec(fields))
+}
+
+fn lang_spec(fields: &'static BTreeMap<String, iteron_tunables::ResolutionValue>) -> LangSpec {
+    use iteron_tunables::ResolutionValue;
+
+    fn strings(
+        fields: &'static BTreeMap<String, ResolutionValue>,
+        field: &str,
+    ) -> &'static [&'static str] {
+        let Some(ResolutionValue::List { items }) = fields.get(field) else {
+            panic!("LangSpec `{field}` passed admission with the wrong shape");
+        };
+        Box::leak(
+            items
+                .iter()
+                .map(|item| match item {
+                    ResolutionValue::Text { value } => value.as_str(),
+                    _ => panic!("LangSpec `{field}` passed admission with a non-text item"),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    fn boolean(fields: &BTreeMap<String, ResolutionValue>, field: &str) -> bool {
+        match fields.get(field) {
+            Some(ResolutionValue::Boolean { value }) => *value,
+            _ => panic!("LangSpec `{field}` passed admission with the wrong shape"),
+        }
+    }
+
+    let block_items = strings(fields, "block");
+    let block = match block_items {
+        [] => None,
+        [open, close] => Some((*open, *close)),
+        _ => panic!("LangSpec `block` passed admission with the wrong length"),
+    };
+    let string_items = strings(fields, "strings");
+    let string_chars = Box::leak(
+        string_items
+            .iter()
+            .map(|value| {
+                value
+                    .chars()
+                    .next()
+                    .expect("admission rejected empty delimiters")
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    LangSpec {
+        line_comments: strings(fields, "line_comments"),
+        block,
+        nest_block: boolean(fields, "nest_block"),
+        strings: string_chars,
+        triple: boolean(fields, "triple"),
+        keywords: strings(fields, "keywords"),
+        types_capitalized: boolean(fields, "types_capitalized"),
+    }
+}
 
 fn spec_for(lang: Option<&str>) -> LangSpec {
     let l = lang.unwrap_or("").trim().to_ascii_lowercase();
@@ -468,7 +541,7 @@ fn spec_for(lang: Option<&str>) -> LangSpec {
             keywords: &[],
             types_capitalized: false,
         },
-        _ => GENERIC,
+        _ => generic_spec(),
     }
 }
 
@@ -642,11 +715,12 @@ pub fn code_spans(
             } else if i < n && chars[i] == '(' {
                 SynClass::Func
             } else if spec.types_capitalized
-                && word
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(EMPTY_WORD_IS_CAPITALIZED)
+                && word.chars().next().map(|c| c.is_uppercase()).unwrap_or(
+                    iteron_tunables::param_bool(
+                        "cli.highlight.empty_word_is_capitalized",
+                        EMPTY_WORD_IS_CAPITALIZED,
+                    ),
+                )
             {
                 SynClass::Type
             } else {

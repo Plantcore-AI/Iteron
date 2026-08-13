@@ -438,7 +438,12 @@ pub fn slash_command_body<'a>(text: &'a str, exists: &dyn Fn(&Path) -> bool) -> 
 /// Positive path evidence for the first token of `text` (which starts with `/`).
 fn leading_token_is_path(text: &str, exists: &dyn Fn(&Path) -> bool) -> bool {
     let raw = leading_shell_token(text);
-    if raw.len() > MAX_DROPPED_PATH_BYTES {
+    if raw.len()
+        > iteron_tunables::param_integer(
+            "cli.commands.max_dropped_path_bytes",
+            MAX_DROPPED_PATH_BYTES,
+        )
+    {
         return false;
     }
     let decoded = unescape_shell_token(raw);

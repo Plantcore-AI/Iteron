@@ -326,12 +326,22 @@ fn bounded_output(
     stderr: Vec<u8>,
     exit_code: u8,
 ) -> anyhow::Result<RenderedOutput> {
-    if stdout.len() > MAX_RESOLUTION_OUTPUT_BYTES {
+    if stdout.len()
+        > iteron_tunables::param_integer(
+            "cli.tunables.max_resolution_output_bytes",
+            MAX_RESOLUTION_OUTPUT_BYTES,
+        )
+    {
         anyhow::bail!(
             "tunables simulation output exceeds the {MAX_RESOLUTION_OUTPUT_BYTES}-byte bound"
         );
     }
-    if stderr.len() > MAX_RESOLUTION_STDERR_BYTES {
+    if stderr.len()
+        > iteron_tunables::param_integer(
+            "cli.tunables.max_resolution_stderr_bytes",
+            MAX_RESOLUTION_STDERR_BYTES,
+        )
+    {
         anyhow::bail!(
             "tunables simulation stderr exceeds the {MAX_RESOLUTION_STDERR_BYTES}-byte bound"
         );

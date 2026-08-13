@@ -40,7 +40,10 @@ fn authoritative_record_waits_for_a_transient_derivative_store_writer() {
     externalize_event_payload(&dir, &tenant, &run, Seq::ZERO, &mut payload).unwrap();
     release.join().unwrap();
     assert_eq!(
-        payload.get(ENVELOPE_FIELD),
+        payload.get(iteron_tunables::param_str(
+            "record.content_store.model.envelope_field",
+            ENVELOPE_FIELD
+        )),
         Some(&serde_json::Value::from(STORE_VERSION))
     );
     std::fs::remove_dir_all(dir).unwrap();

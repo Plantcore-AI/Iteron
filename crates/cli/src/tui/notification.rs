@@ -45,7 +45,12 @@ impl Protocol {
     fn detect() -> Self {
         Self::detect_with(|name| {
             let value = std::env::var(name).ok()?;
-            (value.len() <= MAX_ENV_VALUE_BYTES).then_some(value)
+            (value.len()
+                <= iteron_tunables::param_integer(
+                    "cli.tui.notification.max_env_value_bytes",
+                    MAX_ENV_VALUE_BYTES,
+                ))
+            .then_some(value)
         })
     }
 
@@ -110,7 +115,11 @@ struct FixedNotification {
 impl FixedNotification {
     fn new(sequence: &[u8]) -> Option<Self> {
         if sequence.is_empty()
-            || sequence.len() > MAX_NOTIFICATION_BYTES
+            || sequence.len()
+                > iteron_tunables::param_integer(
+                    "cli.tui.notification.max_notification_bytes",
+                    MAX_NOTIFICATION_BYTES,
+                )
             || (sequence != TERMINAL_BELL
                 && ![
                     OSC9_RUN_COMPLETE,
@@ -168,7 +177,10 @@ impl<W: Write> LiveTerminalWriter<W> {
         desktop_sequences_supported: bool,
     ) -> (Self, LiveNotificationTransport) {
         let shared = Arc::new(Mutex::new(LiveNotificationQueue {
-            notifications: VecDeque::with_capacity(NOTIFICATION_QUEUE_CAPACITY),
+            notifications: VecDeque::with_capacity(iteron_tunables::param_integer(
+                "cli.tui.notification.notification_queue_capacity",
+                NOTIFICATION_QUEUE_CAPACITY,
+            )),
             desktop_sequences_supported,
             poisoned: false,
         }));
@@ -298,7 +310,12 @@ impl LiveNotificationTransport {
                     "the terminal notification writer is poisoned",
                 ));
             }
-            if queue.notifications.len() == NOTIFICATION_QUEUE_CAPACITY {
+            if queue.notifications.len()
+                == iteron_tunables::param_integer(
+                    "cli.tui.notification.notification_queue_capacity",
+                    NOTIFICATION_QUEUE_CAPACITY,
+                )
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "the bounded terminal notification queue is full",
@@ -444,7 +461,15 @@ pub(super) struct TerminalNotifier {
 
 impl TerminalNotifier {
     pub(super) fn new(enabled: bool) -> Self {
-        Self::with_settings(enabled, Protocol::detect(), LONG_IDLE_AFTER, Instant::now())
+        Self::with_settings(
+            enabled,
+            Protocol::detect(),
+            iteron_tunables::param_duration(
+                "cli.tui.notification.long_idle_after",
+                LONG_IDLE_AFTER,
+            ),
+            Instant::now(),
+        )
     }
 
     fn with_settings(
@@ -547,7 +572,13 @@ impl TerminalNotifier {
             Protocol::Bell => transport.write_bell(),
             protocol => {
                 let sequence = notification_sequence(protocol, trigger);
-                debug_assert!(sequence.len() <= MAX_NOTIFICATION_BYTES);
+                debug_assert!(
+                    sequence.len()
+                        <= iteron_tunables::param_integer(
+                            "cli.tui.notification.max_notification_bytes",
+                            MAX_NOTIFICATION_BYTES
+                        )
+                );
                 debug_assert!(sequence.ends_with(TERMINAL_BELL));
                 match transport.admit_notification(sequence) {
                     NotificationAdmission::Unsupported => transport.write_bell(),

@@ -38,7 +38,11 @@ pub(crate) fn negotiate_initialize_result(result: &Value) -> Result<String, McpE
 
 fn is_bounded_protocol_token(version: &str) -> bool {
     !version.is_empty()
-        && version.len() <= MAX_PROTOCOL_VERSION_BYTES
+        && version.len()
+            <= iteron_tunables::param_integer(
+                "mcp.protocol_version.max_protocol_version_bytes",
+                MAX_PROTOCOL_VERSION_BYTES,
+            )
         && version
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))

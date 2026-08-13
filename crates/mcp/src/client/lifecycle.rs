@@ -92,16 +92,27 @@ impl OwnedProcess {
         let child = self.child.as_mut()?;
 
         #[cfg(unix)]
-        self.group.signal(SIGTERM);
+        self.group.signal(iteron_tunables::param_integer(
+            "mcp.client.lifecycle.sigterm",
+            SIGTERM,
+        ));
 
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
         {
-            let grace_deadline = tokio::time::Instant::now() + TERMINATION_GRACE;
+            let grace_deadline = tokio::time::Instant::now()
+                + iteron_tunables::param_duration(
+                    "mcp.client.lifecycle.termination_grace",
+                    TERMINATION_GRACE,
+                );
             loop {
                 match child_exit_is_pending(child.id()) {
                     Ok(true) => break,
                     Ok(false) if tokio::time::Instant::now() < grace_deadline => {
-                        tokio::time::sleep(REAP_POLL_INTERVAL).await;
+                        tokio::time::sleep(iteron_tunables::param_duration(
+                            "mcp.client.lifecycle.reap_poll_interval",
+                            REAP_POLL_INTERVAL,
+                        ))
+                        .await;
                     }
                     Ok(false) => break,
                     Err(_) => {
@@ -115,10 +126,16 @@ impl OwnedProcess {
         #[cfg(unix)]
         self.group.force_kill();
         let _ = child.start_kill();
-        let waited = tokio::time::timeout(SYNCHRONOUS_REAP_CEILING, child.wait())
-            .await
-            .ok()
-            .and_then(Result::ok);
+        let waited = tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "mcp.client.lifecycle.synchronous_reap_ceiling",
+                SYNCHRONOUS_REAP_CEILING,
+            ),
+            child.wait(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
         if waited.is_some() {
             self.child = None;
         } else {
@@ -137,7 +154,11 @@ impl OwnedProcess {
     }
 
     fn reap_direct_child_sync(&mut self) {
-        let deadline = std::time::Instant::now() + SYNCHRONOUS_REAP_CEILING;
+        let deadline = std::time::Instant::now()
+            + iteron_tunables::param_duration(
+                "mcp.client.lifecycle.synchronous_reap_ceiling",
+                SYNCHRONOUS_REAP_CEILING,
+            );
         loop {
             let result = match self.child.as_mut() {
                 Some(child) => child.try_wait(),
@@ -149,7 +170,10 @@ impl OwnedProcess {
                     return;
                 }
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(REAP_POLL_INTERVAL);
+                    std::thread::sleep(iteron_tunables::param_duration(
+                        "mcp.client.lifecycle.reap_poll_interval",
+                        REAP_POLL_INTERVAL,
+                    ));
                 }
                 Ok(None) | Err(_) => return,
             }
@@ -196,7 +220,10 @@ impl ProcessGroupToken {
             return;
         }
         self.armed = false;
-        signal_process_group(self.pid, SIGKILL);
+        signal_process_group(
+            self.pid,
+            iteron_tunables::param_integer("mcp.client.lifecycle.sigkill", SIGKILL),
+        );
     }
 
     fn abandon(&mut self) {

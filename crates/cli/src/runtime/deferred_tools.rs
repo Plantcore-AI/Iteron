@@ -15,9 +15,12 @@ pub(crate) struct EffectingToolAdmissionPolicy {
     pub unknown_set: &'static str,
 }
 
-pub(crate) const fn effecting_tool_admission_policy() -> EffectingToolAdmissionPolicy {
+pub(crate) fn effecting_tool_admission_policy() -> EffectingToolAdmissionPolicy {
     EffectingToolAdmissionPolicy {
-        max_concurrency: super::DEFAULT_MAX_TOOL_CONCURRENCY,
+        max_concurrency: iteron_tunables::param_integer(
+            "cli.runtime.default_max_tool_concurrency",
+            super::DEFAULT_MAX_TOOL_CONCURRENCY,
+        ),
         declared_set_required: true,
         overlap: "reject",
         unknown_set: "reject",

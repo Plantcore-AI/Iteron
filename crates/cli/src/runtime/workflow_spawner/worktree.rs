@@ -148,7 +148,10 @@ impl WriterWorktree {
             self.path.clone(),
             command.to_owned(),
         )
-        .with_timeout_secs(VERIFY_TIMEOUT_SECS)
+        .with_timeout_secs(iteron_tunables::param_integer(
+            "cli.runtime.workflow_spawner.worktree.verify_timeout_secs",
+            VERIFY_TIMEOUT_SECS,
+        ))
         .with_sensitive_env_names(sensitive_env_names.to_vec())
         .with_output_tail_bytes(output_tail_bytes);
         let verdict = oracle.evaluate().await;
@@ -304,7 +307,12 @@ fn prepare_patch_sync(
     )?;
     let metadata = std::fs::metadata(patch_path)
         .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    if metadata.len() > MAX_WRITER_PATCH_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "cli.runtime.workflow_spawner.worktree.max_writer_patch_bytes",
+            MAX_WRITER_PATCH_BYTES,
+        )
+    {
         return Err(MergeFailure::new(
             MergeFailureKind::PatchTooLarge,
             format!(
@@ -428,7 +436,13 @@ fn verified_patch_bytes(
     let metadata = std::fs::metadata(patch_path).map_err(|error| {
         MergeFailure::new(MergeFailureKind::PatchReceiptMismatch, error.to_string())
     })?;
-    if metadata.len() != receipt.patch_bytes || metadata.len() > MAX_WRITER_PATCH_BYTES {
+    if metadata.len() != receipt.patch_bytes
+        || metadata.len()
+            > iteron_tunables::param_integer(
+                "cli.runtime.workflow_spawner.worktree.max_writer_patch_bytes",
+                MAX_WRITER_PATCH_BYTES,
+            )
+    {
         return Err(MergeFailure::new(
             MergeFailureKind::PatchReceiptMismatch,
             "sealed writer patch byte count changed before merge",
@@ -727,9 +741,17 @@ fn read_bounded(mut reader: impl Read) -> Vec<u8> {
     let mut bytes = Vec::new();
     let _ = reader
         .by_ref()
-        .take((MAX_GIT_MESSAGE_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
+                MAX_GIT_MESSAGE_BYTES,
+            ) + 1) as u64,
+        )
         .read_to_end(&mut bytes);
-    bytes.truncate(MAX_GIT_MESSAGE_BYTES);
+    bytes.truncate(iteron_tunables::param_integer(
+        "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
+        MAX_GIT_MESSAGE_BYTES,
+    ));
     bytes
 }
 
@@ -745,7 +767,10 @@ fn bounded_detail(value: &str) -> String {
         })
         .collect::<String>();
     let mut bytes = one_line.into_bytes();
-    bytes.truncate(MAX_GIT_MESSAGE_BYTES);
+    bytes.truncate(iteron_tunables::param_integer(
+        "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
+        MAX_GIT_MESSAGE_BYTES,
+    ));
     while std::str::from_utf8(&bytes).is_err() {
         bytes.pop();
     }
