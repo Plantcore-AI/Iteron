@@ -4,9 +4,23 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "03:00"
+      timezone: Asia/Hong_Kong
+    open-pull-requests-limit: 1
+    groups:
+      cargo-weekly:
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "03:30"
+      timezone: Asia/Hong_Kong
+    open-pull-requests-limit: 1
+    groups:
+      github-actions-weekly:
+        patterns:
+          - "*"

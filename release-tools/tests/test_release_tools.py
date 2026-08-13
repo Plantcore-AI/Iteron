@@ -391,8 +391,9 @@ exit 1
             self.assertEqual(entry["binary"], "cargo-audit")
         workflow = (repository / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("dependency-audit:", workflow)
-        self.assertIn("release-tools/audit_dependencies.sh linux-x86_64", workflow)
-        self.assertIn("needs: [boundary, dependency-audit, test]", workflow)
+        self.assertIn("run: release-tools/audit_dependencies.sh\n", workflow)
+        self.assertNotIn("audit_dependencies.sh linux-x86_64", workflow)
+        self.assertIn("needs: [route, boundary, dependency-audit, test]", workflow)
 
     def test_schema_release_selects_highest_semver_not_api_order(self) -> None:
         releases = [
@@ -720,7 +721,7 @@ exit 1
             "- name: validate candidate against published schema chronology", 1
         )[0]
         self.assertIn(
-            "if: github.event_name == 'pull_request' || "
+            "if: github.event_name == 'pull_request_target' || "
             "github.event_name == 'merge_group'",
             verification,
         )

@@ -7,7 +7,7 @@ claim that every historical tag contains every archive.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
-| macOS arm64 on `macos-15` | native release and CI | supported | system Seatbelt interface |
+| macOS arm64 on `macos-15` | native release; PR CI paused | supported | system Seatbelt interface |
 | macOS x86-64 on `macos-15-intel` | native release | supported | system Seatbelt interface |
 | Linux x86-64 on `ubuntu-24.04` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
 | Linux arm64 on `ubuntu-24.04-arm` | native release | supported | usable bubblewrap/user-namespace boundary required |
@@ -19,11 +19,8 @@ Windows release target, and no Windows installer. Lifecycle paths still assume
 a POSIX shell, and no published tag contains a supported Windows artifact.
 
 The sandbox returns `Unsupported` for every non-macOS, non-Linux target. The
-advisory `windows / check` job in `.github/workflows/windows.yml` runs
-`cargo check --workspace --locked --target x86_64-pc-windows-msvc` on the
-`windows-latest` runner. It is non-blocking and exists only to keep the porting
-gap visible. A green compile result is not runtime, installer, sandbox, or
-release evidence.
+former advisory Windows cross-compilation runner is currently paused. There is
+no Windows runtime, installer, sandbox, or release evidence.
 
 ## Linux requirements
 

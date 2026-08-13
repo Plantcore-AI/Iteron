@@ -21,6 +21,7 @@ case "$host" in
 esac
 
 command -v python3 >/dev/null
+command -v node >/dev/null
 command -v shellcheck >/dev/null
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/core-supply-validate.XXXXXXXX")
@@ -29,6 +30,7 @@ trap 'rm -rf "$temporary"' EXIT
 cd "$repo_root"
 python3 -m compileall -q release-tools
 python3 -m unittest discover -s release-tools/tests -p 'test_*.py' -v
+node release-tools/tests/test_ci_route.js
 shellcheck -s sh install.sh
 shellcheck -s bash \
   release-tools/audit_dependencies.sh \

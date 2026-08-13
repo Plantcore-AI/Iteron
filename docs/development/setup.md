@@ -4,9 +4,9 @@
 
 The supported Iteron source and release targets are macOS and Linux. Install Git,
 a Rust toolchain at version 1.90 or newer, and the compiler/linker required by
-the target. Windows is not supported; the repository retains only an advisory
-`windows / check` cross-compilation lane on `windows-latest` so gaps remain
-visible. The repository does not use a JavaScript build for the product runtime.
+the target. Windows is not supported and its advisory cross-compilation CI is
+currently paused. The repository does not use a JavaScript build for the product
+runtime.
 
 ```sh
 rustup toolchain install 1.90.0 --profile minimal \

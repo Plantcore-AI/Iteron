@@ -1,9 +1,8 @@
 name: review-policy
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
+  # This is a reusable policy lane, not an independent CI entry point. `ci.yml`
+  # calls it from the protected base workflow for pull-request and review events.
+  workflow_call:
 
 permissions:
   contents: read
@@ -20,9 +19,18 @@ jobs:
   required-humans:
     name: review / required-humans
     if: github.event.pull_request.draft == false
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 10
     steps:
+      - name: refuse untrusted fork execution on the persistent DGX runner
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
+            echo "External fork pull requests require an isolated ephemeral runner and maintainer approval." >&2
+            exit 1
+          fi
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
