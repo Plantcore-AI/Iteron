@@ -5,18 +5,16 @@ supported. The current `v0.0.4` release contains only the macOS Apple Silicon
 archive; the other three entries in the four-target matrix remain pending until
 the hosted release workflow can run successfully.
 
-!!! warning "Pre-alpha and pre-public"
+!!! warning "Pre-alpha release"
     A downloadable release is not a compatibility or unattended-safety promise.
-    The repository is currently private, so the unauthenticated public installer
-    below will not work until the public-launch checklist is complete. Review the
-    [project status](../project/status.md) and
+    Review the [project status](../project/status.md) and
     [sandbox limitations](../using/permissions-and-sandbox.md) before using
     Iteron on important work.
 
 ## Install the latest public release
 
-Once the repository is public, a host for which the latest release actually
-contains an archive can use:
+When the repository and selected release archive are publicly accessible, a
+host for which the latest release actually contains an archive can use:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
@@ -34,6 +32,9 @@ The installer:
 - rejects unexpected archive members, links, special files, and path traversal;
 - smoke-tests the downloaded binary before replacing an existing installation;
 - installs atomically without `sudo` and never edits a shell profile.
+
+After installation, follow [Setup and BYOK](setup-and-byok.md) to validate and
+store a provider credential outside the repository.
 
 An explicit `--bin-dir` wins. Otherwise the destination is
 `$ITERON_INSTALL_DIR`, the legacy `$ITERON_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or
@@ -117,8 +118,8 @@ Platform signing is outside the current release slice.
 
 ## Build from source
 
-Building from source is the available path on the private repository and on any
-macOS/Linux target missing from the latest release:
+Building from source is the available path on any macOS/Linux target missing
+from the latest release:
 
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
