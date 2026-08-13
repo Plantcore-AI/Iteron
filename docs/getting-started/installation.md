@@ -17,11 +17,10 @@ When the repository and selected release archive are publicly accessible, a
 host for which the latest release actually contains an archive can use:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
-
-iteron --version
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
+
+Then run `iteron --version`.
 
 The installer:
 

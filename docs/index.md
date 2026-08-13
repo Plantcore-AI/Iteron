@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/iteron-logo.svg" width="720" alt="Iteron">
+  <img src="assets/brand/iteron-banner.webp" width="100%" alt="Iteron — terminal coding agent and modular Rust runtime">
 </p>
 
 # Iteron

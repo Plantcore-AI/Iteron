@@ -17,8 +17,8 @@ hooks:
 theme:
   name: material
   language: en
-  logo: assets/brand/iteron-mark.svg
-  favicon: assets/brand/iteron-mark.svg
+  logo: assets/brand/iteron-machine-mark.webp
+  favicon: assets/brand/iteron-machine-mark.webp
   icon:
     repo: fontawesome/brands/github
   palette:

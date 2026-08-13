@@ -258,9 +258,6 @@ iteron_main() {
         Darwin:arm64|Darwin:aarch64)
             iteron_target=aarch64-apple-darwin
             ;;
-        Darwin:x86_64|Darwin:amd64)
-            iteron_target=x86_64-apple-darwin
-            ;;
         Linux:aarch64|Linux:arm64)
             iteron_target=aarch64-unknown-linux-musl
             ;;
