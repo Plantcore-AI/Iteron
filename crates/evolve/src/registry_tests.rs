@@ -210,7 +210,13 @@ fn d14_11_g2_lineage_query_and_torn_append_recover_verified_prefix() {
         Some("bundle-parent")
     );
     assert_eq!(lineage.source_policies, first.bundle.policies);
-    assert!(lineage.source_policies.len() <= MAX_TRAJECTORY_LINEAGE_POLICIES);
+    assert!(
+        lineage.source_policies.len()
+            <= iteron_tunables::param_integer(
+                "evolve.registry.max_trajectory_lineage_policies",
+                MAX_TRAJECTORY_LINEAGE_POLICIES
+            )
+    );
 
     let verified_prefix = std::fs::metadata(registry.path()).unwrap().len();
     inject_torn_record(&mut registry, &third);

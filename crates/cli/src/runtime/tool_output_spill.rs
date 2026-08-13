@@ -61,7 +61,11 @@ impl ToolOutputSpillPolicy {
         cleanup: ToolOutputSpillCleanup,
     ) -> Result<Self, ToolOutputSpillError> {
         if memory_threshold_bytes > spill_max_bytes
-            || u64::try_from(spill_max_bytes).unwrap_or(u64::MAX) > SCHEMA_MAX_SPILL_BYTES
+            || u64::try_from(spill_max_bytes).unwrap_or(u64::MAX)
+                > iteron_tunables::param_integer(
+                    "cli.runtime.tool_output_spill.schema_max_spill_bytes",
+                    SCHEMA_MAX_SPILL_BYTES,
+                )
         {
             return Err(ToolOutputSpillError::InvalidPolicy);
         }
@@ -88,8 +92,14 @@ impl ToolOutputSpillPolicy {
 impl Default for ToolOutputSpillPolicy {
     fn default() -> Self {
         Self::new(
-            DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
-            DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES,
+            iteron_tunables::param_integer(
+                "cli.runtime.tool_output_spill.default_tool_output_memory_threshold_bytes",
+                DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
+            ),
+            iteron_tunables::param_integer(
+                "cli.runtime.tool_output_spill.default_tool_output_spill_max_bytes",
+                DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES,
+            ),
             ToolOutputSpillCleanup::RunEnd,
         )
         .expect("the built-in ordinary tool-output spill policy is valid")

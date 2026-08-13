@@ -194,24 +194,50 @@ fn only_distinct_successful_requests_restore_restart_credit() {
     assert_eq!(session.restarts(), 1);
     assert!(
         !session
-            .note_request_succeeded(&first, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(
+                &first,
+                ready_at
+                    + iteron_tunables::param_integer(
+                        "lsp.lib.healthy_restart_reset_after_ms",
+                        HEALTHY_RESTART_RESET_AFTER_MS
+                    )
+            )
             .unwrap()
     );
     assert_eq!(session.restarts(), 1, "a replayed success cannot heal");
     assert!(
         !session
-            .note_request_succeeded(&second, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(
+                &second,
+                ready_at
+                    + iteron_tunables::param_integer(
+                        "lsp.lib.healthy_restart_reset_after_ms",
+                        HEALTHY_RESTART_RESET_AFTER_MS
+                    )
+            )
             .unwrap()
     );
     assert_eq!(session.restarts(), 1);
     assert!(
         session
-            .note_request_succeeded(&third, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(
+                &third,
+                ready_at
+                    + iteron_tunables::param_integer(
+                        "lsp.lib.healthy_restart_reset_after_ms",
+                        HEALTHY_RESTART_RESET_AFTER_MS
+                    )
+            )
             .unwrap()
     );
     assert_eq!(session.restarts(), 0);
 
-    let crashed_at = ready_at + HEALTHY_RESTART_RESET_AFTER_MS + 1;
+    let crashed_at = ready_at
+        + iteron_tunables::param_integer(
+            "lsp.lib.healthy_restart_reset_after_ms",
+            HEALTHY_RESTART_RESET_AFTER_MS,
+        )
+        + 1;
     session.apply(Event::ProcessFailed, crashed_at).unwrap();
     let delay = session.plan_restart(crashed_at).unwrap();
     let next_ready = crashed_at + delay;
@@ -219,7 +245,14 @@ fn only_distinct_successful_requests_restore_restart_credit() {
     session.apply(initialized(3), next_ready).unwrap();
     for replay in [first, second, third] {
         assert_eq!(
-            session.note_request_succeeded(&replay, next_ready + HEALTHY_RESTART_RESET_AFTER_MS),
+            session.note_request_succeeded(
+                &replay,
+                next_ready
+                    + iteron_tunables::param_integer(
+                        "lsp.lib.healthy_restart_reset_after_ms",
+                        HEALTHY_RESTART_RESET_AFTER_MS
+                    )
+            ),
             Err(LspError::ServerEpochMismatch {
                 expected: 3,
                 received: 2
@@ -248,7 +281,11 @@ fn ready_epoch_rejects_old_and_future_completions_without_healing_credit() {
     // numerically newer ids must not count as health evidence for generation eight.
     let old: Vec<_> = completions(7, 6).into_iter().skip(3).collect();
     let future = completions(9, 3);
-    let stable_at = ready_at + HEALTHY_RESTART_RESET_AFTER_MS;
+    let stable_at = ready_at
+        + iteron_tunables::param_integer(
+            "lsp.lib.healthy_restart_reset_after_ms",
+            HEALTHY_RESTART_RESET_AFTER_MS,
+        );
     for completion in &old {
         assert_eq!(
             session.note_request_succeeded(completion, stable_at),
@@ -269,7 +306,13 @@ fn ready_epoch_rejects_old_and_future_completions_without_healing_credit() {
     }
     assert_eq!(session.restarts(), 1);
 
-    let current = completions(8, HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize);
+    let current = completions(
+        8,
+        iteron_tunables::param_integer(
+            "lsp.lib.healthy_restart_reset_after_successes",
+            HEALTHY_RESTART_RESET_AFTER_SUCCESSES,
+        ) as usize,
+    );
     assert!(
         !session
             .note_request_succeeded(&current[0], stable_at)
@@ -316,7 +359,12 @@ fn restart_policy_rejects_unbounded_or_inverted_configuration() {
         Err(LspError::RestartBudgetExhausted { attempts: 0 })
     );
     assert!(matches!(
-        RestartPolicy::new(MAX_RESTART_ATTEMPTS + 1, 1, 1),
+        RestartPolicy::new(
+            iteron_tunables::param_integer("lsp.lib.max_restart_attempts", MAX_RESTART_ATTEMPTS)
+                + 1,
+            1,
+            1
+        ),
         Err(LspError::InvalidRestartAttempts { .. })
     ));
     assert!(matches!(

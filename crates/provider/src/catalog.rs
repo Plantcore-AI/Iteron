@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 
 /// Bounded TCP/TLS connect timeout shared by every adapter's HTTP client and re-sampled by the
 /// run-genesis fixed-authority receipt.
-pub const fn provider_connect_timeout() -> Duration {
+pub fn provider_connect_timeout() -> Duration {
     crate::provider_transport_timeout_policy().connect_tls
 }
 
 /// Exact pool owner consumed by the default transport and by the fixed-authority fact adapter.
-pub const fn provider_http_pool_policy() -> crate::ProviderTransportTimeoutPolicy {
+pub fn provider_http_pool_policy() -> crate::ProviderTransportTimeoutPolicy {
     crate::provider_transport_timeout_policy()
 }
 
@@ -548,9 +548,15 @@ impl FileCredential {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = unix_now();
         let usable = state.as_ref().is_some_and(|loaded| {
-            loaded
-                .expires_at_unix
-                .is_some_and(|expiry| now.saturating_add(CREDENTIAL_REFRESH_SKEW_SECS) < expiry)
+            loaded.expires_at_unix.is_some_and(|expiry| {
+                now.saturating_add(iteron_tunables::param_u64(
+                    "provider.catalog.credential_refresh_skew_secs",
+                    iteron_tunables::param_integer(
+                        "provider.catalog.credential_refresh_skew_secs",
+                        CREDENTIAL_REFRESH_SKEW_SECS,
+                    ),
+                )) < expiry
+            })
         });
         if !usable {
             *state = Some(read_credential_file(&self.path));
@@ -567,7 +573,10 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(PRE_EPOCH_CLOCK_UNIX_SECS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "provider.catalog.pre_epoch_clock_unix_secs",
+            PRE_EPOCH_CLOCK_UNIX_SECS,
+        ))
 }
 
 /// Read a credential document through a bounded, permission-checked descriptor.
@@ -590,7 +599,12 @@ fn read_credential_file(path: &std::path::Path) -> LoadedCredential {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return absent("credential file must be a regular file, not a symlink".into());
     }
-    if metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "provider.catalog.max_credential_file_bytes",
+            MAX_CREDENTIAL_FILE_BYTES,
+        )
+    {
         return absent("credential file exceeds its 8 KiB bound".into());
     }
     #[cfg(unix)]
@@ -605,7 +619,12 @@ fn read_credential_file(path: &std::path::Path) -> LoadedCredential {
     let Ok(bytes) = std::fs::read(path) else {
         return absent("credential file could not be read".into());
     };
-    if bytes.len() as u64 > MAX_CREDENTIAL_FILE_BYTES {
+    if bytes.len() as u64
+        > iteron_tunables::param_integer(
+            "provider.catalog.max_credential_file_bytes",
+            MAX_CREDENTIAL_FILE_BYTES,
+        )
+    {
         return absent("credential file exceeds its 8 KiB bound".into());
     }
     let Ok(text) = String::from_utf8(bytes) else {
@@ -720,7 +739,11 @@ impl ProviderInstance {
         let id = id.into();
         let display_name = display_name.into();
         if id.is_empty()
-            || id.len() > MAX_INSTANCE_ID_BYTES
+            || id.len()
+                > iteron_tunables::param_integer(
+                    "provider.catalog.max_instance_id_bytes",
+                    MAX_INSTANCE_ID_BYTES,
+                )
             || !id.chars().all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
             })
@@ -729,7 +752,13 @@ impl ProviderInstance {
                 "provider instance id is invalid".into(),
             ));
         }
-        if display_name.is_empty() || display_name.len() > MAX_DISPLAY_NAME_BYTES {
+        if display_name.is_empty()
+            || display_name.len()
+                > iteron_tunables::param_integer(
+                    "provider.catalog.max_display_name_bytes",
+                    MAX_DISPLAY_NAME_BYTES,
+                )
+        {
             return Err(ProviderError::Configuration(
                 "provider display name is invalid".into(),
             ));
@@ -1175,11 +1204,18 @@ pub async fn discover_catalog(
             provider: instance.id.clone(),
         })?;
     let client = reqwest::Client::builder()
-        .connect_timeout(PER_REQUEST_TIMEOUT)
+        .connect_timeout(iteron_tunables::param_duration(
+            "provider.catalog.per_request_timeout",
+            PER_REQUEST_TIMEOUT,
+        ))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
-    let deadline = Instant::now() + TOTAL_DISCOVERY_TIMEOUT;
+    let deadline = Instant::now()
+        + iteron_tunables::param_duration(
+            "provider.catalog.total_discovery_timeout",
+            TOTAL_DISCOVERY_TIMEOUT,
+        );
     match &instance.catalog_strategy {
         CatalogStrategy::AnthropicModels => {
             let raw = discover_anthropic(&client, instance, &credential, deadline).await?;
@@ -1211,36 +1247,54 @@ pub async fn probe_account(
             provider: instance.id.clone(),
         })?;
     let client = reqwest::Client::builder()
-        .connect_timeout(PER_REQUEST_TIMEOUT)
+        .connect_timeout(iteron_tunables::param_duration(
+            "provider.catalog.per_request_timeout",
+            PER_REQUEST_TIMEOUT,
+        ))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
     match probe {
         AccountProbe::DeepSeekBalance => {
             let endpoint = instance.api_root.origin_endpoint("user/balance")?;
-            tokio::time::timeout(PER_REQUEST_TIMEOUT, async {
-                let response = client
-                    .get(endpoint)
-                    .bearer_auth(credential)
-                    .send()
-                    .await
-                    .map_err(|error| ProviderError::Http(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(api_error_from_response(
+            tokio::time::timeout(
+                iteron_tunables::param_duration(
+                    "provider.catalog.per_request_timeout",
+                    PER_REQUEST_TIMEOUT,
+                ),
+                async {
+                    let response = client
+                        .get(endpoint)
+                        .bearer_auth(credential)
+                        .send()
+                        .await
+                        .map_err(|error| ProviderError::Http(error.to_string()))?;
+                    if !response.status().is_success() {
+                        return Err(api_error_from_response(
+                            response,
+                            instance.adapter,
+                            instance.error_profile,
+                        )
+                        .await);
+                    }
+                    let bytes = read_bounded_response(
                         response,
-                        instance.adapter,
-                        instance.error_profile,
+                        iteron_tunables::param_integer(
+                            "provider.catalog.max_account_probe_page_bytes",
+                            MAX_ACCOUNT_PROBE_PAGE_BYTES,
+                        ),
+                        "account probe",
                     )
-                    .await);
-                }
-                let bytes =
-                    read_bounded_response(response, MAX_ACCOUNT_PROBE_PAGE_BYTES, "account probe")
-                        .await?;
-                let payload: DeepSeekBalance = serde_json::from_slice(&bytes).map_err(|error| {
-                    ProviderError::Decode(format!("malformed DeepSeek balance response: {error}"))
-                })?;
-                Ok(deepseek_probe_result(payload.is_available))
-            })
+                    .await?;
+                    let payload: DeepSeekBalance =
+                        serde_json::from_slice(&bytes).map_err(|error| {
+                            ProviderError::Decode(format!(
+                                "malformed DeepSeek balance response: {error}"
+                            ))
+                        })?;
+                    Ok(deepseek_probe_result(payload.is_available))
+                },
+            )
             .await
             .map_err(|_| ProviderError::Http("account probe timed out".into()))?
         }
@@ -1305,17 +1359,30 @@ async fn probe_fireworks_accounts(
     control_plane_root: &ApiRoot,
 ) -> Result<AccountProbeResult, ProviderError> {
     let endpoint = control_plane_root.endpoint("accounts")?;
-    let deadline = Instant::now() + TOTAL_DISCOVERY_TIMEOUT;
+    let deadline = Instant::now()
+        + iteron_tunables::param_duration(
+            "provider.catalog.total_discovery_timeout",
+            TOTAL_DISCOVERY_TIMEOUT,
+        );
     let mut accounts = Vec::new();
     let mut total_bytes = 0usize;
     let mut cursor: Option<String> = None;
     let mut seen_cursors = BTreeSet::new();
 
-    for page_number in 0..MAX_ACCOUNT_PAGES {
+    let max_account_pages =
+        iteron_tunables::param_usize("provider.catalog.max_account_pages", MAX_ACCOUNT_PAGES);
+    for page_number in 0..max_account_pages {
         let mut request = client
             .get(endpoint.clone())
             .bearer_auth(credential)
-            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[(
+                "pageSize",
+                iteron_tunables::param_integer(
+                    "provider.catalog.fireworks_page_size",
+                    FIREWORKS_PAGE_SIZE,
+                )
+                .to_string(),
+            )])
             .query(&[("readMask", "name,state,status,suspendState")]);
         if let Some(page_token) = &cursor {
             request = request.query(&[("pageToken", page_token)]);
@@ -1335,9 +1402,18 @@ async fn probe_fireworks_accounts(
             ProviderError::Decode(format!("malformed Fireworks accounts response: {error}"))
         })?;
         for account in page.accounts {
-            validate_model_text(&account.name, MAX_MODEL_ID_BYTES, "account name")?;
+            validate_model_text(
+                &account.name,
+                iteron_tunables::param_integer(
+                    "provider.catalog.max_model_id_bytes",
+                    MAX_MODEL_ID_BYTES,
+                ),
+                "account name",
+            )?;
             accounts.push(account);
-            if accounts.len() > MAX_ACCOUNTS {
+            if accounts.len()
+                > iteron_tunables::param_usize("provider.catalog.max_accounts", MAX_ACCOUNTS)
+            {
                 return Err(ProviderError::Decode(
                     "Fireworks account probe exceeded account bound".into(),
                 ));
@@ -1353,7 +1429,7 @@ async fn probe_fireworks_accounts(
             return Ok(aggregate_fireworks_accounts(accounts));
         };
         cursor = Some(next);
-        if page_number + 1 == MAX_ACCOUNT_PAGES {
+        if page_number + 1 == max_account_pages {
             return Err(ProviderError::Decode(
                 "Fireworks account probe exceeded page bound".into(),
             ));
@@ -1375,7 +1451,10 @@ async fn execute_account_request(
     if remaining.is_zero() {
         return Err(ProviderError::Http("account probe timed out".into()));
     }
-    let timeout = remaining.min(PER_REQUEST_TIMEOUT);
+    let timeout = remaining.min(iteron_tunables::param_duration(
+        "provider.catalog.per_request_timeout",
+        PER_REQUEST_TIMEOUT,
+    ));
     let bytes = tokio::time::timeout(timeout, async move {
         let response = request
             .send()
@@ -1384,14 +1463,27 @@ async fn execute_account_request(
         if !response.status().is_success() {
             return Err(api_error_from_response(response, adapter, error_profile).await);
         }
-        read_bounded_response(response, MAX_ACCOUNT_PROBE_PAGE_BYTES, "account probe page").await
+        read_bounded_response(
+            response,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_account_probe_page_bytes",
+                MAX_ACCOUNT_PROBE_PAGE_BYTES,
+            ),
+            "account probe page",
+        )
+        .await
     })
     .await
     .map_err(|_| ProviderError::Http("account probe request timed out".into()))??;
     let total = total_bytes_before
         .checked_add(bytes.len())
         .ok_or_else(|| ProviderError::Decode("account probe total size overflow".into()))?;
-    if total > MAX_ACCOUNT_PROBE_TOTAL_BYTES {
+    if total
+        > iteron_tunables::param_integer(
+            "provider.catalog.max_account_probe_total_bytes",
+            MAX_ACCOUNT_PROBE_TOTAL_BYTES,
+        )
+    {
         return Err(ProviderError::Decode(
             "account probe exceeded total byte bound".into(),
         ));
@@ -1472,7 +1564,13 @@ async fn read_bounded_response(
     max_bytes: usize,
     label: &'static str,
 ) -> Result<Vec<u8>, ProviderError> {
-    let mut body = Vec::with_capacity(BOUNDED_RESPONSE_INITIAL_BYTES.min(max_bytes));
+    let mut body = Vec::with_capacity(
+        iteron_tunables::param_integer(
+            "provider.catalog.bounded_response_initial_bytes",
+            BOUNDED_RESPONSE_INITIAL_BYTES,
+        )
+        .min(max_bytes),
+    );
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
         let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
@@ -1498,12 +1596,24 @@ async fn discover_anthropic(
     let mut cursor: Option<String> = None;
     let mut seen_cursors = BTreeSet::new();
 
-    for page_number in 0..MAX_CATALOG_PAGES {
+    let max_catalog_pages =
+        iteron_tunables::param_usize("provider.catalog.max_catalog_pages", MAX_CATALOG_PAGES);
+    for page_number in 0..max_catalog_pages {
         let mut request = client
             .get(endpoint.clone())
             .header("x-api-key", credential)
             .header("anthropic-version", "2023-06-01")
-            .query(&[("limit", CATALOG_PAGE_SIZE.to_string())]);
+            .query(&[(
+                "limit",
+                iteron_tunables::param_usize(
+                    "provider.catalog.catalog_page_size",
+                    iteron_tunables::param_integer(
+                        "provider.catalog.catalog_page_size",
+                        CATALOG_PAGE_SIZE,
+                    ),
+                )
+                .to_string(),
+            )]);
         if let Some(after_id) = &cursor {
             request = request.query(&[("after_id", after_id)]);
         }
@@ -1533,7 +1643,7 @@ async fn discover_anthropic(
             return Ok(models);
         };
         cursor = Some(next);
-        if page_number + 1 == MAX_CATALOG_PAGES {
+        if page_number + 1 == max_catalog_pages {
             return Err(ProviderError::Decode(
                 "Anthropic catalog exceeded page bound".into(),
             ));
@@ -1606,7 +1716,10 @@ async fn discover_fireworks(
         credential,
         control_plane_root,
         FIREWORKS_SERVERLESS_MODELS_PATH,
-        Some(FIREWORKS_SERVERLESS_FILTER),
+        Some(iteron_tunables::param_str(
+            "provider.catalog.fireworks_serverless_filter",
+            FIREWORKS_SERVERLESS_FILTER,
+        )),
         FireworksModelScope::PublicServerless,
         "accounts/fireworks",
         None,
@@ -1674,7 +1787,12 @@ impl FireworksCatalogBudget {
             .pages
             .checked_add(1)
             .ok_or_else(|| ProviderError::Decode("catalog page counter overflow".into()))?;
-        if self.pages > MAX_FIREWORKS_CATALOG_PAGES {
+        if self.pages
+            > iteron_tunables::param_integer(
+                "provider.catalog.max_fireworks_catalog_pages",
+                MAX_FIREWORKS_CATALOG_PAGES,
+            )
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded aggregate page bound".into(),
             ));
@@ -1683,7 +1801,9 @@ impl FireworksCatalogBudget {
             .total_bytes
             .checked_add(bytes)
             .ok_or_else(|| ProviderError::Decode("catalog byte counter overflow".into()))?;
-        if self.total_bytes > MAX_TOTAL_BYTES {
+        if self.total_bytes
+            > iteron_tunables::param_integer("provider.catalog.max_total_bytes", MAX_TOTAL_BYTES)
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded aggregate byte bound".into(),
             ));
@@ -1703,7 +1823,12 @@ impl FireworksCatalogBudget {
         self.deployed_models = self.deployed_models.checked_add(1).ok_or_else(|| {
             ProviderError::Decode("Fireworks deployed-model counter overflow".into())
         })?;
-        if self.deployed_models > MAX_FIREWORKS_DEPLOYED_MODELS {
+        if self.deployed_models
+            > iteron_tunables::param_integer(
+                "provider.catalog.max_fireworks_deployed_models",
+                MAX_FIREWORKS_DEPLOYED_MODELS,
+            )
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded deployed-model bound".into(),
             ));
@@ -1746,7 +1871,12 @@ async fn discover_fireworks_models_at(
     let mut seen_cursors = BTreeSet::new();
 
     loop {
-        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+        if budget.pages
+            >= iteron_tunables::param_integer(
+                "provider.catalog.max_fireworks_catalog_pages",
+                MAX_FIREWORKS_CATALOG_PAGES,
+            )
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded aggregate page bound".into(),
             ));
@@ -1754,7 +1884,14 @@ async fn discover_fireworks_models_at(
         let mut request = client
             .get(endpoint.clone())
             .bearer_auth(credential)
-            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())]);
+            .query(&[(
+                "pageSize",
+                iteron_tunables::param_integer(
+                    "provider.catalog.fireworks_page_size",
+                    FIREWORKS_PAGE_SIZE,
+                )
+                .to_string(),
+            )]);
         if let Some(filter) = filter {
             request = request.query(&[("filter", filter)]);
         }
@@ -1813,7 +1950,12 @@ async fn discover_fireworks_default_deployments(
     let mut default_evidence = BTreeMap::<String, bool>::new();
 
     loop {
-        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+        if budget.pages
+            >= iteron_tunables::param_integer(
+                "provider.catalog.max_fireworks_catalog_pages",
+                MAX_FIREWORKS_CATALOG_PAGES,
+            )
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded aggregate page bound".into(),
             ));
@@ -1821,7 +1963,14 @@ async fn discover_fireworks_default_deployments(
         let mut request = client
             .get(endpoint.clone())
             .bearer_auth(credential)
-            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[(
+                "pageSize",
+                iteron_tunables::param_integer(
+                    "provider.catalog.fireworks_page_size",
+                    FIREWORKS_PAGE_SIZE,
+                )
+                .to_string(),
+            )])
             .query(&[("readMask", "name,model,deployment,default,state,status")]);
         if let Some(page_token) = &cursor {
             request = request.query(&[("pageToken", page_token)]);
@@ -1903,7 +2052,12 @@ async fn discover_fireworks_catalog_accounts(
     let mut cursor: Option<String> = None;
     let mut seen_cursors = BTreeSet::new();
     loop {
-        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+        if budget.pages
+            >= iteron_tunables::param_integer(
+                "provider.catalog.max_fireworks_catalog_pages",
+                MAX_FIREWORKS_CATALOG_PAGES,
+            )
+        {
             return Err(ProviderError::Decode(
                 "Fireworks catalog exceeded aggregate page bound".into(),
             ));
@@ -1911,7 +2065,14 @@ async fn discover_fireworks_catalog_accounts(
         let mut request = client
             .get(endpoint.clone())
             .bearer_auth(credential)
-            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[(
+                "pageSize",
+                iteron_tunables::param_integer(
+                    "provider.catalog.fireworks_page_size",
+                    FIREWORKS_PAGE_SIZE,
+                )
+                .to_string(),
+            )])
             .query(&[("readMask", "name,state,status,suspendState")]);
         if let Some(page_token) = &cursor {
             request = request.query(&[("pageToken", page_token)]);
@@ -1948,7 +2109,12 @@ async fn discover_fireworks_catalog_accounts(
                     result,
                     conflicting: false,
                 });
-            if accounts.len() > MAX_FIREWORKS_CATALOG_ACCOUNTS {
+            if accounts.len()
+                > iteron_tunables::param_integer(
+                    "provider.catalog.max_fireworks_catalog_accounts",
+                    MAX_FIREWORKS_CATALOG_ACCOUNTS,
+                )
+            {
                 return Err(ProviderError::Decode(
                     "Fireworks catalog exceeded account bound".into(),
                 ));
@@ -2000,7 +2166,13 @@ fn advance_page_token(
     let Some(next) = next.filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    if next.len() > MAX_PAGE_TOKEN_BYTES || next.chars().any(char::is_control) {
+    if next.len()
+        > iteron_tunables::param_integer(
+            "provider.catalog.max_page_token_bytes",
+            MAX_PAGE_TOKEN_BYTES,
+        )
+        || next.chars().any(char::is_control)
+    {
         return Err(ProviderError::Decode(format!(
             "{label} page token is invalid"
         )));
@@ -2024,7 +2196,10 @@ async fn execute_catalog_request(
     if remaining.is_zero() {
         return Err(ProviderError::Http("catalog discovery timed out".into()));
     }
-    let timeout = remaining.min(PER_REQUEST_TIMEOUT);
+    let timeout = remaining.min(iteron_tunables::param_duration(
+        "provider.catalog.per_request_timeout",
+        PER_REQUEST_TIMEOUT,
+    ));
     tokio::time::timeout(timeout, async move {
         let response = request
             .send()
@@ -2043,7 +2218,10 @@ async fn read_catalog_body(
     response: reqwest::Response,
     total_bytes_before: usize,
 ) -> Result<Vec<u8>, ProviderError> {
-    let mut body = Vec::with_capacity(CATALOG_PAGE_INITIAL_BYTES);
+    let mut body = Vec::with_capacity(iteron_tunables::param_integer(
+        "provider.catalog.catalog_page_initial_bytes",
+        CATALOG_PAGE_INITIAL_BYTES,
+    ));
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
         let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
@@ -2054,12 +2232,16 @@ async fn read_catalog_body(
         let total_size = total_bytes_before
             .checked_add(page_size)
             .ok_or_else(|| ProviderError::Decode("catalog total size overflow".into()))?;
-        if page_size > MAX_PAGE_BYTES {
+        if page_size
+            > iteron_tunables::param_integer("provider.catalog.max_page_bytes", MAX_PAGE_BYTES)
+        {
             return Err(ProviderError::Decode(
                 "provider catalog page exceeded 2 MiB".into(),
             ));
         }
-        if total_size > MAX_TOTAL_BYTES {
+        if total_size
+            > iteron_tunables::param_integer("provider.catalog.max_total_bytes", MAX_TOTAL_BYTES)
+        {
             return Err(ProviderError::Decode(
                 "provider catalog exceeded 8 MiB".into(),
             ));
@@ -2073,7 +2255,11 @@ fn decode_page<T: for<'de> Deserialize<'de>>(
     bytes: &[u8],
     total_bytes: usize,
 ) -> Result<T, ProviderError> {
-    if bytes.len() > MAX_PAGE_BYTES || total_bytes > MAX_TOTAL_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer("provider.catalog.max_page_bytes", MAX_PAGE_BYTES)
+        || total_bytes
+            > iteron_tunables::param_integer("provider.catalog.max_total_bytes", MAX_TOTAL_BYTES)
+    {
         return Err(ProviderError::Decode(
             "provider catalog response exceeded byte bounds".into(),
         ));
@@ -2083,7 +2269,9 @@ fn decode_page<T: for<'de> Deserialize<'de>>(
 }
 
 fn enforce_model_bound(count: usize) -> Result<(), ProviderError> {
-    if count > MAX_CATALOG_MODELS {
+    if count
+        > iteron_tunables::param_usize("provider.catalog.max_catalog_models", MAX_CATALOG_MODELS)
+    {
         Err(ProviderError::Decode(
             "provider catalog exceeded model bound".into(),
         ))
@@ -2183,9 +2371,20 @@ where
 }
 
 fn raw_anthropic_model(model: AnthropicModel) -> Result<RawModel, ProviderError> {
-    validate_model_text(&model.id, MAX_MODEL_ID_BYTES, "model id")?;
+    validate_model_text(
+        &model.id,
+        iteron_tunables::param_integer("provider.catalog.max_model_id_bytes", MAX_MODEL_ID_BYTES),
+        "model id",
+    )?;
     if let Some(display_name) = &model.display_name {
-        validate_model_text(display_name, MAX_DISPLAY_NAME_BYTES, "model display name")?;
+        validate_model_text(
+            display_name,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_display_name_bytes",
+                MAX_DISPLAY_NAME_BYTES,
+            ),
+            "model display name",
+        )?;
     }
     Ok(RawModel {
         id: model.id,
@@ -2197,9 +2396,20 @@ fn raw_anthropic_model(model: AnthropicModel) -> Result<RawModel, ProviderError>
 }
 
 fn raw_openai_model(model: OpenAiModel) -> Result<RawModel, ProviderError> {
-    validate_model_text(&model.id, MAX_MODEL_ID_BYTES, "model id")?;
+    validate_model_text(
+        &model.id,
+        iteron_tunables::param_integer("provider.catalog.max_model_id_bytes", MAX_MODEL_ID_BYTES),
+        "model id",
+    )?;
     if let Some(owner) = &model.owned_by {
-        validate_model_text(owner, MAX_DISPLAY_NAME_BYTES, "model owner")?;
+        validate_model_text(
+            owner,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_display_name_bytes",
+                MAX_DISPLAY_NAME_BYTES,
+            ),
+            "model owner",
+        )?;
     }
     Ok(RawModel {
         display_name: Some(model.id.clone()),
@@ -2216,9 +2426,20 @@ fn describe_fireworks_model(
     account_state: Option<FireworksCatalogAccountState>,
     has_default_deployment: bool,
 ) -> Result<ModelDescriptor, ProviderError> {
-    validate_model_text(&model.name, MAX_MODEL_ID_BYTES, "model id")?;
+    validate_model_text(
+        &model.name,
+        iteron_tunables::param_integer("provider.catalog.max_model_id_bytes", MAX_MODEL_ID_BYTES),
+        "model id",
+    )?;
     if let Some(display_name) = &model.display_name {
-        validate_model_text(display_name, MAX_DISPLAY_NAME_BYTES, "model display name")?;
+        validate_model_text(
+            display_name,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_display_name_bytes",
+                MAX_DISPLAY_NAME_BYTES,
+            ),
+            "model display name",
+        )?;
     }
     let (owner, _) = parse_fireworks_model_name(&model.name)?;
     let owned_by = Some(owner.to_string());
@@ -2608,10 +2829,34 @@ impl ProviderHealthStore {
     pub fn new(max_entries: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HealthState::default())),
-            max_entries: max_entries.clamp(1, MAX_HEALTH_ENTRIES),
+            max_entries: max_entries.clamp(
+                1,
+                iteron_tunables::param_usize(
+                    "provider.catalog.max_health_entries",
+                    iteron_tunables::param_integer(
+                        "provider.catalog.max_health_entries",
+                        MAX_HEALTH_ENTRIES,
+                    ),
+                ),
+            ),
             max_model_entries: max_entries
-                .saturating_mul(MODEL_HEALTH_ENTRIES_PER_PROVIDER)
-                .clamp(1, MAX_MODEL_HEALTH_ENTRIES),
+                .saturating_mul(iteron_tunables::param_usize(
+                    "provider.catalog.model_health_entries_per_provider",
+                    iteron_tunables::param_integer(
+                        "provider.catalog.model_health_entries_per_provider",
+                        MODEL_HEALTH_ENTRIES_PER_PROVIDER,
+                    ),
+                ))
+                .clamp(
+                    1,
+                    iteron_tunables::param_usize(
+                        "provider.catalog.max_model_health_entries",
+                        iteron_tunables::param_integer(
+                            "provider.catalog.max_model_health_entries",
+                            MAX_MODEL_HEALTH_ENTRIES,
+                        ),
+                    ),
+                ),
         }
     }
 
@@ -2669,9 +2914,19 @@ impl ProviderHealthStore {
         provider_instance_id: &str,
         model_id: &str,
     ) -> bool {
-        if !valid_health_key(provider_instance_id, MAX_INSTANCE_ID_BYTES)
-            || !valid_health_key(model_id, MAX_MODEL_ID_BYTES)
-        {
+        if !valid_health_key(
+            provider_instance_id,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_instance_id_bytes",
+                MAX_INSTANCE_ID_BYTES,
+            ),
+        ) || !valid_health_key(
+            model_id,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_model_id_bytes",
+                MAX_MODEL_ID_BYTES,
+            ),
+        ) {
             return false;
         }
         let key = (provider_instance_id.to_string(), model_id.to_string());
@@ -2875,7 +3130,13 @@ impl ProviderHealthStore {
     }
 
     fn update(&self, provider_instance_id: &str, apply: impl FnOnce(&mut ProviderHealth)) {
-        if provider_instance_id.is_empty() || provider_instance_id.len() > MAX_INSTANCE_ID_BYTES {
+        if provider_instance_id.is_empty()
+            || provider_instance_id.len()
+                > iteron_tunables::param_integer(
+                    "provider.catalog.max_instance_id_bytes",
+                    MAX_INSTANCE_ID_BYTES,
+                )
+        {
             return;
         }
         let mut state = self
@@ -2905,9 +3166,19 @@ impl ProviderHealthStore {
         model_id: &str,
         normalized: &crate::NormalizedFailure,
     ) {
-        if !valid_health_key(provider_instance_id, MAX_INSTANCE_ID_BYTES)
-            || !valid_health_key(model_id, MAX_MODEL_ID_BYTES)
-        {
+        if !valid_health_key(
+            provider_instance_id,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_instance_id_bytes",
+                MAX_INSTANCE_ID_BYTES,
+            ),
+        ) || !valid_health_key(
+            model_id,
+            iteron_tunables::param_integer(
+                "provider.catalog.max_model_id_bytes",
+                MAX_MODEL_ID_BYTES,
+            ),
+        ) {
             return;
         }
         let key = (provider_instance_id.to_string(), model_id.to_string());
@@ -3186,8 +3457,15 @@ pub fn realize_cost_microusd(rates: &TokenRateCard, usage: &Usage) -> Option<u64
     let mut total: u128 = 0;
     for (tokens, rate) in classes {
         let numerator = u128::from(tokens).checked_mul(u128::from(rate))?;
-        let class_cost =
-            numerator.checked_add(MICROTOKENS_PER_TOKEN_CLASS - 1)? / MICROTOKENS_PER_TOKEN_CLASS;
+        let class_cost = numerator.checked_add(
+            iteron_tunables::param_integer(
+                "provider.catalog.microtokens_per_token_class",
+                MICROTOKENS_PER_TOKEN_CLASS,
+            ) - 1,
+        )? / iteron_tunables::param_integer(
+            "provider.catalog.microtokens_per_token_class",
+            MICROTOKENS_PER_TOKEN_CLASS,
+        );
         total = total.checked_add(class_cost)?;
     }
     u64::try_from(total).ok()
@@ -4817,7 +5095,15 @@ impl ModelRouterObservation {
                 "a routing observation must carry at least one resolved route",
             ));
         }
-        if self.resolved_routes.len() > MAX_RESOLVED_ROUTES {
+        if self.resolved_routes.len()
+            > iteron_tunables::param_usize(
+                "provider.catalog.max_resolved_routes",
+                iteron_tunables::param_integer(
+                    "provider.catalog.max_resolved_routes",
+                    MAX_RESOLVED_ROUTES,
+                ),
+            )
+        {
             return Err(ModelRouterError::InvalidObservation(
                 "a routing observation carries more resolved routes than the bounded maximum",
             ));
@@ -4848,7 +5134,11 @@ impl ModelRouterObservation {
 /// well-formedness nobody checked.
 fn model_identity_is_well_formed(model: &str) -> bool {
     !model.trim().is_empty()
-        && model.len() <= MAX_ROUTE_MODEL_BYTES
+        && model.len()
+            <= iteron_tunables::param_integer(
+                "provider.catalog.max_route_model_bytes",
+                MAX_ROUTE_MODEL_BYTES,
+            )
         && !model.chars().any(char::is_control)
 }
 

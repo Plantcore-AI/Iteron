@@ -231,7 +231,13 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if scope.is_empty() || scope.len() > MAX_MEMORY_BENCHMARK_SCOPE_BYTES {
+        if scope.is_empty()
+            || scope.len()
+                > iteron_tunables::param_integer(
+                    "cli.runtime.strategy_ports.max_memory_benchmark_scope_bytes",
+                    MAX_MEMORY_BENCHMARK_SCOPE_BYTES,
+                )
+        {
             return Err(KernelError::ContextResolution(
                 "benchmark memory scope must contain 1..=1024 bytes".into(),
             ));

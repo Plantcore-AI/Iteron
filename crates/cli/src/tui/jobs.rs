@@ -209,7 +209,10 @@ async fn write(app: &mut App, session: &mut Session, job_id: &str, input: String
                     &value
                         .get("accepted_bytes")
                         .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(MISSING_COUNTER)
+                        .unwrap_or(iteron_tunables::param_integer(
+                            "cli.tui.jobs.missing_counter",
+                            MISSING_COUNTER,
+                        ))
                         .to_string(),
                 ),
                 kv(
@@ -217,7 +220,10 @@ async fn write(app: &mut App, session: &mut Session, job_id: &str, input: String
                     if value
                         .get("stdin_closed")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(STDIN_CLOSED_UNKNOWN)
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "cli.tui.jobs.stdin_closed_unknown",
+                            STDIN_CLOSED_UNKNOWN,
+                        ))
                     {
                         "closed"
                     } else {
@@ -279,7 +285,10 @@ fn render_page(app: &mut App, job_id: &str, value: &serde_json::Value) {
         let gap = frame
             .get("gap")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(RETENTION_GAP_UNKNOWN);
+            .unwrap_or(iteron_tunables::param_bool(
+                "cli.tui.jobs.retention_gap_unknown",
+                RETENTION_GAP_UNKNOWN,
+            ));
         let text = frame
             .get("text")
             .and_then(serde_json::Value::as_str)
@@ -291,11 +300,17 @@ fn render_page(app: &mut App, job_id: &str, value: &serde_json::Value) {
                 frame
                     .get("next_cursor")
                     .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(MISSING_COUNTER),
+                    .unwrap_or(iteron_tunables::param_integer(
+                        "cli.tui.jobs.missing_counter",
+                        MISSING_COUNTER
+                    )),
                 if gap { " · retention gap" } else { "" }
             ),
         ));
-        for line in text.lines().take(JOB_FRAME_PREVIEW_LINES) {
+        for line in text.lines().take(iteron_tunables::param_integer(
+            "cli.tui.jobs.job_frame_preview_lines",
+            JOB_FRAME_PREVIEW_LINES,
+        )) {
             rows.push(block::PanelRow::Note(format!("{stream}> {line}")));
         }
     }

@@ -15,6 +15,13 @@ pub(super) const MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
 /// Decode one frame at a time and reject animations whose aggregate work exceeds eight maximum
 /// frames. The count ceiling separately bounds tiny-frame iteration overhead.
 pub(super) const MAX_ANIMATION_FRAMES: u32 = 256;
+
+pub(super) fn max_animation_frames() -> u32 {
+    iteron_tunables::param_integer(
+        "cli.image_input.decode.max_animation_frames",
+        MAX_ANIMATION_FRAMES,
+    )
+}
 const MAX_TOTAL_FRAME_PIXELS: u64 = 64 * 1024 * 1024;
 /// A PNG with no animation control chunk still decodes one frame, so the aggregate-work check
 /// below must charge it that much rather than nothing.
@@ -44,7 +51,10 @@ fn validate_png(
     let decoder = png::Decoder::new_with_limits(
         BufReader::new(Cursor::new(bytes)),
         png::Limits {
-            bytes: MAX_DECODE_BUFFER_BYTES,
+            bytes: iteron_tunables::param_integer(
+                "cli.image_input.decode.max_decode_buffer_bytes",
+                MAX_DECODE_BUFFER_BYTES,
+            ),
         },
     );
     let mut reader = decoder.read_info().map_err(|_| invalid())?;
@@ -99,7 +109,11 @@ fn validate_gif(
     let mut options = DecodeOptions::new();
     options.set_color_output(ColorOutput::Indexed);
     options.set_memory_limit(MemoryLimit::Bytes(
-        NonZeroU64::new(MAX_DECODE_BUFFER_BYTES as u64).expect("decode limit is non-zero"),
+        NonZeroU64::new(iteron_tunables::param_integer(
+            "cli.image_input.decode.max_decode_buffer_bytes",
+            MAX_DECODE_BUFFER_BYTES,
+        ) as u64)
+        .expect("decode limit is non-zero"),
     ));
     options.check_frame_consistency(true);
     options.check_lzw_end_code(true);
@@ -147,7 +161,10 @@ fn validate_webp(
 ) -> Result<(), ImageInputErrorKind> {
     let mut decoder =
         WebPDecoder::new(BufReader::new(Cursor::new(bytes))).map_err(|_| invalid())?;
-    decoder.set_memory_limit(MAX_DECODE_BUFFER_BYTES);
+    decoder.set_memory_limit(iteron_tunables::param_integer(
+        "cli.image_input.decode.max_decode_buffer_bytes",
+        MAX_DECODE_BUFFER_BYTES,
+    ));
     let (width, height) = decoder.dimensions();
     let frames = if decoder.is_animated() {
         decoder.num_frames()
@@ -198,7 +215,12 @@ fn validate_animation_bounds(
         .checked_mul(u64::from(height))
         .and_then(|pixels| pixels.checked_mul(u64::from(frames)))
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
-    if pixels > MAX_TOTAL_FRAME_PIXELS {
+    if pixels
+        > iteron_tunables::param_integer(
+            "cli.image_input.decode.max_total_frame_pixels",
+            MAX_TOTAL_FRAME_PIXELS,
+        )
+    {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
     Ok(())
@@ -216,7 +238,11 @@ fn validate_dimensions(
         || height == 0
         || width > max_dimension
         || height > max_dimension
-        || pixels > MAX_IMAGE_PIXELS
+        || pixels
+            > iteron_tunables::param_integer(
+                "cli.image_input.decode.max_image_pixels",
+                MAX_IMAGE_PIXELS,
+            )
     {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
@@ -236,14 +262,25 @@ fn add_frame_pixels(
     let total = total
         .checked_add(pixels)
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
-    if total > MAX_TOTAL_FRAME_PIXELS {
+    if total
+        > iteron_tunables::param_integer(
+            "cli.image_input.decode.max_total_frame_pixels",
+            MAX_TOTAL_FRAME_PIXELS,
+        )
+    {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
     Ok(total)
 }
 
 fn bounded_buffer(size: usize) -> Result<Vec<u8>, ImageInputErrorKind> {
-    if size == 0 || size > MAX_DECODE_BUFFER_BYTES {
+    if size == 0
+        || size
+            > iteron_tunables::param_integer(
+                "cli.image_input.decode.max_decode_buffer_bytes",
+                MAX_DECODE_BUFFER_BYTES,
+            )
+    {
         return Err(ImageInputErrorKind::DecodeLimitExceeded);
     }
     let mut buffer = Vec::new();

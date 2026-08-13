@@ -101,7 +101,10 @@ impl Agent {
                     };
                     if !committed_provider_run_notices.contains(&key)
                         && committed_provider_run_notices.len()
-                            >= MAX_COMMITTED_PROVIDER_RUN_NOTICES
+                            >= iteron_tunables::param_integer(
+                                "cli.runtime.max_committed_provider_run_notices",
+                                MAX_COMMITTED_PROVIDER_RUN_NOTICES,
+                            )
                     {
                         return Err(KernelError::ProviderRunNoticeLimit);
                     }
@@ -228,7 +231,10 @@ impl Agent {
                         _ => None,
                     })
                     .max()
-                    .unwrap_or(NO_APPROVAL_SEQ);
+                    .unwrap_or(iteron_tunables::param_integer(
+                        "cli.runtime.resume.no_approval_seq",
+                        NO_APPROVAL_SEQ,
+                    ));
                 self.selected_route = events.iter().rev().find_map(|event| match &event.kind {
                     EventKind::ModelSelected {
                         provider_id,
@@ -359,7 +365,11 @@ impl Agent {
                 continue;
             };
             if !committed_provider_run_notices.contains(&key)
-                && committed_provider_run_notices.len() >= MAX_COMMITTED_PROVIDER_RUN_NOTICES
+                && committed_provider_run_notices.len()
+                    >= iteron_tunables::param_integer(
+                        "cli.runtime.max_committed_provider_run_notices",
+                        MAX_COMMITTED_PROVIDER_RUN_NOTICES,
+                    )
             {
                 return Err(KernelError::ProviderRunNoticeLimit);
             }
@@ -506,7 +516,10 @@ impl Agent {
                 _ => None,
             })
             .max()
-            .unwrap_or(NO_APPROVAL_SEQ);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.resume.no_approval_seq",
+                NO_APPROVAL_SEQ,
+            ));
         let selected_route = events.iter().rev().find_map(|event| match &event.kind {
             EventKind::ModelSelected {
                 provider_id,

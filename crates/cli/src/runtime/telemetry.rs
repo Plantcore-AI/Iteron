@@ -215,9 +215,12 @@ impl TelemetrySink {
             }
             TelemetrySendOutcome::Accepted
         };
-        tokio::time::timeout(EXPORT_TIMEOUT, dispatch)
-            .await
-            .unwrap_or(TelemetrySendOutcome::Unknown)
+        tokio::time::timeout(
+            iteron_tunables::param_duration("cli.runtime.telemetry.export_timeout", EXPORT_TIMEOUT),
+            dispatch,
+        )
+        .await
+        .unwrap_or(TelemetrySendOutcome::Unknown)
     }
 }
 

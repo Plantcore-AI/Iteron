@@ -98,7 +98,10 @@ async fn capture_observation_inner(
         &mut command,
         timeout,
         policy.output_max_bytes,
-        policy.output_max_bytes.min(STDERR_LIMIT),
+        policy.output_max_bytes.min(iteron_tunables::param_integer(
+            "tools.git_harness.stderr_limit",
+            STDERR_LIMIT,
+        )),
     )
     .await
     .map_err(|error| format!("could not run bounded {label}: {error}"))?;
@@ -415,9 +418,13 @@ fn render_environment_status(bytes: &[u8]) -> Result<String, String> {
         )
     };
     let rendered = format!("branch={branch}; status={status}{encoding}");
-    if rendered.len() > MAX_ENVIRONMENT_RENDERED_BYTES {
+    let max_rendered_bytes = iteron_tunables::param_usize(
+        "tools.git_observe.max_environment_rendered_bytes",
+        MAX_ENVIRONMENT_RENDERED_BYTES,
+    );
+    if rendered.len() > max_rendered_bytes {
         return Err(format!(
-            "Git environment summary exceeded the {MAX_ENVIRONMENT_RENDERED_BYTES}-byte rendered bound"
+            "Git environment summary exceeded the {max_rendered_bytes}-byte rendered bound"
         ));
     }
     Ok(rendered)
@@ -520,7 +527,10 @@ async fn run_git_log(root: &Path, max_count: usize, policy: GitPolicy) -> Result
 pub(crate) async fn run_git_environment(root: &Path) -> Result<String, String> {
     let policy = crate::ObservationToolPolicy::default().git;
     let bytes = tokio::time::timeout(
-        ENVIRONMENT_GIT_TIMEOUT,
+        iteron_tunables::param_duration(
+            "tools.git_observe.environment_git_timeout",
+            ENVIRONMENT_GIT_TIMEOUT,
+        ),
         capture_observation_inner(
             root,
             environment_status_args,
@@ -532,7 +542,11 @@ pub(crate) async fn run_git_environment(root: &Path) -> Result<String, String> {
     .map_err(|_| {
         format!(
             "Git environment status exceeded {} seconds",
-            ENVIRONMENT_GIT_TIMEOUT.as_secs()
+            iteron_tunables::param_duration(
+                "tools.git_observe.environment_git_timeout",
+                ENVIRONMENT_GIT_TIMEOUT
+            )
+            .as_secs()
         )
     })??;
     render_environment_status(&bytes)
@@ -555,7 +569,11 @@ fn parse_log_count_with_policy(input: &Value, policy: GitPolicy) -> Result<usize
         return Err("git_log accepts only the `max_count` field".to_owned());
     }
     let Some(value) = object.get("max_count") else {
-        return Ok(DEFAULT_LOG_COUNT.min(policy.log_max_entries));
+        return Ok(iteron_tunables::param_integer(
+            "tools.git_observe.default_log_count",
+            DEFAULT_LOG_COUNT,
+        )
+        .min(policy.log_max_entries));
     };
     let count = value.as_u64().ok_or_else(|| {
         format!(

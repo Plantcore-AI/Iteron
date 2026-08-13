@@ -81,14 +81,25 @@ impl McpServerPolicy {
     /// Tool names come from operator configuration but are shaped like the untrusted names they
     /// must match, so they are validated with the same rule and never echoed into a diagnostic.
     pub fn validate(&self) -> Result<(), McpError> {
-        if self.tools.len() > MAX_MCP_TOOL_POLICY_ENTRIES {
+        if self.tools.len()
+            > iteron_tunables::param_integer(
+                "mcp.policy.max_mcp_tool_policy_entries",
+                MAX_MCP_TOOL_POLICY_ENTRIES,
+            )
+        {
             return Err(McpError::InvalidToolPolicy {
-                limit: MAX_MCP_TOOL_POLICY_ENTRIES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.policy.max_mcp_tool_policy_entries",
+                    MAX_MCP_TOOL_POLICY_ENTRIES,
+                ),
             });
         }
         for name in self.tools.keys() {
             validate_bare_tool_name(name).map_err(|_| McpError::InvalidToolPolicy {
-                limit: MAX_MCP_TOOL_POLICY_ENTRIES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.policy.max_mcp_tool_policy_entries",
+                    MAX_MCP_TOOL_POLICY_ENTRIES,
+                ),
             })?;
         }
         Ok(())

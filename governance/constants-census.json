@@ -1,9 +1,9 @@
 {
   "by_crate": {
     "agents": {
-      "bounded": 15,
-      "searchable": 19,
-      "structural": 11
+      "bounded": 16,
+      "searchable": 12,
+      "structural": 18
     },
     "changeset": {
       "bounded": 5,
@@ -11,34 +11,34 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 176,
-      "searchable": 314,
-      "structural": 67
+      "bounded": 200,
+      "searchable": 217,
+      "structural": 167
     },
     "ctx": {
-      "bounded": 41,
-      "searchable": 24,
-      "structural": 7
+      "bounded": 42,
+      "searchable": 19,
+      "structural": 11
     },
     "eval": {
-      "bounded": 33,
-      "searchable": 22,
-      "structural": 6
+      "bounded": 40,
+      "searchable": 7,
+      "structural": 19
     },
     "evolve": {
-      "bounded": 52,
-      "searchable": 33,
-      "structural": 19
+      "bounded": 58,
+      "searchable": 8,
+      "structural": 49
     },
     "kernel": {
       "bounded": 8,
-      "searchable": 13,
-      "structural": 2
+      "searchable": 0,
+      "structural": 13
     },
     "lsp": {
-      "bounded": 31,
+      "bounded": 29,
       "searchable": 7,
-      "structural": 1
+      "structural": 3
     },
     "marketplace": {
       "bounded": 12,
@@ -46,43 +46,43 @@
       "structural": 3
     },
     "mcp": {
-      "bounded": 55,
-      "searchable": 45,
-      "structural": 7
+      "bounded": 54,
+      "searchable": 31,
+      "structural": 22
     },
     "obs": {
       "bounded": 8,
-      "searchable": 18,
-      "structural": 3
+      "searchable": 4,
+      "structural": 17
     },
     "protocol": {
-      "bounded": 52,
-      "searchable": 29,
-      "structural": 4
+      "bounded": 48,
+      "searchable": 1,
+      "structural": 30
     },
     "provider": {
-      "bounded": 66,
-      "searchable": 71,
-      "structural": 11
+      "bounded": 68,
+      "searchable": 32,
+      "structural": 48
     },
     "record": {
-      "bounded": 27,
-      "searchable": 35,
-      "structural": 18
+      "bounded": 25,
+      "searchable": 20,
+      "structural": 34
     },
     "sandbox": {
-      "bounded": 2,
-      "searchable": 29,
-      "structural": 10
+      "bounded": 3,
+      "searchable": 16,
+      "structural": 17
     },
     "sched": {
       "bounded": 0,
-      "searchable": 3,
-      "structural": 0
+      "searchable": 1,
+      "structural": 2
     },
     "statusline": {
       "bounded": 3,
-      "searchable": 6,
+      "searchable": 5,
       "structural": 0
     },
     "support": {
@@ -91,28 +91,28 @@
       "structural": 1
     },
     "tools": {
-      "bounded": 72,
-      "searchable": 81,
-      "structural": 4
+      "bounded": 97,
+      "searchable": 51,
+      "structural": 11
     },
     "tunables": {
-      "bounded": 19,
-      "searchable": 63,
-      "structural": 31
+      "bounded": 18,
+      "searchable": 4,
+      "structural": 94
     },
     "verify": {
       "bounded": 6,
-      "searchable": 4,
-      "structural": 1
+      "searchable": 2,
+      "structural": 2
     },
     "workflow": {
-      "bounded": 27,
-      "searchable": 40,
-      "structural": 0
+      "bounded": 43,
+      "searchable": 14,
+      "structural": 11
     }
   },
   "schema_version": 1,
-  "settable": 1571,
-  "structural": 206,
-  "total": 1777
+  "settable": 1239,
+  "structural": 572,
+  "total": 1811
 }

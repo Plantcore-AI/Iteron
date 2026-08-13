@@ -109,7 +109,12 @@ impl RootBinding {
         } else {
             std::env::current_dir()?.join(path)
         };
-        if absolute.as_os_str().as_bytes().len() > MAX_CAPABILITY_PATH_BYTES {
+        if absolute.as_os_str().as_bytes().len()
+            > iteron_tunables::param_integer(
+                "cli.tui.capability_fs.max_capability_path_bytes",
+                MAX_CAPABILITY_PATH_BYTES,
+            )
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "workspace path is too long",
@@ -123,7 +128,12 @@ impl RootBinding {
                 Component::CurDir => {}
                 Component::Normal(component) if saw_root => {
                     components.push(component.to_os_string());
-                    if components.len() > MAX_CAPABILITY_COMPONENTS {
+                    if components.len()
+                        > iteron_tunables::param_integer(
+                            "cli.tui.capability_fs.max_capability_components",
+                            MAX_CAPABILITY_COMPONENTS,
+                        )
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "workspace path has too many components",

@@ -113,7 +113,11 @@ fn direct_route_scope() -> String {
 
 fn validate_route_scope(route_scope: &str) -> Result<(), ProviderError> {
     if route_scope.is_empty()
-        || route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+        || route_scope.len()
+            > iteron_tunables::param_integer(
+                "provider.responses.max_route_scope_bytes",
+                MAX_ROUTE_SCOPE_BYTES,
+            )
         || route_scope.chars().any(char::is_control)
     {
         return Err(ProviderError::Configuration(
@@ -371,15 +375,26 @@ impl SseDecoder {
             .total_bytes
             .checked_add(bytes.len())
             .ok_or_else(|| ProviderError::Decode("Responses stream byte count overflow".into()))?;
-        if self.total_bytes > MAX_STREAM_BYTES {
+        if self.total_bytes
+            > iteron_tunables::param_usize("provider.responses.max_stream_bytes", MAX_STREAM_BYTES)
+        {
             return Err(ProviderError::Decode(format!(
-                "Responses stream exceeded {MAX_STREAM_BYTES} bytes"
+                "Responses stream exceeded {} bytes",
+                iteron_tunables::param_usize(
+                    "provider.responses.max_stream_bytes",
+                    MAX_STREAM_BYTES
+                )
             )));
         }
         self.pending.extend_from_slice(bytes);
         let mut frames = Vec::new();
         while let Some((boundary, separator_len)) = frame_boundary(&self.pending) {
-            if boundary > MAX_SSE_FRAME_BYTES {
+            if boundary
+                > iteron_tunables::param_integer(
+                    "provider.responses.max_sse_frame_bytes",
+                    MAX_SSE_FRAME_BYTES,
+                )
+            {
                 return Err(ProviderError::Decode(format!(
                     "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
                 )));
@@ -390,7 +405,12 @@ impl SseDecoder {
                 frames.push(frame);
             }
         }
-        if self.pending.len() > MAX_SSE_FRAME_BYTES {
+        if self.pending.len()
+            > iteron_tunables::param_integer(
+                "provider.responses.max_sse_frame_bytes",
+                MAX_SSE_FRAME_BYTES,
+            )
+        {
             return Err(ProviderError::Decode(format!(
                 "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
             )));
@@ -654,9 +674,19 @@ impl ResponseParser {
     }
 
     fn reserve_output(&mut self, output_index: u64) -> Result<(), ProviderError> {
-        if !self.outputs.contains_key(&output_index) && self.outputs.len() >= MAX_OUTPUT_ITEMS {
+        if !self.outputs.contains_key(&output_index)
+            && self.outputs.len()
+                >= iteron_tunables::param_usize(
+                    "provider.responses.max_output_items",
+                    MAX_OUTPUT_ITEMS,
+                )
+        {
             return Err(ProviderError::Decode(format!(
-                "Responses output exceeded {MAX_OUTPUT_ITEMS} items"
+                "Responses output exceeded {} items",
+                iteron_tunables::param_usize(
+                    "provider.responses.max_output_items",
+                    MAX_OUTPUT_ITEMS
+                )
             )));
         }
         self.outputs.entry(output_index).or_default();
@@ -668,9 +698,24 @@ impl ResponseParser {
             .output_bytes
             .checked_add(additional)
             .ok_or_else(|| ProviderError::Decode("Responses output byte count overflow".into()))?;
-        if self.output_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+        if self.output_bytes
+            > iteron_tunables::param_usize(
+                "provider.responses.max_assembled_output_bytes",
+                iteron_tunables::param_integer(
+                    "provider.responses.max_assembled_output_bytes",
+                    MAX_ASSEMBLED_OUTPUT_BYTES,
+                ),
+            )
+        {
             return Err(ProviderError::Decode(format!(
-                "Responses assembled output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                "Responses assembled output exceeded {} bytes",
+                iteron_tunables::param_usize(
+                    "provider.responses.max_assembled_output_bytes",
+                    iteron_tunables::param_integer(
+                        "provider.responses.max_assembled_output_bytes",
+                        MAX_ASSEMBLED_OUTPUT_BYTES
+                    )
+                )
             )));
         }
         Ok(())
@@ -720,9 +765,24 @@ impl ResponseParser {
         if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
             return Ok(());
         }
-        if self.functions.len() >= MAX_FUNCTION_CALLS {
+        if self.functions.len()
+            >= iteron_tunables::param_usize(
+                "provider.responses.max_function_calls",
+                iteron_tunables::param_integer(
+                    "provider.responses.max_function_calls",
+                    MAX_FUNCTION_CALLS,
+                ),
+            )
+        {
             return Err(ProviderError::Decode(format!(
-                "Responses output exceeded {MAX_FUNCTION_CALLS} function calls"
+                "Responses output exceeded {} function calls",
+                iteron_tunables::param_usize(
+                    "provider.responses.max_function_calls",
+                    iteron_tunables::param_integer(
+                        "provider.responses.max_function_calls",
+                        MAX_FUNCTION_CALLS
+                    )
+                )
             )));
         }
         let item_id = required_str(item, "id")?.to_string();
@@ -890,9 +950,15 @@ impl ResponseParser {
             .get("output")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| ProviderError::Decode("terminal response lacked output array".into()))?;
-        if output.len() > MAX_OUTPUT_ITEMS {
+        if output.len()
+            > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
+        {
             return Err(ProviderError::Decode(format!(
-                "Responses output exceeded {MAX_OUTPUT_ITEMS} items"
+                "Responses output exceeded {} items",
+                iteron_tunables::param_usize(
+                    "provider.responses.max_output_items",
+                    MAX_OUTPUT_ITEMS
+                )
             )));
         }
         validate_native_output(output, allow_incomplete_functions)?;
@@ -1105,10 +1171,18 @@ impl ResponseParser {
 
 fn validate_state_envelope_bounds(state: &ProviderState) -> Result<(), ProviderError> {
     if state.route_scope.is_empty()
-        || state.route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+        || state.route_scope.len()
+            > iteron_tunables::param_integer(
+                "provider.responses.max_route_scope_bytes",
+                MAX_ROUTE_SCOPE_BYTES,
+            )
         || state.route_scope.chars().any(char::is_control)
         || state.format.is_empty()
-        || state.format.len() > MAX_STATE_FORMAT_BYTES
+        || state.format.len()
+            > iteron_tunables::param_integer(
+                "provider.responses.max_state_format_bytes",
+                MAX_STATE_FORMAT_BYTES,
+            )
         || state.format.chars().any(char::is_control)
     {
         return Err(ProviderError::Decode(
@@ -1117,9 +1191,24 @@ fn validate_state_envelope_bounds(state: &ProviderState) -> Result<(), ProviderE
     }
     let encoded = serde_json::to_vec(&state.payload)
         .map_err(|_| ProviderError::Decode("provider state payload could not be encoded".into()))?;
-    if encoded.len() > MAX_ASSEMBLED_OUTPUT_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_usize(
+            "provider.responses.max_assembled_output_bytes",
+            iteron_tunables::param_integer(
+                "provider.responses.max_assembled_output_bytes",
+                MAX_ASSEMBLED_OUTPUT_BYTES,
+            ),
+        )
+    {
         return Err(ProviderError::Decode(format!(
-            "provider state payload exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+            "provider state payload exceeded {} bytes",
+            iteron_tunables::param_usize(
+                "provider.responses.max_assembled_output_bytes",
+                iteron_tunables::param_integer(
+                    "provider.responses.max_assembled_output_bytes",
+                    MAX_ASSEMBLED_OUTPUT_BYTES
+                )
+            )
         )));
     }
     Ok(())
@@ -1129,16 +1218,34 @@ fn validate_native_output(
     output: &[serde_json::Value],
     allow_incomplete_functions: bool,
 ) -> Result<(), ProviderError> {
-    if output.len() > MAX_OUTPUT_ITEMS {
+    if output.len()
+        > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
+    {
         return Err(ProviderError::Decode(format!(
-            "Responses output exceeded {MAX_OUTPUT_ITEMS} items"
+            "Responses output exceeded {} items",
+            iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
         )));
     }
     let encoded = serde_json::to_vec(output)
         .map_err(|_| ProviderError::Decode("Responses output could not be encoded".into()))?;
-    if encoded.len() > MAX_ASSEMBLED_OUTPUT_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_usize(
+            "provider.responses.max_assembled_output_bytes",
+            iteron_tunables::param_integer(
+                "provider.responses.max_assembled_output_bytes",
+                MAX_ASSEMBLED_OUTPUT_BYTES,
+            ),
+        )
+    {
         return Err(ProviderError::Decode(format!(
-            "Responses native output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+            "Responses native output exceeded {} bytes",
+            iteron_tunables::param_usize(
+                "provider.responses.max_assembled_output_bytes",
+                iteron_tunables::param_integer(
+                    "provider.responses.max_assembled_output_bytes",
+                    MAX_ASSEMBLED_OUTPUT_BYTES
+                )
+            )
         )));
     }
 
@@ -1146,7 +1253,10 @@ fn validate_native_output(
     for item in output {
         validate_bounded_string(
             required_str(item, "id")?,
-            MAX_ITEM_ID_BYTES,
+            iteron_tunables::param_integer(
+                "provider.responses.max_item_id_bytes",
+                MAX_ITEM_ID_BYTES,
+            ),
             "output item id",
         )?;
         match required_str(item, "type")? {
@@ -1156,20 +1266,53 @@ fn validate_native_output(
                 function_calls = function_calls.checked_add(1).ok_or_else(|| {
                     ProviderError::Decode("Responses function count overflow".into())
                 })?;
-                if function_calls > MAX_FUNCTION_CALLS {
+                if function_calls
+                    > iteron_tunables::param_usize(
+                        "provider.responses.max_function_calls",
+                        iteron_tunables::param_integer(
+                            "provider.responses.max_function_calls",
+                            MAX_FUNCTION_CALLS,
+                        ),
+                    )
+                {
                     return Err(ProviderError::Decode(format!(
-                        "Responses output exceeded {MAX_FUNCTION_CALLS} function calls"
+                        "Responses output exceeded {} function calls",
+                        iteron_tunables::param_usize(
+                            "provider.responses.max_function_calls",
+                            iteron_tunables::param_integer(
+                                "provider.responses.max_function_calls",
+                                MAX_FUNCTION_CALLS
+                            )
+                        )
                     )));
                 }
                 validate_bounded_string(
                     required_str(item, "call_id")?,
-                    MAX_ITEM_ID_BYTES,
+                    iteron_tunables::param_integer(
+                        "provider.responses.max_item_id_bytes",
+                        MAX_ITEM_ID_BYTES,
+                    ),
                     "function call id",
                 )?;
                 let name = required_str(item, "name")?;
-                validate_bounded_string(name, MAX_FUNCTION_NAME_BYTES, "function name")?;
+                validate_bounded_string(
+                    name,
+                    iteron_tunables::param_integer(
+                        "provider.responses.max_function_name_bytes",
+                        MAX_FUNCTION_NAME_BYTES,
+                    ),
+                    "function name",
+                )?;
                 let arguments = required_str(item, "arguments")?;
-                if arguments.len() > MAX_ASSEMBLED_OUTPUT_BYTES {
+                if arguments.len()
+                    > iteron_tunables::param_usize(
+                        "provider.responses.max_assembled_output_bytes",
+                        iteron_tunables::param_integer(
+                            "provider.responses.max_assembled_output_bytes",
+                            MAX_ASSEMBLED_OUTPUT_BYTES,
+                        ),
+                    )
+                {
                     return Err(ProviderError::Decode(
                         "Responses function arguments exceeded their byte bound".into(),
                     ));
@@ -1203,7 +1346,10 @@ fn validate_native_message(item: &serde_json::Value) -> Result<(), ProviderError
             phase.as_str().ok_or_else(|| {
                 ProviderError::Decode("Responses message phase was not a string".into())
             })?,
-            MAX_MESSAGE_PHASE_BYTES,
+            iteron_tunables::param_integer(
+                "provider.responses.max_message_phase_bytes",
+                MAX_MESSAGE_PHASE_BYTES,
+            ),
             "message phase",
         )?;
     }
@@ -1211,7 +1357,9 @@ fn validate_native_message(item: &serde_json::Value) -> Result<(), ProviderError
         .get("content")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| ProviderError::Decode("Responses message lacked content array".into()))?;
-    if content.len() > MAX_OUTPUT_ITEMS {
+    if content.len()
+        > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
+    {
         return Err(ProviderError::Decode(
             "Responses message content exceeded its item bound".into(),
         ));
@@ -1236,7 +1384,16 @@ fn validate_native_message(item: &serde_json::Value) -> Result<(), ProviderError
 
 fn validate_native_reasoning(item: &serde_json::Value) -> Result<(), ProviderError> {
     let encrypted = required_str(item, "encrypted_content")?;
-    if encrypted.is_empty() || encrypted.len() > MAX_ASSEMBLED_OUTPUT_BYTES {
+    if encrypted.is_empty()
+        || encrypted.len()
+            > iteron_tunables::param_usize(
+                "provider.responses.max_assembled_output_bytes",
+                iteron_tunables::param_integer(
+                    "provider.responses.max_assembled_output_bytes",
+                    MAX_ASSEMBLED_OUTPUT_BYTES,
+                ),
+            )
+    {
         return Err(ProviderError::Decode(
             "Responses reasoning lacked bounded encrypted continuation content".into(),
         ));
@@ -1248,7 +1405,9 @@ fn validate_native_reasoning(item: &serde_json::Value) -> Result<(), ProviderErr
         let parts = parts.as_array().ok_or_else(|| {
             ProviderError::Decode(format!("Responses reasoning {field} was not an array"))
         })?;
-        if parts.len() > MAX_OUTPUT_ITEMS {
+        if parts.len()
+            > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
+        {
             return Err(ProviderError::Decode(format!(
                 "Responses reasoning {field} exceeded its item bound"
             )));
@@ -1431,15 +1590,28 @@ impl Provider for OpenAiResponses {
             .bearer_auth(&self.key)
             .header("content-type", "application/json")
             .json(&body);
-        let header_timeout =
-            remaining_timeout(deadline, RESPONSE_HEADER_TIMEOUT, "response headers")?;
+        let header_timeout = remaining_timeout(
+            deadline,
+            iteron_tunables::param_duration(
+                "provider.responses.response_header_timeout",
+                RESPONSE_HEADER_TIMEOUT,
+            ),
+            "response headers",
+        )?;
         let response = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Http("Responses response headers timed out".into()))?
             .map_err(|error| ProviderError::Http(error.to_string()))?;
         if !response.status().is_success() {
             return Err(tokio::time::timeout(
-                remaining_timeout(deadline, ERROR_RESPONSE_TIMEOUT, "error response body")?,
+                remaining_timeout(
+                    deadline,
+                    iteron_tunables::param_duration(
+                        "provider.responses.error_response_timeout",
+                        ERROR_RESPONSE_TIMEOUT,
+                    ),
+                    "error response body",
+                )?,
                 crate::api_error_from_response(
                     response,
                     AdapterKind::OpenAiResponses,

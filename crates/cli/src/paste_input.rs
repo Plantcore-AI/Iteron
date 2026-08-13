@@ -308,7 +308,9 @@ impl PastedTexts {
         {
             return Ok(&self.items[index]);
         }
-        if self.items.len() >= MAX_PASTED_TEXTS {
+        if self.items.len()
+            >= iteron_tunables::param_integer("cli.paste_input.max_pasted_texts", MAX_PASTED_TEXTS)
+        {
             return Err(PasteInputError {
                 kind: PasteInputErrorKind::TooMany,
                 bytes,
@@ -418,7 +420,16 @@ pub fn normalize_newlines(text: &str) -> String {
 /// Below the thresholds a paste is ordinary typing and stays inline, because a tag the operator
 /// cannot read is worse than three lines they can.
 pub fn should_capture(text: &str) -> bool {
-    text.len() > MAX_INLINE_PASTE_BYTES || count_lines(text) > MAX_INLINE_PASTE_LINES
+    text.len()
+        > iteron_tunables::param_integer(
+            "cli.paste_input.max_inline_paste_bytes",
+            MAX_INLINE_PASTE_BYTES,
+        )
+        || count_lines(text)
+            > iteron_tunables::param_integer(
+                "cli.paste_input.max_inline_paste_lines",
+                MAX_INLINE_PASTE_LINES,
+            )
 }
 
 /// The tag for `id`, announcing its size the way the operator will read it back.

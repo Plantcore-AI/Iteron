@@ -237,7 +237,11 @@ impl PluginMcpBindingId {
             || version.is_empty()
             || version.len() > 128
             || server_name.is_empty()
-            || server_name.len() > Self::MAX_SERVER_BYTES
+            || server_name.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.max_server_bytes",
+                    Self::MAX_SERVER_BYTES,
+                )
             || [plugin_id, version, server_name]
                 .into_iter()
                 .any(|value| value.chars().any(char::is_control))
@@ -275,7 +279,11 @@ impl PluginMcpBindingId {
             .split_once(':')
             .ok_or("plugin MCP identity is malformed")?;
         if server_hex.is_empty()
-            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
+            || server_hex.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.max_server_bytes",
+                    Self::MAX_SERVER_BYTES,
+                ) * 2
             || server_hex.len() % 2 != 0
             || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
             || digest.len() != 64
@@ -324,7 +332,11 @@ impl McpServerBindingId {
 
     fn new(config: &McpServerConfig) -> Result<Self, &'static str> {
         if config.name.is_empty()
-            || config.name.len() > Self::MAX_SERVER_BYTES
+            || config.name.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.max_server_bytes",
+                    Self::MAX_SERVER_BYTES,
+                )
             || config.name.chars().any(char::is_control)
         {
             return Err("MCP server binding namespace is outside its checkpoint domain");
@@ -362,7 +374,11 @@ impl McpServerBindingId {
             .split_once(':')
             .ok_or("MCP server binding is malformed")?;
         if server_hex.is_empty()
-            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
+            || server_hex.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.max_server_bytes",
+                    Self::MAX_SERVER_BYTES,
+                ) * 2
             || server_hex.len() % 2 != 0
             || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
             || digest.len() != 64
@@ -668,7 +684,10 @@ pub struct ProviderModelCapabilities {
 }
 
 fn default_true() -> bool {
-    PROVIDER_SWITCH_DEFAULT
+    iteron_tunables::param_bool(
+        "cli.config.provider_switch_default",
+        PROVIDER_SWITCH_DEFAULT,
+    )
 }
 
 impl ProviderConfig {
@@ -857,10 +876,14 @@ impl FileConfig {
                     // A zero window is not "unknown": the admission and compaction paths both
                     // filter it out, so it would read as a working declaration while doing
                     // nothing. Refuse it here instead of accepting a no-op.
-                    if capabilities
-                        .context_window_tokens
-                        .is_some_and(|window| window == 0 || window > MAX_DECLARED_CONTEXT_WINDOW)
-                    {
+                    if capabilities.context_window_tokens.is_some_and(|window| {
+                        window == 0
+                            || window
+                                > iteron_tunables::param_integer(
+                                    "cli.config.max_declared_context_window",
+                                    MAX_DECLARED_CONTEXT_WINDOW,
+                                )
+                    }) {
                         return Err(format!(
                             "provider `{}` model `{model_id}` context_window_tokens must be 1..={MAX_DECLARED_CONTEXT_WINDOW}",
                             provider.id
@@ -887,7 +910,9 @@ impl FileConfig {
                 .map_err(|error| format!("active_policy_bundle: {error}"))?;
         }
         if let Some(servers) = &self.mcp_servers {
-            if servers.len() > MAX_MCP_SERVERS {
+            if servers.len()
+                > iteron_tunables::param_integer("cli.config.max_mcp_servers", MAX_MCP_SERVERS)
+            {
                 return Err(format!(
                     "mcp_servers exceeds the {MAX_MCP_SERVERS}-server configuration bound"
                 ));
@@ -901,7 +926,11 @@ impl FileConfig {
                         "mcp_servers contains a duplicate server namespace at index {index}"
                     ));
                 }
-                if server.args.len() > MAX_MCP_SERVER_ARGS
+                if server.args.len()
+                    > iteron_tunables::param_integer(
+                        "cli.config.max_mcp_server_args",
+                        MAX_MCP_SERVER_ARGS,
+                    )
                     || server
                         .args
                         .iter()
@@ -1244,18 +1273,28 @@ impl ConfigLock {
                     let stale = std::fs::metadata(&path)
                         .and_then(|metadata| metadata.modified())
                         .map(|modified| {
-                            modified
-                                .elapsed()
-                                .map(|age| age.as_secs())
-                                .unwrap_or(CONFIG_LOCK_AGE_ON_UNUSABLE_CLOCK_SECS)
-                                > CONFIG_LOCK_STALE_SECS
+                            modified.elapsed().map(|age| age.as_secs()).unwrap_or(
+                                iteron_tunables::param_integer(
+                                    "cli.config.config_lock_age_on_unusable_clock_secs",
+                                    CONFIG_LOCK_AGE_ON_UNUSABLE_CLOCK_SECS,
+                                ),
+                            ) > iteron_tunables::param_integer(
+                                "cli.config.config_lock_stale_secs",
+                                CONFIG_LOCK_STALE_SECS,
+                            )
                         })
-                        .unwrap_or(CONFIG_LOCK_STALE_WHEN_UNREADABLE);
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "cli.config.config_lock_stale_when_unreadable",
+                            CONFIG_LOCK_STALE_WHEN_UNREADABLE,
+                        ));
                     if stale {
                         let _ = std::fs::remove_file(&path);
                         continue;
                     }
-                    std::thread::sleep(CONFIG_LOCK_RETRY_INTERVAL);
+                    std::thread::sleep(iteron_tunables::param_duration(
+                        "cli.config.config_lock_retry_interval",
+                        CONFIG_LOCK_RETRY_INTERVAL,
+                    ));
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -1320,7 +1359,10 @@ pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or(TEMP_FILE_NONCE_ON_UNUSABLE_CLOCK);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.config.temp_file_nonce_on_unusable_clock",
+            TEMP_FILE_NONCE_ON_UNUSABLE_CLOCK,
+        ));
     let temp = parent.join(format!(
         ".{}.{}.{nonce}.tmp",
         path.file_name()
@@ -1405,21 +1447,29 @@ fn read_bounded_config(path: &Path, allow_symlink: bool) -> anyhow::Result<Optio
     if !opened.is_file() {
         anyhow::bail!("{}: config must be a regular file", path.display());
     }
-    if opened.len() > MAX_CONFIG_BYTES as u64 {
+    if opened.len()
+        > iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES) as u64
+    {
         anyhow::bail!(
             "{}: config exceeds the {} byte limit",
             path.display(),
-            MAX_CONFIG_BYTES
+            iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES)
         );
     }
-    let mut bytes = Vec::with_capacity((opened.len() as usize).min(MAX_CONFIG_BYTES));
-    file.take((MAX_CONFIG_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_CONFIG_BYTES {
+    let mut bytes = Vec::with_capacity((opened.len() as usize).min(
+        iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES),
+    ));
+    file.take(
+        (iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES) + 1)
+            as u64,
+    )
+    .read_to_end(&mut bytes)?;
+    if bytes.len() > iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES)
+    {
         anyhow::bail!(
             "{}: config exceeds the {} byte limit",
             path.display(),
-            MAX_CONFIG_BYTES
+            iteron_tunables::param_integer("cli.config.max_config_bytes", MAX_CONFIG_BYTES)
         );
     }
     String::from_utf8(bytes)
@@ -1599,7 +1649,10 @@ pub(crate) fn resolve_completion_notifications(
     untrusted_project: Option<bool>,
 ) -> CompletionNotificationResolution {
     CompletionNotificationResolution {
-        enabled: trusted_user.unwrap_or(COMPLETION_NOTIFICATIONS_DEFAULT),
+        enabled: trusted_user.unwrap_or(iteron_tunables::param_bool(
+            "cli.config.completion_notifications_default",
+            COMPLETION_NOTIFICATIONS_DEFAULT,
+        )),
         project_ignored: untrusted_project.is_some(),
     }
 }

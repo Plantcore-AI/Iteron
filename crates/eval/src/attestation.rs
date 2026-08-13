@@ -122,13 +122,37 @@ impl RunAttestation {
             attempt_record_count: input.attempt_record_count,
             adapters: adapter_evidence(input.corpus)?,
             artifacts: vec![
-                artifact_digest("core_binary", input.core_path, MAX_ITERON_BINARY_BYTES)?,
-                artifact_digest("corpus", input.corpus_path, MAX_CORPUS_BYTES)?,
-                artifact_digest("evaluation_result", input.result_path, MAX_RESULT_BYTES)?,
+                artifact_digest(
+                    "core_binary",
+                    input.core_path,
+                    iteron_tunables::param_integer(
+                        "eval.attestation.max_iteron_binary_bytes",
+                        MAX_ITERON_BINARY_BYTES,
+                    ),
+                )?,
+                artifact_digest(
+                    "corpus",
+                    input.corpus_path,
+                    iteron_tunables::param_integer(
+                        "eval.attestation.max_corpus_bytes",
+                        MAX_CORPUS_BYTES,
+                    ),
+                )?,
+                artifact_digest(
+                    "evaluation_result",
+                    input.result_path,
+                    iteron_tunables::param_integer(
+                        "eval.attestation.max_result_bytes",
+                        MAX_RESULT_BYTES,
+                    ),
+                )?,
                 artifact_digest(
                     "attempt_ledger",
                     input.attempt_ledger_path,
-                    MAX_ATTEMPT_LEDGER_BYTES,
+                    iteron_tunables::param_integer(
+                        "eval.attestation.max_attempt_ledger_bytes",
+                        MAX_ATTEMPT_LEDGER_BYTES,
+                    ),
                 )?,
             ],
             attestation_sha256: String::new(),
@@ -152,13 +176,37 @@ impl RunAttestation {
         attempt_ledger_path: &Path,
     ) -> Result<(), AttestationError> {
         let actual = vec![
-            artifact_digest("core_binary", core_path, MAX_ITERON_BINARY_BYTES)?,
-            artifact_digest("corpus", corpus_path, MAX_CORPUS_BYTES)?,
-            artifact_digest("evaluation_result", result_path, MAX_RESULT_BYTES)?,
+            artifact_digest(
+                "core_binary",
+                core_path,
+                iteron_tunables::param_integer(
+                    "eval.attestation.max_iteron_binary_bytes",
+                    MAX_ITERON_BINARY_BYTES,
+                ),
+            )?,
+            artifact_digest(
+                "corpus",
+                corpus_path,
+                iteron_tunables::param_integer(
+                    "eval.attestation.max_corpus_bytes",
+                    MAX_CORPUS_BYTES,
+                ),
+            )?,
+            artifact_digest(
+                "evaluation_result",
+                result_path,
+                iteron_tunables::param_integer(
+                    "eval.attestation.max_result_bytes",
+                    MAX_RESULT_BYTES,
+                ),
+            )?,
             artifact_digest(
                 "attempt_ledger",
                 attempt_ledger_path,
-                MAX_ATTEMPT_LEDGER_BYTES,
+                iteron_tunables::param_integer(
+                    "eval.attestation.max_attempt_ledger_bytes",
+                    MAX_ATTEMPT_LEDGER_BYTES,
+                ),
             )?,
         ];
         if self.artifacts != actual {
@@ -203,7 +251,12 @@ pub fn write_atomic(attestation: &RunAttestation, path: &Path) -> Result<(), Att
     ));
     let bytes = serde_json::to_vec_pretty(attestation)
         .map_err(|error| AttestationError::Json(error.to_string()))?;
-    if bytes.len() as u64 > MAX_ATTESTATION_BYTES {
+    if bytes.len() as u64
+        > iteron_tunables::param_integer(
+            "eval.attestation.max_attestation_bytes",
+            MAX_ATTESTATION_BYTES,
+        )
+    {
         return Err(AttestationError::Artifact {
             path: path.display().to_string(),
             reason: "attestation exceeds its fixed size limit".into(),

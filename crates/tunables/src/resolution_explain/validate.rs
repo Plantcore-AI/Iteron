@@ -50,7 +50,17 @@ pub(super) fn checked_entries(
         shadowed = shadowed
             .checked_add(entry.shadowed.len())
             .ok_or(ExplainError::ReportBoundExceeded)?;
-        if adjustments > MAX_ADJUSTMENTS || shadowed > MAX_SHADOWED_VALUES {
+        if adjustments
+            > crate::param_integer(
+                "tunables.resolution_explain.validate.max_adjustments",
+                MAX_ADJUSTMENTS,
+            )
+            || shadowed
+                > crate::param_integer(
+                    "tunables.resolution_explain.validate.max_shadowed_values",
+                    MAX_SHADOWED_VALUES,
+                )
+        {
             return Err(ExplainError::ReportBoundExceeded);
         }
         if entry
@@ -438,7 +448,11 @@ pub(super) fn valid_shadowed_reason(value: &str) -> bool {
 
 fn safe_code(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_REASON_CODE_BYTES
+        && value.len()
+            <= crate::param_integer(
+                "tunables.resolution_explain.validate.max_reason_code_bytes",
+                MAX_REASON_CODE_BYTES,
+            )
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
                 || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'$' | b'@' | b'+')

@@ -43,6 +43,12 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--harness-profile <HARNESS_PROFILE>` | Immutable runtime-tunables profile. Benchmark attempts select `benchmark` automatically; ordinary runs select `interactive` unless this operator-owned flag says otherwise. |
 | `--tunables-export` | Print the whole machine-readable optimization surface as JSON and exit: every family, every exposed parameter, the module axis and the addressable prompt artifacts. This is what an external optimizer reads to construct a legal profile. |
 | `--tunables-profile <PATH>` | Apply a tunables profile document to this run. Requires --tunables-profile-digest; a candidate that can be swapped between digesting and applying is not pinned to anything. |
+| `--tunables-profile-json <JSON>` | A tunables profile as inline JSON, for a one-off experiment. Mutually exclusive with --tunables-profile; neither can be digest-pinned, because bytes produced in the same breath as the claim about them have nothing prior to pin to. |
+| `--set <KEY=VALUE>` | Set one tunable for this run: `--set compaction_trigger=120000`. Repeatable. Accepts a family id, semantic key, alias, or exposed parameter id; the source kind is inferred from the family's own declared bindings. Repeatable. |
+| `--tunables-explain` | Print the exact assembled profile and whether each tier-2 parameter has a production use site, then exit without running anything. |
+| `--tunables-module <MODULE>` | Restrict --tunables-export to one optimization module. |
+| `--tunables-filter <SUBSTRING>` | Restrict --tunables-export to entries whose id or summary contains this substring. |
+| `--tunables-format <TUNABLES_FORMAT>` | --tunables-export output shape: json for machines, table for a human scanning the surface. |
 | `--tunables-profile-digest <SHA256>` | The SHA-256 the profile file must have. Any mismatch refuses the run. |
 | `--emit-tunables-profile <PATH>` | Write the profile that reproduces this run's effective tunables, then continue. |
 | `--resume <RESUME>` | Resume a prior run by id: reconstruct its transcript from the rollout and continue (invariant #2, recoverable). When set, the task argument may be a follow-up instruction. |

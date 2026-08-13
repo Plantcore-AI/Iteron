@@ -12,6 +12,7 @@ path = "src/main.rs"
 # The evolution control plane is deliberately outside the runtime TCB. It consumes recorded
 # trajectories and emits versioned policy artifacts; it cannot execute tools or grant capability.
 [dependencies]
+iteron-tunables = { path = "../tunables" }
 iteron-protocol = { path = "../protocol" }
 iteron-record = { path = "../record" }
 serde = { workspace = true }

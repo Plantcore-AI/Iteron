@@ -126,6 +126,34 @@ struct JsonBudget {
     nodes: usize,
 }
 
+fn max_v2_depth() -> usize {
+    iteron_tunables::param_integer(
+        "protocol.tunables_snapshot.max_run_genesis_tunables_v2_depth",
+        MAX_RUN_GENESIS_TUNABLES_V2_DEPTH,
+    )
+}
+
+fn max_v2_nodes() -> usize {
+    iteron_tunables::param_integer(
+        "protocol.tunables_snapshot.max_run_genesis_tunables_v2_nodes",
+        MAX_RUN_GENESIS_TUNABLES_V2_NODES,
+    )
+}
+
+fn max_v2_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "protocol.tunables_snapshot.max_run_genesis_tunables_v2_bytes",
+        MAX_RUN_GENESIS_TUNABLES_V2_BYTES,
+    )
+}
+
+fn max_ceiling_adjustments() -> usize {
+    iteron_tunables::param_integer(
+        "protocol.tunables_snapshot.max_run_genesis_tunable_ceilings",
+        MAX_RUN_GENESIS_TUNABLE_CEILINGS,
+    )
+}
+
 impl JsonBudget {
     fn observe(
         &mut self,
@@ -146,7 +174,7 @@ impl JsonBudget {
         depth: usize,
         inherited_sha256_field: bool,
     ) -> Result<(), TunablesSnapshotError> {
-        if depth > MAX_RUN_GENESIS_TUNABLES_V2_DEPTH {
+        if depth > max_v2_depth() {
             return invalid("a V2 projection exceeds its depth bound");
         }
         self.nodes = self
@@ -155,7 +183,7 @@ impl JsonBudget {
             .ok_or(TunablesSnapshotError::Invalid {
                 reason: "V2 projection node count overflow",
             })?;
-        if self.nodes > MAX_RUN_GENESIS_TUNABLES_V2_NODES {
+        if self.nodes > max_v2_nodes() {
             return invalid("V2 projections exceed their node bound");
         }
         let sha256_field = inherited_sha256_field
@@ -423,7 +451,7 @@ pub fn validate_tunables_snapshot_v2(
         if effective != (entry.state == RunGenesisTunableState::Effective)
             || inactive != (entry.state == RunGenesisTunableState::Inactive)
             || (effective && entry.provenance.is_none())
-            || entry.ceiling_adjustments.len() > MAX_RUN_GENESIS_TUNABLE_CEILINGS
+            || entry.ceiling_adjustments.len() > max_ceiling_adjustments()
         {
             return invalid("V2 entry state and explanation fields are inconsistent");
         }
@@ -493,7 +521,7 @@ pub fn validate_tunables_snapshot_v2(
             reason: "V2 canonical snapshot encoding failed",
         })?
         .len();
-    if payload_bytes > MAX_RUN_GENESIS_TUNABLES_V2_BYTES {
+    if payload_bytes > max_v2_bytes() {
         return invalid("V2 snapshot exceeds its canonical byte bound");
     }
     if recompute_effective_digest(snapshot)? != snapshot.effective_digest_sha256 {

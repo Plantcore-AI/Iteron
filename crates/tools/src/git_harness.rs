@@ -227,15 +227,30 @@ pub(crate) fn hardened_git_command(
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", NULL_DEVICE)
-        .env("GIT_CONFIG_GLOBAL", NULL_DEVICE)
+        .env(
+            "GIT_CONFIG_SYSTEM",
+            iteron_tunables::param_str("tools.git_harness.null_device", NULL_DEVICE),
+        )
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            iteron_tunables::param_str("tools.git_harness.null_device", NULL_DEVICE),
+        )
         .env("GIT_ATTR_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", NULL_DEVICE)
-        .env("SSH_ASKPASS", NULL_DEVICE)
+        .env(
+            "GIT_ASKPASS",
+            iteron_tunables::param_str("tools.git_harness.null_device", NULL_DEVICE),
+        )
+        .env(
+            "SSH_ASKPASS",
+            iteron_tunables::param_str("tools.git_harness.null_device", NULL_DEVICE),
+        )
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")
-        .env("GIT_EDITOR", NULL_DEVICE)
+        .env(
+            "GIT_EDITOR",
+            iteron_tunables::param_str("tools.git_harness.null_device", NULL_DEVICE),
+        )
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_CEILING_DIRECTORIES", &repository.work_tree)
@@ -429,12 +444,18 @@ pub(crate) async fn run_command_bounded(
             let _ = child.start_kill();
             let _ = child.wait().await;
             group.disarm();
-            let _ = tokio::time::timeout(POST_KILL_DRAIN_TIMEOUT, async {
-                let _ = tokio::join!(
-                    drain_bounded(&mut stdout, &mut stdout_capture),
-                    drain_bounded(&mut stderr, &mut stderr_capture),
-                );
-            })
+            let _ = tokio::time::timeout(
+                iteron_tunables::param_duration(
+                    "tools.git_harness.post_kill_drain_timeout",
+                    POST_KILL_DRAIN_TIMEOUT,
+                ),
+                async {
+                    let _ = tokio::join!(
+                        drain_bounded(&mut stdout, &mut stdout_capture),
+                        drain_bounded(&mut stderr, &mut stderr_capture),
+                    );
+                },
+            )
             .await;
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,

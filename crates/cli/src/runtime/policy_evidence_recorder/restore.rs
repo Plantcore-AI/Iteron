@@ -29,7 +29,12 @@ impl PolicyEvidenceRecorder {
             match groups.last_mut() {
                 Some((current, group)) if current == run_id => group.push(timed.clone()),
                 _ => {
-                    if groups.len() >= MAX_POLICY_RUN_SEGMENTS {
+                    if groups.len()
+                        >= iteron_tunables::param_integer(
+                            "cli.runtime.policy_evidence_recorder.restore.max_policy_run_segments",
+                            MAX_POLICY_RUN_SEGMENTS,
+                        )
+                    {
                         return Err(PolicyEvidenceRecorderError::ReplayInvariant(
                             "policy run segment bound was exceeded",
                         ));

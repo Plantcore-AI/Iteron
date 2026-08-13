@@ -117,9 +117,15 @@ impl Default for Projection {
             })
             .collect();
         Self {
-            logs: VecDeque::with_capacity(MAX_LIVE_LOGS),
+            logs: VecDeque::with_capacity(iteron_tunables::param_integer(
+                "obs.otel.lifecycle.max_live_logs",
+                MAX_LIVE_LOGS,
+            )),
             metrics,
-            spans: VecDeque::with_capacity(MAX_LIVE_SPANS),
+            spans: VecDeque::with_capacity(iteron_tunables::param_integer(
+                "obs.otel.lifecycle.max_live_spans",
+                MAX_LIVE_SPANS,
+            )),
             open: HashMap::new(),
             dropped_logs: 0,
             dropped_spans: 0,
@@ -137,7 +143,10 @@ pub struct LifecycleTelemetryRuntime {
 
 impl LifecycleTelemetryRuntime {
     pub fn attach(bus: &crate::lifecycle::LifecycleBus) -> Result<Self, &'static str> {
-        let receiver = bus.subscribe(SUBSCRIBER_CAPACITY)?;
+        let receiver = bus.subscribe(iteron_tunables::param_integer(
+            "obs.otel.lifecycle.subscriber_capacity",
+            SUBSCRIBER_CAPACITY,
+        ))?;
         let projection = Arc::new(Mutex::new(Projection::default()));
         let weak = Arc::downgrade(&projection);
         std::thread::Builder::new()
@@ -172,7 +181,10 @@ fn project_loop(
         let Some(projection) = projection.upgrade() else {
             return;
         };
-        match receiver.recv_timeout(PROJECT_LOOP_IDLE_POLL) {
+        match receiver.recv_timeout(iteron_tunables::param_duration(
+            "obs.otel.lifecycle.project_loop_idle_poll",
+            PROJECT_LOOP_IDLE_POLL,
+        )) {
             Ok(event) => {
                 let mut state = projection
                     .lock()
@@ -188,7 +200,9 @@ fn project_loop(
 impl Projection {
     fn record(&mut self, event: LifecycleEventEnvelope) {
         let traceparent = traceparent(&event);
-        if self.logs.len() == MAX_LIVE_LOGS {
+        if self.logs.len()
+            == iteron_tunables::param_integer("obs.otel.lifecycle.max_live_logs", MAX_LIVE_LOGS)
+        {
             self.logs.pop_front();
             self.dropped_logs = self.dropped_logs.saturating_add(1);
         }
@@ -266,7 +280,13 @@ impl Projection {
             .map(|spec| spec.phase)
             .unwrap_or(LifecyclePhase::Progress);
         if matches!(phase, LifecyclePhase::Requested | LifecyclePhase::Started) {
-            if self.open.len() == MAX_OPEN_SPANS && !self.open.contains_key(&key) {
+            if self.open.len()
+                == iteron_tunables::param_integer(
+                    "obs.otel.lifecycle.max_open_spans",
+                    MAX_OPEN_SPANS,
+                )
+                && !self.open.contains_key(&key)
+            {
                 self.dropped_open_spans = self.dropped_open_spans.saturating_add(1);
                 return;
             }
@@ -300,7 +320,9 @@ impl Projection {
         let Some(duration_ns) = duration_ns else {
             return;
         };
-        if self.spans.len() == MAX_LIVE_SPANS {
+        if self.spans.len()
+            == iteron_tunables::param_integer("obs.otel.lifecycle.max_live_spans", MAX_LIVE_SPANS)
+        {
             self.spans.pop_front();
             self.dropped_spans = self.dropped_spans.saturating_add(1);
         }
@@ -340,7 +362,12 @@ impl Projection {
             let Some(open) = self.open.remove(&key) else {
                 continue;
             };
-            if self.spans.len() == MAX_LIVE_SPANS {
+            if self.spans.len()
+                == iteron_tunables::param_integer(
+                    "obs.otel.lifecycle.max_live_spans",
+                    MAX_LIVE_SPANS,
+                )
+            {
                 self.spans.pop_front();
                 self.dropped_spans = self.dropped_spans.saturating_add(1);
             }

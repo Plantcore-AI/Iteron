@@ -277,7 +277,10 @@ pub(super) async fn handle_registered_command(
                             ),
                         ));
                     }
-                    for segment in ledger.segments.iter().take(LEDGER_SEGMENT_ROWS) {
+                    for segment in ledger.segments.iter().take(iteron_tunables::param_integer(
+                        "cli.tui.command_dispatch.ledger_segment_rows",
+                        LEDGER_SEGMENT_ROWS,
+                    )) {
                         rows.push(block::PanelRow::Note(format!(
                             "#{:02} {:?} · {:?} · {} tok · {} bytes · {:?}",
                             segment.ordinal,
@@ -777,7 +780,10 @@ pub(super) async fn handle_registered_command(
                     let mut rows = review
                         .summary()
                         .into_iter()
-                        .take(WORKSPACE_REVIEW_SUMMARY_ROWS)
+                        .take(iteron_tunables::param_integer(
+                            "cli.tui.command_dispatch.workspace_review_summary_rows",
+                            WORKSPACE_REVIEW_SUMMARY_ROWS,
+                        ))
                         .map(block::PanelRow::Note)
                         .collect::<Vec<_>>();
                     let blind = review.changes.invisible_to_bare_diff().len();
@@ -1125,7 +1131,10 @@ pub(super) async fn handle_registered_command(
                                     | iteron_protocol::EventKind::TurnStart
                             )
                         })
-                        .take(REWIND_TARGET_ROWS)
+                        .take(iteron_tunables::param_integer(
+                            "cli.tui.command_dispatch.rewind_target_rows",
+                            REWIND_TARGET_ROWS,
+                        ))
                     {
                         let kind = if matches!(
                             event.kind,
@@ -1205,7 +1214,10 @@ pub(super) async fn handle_registered_command(
                 for entry in preview
                     .irrecoverable()
                     .iter()
-                    .take(IRRECOVERABLE_PREVIEW_ROWS)
+                    .take(iteron_tunables::param_integer(
+                        "cli.tui.command_dispatch.irrecoverable_preview_rows",
+                        IRRECOVERABLE_PREVIEW_ROWS,
+                    ))
                 {
                     rows.push(item("−", &entry.path, "would be deleted"));
                 }

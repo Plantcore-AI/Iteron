@@ -129,7 +129,10 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
                 while cur
                     .last()
                     .map(|(c, _)| *c == ' ')
-                    .unwrap_or(EMPTY_ROW_HAS_TRAILING_SPACE)
+                    .unwrap_or(iteron_tunables::param_bool(
+                        "cli.render.empty_row_has_trailing_space",
+                        EMPTY_ROW_HAS_TRAILING_SPACE,
+                    ))
                 {
                     cur.pop();
                 }

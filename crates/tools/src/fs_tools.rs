@@ -148,7 +148,10 @@ struct ReadWindow {
 
 impl ReadWindow {
     fn from_input(input: &serde_json::Value) -> Result<Self, String> {
-        let offset = positive_integer(input, "offset")?.unwrap_or(DEFAULT_READ_OFFSET_LINE);
+        let offset = positive_integer(input, "offset")?.unwrap_or(iteron_tunables::param_integer(
+            "tools.fs_tools.default_read_offset_line",
+            DEFAULT_READ_OFFSET_LINE,
+        ));
         let limit = positive_integer(input, "limit")?;
         Ok(Self { offset, limit })
     }
@@ -232,7 +235,11 @@ async fn read_numbered_file(
             .len()
             .saturating_add(separator_bytes)
             .saturating_add(numbered.len())
-            > policy.output_max_bytes - TRUNCATION_MARKER_RESERVE_BYTES
+            > policy.output_max_bytes
+                - iteron_tunables::param_integer(
+                    "tools.fs_tools.truncation_marker_reserve_bytes",
+                    TRUNCATION_MARKER_RESERVE_BYTES,
+                )
         {
             truncated_before = Some((absolute_line, TruncationCause::OutputBytes));
             break;
@@ -259,7 +266,12 @@ async fn read_numbered_file(
         let marker = format!(
             "… (truncated before line {next_line}; {reason}; continue with offset={next_line})"
         );
-        if marker.len() >= TRUNCATION_MARKER_RESERVE_BYTES {
+        if marker.len()
+            >= iteron_tunables::param_integer(
+                "tools.fs_tools.truncation_marker_reserve_bytes",
+                TRUNCATION_MARKER_RESERVE_BYTES,
+            )
+        {
             return Err(std::io::Error::other(
                 "read_file truncation marker exceeded its reserved output budget",
             ));

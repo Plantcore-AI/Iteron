@@ -46,6 +46,8 @@ pub struct RunCoreRequest<'a> {
     pub task_dag: Arc<ExecutionLedger>,
     pub spawner: Arc<dyn AgentSpawner>,
     pub sink: Arc<dyn ProgressSink>,
+    /// Operator profile this run was resolved under, read only for prompt-artifact replacement.
+    pub tunables_profile: Option<Arc<iteron_tunables::ProfileDocument>>,
 }
 
 pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> {
@@ -63,6 +65,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         task_dag,
         spawner,
         sink,
+        tunables_profile,
     } = request;
     if spawner.port_version() != AGENT_SPAWNER_PORT_VERSION {
         anyhow::bail!(
@@ -105,6 +108,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         speculative_siblings,
         task_retry,
         schema_retry,
+        tunables_profile,
     });
 
     // A LocalSet lets the `!Send` QuickJS runtime run on the current thread while `tokio::spawn`
@@ -131,7 +135,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
             let result: anyhow::Result<String> = AsyncContext::async_with(&ctx, async |ctx| {
                 crate::bindings::install(&ctx, &env)
                     .map_err(|error| anyhow::anyhow!("install host fns: {error}"))?;
-                ctx.eval::<(), _>(PRELUDE)
+                ctx.eval::<(), _>(iteron_tunables::param_str("workflow.host.prelude", PRELUDE))
                     .catch(&ctx)
                     .map_err(|error| anyhow::anyhow!("prelude: {error}"))?;
                 ctx.eval::<(), _>(args_js.as_bytes())

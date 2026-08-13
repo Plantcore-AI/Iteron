@@ -66,7 +66,8 @@ const RECEIPT_SCAN_CHUNK_BYTES: usize = 8 * 1024;
 /// Legacy floating-point ceilings are compatibility data only. Rounding down is deliberately
 /// conservative: reconstructing old journals must never grant one extra micro-dollar.
 fn legacy_usd_to_microusd_floor(value: f64) -> u64 {
-    let scaled = value * MICROUSD_PER_USD;
+    let scaled =
+        value * iteron_tunables::param_f64("record.session.microusd_per_usd", MICROUSD_PER_USD);
     if !scaled.is_finite() || scaled >= u64::MAX as f64 {
         u64::MAX
     } else {
@@ -604,7 +605,10 @@ fn read_receipt_ending_at(path: &Path, end_bytes: u64) -> Option<PhysicalReceipt
             }
             break line;
         }
-        let start = cursor.saturating_sub(RECEIPT_SCAN_CHUNK_BYTES as u64);
+        let start = cursor.saturating_sub(iteron_tunables::param_integer(
+            "record.session.receipt_scan_chunk_bytes",
+            RECEIPT_SCAN_CHUNK_BYTES,
+        ) as u64);
         let chunk_len = usize::try_from(cursor - start).ok()?;
         let mut chunk = vec![0u8; chunk_len];
         file.seek(SeekFrom::Start(start)).ok()?;
@@ -748,7 +752,9 @@ fn genesis_matches_meta(path: &Path, meta: &SessionMeta) -> bool {
 }
 
 fn ancestry_matches_rollout(runs_dir: &Path, meta: &SessionMeta) -> bool {
-    if meta.ancestry.len() > MAX_FORK_DEPTH {
+    if meta.ancestry.len()
+        > iteron_tunables::param_integer("record.session.max_fork_depth", MAX_FORK_DEPTH)
+    {
         return false;
     }
     let mut expected = meta.parent.clone();
@@ -851,7 +857,10 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(PRE_EPOCH_TIMESTAMP_SECS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "record.session.pre_epoch_timestamp_secs",
+            PRE_EPOCH_TIMESTAMP_SECS,
+        ))
 }
 
 /// Deterministic title: the first user message's first non-empty line, char-truncated (SESS-3).
@@ -875,10 +884,13 @@ pub fn title_from_text(text: &str) -> String {
         .unwrap_or("")
         .trim();
     const MAX: usize = 72;
-    if first_line.chars().count() <= MAX {
+    if first_line.chars().count() <= iteron_tunables::param_integer("record.session.max", MAX) {
         first_line.to_string()
     } else {
-        let mut t: String = first_line.chars().take(MAX).collect();
+        let mut t: String = first_line
+            .chars()
+            .take(iteron_tunables::param_integer("record.session.max", MAX))
+            .collect();
         t.push('…');
         t
     }
@@ -1064,7 +1076,10 @@ struct IndexRead {
 }
 
 fn max_index_scan_lines(live_runs: usize) -> usize {
-    live_runs.saturating_mul(INDEX_SCAN_LINES_PER_LIVE_RUN)
+    live_runs.saturating_mul(iteron_tunables::param_integer(
+        "record.session.index_scan_lines_per_live_run",
+        INDEX_SCAN_LINES_PER_LIVE_RUN,
+    ))
 }
 
 /// Read only a live-run-proportional prefix. Any malformed, torn, oversized, or over-limit cache
@@ -1236,7 +1251,10 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     let index_manifest_missing = !existing.is_empty()
         && std::fs::symlink_metadata(index_path(runs_dir))
             .map(|metadata| !metadata.file_type().is_file())
-            .unwrap_or(UNSTATABLE_INDEX_IS_MISSING);
+            .unwrap_or(iteron_tunables::param_bool(
+                "record.session.unstatable_index_is_missing",
+                UNSTATABLE_INDEX_IS_MISSING,
+            ));
     let index = read_index(runs_dir, existing.len());
     // A missing manifest decodes as an exact empty cache so ordinary first-use remains cheap. If
     // rollouts do exist, however, it also means revocation/crash invalidated the projection and
@@ -1864,7 +1882,10 @@ fn fork_internal(
     // Once exact policy exists it is authoritative. The legacy f64 field is consulted only for
     // pre-policy journals and is reconstructed by flooring, never ceiling.
     let max_microusd = exact_max_microusd.or(legacy_max_microusd);
-    let max_usd = max_microusd.map(|value| value as f64 / MICROUSD_PER_USD);
+    let max_usd = max_microusd.map(|value| {
+        value as f64
+            / iteron_tunables::param_f64("record.session.microusd_per_usd", MICROUSD_PER_USD)
+    });
     let inherited_policy =
         RuntimePolicyState::from_events(logical_prefix.iter().map(|scoped| &scoped.event));
     let inherited_selection = logical_prefix
@@ -2093,7 +2114,7 @@ fn expand_scoped_from(
     preloaded: Option<Vec<ReadLine>>,
     ancestry: &mut Vec<SessionAncestryReceipt>,
 ) -> Result<Vec<ScopedEvent>, RecordError> {
-    if depth > MAX_FORK_DEPTH {
+    if depth > iteron_tunables::param_integer("record.session.max_fork_depth", MAX_FORK_DEPTH) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("fork chain for {run} exceeds max depth {MAX_FORK_DEPTH} (cyclic parent?)"),
@@ -2117,7 +2138,8 @@ fn expand_scoped_from(
     }) = lines.first().map(|l| &l.event.kind)
     {
         let parent = RunId(pr.clone());
-        if depth >= MAX_FORK_DEPTH {
+        if depth >= iteron_tunables::param_integer("record.session.max_fork_depth", MAX_FORK_DEPTH)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("fork chain for {run} exceeds max depth {MAX_FORK_DEPTH} (cyclic parent?)"),
@@ -2186,7 +2208,10 @@ fn expand_scoped_from(
     for l in &lines {
         if upto
             .map(|u| l.seq.0 <= u)
-            .unwrap_or(UNBOUNDED_SCOPE_ADMITS_LINE)
+            .unwrap_or(iteron_tunables::param_bool(
+                "record.session.unbounded_scope_admits_line",
+                UNBOUNDED_SCOPE_ADMITS_LINE,
+            ))
         {
             events.push(ScopedEvent {
                 event: l.event.clone(),

@@ -12,7 +12,10 @@ pub(super) fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(CLOCK_BEFORE_EPOCH_SECS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.runtime.provider_accounting.clock_before_epoch_secs",
+            CLOCK_BEFORE_EPOCH_SECS,
+        ))
 }
 
 pub(super) fn elapsed_us(started: Instant) -> u64 {
@@ -26,7 +29,10 @@ pub(super) fn bounded_provider_notice(
     let raw = format!("{label} [{}]: {}", notice.code, notice.message);
     iteron_protocol::text::head(
         &iteron_record::redact::scrub(&raw),
-        PROVIDER_NOTICE_MAX_BYTES,
+        iteron_tunables::param_integer(
+            "cli.runtime.provider_accounting.provider_notice_max_bytes",
+            PROVIDER_NOTICE_MAX_BYTES,
+        ),
     )
 }
 
@@ -40,13 +46,21 @@ pub(super) fn bounded_provider_run_notice(
     );
     iteron_protocol::text::head(
         &iteron_record::redact::scrub(&raw),
-        PROVIDER_NOTICE_MAX_BYTES,
+        iteron_tunables::param_integer(
+            "cli.runtime.provider_accounting.provider_notice_max_bytes",
+            PROVIDER_NOTICE_MAX_BYTES,
+        ),
     )
 }
 
 pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
     let suffix = text.strip_prefix(PROVIDER_RUN_NOTICE_PREFIX)?;
-    let body = suffix.as_bytes().get(..PROVIDER_RUN_NOTICE_KEY_BODY_LEN)?;
+    let body = suffix.as_bytes().get(
+        ..iteron_tunables::param_integer(
+            "cli.runtime.provider_run_notice_key_body_len",
+            PROVIDER_RUN_NOTICE_KEY_BODY_LEN,
+        ),
+    )?;
     if !body.iter().enumerate().all(|(index, byte)| {
         if (index + 1) % 9 == 0 && index < 63 {
             *byte == b'-'
@@ -54,7 +68,12 @@ pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
             byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
         }
     }) || !suffix
-        .get(PROVIDER_RUN_NOTICE_KEY_BODY_LEN..)?
+        .get(
+            iteron_tunables::param_integer(
+                "cli.runtime.provider_run_notice_key_body_len",
+                PROVIDER_RUN_NOTICE_KEY_BODY_LEN,
+            )..,
+        )?
         .starts_with("; code=")
     {
         return None;
@@ -126,13 +145,23 @@ impl Agent {
             if let Err(error) = self.emit_durable(
                 turn,
                 EventKind::Notice {
-                    text: UNPRICEABLE_CACHE_CREATION_NOTICE.into(),
+                    text: iteron_tunables::param_str(
+                        "cli.runtime.unpriceable_cache_creation_notice",
+                        UNPRICEABLE_CACHE_CREATION_NOTICE,
+                    )
+                    .into(),
                 },
             ) {
                 self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(error);
             }
-            self.ui(UiEvent::Notice(UNPRICEABLE_CACHE_CREATION_NOTICE.into()));
+            self.ui(UiEvent::Notice(
+                iteron_tunables::param_str(
+                    "cli.runtime.unpriceable_cache_creation_notice",
+                    UNPRICEABLE_CACHE_CREATION_NOTICE,
+                )
+                .into(),
+            ));
         }
         self.ledger.turn(&usage, model_ms);
         let projection = match projection.transpose() {

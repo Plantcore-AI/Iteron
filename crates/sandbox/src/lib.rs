@@ -134,8 +134,14 @@ impl Confinement {
     pub fn unconfined(workspace: impl Into<PathBuf>) -> Self {
         let mut conf = Self::new(workspace, true);
         conf.allow_egress = true;
-        conf.timeout_secs = Self::UNCONFINED_TIMEOUT_SECS;
-        conf.max_output_bytes = Self::UNCONFINED_MAX_OUTPUT_BYTES;
+        conf.timeout_secs = iteron_tunables::param_integer(
+            "sandbox.lib.unconfined_timeout_secs",
+            Self::UNCONFINED_TIMEOUT_SECS,
+        );
+        conf.max_output_bytes = iteron_tunables::param_integer(
+            "sandbox.lib.unconfined_max_output_bytes",
+            Self::UNCONFINED_MAX_OUTPUT_BYTES,
+        );
         conf
     }
 
@@ -153,8 +159,14 @@ impl Confinement {
                 std::process::id()
             )),
             allow_egress: false,
-            timeout_secs: Self::DEFAULT_TIMEOUT_SECS,
-            max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
+            timeout_secs: iteron_tunables::param_integer(
+                "sandbox.lib.default_timeout_secs",
+                Self::DEFAULT_TIMEOUT_SECS,
+            ),
+            max_output_bytes: iteron_tunables::param_integer(
+                "sandbox.lib.default_max_output_bytes",
+                Self::DEFAULT_MAX_OUTPUT_BYTES,
+            ),
             sensitive_env_names: Vec::new(),
             child_environment: None,
             unconfined,
@@ -208,10 +220,16 @@ impl ProcessSignalKillEscalationPolicy {
     pub const ID: &'static str = "term_grace_kill_reap";
 }
 
-pub const fn process_signal_kill_escalation_policy() -> ProcessSignalKillEscalationPolicy {
+pub fn process_signal_kill_escalation_policy() -> ProcessSignalKillEscalationPolicy {
     ProcessSignalKillEscalationPolicy {
-        term_grace_milliseconds: TERMINATION_GRACE_MS,
-        post_kill_reap_seconds: POST_KILL_DRAIN_SECS,
+        term_grace_milliseconds: iteron_tunables::param_integer(
+            "sandbox.lib.termination_grace_ms",
+            TERMINATION_GRACE_MS,
+        ),
+        post_kill_reap_seconds: iteron_tunables::param_integer(
+            "sandbox.lib.post_kill_drain_secs",
+            POST_KILL_DRAIN_SECS,
+        ),
     }
 }
 
@@ -224,7 +242,10 @@ struct BoundedCapture {
 impl BoundedCapture {
     fn with_limit(limit: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(limit.min(INITIAL_CAPTURE_CAPACITY_BYTES)),
+            bytes: Vec::with_capacity(limit.min(iteron_tunables::param_integer(
+                "sandbox.lib.initial_capture_capacity_bytes",
+                INITIAL_CAPTURE_CAPACITY_BYTES,
+            ))),
             truncated: false,
         }
     }
@@ -262,7 +283,11 @@ async fn drain_bounded<R: AsyncRead + Unpin>(
     capture: &mut BoundedCapture,
     limit: usize,
 ) -> std::io::Result<()> {
-    let mut chunk = [0_u8; DRAIN_CHUNK_BYTES];
+    let mut chunk =
+        vec![
+            0_u8;
+            iteron_tunables::param_integer("sandbox.lib.drain_chunk_bytes", DRAIN_CHUNK_BYTES,)
+        ];
     loop {
         let read = reader.read(&mut chunk).await?;
         if read == 0 {
@@ -399,7 +424,10 @@ pub(crate) async fn collect_child_output(
             // outside it. Resume both drains concurrently to retain buffered tail bytes and close
             // the pipes. This cleanup itself is bounded in case a hostile daemon escaped the group.
             let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(POST_KILL_DRAIN_SECS),
+                std::time::Duration::from_secs(iteron_tunables::param_integer(
+                    "sandbox.lib.post_kill_drain_secs",
+                    POST_KILL_DRAIN_SECS,
+                )),
                 async {
                     let _ = tokio::join!(
                         drain_bounded(&mut stdout, &mut out, conf.max_output_bytes),
@@ -511,9 +539,15 @@ const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
 /// an otherwise perfectly usable namespace, so resolve the interpreter instead of assuming it.
 fn select_confined_shell(preferred_exists: bool) -> &'static str {
     if preferred_exists {
-        PREFERRED_CONFINED_SHELL
+        iteron_tunables::param_str(
+            "sandbox.lib.preferred_confined_shell",
+            PREFERRED_CONFINED_SHELL,
+        )
     } else {
-        FALLBACK_CONFINED_SHELL
+        iteron_tunables::param_str(
+            "sandbox.lib.fallback_confined_shell",
+            FALLBACK_CONFINED_SHELL,
+        )
     }
 }
 
@@ -522,7 +556,13 @@ fn select_confined_shell(preferred_exists: bool) -> &'static str {
 pub fn confined_shell() -> &'static str {
     static SHELL: OnceLock<&'static str> = OnceLock::new();
     SHELL.get_or_init(|| {
-        select_confined_shell(std::path::Path::new(PREFERRED_CONFINED_SHELL).exists())
+        select_confined_shell(
+            std::path::Path::new(iteron_tunables::param_str(
+                "sandbox.lib.preferred_confined_shell",
+                PREFERRED_CONFINED_SHELL,
+            ))
+            .exists(),
+        )
     })
 }
 

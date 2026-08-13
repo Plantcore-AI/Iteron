@@ -224,9 +224,21 @@ pub fn explain_text(report: &ResolutionReport) -> Result<String, ExplainError> {
             )
             .map_err(|_| ExplainError::Serialization)?;
         }
-        ensure_output_bound(output.len(), MAX_HUMAN_EXPLAIN_BYTES)?;
+        ensure_output_bound(
+            output.len(),
+            crate::param_integer(
+                "tunables.resolution_explain.max_human_explain_bytes",
+                MAX_HUMAN_EXPLAIN_BYTES,
+            ),
+        )?;
     }
-    ensure_output_bound(output.len(), MAX_HUMAN_EXPLAIN_BYTES)?;
+    ensure_output_bound(
+        output.len(),
+        crate::param_integer(
+            "tunables.resolution_explain.max_human_explain_bytes",
+            MAX_HUMAN_EXPLAIN_BYTES,
+        ),
+    )?;
     Ok(output)
 }
 
@@ -237,7 +249,11 @@ pub fn explain_entry_json(
     selector: &str,
 ) -> Result<String, ExplainError> {
     if selector.is_empty()
-        || selector.len() > MAX_SELECTOR_BYTES
+        || selector.len()
+            > crate::param_integer(
+                "tunables.resolution_explain.max_selector_bytes",
+                MAX_SELECTOR_BYTES,
+            )
         || selector.chars().any(char::is_control)
     {
         return Err(ExplainError::InvalidSelector);
@@ -267,7 +283,13 @@ pub fn explain_entry_json(
         entry: build_entry(entry)?,
     };
     let output = serde_json::to_string(&document).map_err(|_| ExplainError::Serialization)?;
-    ensure_output_bound(output.len(), MAX_JSON_EXPLAIN_BYTES)?;
+    ensure_output_bound(
+        output.len(),
+        crate::param_integer(
+            "tunables.resolution_explain.max_json_explain_bytes",
+            MAX_JSON_EXPLAIN_BYTES,
+        ),
+    )?;
     Ok(output)
 }
 

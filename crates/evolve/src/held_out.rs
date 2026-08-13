@@ -81,9 +81,17 @@ pub struct HeldOutEvalReport {
 
 impl HeldOutEvalReport {
     pub fn from_json(bytes: &[u8]) -> Result<Self, HeldOutBridgeError> {
-        if bytes.len() > MAX_HELD_OUT_REPORT_JSON_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.held_out.max_held_out_report_json_bytes",
+                MAX_HELD_OUT_REPORT_JSON_BYTES,
+            )
+        {
             return Err(HeldOutBridgeError::ReportTooLarge {
-                max: MAX_HELD_OUT_REPORT_JSON_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.held_out.max_held_out_report_json_bytes",
+                    MAX_HELD_OUT_REPORT_JSON_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }
@@ -272,9 +280,17 @@ impl HeldOutEvidenceStore {
             }
             let bytes =
                 serde_json::to_vec(&report).map_err(HeldOutBridgeError::InvalidReportJson)?;
-            if bytes.len() > MAX_HELD_OUT_REPORT_JSON_BYTES {
+            if bytes.len()
+                > iteron_tunables::param_integer(
+                    "evolve.held_out.max_held_out_report_json_bytes",
+                    MAX_HELD_OUT_REPORT_JSON_BYTES,
+                )
+            {
                 return Err(HeldOutBridgeError::ReportTooLarge {
-                    max: MAX_HELD_OUT_REPORT_JSON_BYTES,
+                    max: iteron_tunables::param_integer(
+                        "evolve.held_out.max_held_out_report_json_bytes",
+                        MAX_HELD_OUT_REPORT_JSON_BYTES,
+                    ),
                     actual: bytes.len(),
                 });
             }
@@ -365,9 +381,17 @@ impl HeldOutEvidenceStore {
                 Err(HeldOutBridgeError::ConflictingEvidence)
             };
         }
-        if self.entries.len() >= MAX_HELD_OUT_EVIDENCE_RECORDS {
+        if self.entries.len()
+            >= iteron_tunables::param_integer(
+                "evolve.held_out.max_held_out_evidence_records",
+                MAX_HELD_OUT_EVIDENCE_RECORDS,
+            )
+        {
             return Err(HeldOutBridgeError::EvidenceLimit {
-                max: MAX_HELD_OUT_EVIDENCE_RECORDS,
+                max: iteron_tunables::param_integer(
+                    "evolve.held_out.max_held_out_evidence_records",
+                    MAX_HELD_OUT_EVIDENCE_RECORDS,
+                ),
             });
         }
         if let Some(digest) = evaluator_input_digest {

@@ -69,8 +69,13 @@ impl DeferredToolCatalog {
         state.exposed.retain(|name| admitted.contains(name));
 
         let mut visible = state.exposed.clone();
-        if admitted.contains(TOOL_SEARCH) {
-            visible.insert(TOOL_SEARCH.to_owned());
+        if admitted.contains(iteron_tunables::param_str(
+            "tools.tool_search.tool_search",
+            TOOL_SEARCH,
+        )) {
+            visible.insert(
+                iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH).to_owned(),
+            );
         }
         let ranked = ranked_names(&state, admitted, task);
         for name in ranked.into_iter().take(eager_limit) {
@@ -80,17 +85,30 @@ impl DeferredToolCatalog {
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<String, &'static str> {
-        if query.len() > MAX_QUERY_BYTES {
+        if query.len()
+            > iteron_tunables::param_integer("tools.tool_search.max_query_bytes", MAX_QUERY_BYTES)
+        {
             return Err("tool_search query exceeds 256 bytes");
         }
-        let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
+        let limit = limit.clamp(
+            1,
+            iteron_tunables::param_usize(
+                "tools.tool_search.max_search_results",
+                iteron_tunables::param_integer(
+                    "tools.tool_search.max_search_results",
+                    MAX_SEARCH_RESULTS,
+                ),
+            ),
+        );
         let mut state = self.inner.lock().map_err(|_| "tool catalog unavailable")?;
         if state.admitted.is_empty() {
             return Err("tool catalog has not been admitted for this turn");
         }
         let names = ranked_names(&state, &state.admitted, query)
             .into_iter()
-            .filter(|name| name != TOOL_SEARCH)
+            .filter(|name| {
+                name != iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH)
+            })
             .take(limit)
             .collect::<Vec<_>>();
         for name in &names {
@@ -120,7 +138,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<DeferredToolCatalog, T
     let executor_catalog = catalog.clone();
     registry.push_tool(
         ToolSpec {
-            name: TOOL_SEARCH.into(),
+            name: iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH).into(),
             description: "Search the authority-admitted tool catalog by task or capability. The returned bounded schemas become callable on the next turn; use this when the currently visible tools do not cover the task.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -149,7 +167,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<DeferredToolCatalog, T
                     .get("limit")
                     .and_then(serde_json::Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(DEFAULT_SEARCH_RESULTS);
+                    .unwrap_or_else(|| {
+                        iteron_tunables::param_usize(
+                            "tools.tool_search.default_search_results",
+                            iteron_tunables::param_integer("tools.tool_search.default_search_results", DEFAULT_SEARCH_RESULTS),
+                        )
+                    });
                 match catalog.search(query, limit) {
                     Ok(content) => ok_result(call.id, content),
                     Err(reason) => err_result(call.id, reason.into()),
@@ -161,7 +184,10 @@ pub(crate) fn register(registry: &mut Registry) -> Result<DeferredToolCatalog, T
         registry
             .specs()
             .into_iter()
-            .find(|spec| spec.name == TOOL_SEARCH)
+            .find(|spec| {
+                spec.name
+                    == iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH)
+            })
             .expect("tool_search was just registered"),
     );
     Ok(catalog)

@@ -151,7 +151,12 @@ impl PolicyEvidenceRecorder {
         }
         let slot = FrozenPolicySlot::parse(slot_id)
             .ok_or_else(|| PolicyEvidenceRecorderError::UnknownSlot(slot_id.clone()))?;
-        if self.opportunities.len() >= MAX_RUN_POLICY_OPPORTUNITIES {
+        if self.opportunities.len()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.policy_evidence_recorder.max_run_policy_opportunities",
+                MAX_RUN_POLICY_OPPORTUNITIES,
+            )
+        {
             return Err(PolicyEvidenceRecorderError::TooManyOpportunities);
         }
         let policy = self
@@ -427,12 +432,12 @@ impl PolicyEvidenceRecorder {
     }
 
     pub(crate) fn turn_latency_us(&self, turn: TurnId, now_us: u64) -> u64 {
-        now_us.saturating_sub(
-            self.turn_started_at_us
-                .get(&turn.0)
-                .copied()
-                .unwrap_or(UNOBSERVED_TURN_START_US),
-        )
+        now_us.saturating_sub(self.turn_started_at_us.get(&turn.0).copied().unwrap_or(
+            iteron_tunables::param_integer(
+                "cli.runtime.policy_evidence_recorder.unobserved_turn_start_us",
+                UNOBSERVED_TURN_START_US,
+            ),
+        ))
     }
 
     pub(crate) fn is_turn_terminal(&self, turn: TurnId) -> bool {

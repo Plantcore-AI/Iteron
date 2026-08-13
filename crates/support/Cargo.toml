@@ -6,5 +6,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+iteron-tunables = { path = "../tunables" }
 iteron-record = { path = "../record" }
 thiserror = { workspace = true }

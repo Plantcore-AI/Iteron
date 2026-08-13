@@ -1433,7 +1433,10 @@ fn register_server_tools(
                     .get("limit")
                     .and_then(Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(RESOURCE_SEARCH_DEFAULT_LIMIT);
+                    .unwrap_or(iteron_tunables::param_integer(
+                        "cli.mcp.session.resource_search_default_limit",
+                        RESOURCE_SEARCH_DEFAULT_LIMIT,
+                    ));
                 match server.search(query, limit).await {
                     Ok(content) => definite_result(call.id, content, false),
                     Err(error) => definite_result(

@@ -258,9 +258,17 @@ impl TrajectoryRegistry {
                 })
             };
         }
-        if summary.run_digests.len() >= MAX_TRAJECTORY_REGISTRY_RECORDS {
+        if summary.run_digests.len()
+            >= iteron_tunables::param_integer(
+                "evolve.registry.max_trajectory_registry_records",
+                MAX_TRAJECTORY_REGISTRY_RECORDS,
+            )
+        {
             return Err(TrajectoryRegistryError::TooManyRecords {
-                limit: MAX_TRAJECTORY_REGISTRY_RECORDS,
+                limit: iteron_tunables::param_integer(
+                    "evolve.registry.max_trajectory_registry_records",
+                    MAX_TRAJECTORY_REGISTRY_RECORDS,
+                ),
             });
         }
 
@@ -297,7 +305,10 @@ impl TrajectoryRegistry {
             .checked_add(line.len() as u64)
             .ok_or(TrajectoryRegistryError::RegistryTooLarge {
                 bytes: u64::MAX,
-                limit: MAX_TRAJECTORY_REGISTRY_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.registry.max_trajectory_registry_bytes",
+                    MAX_TRAJECTORY_REGISTRY_BYTES,
+                ),
             })?;
         ensure_registry_size(next_bytes)?;
 
@@ -382,7 +393,8 @@ impl TrajectoryRegistry {
         ensure_registry_size(original_len)?;
         let mut reader = BufReader::new(&mut self.file);
         let mut sequence = 0u64;
-        let mut last_hash = ZERO_HASH.to_string();
+        let mut last_hash =
+            iteron_tunables::param_str("evolve.registry.zero_hash", ZERO_HASH).to_string();
         let mut verified_bytes = 0u64;
         let mut run_digests = BTreeMap::new();
         let content_runs_dir = self.content_runs_dir.clone();
@@ -391,9 +403,17 @@ impl TrajectoryRegistry {
             if !terminated {
                 break;
             }
-            if sequence as usize >= MAX_TRAJECTORY_REGISTRY_RECORDS {
+            if sequence as usize
+                >= iteron_tunables::param_integer(
+                    "evolve.registry.max_trajectory_registry_records",
+                    MAX_TRAJECTORY_REGISTRY_RECORDS,
+                )
+            {
                 return Err(TrajectoryRegistryError::TooManyRecords {
-                    limit: MAX_TRAJECTORY_REGISTRY_RECORDS,
+                    limit: iteron_tunables::param_integer(
+                        "evolve.registry.max_trajectory_registry_records",
+                        MAX_TRAJECTORY_REGISTRY_RECORDS,
+                    ),
                 });
             }
             let stored: StoredRegistryRecord = serde_json::from_slice(&bytes)?;
@@ -413,7 +433,10 @@ impl TrajectoryRegistry {
             verified_bytes = verified_bytes.checked_add(consumed as u64).ok_or(
                 TrajectoryRegistryError::RegistryTooLarge {
                     bytes: u64::MAX,
-                    limit: MAX_TRAJECTORY_REGISTRY_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "evolve.registry.max_trajectory_registry_bytes",
+                        MAX_TRAJECTORY_REGISTRY_BYTES,
+                    ),
                 },
             )?;
         }

@@ -52,8 +52,14 @@ pub const INVESTIGATOR_DELIVERABLE: &str = "Return: (1) a direct conclusion; (2)
 impl AgentTask {
     /// Build the generic read-only investigator contract from a normalized objective.
     pub(crate) fn investigator(id: usize, objective: String) -> Self {
-        let scope = INVESTIGATOR_SCOPE.to_string();
-        let deliverable = INVESTIGATOR_DELIVERABLE.to_string();
+        let scope =
+            iteron_tunables::param_str("agents.stage.investigator_scope", INVESTIGATOR_SCOPE)
+                .to_string();
+        let deliverable = iteron_tunables::param_str(
+            "agents.stage.investigator_deliverable",
+            INVESTIGATOR_DELIVERABLE,
+        )
+        .to_string();
         let prompt =
             format!("Assigned question: {objective}\nScope: {scope}\nDeliverable: {deliverable}");
         Self {

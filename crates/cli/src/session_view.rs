@@ -153,20 +153,27 @@ fn encode_cursor<T: Serialize>(cursor: &T) -> anyhow::Result<String> {
         payload: URL_SAFE_NO_PAD.encode(payload),
     };
     let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&envelope)?);
-    if encoded.len() > MAX_CURSOR_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer("cli.session_view.max_cursor_bytes", MAX_CURSOR_BYTES)
+    {
         anyhow::bail!("session cursor exceeds its byte bound");
     }
     Ok(encoded)
 }
 
 fn decode_cursor<T: for<'de> Deserialize<'de>>(token: &str) -> anyhow::Result<T> {
-    if token.is_empty() || token.len() > MAX_CURSOR_BYTES {
+    if token.is_empty()
+        || token.len()
+            > iteron_tunables::param_integer("cli.session_view.max_cursor_bytes", MAX_CURSOR_BYTES)
+    {
         anyhow::bail!("session cursor is empty or exceeds its byte bound");
     }
     let envelope_bytes = URL_SAFE_NO_PAD
         .decode(token)
         .map_err(|_| anyhow::anyhow!("session cursor is not valid base64url"))?;
-    if envelope_bytes.len() > MAX_CURSOR_BYTES {
+    if envelope_bytes.len()
+        > iteron_tunables::param_integer("cli.session_view.max_cursor_bytes", MAX_CURSOR_BYTES)
+    {
         anyhow::bail!("decoded session cursor exceeds its byte bound");
     }
     let envelope: CursorEnvelope = serde_json::from_slice(&envelope_bytes)
@@ -174,7 +181,10 @@ fn decode_cursor<T: for<'de> Deserialize<'de>>(token: &str) -> anyhow::Result<T>
     let payload = URL_SAFE_NO_PAD
         .decode(&envelope.payload)
         .map_err(|_| anyhow::anyhow!("session cursor payload is invalid"))?;
-    if payload.len() > MAX_CURSOR_BYTES || cursor_digest(&payload) != envelope.digest {
+    if payload.len()
+        > iteron_tunables::param_integer("cli.session_view.max_cursor_bytes", MAX_CURSOR_BYTES)
+        || cursor_digest(&payload) != envelope.digest
+    {
         anyhow::bail!("session cursor integrity check failed");
     }
     serde_json::from_slice(&payload)
@@ -233,7 +243,10 @@ pub(crate) fn list_sessions(
 ) -> SessionListDocument {
     let metas = iteron_record::session::list_scoped(runs_dir, tenant, repo);
     let total = metas.len();
-    let limit = limit.min(MAX_SESSIONS_PER_PAGE);
+    let limit = limit.min(iteron_tunables::param_integer(
+        "cli.session_view.max_sessions_per_page",
+        MAX_SESSIONS_PER_PAGE,
+    ));
     let sessions = metas
         .iter()
         .take(limit)
@@ -261,7 +274,13 @@ pub(crate) fn list_sessions_page(
     if let Some(tag) = agent_definition_tag {
         validate_agent_definition_tag(tag)?;
     }
-    let limit = limit.clamp(1, MAX_SESSIONS_PER_PAGE);
+    let limit = limit.clamp(
+        1,
+        iteron_tunables::param_integer(
+            "cli.session_view.max_sessions_per_page",
+            MAX_SESSIONS_PER_PAGE,
+        ),
+    );
     let metas: Vec<_> = iteron_record::list(runs_dir, tenant)
         .into_iter()
         .filter(|meta| {
@@ -334,7 +353,12 @@ pub(crate) fn read_transcript(
         let value = serde_json::to_value(&scrubbed)?;
         // Measure what the client will actually receive, not the in-memory event.
         let size = value.to_string().len();
-        if budget.saturating_add(size) > MAX_TRANSCRIPT_BYTES {
+        if budget.saturating_add(size)
+            > iteron_tunables::param_integer(
+                "cli.session_view.max_transcript_bytes",
+                MAX_TRANSCRIPT_BYTES,
+            )
+        {
             truncated = true;
             break;
         }
@@ -359,7 +383,16 @@ pub(crate) fn read_transcript_page(
     cursor: Option<&str>,
     schema_version: u32,
 ) -> anyhow::Result<SessionTranscriptPage> {
-    read_transcript_page_with_limit(runs_dir, run, cursor, schema_version, MAX_TRANSCRIPT_BYTES)
+    read_transcript_page_with_limit(
+        runs_dir,
+        run,
+        cursor,
+        schema_version,
+        iteron_tunables::param_integer(
+            "cli.session_view.max_transcript_bytes",
+            MAX_TRANSCRIPT_BYTES,
+        ),
+    )
 }
 
 fn read_transcript_page_with_limit(

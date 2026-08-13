@@ -99,6 +99,13 @@ const SQ_ENTRY_OVERHEAD_BYTES: usize = 1024;
 /// Bytes reserved for a full [`SQ_CAPACITY`] burst of small control operations.
 const SQ_CONTROL_RESERVE_BYTES: usize = SQ_CAPACITY * SQ_ENTRY_OVERHEAD_BYTES;
 
+fn sq_control_reserve_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.app_server.sq_control_reserve_bytes",
+        SQ_CONTROL_RESERVE_BYTES,
+    )
+}
+
 /// Total heap budget for submissions waiting on the in-process SQ.
 ///
 /// This admits one maximum legal multimodal submission (1 MiB text plus 32 MiB of encoded image
@@ -109,6 +116,17 @@ pub(crate) const SQ_BYTE_CAPACITY: usize = SQ_ENTRY_OVERHEAD_BYTES
     + iteron_protocol::task::MAX_TASK_TEXT_BYTES
     + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
     + SQ_CONTROL_RESERVE_BYTES;
+
+fn sq_byte_capacity() -> usize {
+    let derived = iteron_tunables::param_integer(
+        "cli.app_server.sq_entry_overhead_bytes",
+        SQ_ENTRY_OVERHEAD_BYTES,
+    )
+    .saturating_add(iteron_protocol::task::MAX_TASK_TEXT_BYTES)
+    .saturating_add(iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES)
+    .saturating_add(sq_control_reserve_bytes());
+    iteron_tunables::param_integer("cli.app_server.sq_byte_capacity", derived)
+}
 
 /// Event-queue depth.
 ///
@@ -610,7 +628,11 @@ impl SubmissionDeduplicator {
         if !self.live.insert(id.0) {
             return SubmissionIdentityAdmission::Duplicate;
         }
-        if self.live.len() > SUBMISSION_DEDUP_WINDOW
+        if self.live.len()
+            > iteron_tunables::param_integer(
+                "cli.app_server.submission_dedup_window",
+                SUBMISSION_DEDUP_WINDOW,
+            )
             && let Some(oldest) = self.live.pop_first()
         {
             self.retired_through = self.retired_through.max(oldest);
@@ -937,7 +959,11 @@ fn submission_weight(op: &Op) -> usize {
             0
         }
     };
-    SQ_ENTRY_OVERHEAD_BYTES.saturating_add(variable_bytes)
+    iteron_tunables::param_integer(
+        "cli.app_server.sq_entry_overhead_bytes",
+        SQ_ENTRY_OVERHEAD_BYTES,
+    )
+    .saturating_add(variable_bytes)
 }
 
 /// The frontend's end of the wire: a client to submit through and a queue to read.
@@ -1243,7 +1269,11 @@ impl EventPublisher {
                 LifecyclePayload::default(),
             );
         }
-        if self.workflow_phases.len() < MAX_TRACKED_WORKFLOW_PHASES
+        if self.workflow_phases.len()
+            < iteron_tunables::param_integer(
+                "cli.app_server.max_tracked_workflow_phases",
+                MAX_TRACKED_WORKFLOW_PHASES,
+            )
             || self.workflow_phases.contains_key(workflow_id)
         {
             self.workflow_phases
@@ -2715,7 +2745,13 @@ impl AppServer {
             .unwrap_or(SessionLifecycleState::Stopping);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
         let mut report = workflows
-            .shutdown(&mut settled_rx, crate::workflow::SHUTDOWN_GRACE)
+            .shutdown(
+                &mut settled_rx,
+                iteron_tunables::param_duration(
+                    "cli.workflow.shutdown_grace",
+                    crate::workflow::SHUTDOWN_GRACE,
+                ),
+            )
             .await;
         report
             .lines
@@ -2778,9 +2814,15 @@ impl AppServer {
         debug_assert!(session_lifecycle.is_terminal());
         events.record_lifecycle("session.stopped", None, None, LifecyclePayload::default());
         drop(events.lifecycle_hooks.take());
-        if tokio::time::timeout(LIFECYCLE_HOOK_DRAIN_GRACE, &mut lifecycle_hook_task)
-            .await
-            .is_err()
+        if tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "cli.app_server.lifecycle_hook_drain_grace",
+                LIFECYCLE_HOOK_DRAIN_GRACE,
+            ),
+            &mut lifecycle_hook_task,
+        )
+        .await
+        .is_err()
         {
             lifecycle_hook_task.abort();
             let _ = lifecycle_hook_task.await;

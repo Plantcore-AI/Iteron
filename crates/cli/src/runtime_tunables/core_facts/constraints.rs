@@ -218,7 +218,10 @@ fn add_token_constraints(
     }
     // Compaction is a local context operation. Parent tokens bound both its output and its local
     // reasoning effort; provider reasoning capability only controls outbound serialization.
-    let parent_token_ceiling = cap.unwrap_or(UNBOUNDED_PARENT_TOKEN_CEILING);
+    let parent_token_ceiling = cap.unwrap_or(iteron_tunables::param_integer(
+        "cli.runtime_tunables.core_facts.constraints.unbounded_parent_token_ceiling",
+        UNBOUNDED_PARENT_TOKEN_CEILING,
+    ));
     upper(
         builder,
         "summary_profile",

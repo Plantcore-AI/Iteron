@@ -603,10 +603,12 @@ impl McpClient {
         }
         McpToolOutcome::Completed {
             content: output,
-            is_error: result
-                .get("isError")
-                .and_then(Value::as_bool)
-                .unwrap_or(TOOL_RESULT_IS_ERROR_DEFAULT),
+            is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(
+                iteron_tunables::param_bool(
+                    "mcp.client.tool_result_is_error_default",
+                    TOOL_RESULT_IS_ERROR_DEFAULT,
+                ),
+            ),
             evidence,
         }
     }

@@ -17,8 +17,14 @@ impl Default for ResponseLimits {
     fn default() -> Self {
         Self {
             frame_bytes: MAX_FRAME_BYTES,
-            aggregate_bytes: MAX_RESPONSE_BYTES,
-            frames: MAX_RESPONSE_FRAMES,
+            aggregate_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_response_bytes",
+                MAX_RESPONSE_BYTES,
+            ),
+            frames: iteron_tunables::param_integer(
+                "mcp.lib.max_response_frames",
+                MAX_RESPONSE_FRAMES,
+            ),
         }
     }
 }
@@ -30,7 +36,10 @@ pub(super) async fn read_frame<R>(reader: &mut R, limit: usize) -> Result<Option
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut frame = Vec::with_capacity(limit.min(READ_BUFFER_BYTES));
+    let mut frame = Vec::with_capacity(limit.min(iteron_tunables::param_integer(
+        "mcp.client.transport.read_buffer_bytes",
+        READ_BUFFER_BYTES,
+    )));
     loop {
         let available = reader
             .fill_buf()

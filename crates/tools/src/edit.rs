@@ -153,6 +153,13 @@ fn plan_normalized_edit(
     }
 
     let prefix = normalized_prefix_table(&old_lines);
+    let max_candidate_checks = iteron_tunables::param_usize(
+        "tools.edit.max_normalized_candidate_checks",
+        iteron_tunables::param_integer(
+            "tools.edit.max_normalized_candidate_checks",
+            MAX_NORMALIZED_CANDIDATE_CHECKS,
+        ),
+    );
     let mut prefix_len = 0usize;
     let mut candidate_checks = 0usize;
     let mut unique_start = None;
@@ -169,7 +176,7 @@ fn plan_normalized_edit(
 
         let start = line_index + 1 - old_lines.len();
         candidate_checks += 1;
-        if candidate_checks > MAX_NORMALIZED_CANDIDATE_CHECKS {
+        if candidate_checks > max_candidate_checks {
             return Err(UniqueEditError::NormalizationLimit(
                 "candidate verification exceeds its bounded work limit",
             ));
@@ -202,8 +209,10 @@ fn normalized_lines(text: &str) -> Result<Vec<NormalizedLine>, UniqueEditError> 
     let bytes = text.as_bytes();
     let mut lines = Vec::new();
     let mut start = 0usize;
+    let max_normalized_lines =
+        iteron_tunables::param_usize("tools.edit.max_normalized_lines", MAX_NORMALIZED_LINES);
     while start < bytes.len() {
-        if lines.len() == MAX_NORMALIZED_LINES {
+        if lines.len() == max_normalized_lines {
             return Err(UniqueEditError::NormalizationLimit(
                 "line count exceeds 262144",
             ));
@@ -393,17 +402,22 @@ pub(crate) async fn edit_workspace_file_with_hook<F>(
 where
     F: FnOnce(&std::path::Path),
 {
-    if path.is_empty() || path.len() > MAX_EDIT_PATH_BYTES {
+    if path.is_empty()
+        || path.len()
+            > iteron_tunables::param_integer("tools.edit.max_edit_path_bytes", MAX_EDIT_PATH_BYTES)
+    {
         return Err(format!(
             "edit path must contain 1..={MAX_EDIT_PATH_BYTES} bytes"
         ));
     }
+    let max_edit_input_bytes =
+        iteron_tunables::param_usize("tools.edit.max_edit_input_bytes", MAX_EDIT_INPUT_BYTES);
     if old
         .len()
         .checked_add(new.len())
-        .is_none_or(|bytes| bytes > MAX_EDIT_INPUT_BYTES)
+        .is_none_or(|bytes| bytes > max_edit_input_bytes)
     {
-        return Err(format!("edit input exceeds {MAX_EDIT_INPUT_BYTES} bytes"));
+        return Err(format!("edit input exceeds {max_edit_input_bytes} bytes"));
     }
 
     let target = resolve_in_root(root, path)?;

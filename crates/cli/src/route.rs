@@ -206,13 +206,19 @@ fn bounded_status_text(value: &str) -> String {
     let mut output = value
         .chars()
         .filter(|character| !character.is_control())
-        .take(MAX_STATUS_METADATA_CHARS)
+        .take(iteron_tunables::param_integer(
+            "cli.route.max_status_metadata_chars",
+            MAX_STATUS_METADATA_CHARS,
+        ))
         .collect::<String>();
     if value
         .chars()
         .filter(|character| !character.is_control())
         .count()
-        > MAX_STATUS_METADATA_CHARS
+        > iteron_tunables::param_integer(
+            "cli.route.max_status_metadata_chars",
+            MAX_STATUS_METADATA_CHARS,
+        )
     {
         output.push('…');
     }

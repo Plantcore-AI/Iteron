@@ -159,12 +159,50 @@ impl std::fmt::Display for CoverageError {
 
 impl std::error::Error for CoverageError {}
 
+/// The built-in instruction that merges child results: the contract the single writer reads under
+/// the ordered bundle. Addressable as the `prompt/reduce@v1` artifact.
+///
+/// This is model-visible text and only that. Replacing it changes what the writer reads and
+/// nothing about the join/reduce physics above — coverage is still checked, ordering is still by
+/// declaration index, and FAILED/SKIPPED sections are still labelled non-evidence by
+/// [`SummaryOutcome::label`], which no artifact can reach.
+const WRITER_VERIFICATION_CONTRACT: &str = "\nWriter verification contract:\n\
+     - Treat only DONE sections as candidate evidence; FAILED and SKIPPED sections are coverage \
+     diagnostics, never evidence.\n\
+     - Independently verify every adopted material claim against the current repository, using \
+     exact file:line references or named symbols.\n\
+     - Resolve conflicts explicitly, keep inference labelled, and report evidence gaps instead \
+     of converting speculation into fact.\n\
+     - Synthesize a plan and implement the operator task yourself. You are the only writer.\n";
+
+/// The writer contract, after any operator-supplied artifact replacement. With no profile, or a
+/// profile that carries no `prompt/reduce@v1` entry, this is the compiled constant verbatim.
+fn writer_verification_contract(profile: Option<&iteron_tunables::ProfileDocument>) -> &str {
+    profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/reduce@v1"))
+        .unwrap_or(iteron_tunables::param_str(
+            "agents.reduce.writer_verification_contract",
+            WRITER_VERIFICATION_CONTRACT,
+        ))
+}
+
 /// Verify exact declaration coverage before rendering anything the writer can consume. Missing,
 /// duplicate, unassigned, or relabelled summaries fail closed; a diagnostic cannot silently shift
 /// into another investigator's evidence slot.
+///
+/// Compiled-default entry point: identical to [`reduce_checked_with_profile`] with no profile.
 pub fn reduce_checked(
     expected: &[CoverageExpectation],
     results: Vec<Summary>,
+) -> Result<OrderedBundle, CoverageError> {
+    reduce_checked_with_profile(expected, results, None)
+}
+
+/// As [`reduce_checked`], with the operator profile that may replace `prompt/reduce@v1`.
+pub fn reduce_checked_with_profile(
+    expected: &[CoverageExpectation],
+    results: Vec<Summary>,
+    profile: Option<&iteron_tunables::ProfileDocument>,
 ) -> Result<OrderedBundle, CoverageError> {
     let policy = join_reduce_policy();
     let mut declarations = BTreeMap::new();
@@ -194,13 +232,23 @@ pub fn reduce_checked(
     {
         return Err(CoverageError::MissingSummary(*missing));
     }
-    Ok(reduce(results))
+    Ok(reduce_with_profile(results, profile))
 }
 
 /// Reduce fan results into the ordered bundle. Pure and deterministic: results may arrive in any
 /// order, but the output is always ordered by `idx`. The trailing line names the single-writer
 /// contract explicitly (ADR-001) so the writer knows it is synthesizing, not delegating further.
-pub fn reduce(mut results: Vec<Summary>) -> OrderedBundle {
+///
+/// Compiled-default entry point: identical to [`reduce_with_profile`] with no profile.
+pub fn reduce(results: Vec<Summary>) -> OrderedBundle {
+    reduce_with_profile(results, None)
+}
+
+/// As [`reduce`], with the operator profile that may replace `prompt/reduce@v1`.
+pub fn reduce_with_profile(
+    mut results: Vec<Summary>,
+    profile: Option<&iteron_tunables::ProfileDocument>,
+) -> OrderedBundle {
     let policy = join_reduce_policy();
     // Declaration order, never completion order. Secondary keys make malformed duplicate indices
     // deterministic across input permutations instead of inheriting arrival order.
@@ -246,16 +294,7 @@ pub fn reduce(mut results: Vec<Summary>) -> OrderedBundle {
             s.text.trim()
         ));
     }
-    text.push_str(
-        "\nWriter verification contract:\n\
-         - Treat only DONE sections as candidate evidence; FAILED and SKIPPED sections are coverage \
-         diagnostics, never evidence.\n\
-         - Independently verify every adopted material claim against the current repository, using \
-         exact file:line references or named symbols.\n\
-         - Resolve conflicts explicitly, keep inference labelled, and report evidence gaps instead \
-         of converting speculation into fact.\n\
-         - Synthesize a plan and implement the operator task yourself. You are the only writer.\n",
-    );
+    text.push_str(writer_verification_contract(profile));
     OrderedBundle {
         text,
         done,

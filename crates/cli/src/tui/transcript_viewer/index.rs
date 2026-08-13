@@ -99,7 +99,10 @@ impl Viewer {
             .map(IndexJob::into_reusable)
             .unwrap_or_default();
         reusable.extend(self.entries.drain(..).map(|entry| (entry.id, entry)));
-        let start = blocks.len().saturating_sub(MAX_INDEX_ENTRIES);
+        let start = blocks.len().saturating_sub(iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_index_entries",
+            MAX_INDEX_ENTRIES,
+        ));
         let target = blocks[start..].to_vec();
         let retained_revisions = target
             .iter()
@@ -118,7 +121,10 @@ impl Viewer {
             reusable,
             newest_first: Vec::with_capacity(total),
             next: total,
-            remaining_bytes: MAX_INDEX_TOTAL_BYTES,
+            remaining_bytes: iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_index_total_bytes",
+                MAX_INDEX_TOTAL_BYTES,
+            ),
         });
         self.authority_revision = None;
         self.search_job = None;
@@ -221,14 +227,22 @@ impl Viewer {
         }
 
         if let Some(job) = self.search_job.as_mut() {
-            for _ in 0..MAX_SEARCH_ENTRIES_PER_TICK {
+            for _ in 0..iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_search_entries_per_tick",
+                MAX_SEARCH_ENTRIES_PER_TICK,
+            ) {
                 if job.cursor == self.entries.len() || job.truncated {
                     break;
                 }
                 let entry = &self.entries[job.cursor];
                 job.cursor += 1;
                 if entry.complete && entry.folded.contains(&job.folded_query) {
-                    if job.results.len() == MAX_RESULTS {
+                    if job.results.len()
+                        == iteron_tunables::param_integer(
+                            "cli.tui.transcript_viewer.max_results",
+                            MAX_RESULTS,
+                        )
+                    {
                         job.truncated = true;
                     } else {
                         job.results.push(entry.id);
@@ -403,7 +417,10 @@ impl Viewer {
             self.result_position = self
                 .selected_id
                 .and_then(|selected| self.results.iter().position(|id| *id == selected))
-                .unwrap_or(RESULT_RESET_POSITION);
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.tui.transcript_viewer.index.result_reset_position",
+                    RESULT_RESET_POSITION,
+                ));
             self.selected_id = self.results.get(self.result_position).copied();
         }
         if let Some(authority_revision) = self.authority_revision {

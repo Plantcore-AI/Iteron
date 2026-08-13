@@ -63,7 +63,12 @@ pub(super) fn publish_locked(
             surface,
         };
         let bytes = serde_json::to_vec(&edge)?;
-        if bytes.len() > MAX_LINEAGE_EDGE_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "record.content_store.model.max_lineage_edge_bytes",
+                MAX_LINEAGE_EDGE_BYTES,
+            )
+        {
             return Err(ContentStoreError::Corrupt);
         }
         let id = hex::encode(Sha256::digest(&bytes));
@@ -156,7 +161,10 @@ pub(super) fn remove_for_reference_locked(
     }
     remove_empty_dir(&to_dir)?;
     u32::try_from(removed).map_err(|_| ContentStoreError::ReferenceBound {
-        max: MAX_CONTENT_LINEAGE_EDGES,
+        max: iteron_tunables::param_integer(
+            "record.content_store.model.max_content_lineage_edges",
+            MAX_CONTENT_LINEAGE_EDGES,
+        ),
     })
 }
 
@@ -164,7 +172,13 @@ fn ensure_index_path(path: &Path, bytes: &[u8]) -> Result<bool, ContentStoreErro
     let dir = path.parent().ok_or(ContentStoreError::Corrupt)?;
     std::fs::create_dir_all(dir)?;
     if path.exists() {
-        let existing = read_limited(path, MAX_LINEAGE_EDGE_BYTES)?;
+        let existing = read_limited(
+            path,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_lineage_edge_bytes",
+                MAX_LINEAGE_EDGE_BYTES,
+            ),
+        )?;
         return if existing == bytes {
             Ok(false)
         } else {
@@ -172,11 +186,24 @@ fn ensure_index_path(path: &Path, bytes: &[u8]) -> Result<bool, ContentStoreErro
         };
     }
     let count = std::fs::read_dir(dir)?
-        .take(MAX_CONTENT_LINEAGE_EDGES + 1)
+        .take(
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_content_lineage_edges",
+                MAX_CONTENT_LINEAGE_EDGES,
+            ) + 1,
+        )
         .count();
-    if count >= MAX_CONTENT_LINEAGE_EDGES {
+    if count
+        >= iteron_tunables::param_integer(
+            "record.content_store.model.max_content_lineage_edges",
+            MAX_CONTENT_LINEAGE_EDGES,
+        )
+    {
         return Err(ContentStoreError::ReferenceBound {
-            max: MAX_CONTENT_LINEAGE_EDGES,
+            max: iteron_tunables::param_integer(
+                "record.content_store.model.max_content_lineage_edges",
+                MAX_CONTENT_LINEAGE_EDGES,
+            ),
         });
     }
     #[cfg(test)]
@@ -200,7 +227,14 @@ fn preflight_capacity(prepared: &[(PathBuf, PathBuf, Vec<u8>)]) -> Result<(), Co
     for (from, to, bytes) in prepared {
         for path in [from, to] {
             if path.exists() {
-                if read_limited(path, MAX_LINEAGE_EDGE_BYTES)? != *bytes {
+                if read_limited(
+                    path,
+                    iteron_tunables::param_integer(
+                        "record.content_store.model.max_lineage_edge_bytes",
+                        MAX_LINEAGE_EDGE_BYTES,
+                    ),
+                )? != *bytes
+                {
                     return Err(ContentStoreError::Corrupt);
                 }
                 continue;
@@ -214,13 +248,28 @@ fn preflight_capacity(prepared: &[(PathBuf, PathBuf, Vec<u8>)]) -> Result<(), Co
     }
     for (dir, adding) in additions {
         let current = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries.take(MAX_CONTENT_LINEAGE_EDGES + 1).count(),
+            Ok(entries) => entries
+                .take(
+                    iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_lineage_edges",
+                        MAX_CONTENT_LINEAGE_EDGES,
+                    ) + 1,
+                )
+                .count(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error.into()),
         };
-        if current.saturating_add(adding) > MAX_CONTENT_LINEAGE_EDGES {
+        if current.saturating_add(adding)
+            > iteron_tunables::param_integer(
+                "record.content_store.model.max_content_lineage_edges",
+                MAX_CONTENT_LINEAGE_EDGES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_LINEAGE_EDGES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_lineage_edges",
+                    MAX_CONTENT_LINEAGE_EDGES,
+                ),
             });
         }
     }
@@ -244,14 +293,32 @@ fn read_index(
         Err(error) => return Err(error.into()),
     };
     let mut edges = Vec::new();
-    for entry in entries.take(MAX_CONTENT_LINEAGE_EDGES + 1) {
-        if edges.len() == MAX_CONTENT_LINEAGE_EDGES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_lineage_edges",
+            MAX_CONTENT_LINEAGE_EDGES,
+        ) + 1,
+    ) {
+        if edges.len()
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_lineage_edges",
+                MAX_CONTENT_LINEAGE_EDGES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_LINEAGE_EDGES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_lineage_edges",
+                    MAX_CONTENT_LINEAGE_EDGES,
+                ),
             });
         }
-        let edge: LineageEdge =
-            serde_json::from_slice(&read_limited(&entry?.path(), MAX_LINEAGE_EDGE_BYTES)?)?;
+        let edge: LineageEdge = serde_json::from_slice(&read_limited(
+            &entry?.path(),
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_lineage_edge_bytes",
+                MAX_LINEAGE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION
             || match direction {
                 Direction::From => edge.source_digest != *expected,

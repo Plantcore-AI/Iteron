@@ -119,14 +119,19 @@ pub(super) fn apply_event(
 
 pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
     let bytes = serde_json::to_vec(spec).map_err(|error| TunerError::Encode(error.to_string()))?;
-    if bytes.len() > MAX_SPEC_BYTES
+    if bytes.len() > iteron_tunables::param_integer("eval.tuner.max_spec_bytes", MAX_SPEC_BYTES)
         || spec.schema_version != 1
         || spec.experiment_id.trim().is_empty()
         || spec.experiment_id.len() > 128
         || !valid_digest(&spec.train_dataset_digest)
         || spec.tunables_registry_digest != iteron_tunables::REGISTRY_DIGEST_SHA256
-        || !(1..=MAX_TUNER_TRIALS).contains(&spec.max_trials)
-        || !(1..=MAX_TUNER_CONCURRENCY).contains(&spec.max_concurrency)
+        || !(1..=iteron_tunables::param_integer("eval.tuner.max_tuner_trials", MAX_TUNER_TRIALS))
+            .contains(&spec.max_trials)
+        || !(1..=iteron_tunables::param_integer(
+            "eval.tuner.max_tuner_concurrency",
+            MAX_TUNER_CONCURRENCY,
+        ))
+            .contains(&spec.max_concurrency)
         || spec.max_concurrency > spec.max_trials
         || !(2..=8).contains(&spec.reduction_factor)
         || spec.round_budgets.is_empty()
@@ -134,7 +139,8 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         || spec.round_budgets.contains(&0)
         || !spec.round_budgets.windows(2).all(|pair| pair[0] < pair[1])
         || spec.candidates.is_empty()
-        || spec.candidates.len() > MAX_CANDIDATES
+        || spec.candidates.len()
+            > iteron_tunables::param_integer("eval.tuner.max_candidates", MAX_CANDIDATES)
     {
         return Err(TunerError::InvalidSpec(
             "bounded spec invariant failed".into(),

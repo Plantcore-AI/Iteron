@@ -11,8 +11,8 @@ mod input;
 
 use self::auth::BearerToken;
 use self::framing::{
-    EncodedServerFrame, MAX_IN_FLIGHT_SERVER_BYTES, MAX_PINNED_REPLAY_BYTES, ReplayRing,
-    ServerFrame, send_encoded_frame, send_frame,
+    EncodedServerFrame, ReplayRing, ServerFrame, max_in_flight_server_bytes,
+    max_pinned_replay_bytes, send_encoded_frame, send_frame,
 };
 use self::input::{
     ClientFrame, FrameBytes, FrameReader, MAX_CLIENT_FRAME_BYTES, MAX_PENDING_CLIENT_BYTES,
@@ -197,17 +197,20 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
         "authentication": "stdin_bearer_hello",
     }));
 
-    let (live, _) = broadcast::channel(LIVE_CAPACITY);
+    let (live, _) = broadcast::channel(iteron_tunables::param_integer(
+        "cli.tui.headless.live_capacity",
+        LIVE_CAPACITY,
+    ));
     let shared = Arc::new(Shared {
         client: handle.client,
         control: handle.control.downgrade(),
         auth_token,
         ring: Mutex::new(ReplayRing::production()),
         live,
-        outbound_budget: Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES)),
+        outbound_budget: Arc::new(Semaphore::new(max_in_flight_server_bytes())),
         frame_preparers: Arc::new(Semaphore::new(1)),
         fragment_encoders: Arc::new(Semaphore::new(1)),
-        replay_retention: Arc::new(Semaphore::new(MAX_PINNED_REPLAY_BYTES)),
+        replay_retention: Arc::new(Semaphore::new(max_pinned_replay_bytes())),
         rollout_replays: Arc::new(Semaphore::new(1)),
         cursor: AtomicU64::new(0),
         client_failures: AtomicU64::new(0),
@@ -255,8 +258,14 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
         }
     });
 
-    let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let frame_budget = Arc::new(Semaphore::new(MAX_PENDING_CLIENT_BYTES));
+    let permits = Arc::new(Semaphore::new(iteron_tunables::param_integer(
+        "cli.tui.headless.max_connections",
+        MAX_CONNECTIONS,
+    )));
+    let frame_budget = Arc::new(Semaphore::new(iteron_tunables::param_integer(
+        "cli.tui.headless.input.max_pending_client_bytes",
+        MAX_PENDING_CLIENT_BYTES,
+    )));
     let mut connections = JoinSet::new();
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -350,10 +359,13 @@ async fn serve_connection(
 ) -> Result<()> {
     let (reader, mut writer) = socket.into_split();
     let mut reader = FrameReader::new(reader, frame_budget);
-    let hello = tokio::time::timeout(HANDSHAKE_TIMEOUT, reader.next_frame())
-        .await
-        .context("headless handshake timed out")??
-        .context("client disconnected before handshake")?;
+    let hello = tokio::time::timeout(
+        iteron_tunables::param_duration("cli.tui.headless.handshake_timeout", HANDSHAKE_TIMEOUT),
+        reader.next_frame(),
+    )
+    .await
+    .context("headless handshake timed out")??
+    .context("client disconnected before handshake")?;
     let ParsedClientFrame {
         frame: hello,
         input_guard: hello_input_guard,
@@ -387,7 +399,10 @@ async fn serve_connection(
         .await?;
         return Ok(());
     }
-    reader.set_max_frame_bytes(MAX_CLIENT_FRAME_BYTES);
+    reader.set_max_frame_bytes(iteron_tunables::param_integer(
+        "cli.tui.headless.input.max_client_frame_bytes",
+        MAX_CLIENT_FRAME_BYTES,
+    ));
 
     let mut live = shared.live.subscribe();
     let (cursor, requested, fallback, lost_result, oldest) = {
@@ -494,20 +509,24 @@ async fn serve_connection(
         delivered = expected;
     }
 
-    let mut idle_deadline = tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
+    let mut idle_deadline = tokio::time::Instant::now()
+        + iteron_tunables::param_duration(
+            "cli.tui.headless.authenticated_idle_timeout",
+            AUTHENTICATED_IDLE_TIMEOUT,
+        );
     let mut pending_control: Option<control::Pending> = None;
     loop {
         tokio::select! {
             inbound = tokio::time::timeout_at(
                 idle_deadline,
-                reader.next_frame_with_partial_timeout(PARTIAL_FRAME_TIMEOUT),
+                reader.next_frame_with_partial_timeout(iteron_tunables::param_duration("cli.tui.headless.partial_frame_timeout", PARTIAL_FRAME_TIMEOUT)),
             ), if pending_control.is_none() => {
                 let Some(bytes) = inbound
                     .context("authenticated headless client idle timeout")??
                 else {
                     return Ok(());
                 };
-                idle_deadline = tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
+                idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
                 let ParsedClientFrame { frame, input_guard } =
                     parse_client_frame(bytes).await?;
                 match frame {
@@ -606,7 +625,7 @@ async fn serve_connection(
                     },
                 )
                 .await?;
-                idle_deadline = tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
+                idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
             }
             outbound = live.recv() => {
                 match outbound {
@@ -643,7 +662,7 @@ async fn serve_connection(
                         .await?;
                         delivered = seq;
                         idle_deadline =
-                            tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
+                            tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         send_frame(
@@ -695,7 +714,10 @@ async fn send_rollout<W: AsyncWrite + Unpin>(
     path: &Path,
 ) -> Result<()> {
     tokio::time::timeout(
-        ROLLOUT_REPLAY_TIMEOUT,
+        iteron_tunables::param_duration(
+            "cli.tui.headless.rollout_replay_timeout",
+            ROLLOUT_REPLAY_TIMEOUT,
+        ),
         send_rollout_inner(
             writer,
             outbound_budget,

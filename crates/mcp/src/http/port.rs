@@ -36,12 +36,19 @@ impl McpSessionId {
     /// containing CR, LF, or NUL is header injection performed by the peer.
     pub fn parse(value: &str) -> Result<Self, McpError> {
         if value.is_empty()
-            || value.len() > MAX_MCP_SESSION_ID_BYTES
+            || value.len()
+                > iteron_tunables::param_integer(
+                    "mcp.http.port.max_mcp_session_id_bytes",
+                    MAX_MCP_SESSION_ID_BYTES,
+                )
             || !value.bytes().all(|byte| byte.is_ascii_graphic())
         {
             return Err(McpError::InvalidEndpoint {
                 field: "session_id",
-                limit: MAX_MCP_SESSION_ID_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.http.port.max_mcp_session_id_bytes",
+                    MAX_MCP_SESSION_ID_BYTES,
+                ),
             });
         }
         Ok(Self(value.to_owned()))
@@ -64,14 +71,21 @@ impl McpHeaderValue {
     pub fn new(value: impl Into<String>) -> Result<Self, McpError> {
         let value = value.into();
         if value.is_empty()
-            || value.len() > MAX_MCP_HEADER_VALUE_BYTES
+            || value.len()
+                > iteron_tunables::param_integer(
+                    "mcp.http.port.max_mcp_header_value_bytes",
+                    MAX_MCP_HEADER_VALUE_BYTES,
+                )
             || !value
                 .bytes()
                 .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte))
         {
             return Err(McpError::InvalidEndpoint {
                 field: "header_value",
-                limit: MAX_MCP_HEADER_VALUE_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.http.port.max_mcp_header_value_bytes",
+                    MAX_MCP_HEADER_VALUE_BYTES,
+                ),
             });
         }
         Ok(Self(value))
@@ -200,7 +214,13 @@ pub(crate) fn build_post_with_version(
         });
     }
     let mut headers = vec![
-        ("accept".to_owned(), McpHeaderValue::new(MCP_HTTP_ACCEPT)?),
+        (
+            "accept".to_owned(),
+            McpHeaderValue::new(iteron_tunables::param_str(
+                "mcp.http.port.mcp_http_accept",
+                MCP_HTTP_ACCEPT,
+            ))?,
+        ),
         (
             "content-type".to_owned(),
             McpHeaderValue::new(MCP_JSON_MEDIA_TYPE)?,

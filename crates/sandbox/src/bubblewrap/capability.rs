@@ -51,9 +51,15 @@ pub(super) fn cached_probe(
     let ttl = if entry.usable {
         // Host policy (AppArmor, user-namespace controls) can revoke capability without replacing
         // the binary, so even a fingerprint-matched success receives a bounded lifetime.
-        BWRAP_PROBE_POSITIVE_TTL
+        iteron_tunables::param_duration(
+            "sandbox.bubblewrap.capability.bwrap_probe_positive_ttl",
+            BWRAP_PROBE_POSITIVE_TTL,
+        )
     } else {
-        BWRAP_PROBE_NEGATIVE_TTL
+        iteron_tunables::param_duration(
+            "sandbox.bubblewrap.capability.bwrap_probe_negative_ttl",
+            BWRAP_PROBE_NEGATIVE_TTL,
+        )
     };
     (now.duration_since(entry.at) < ttl).then_some(entry.usable)
 }
@@ -151,7 +157,13 @@ fn probe_binary(binary: &Path) -> bool {
     let Ok(workspace) = File::open("/tmp") else {
         return false;
     };
-    let Ok(inherited) = duplicate_for_child(&workspace, CHILD_INHERITED_FD_FLOOR) else {
+    let Ok(inherited) = duplicate_for_child(
+        &workspace,
+        iteron_tunables::param_integer(
+            "sandbox.bubblewrap.capability.child_inherited_fd_floor",
+            CHILD_INHERITED_FD_FLOOR,
+        ),
+    ) else {
         return false;
     };
     let descriptor = inherited.as_raw_fd();
@@ -168,21 +180,52 @@ fn probe_binary(binary: &Path) -> bool {
         return false;
     };
     let started = Instant::now();
-    let run_deadline = started + BWRAP_PROBE_RUN_TIMEOUT;
-    let total_deadline = run_deadline + BWRAP_PROBE_REAP_TIMEOUT;
-    debug_assert_eq!(total_deadline, started + BWRAP_PROBE_TIMEOUT);
-    for _ in 0..BWRAP_PROBE_MAX_POLLS {
+    let run_deadline = started
+        + iteron_tunables::param_duration(
+            "sandbox.bubblewrap.capability.bwrap_probe_run_timeout",
+            BWRAP_PROBE_RUN_TIMEOUT,
+        );
+    let total_deadline = run_deadline
+        + iteron_tunables::param_duration(
+            "sandbox.bubblewrap.capability.bwrap_probe_reap_timeout",
+            BWRAP_PROBE_REAP_TIMEOUT,
+        );
+    debug_assert_eq!(
+        total_deadline,
+        started
+            + iteron_tunables::param_duration(
+                "sandbox.bubblewrap.capability.bwrap_probe_timeout",
+                BWRAP_PROBE_TIMEOUT
+            )
+    );
+    for _ in 0..iteron_tunables::param_integer(
+        "sandbox.bubblewrap.capability.bwrap_probe_max_polls",
+        BWRAP_PROBE_MAX_POLLS,
+    ) {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < run_deadline => std::thread::sleep(BWRAP_PROBE_POLL),
+            Ok(None) if Instant::now() < run_deadline => {
+                std::thread::sleep(iteron_tunables::param_duration(
+                    "sandbox.bubblewrap.capability.bwrap_probe_poll",
+                    BWRAP_PROBE_POLL,
+                ))
+            }
             Ok(None) | Err(_) => break,
         }
     }
     let _ = child.kill();
-    for _ in 0..BWRAP_PROBE_REAP_POLLS {
+    for _ in 0..iteron_tunables::param_integer(
+        "sandbox.bubblewrap.capability.bwrap_probe_reap_polls",
+        BWRAP_PROBE_REAP_POLLS,
+    ) {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < total_deadline => std::thread::sleep(BWRAP_PROBE_POLL),
+            Ok(None) if Instant::now() < total_deadline => {
+                std::thread::sleep(iteron_tunables::param_duration(
+                    "sandbox.bubblewrap.capability.bwrap_probe_poll",
+                    BWRAP_PROBE_POLL,
+                ))
+            }
             Ok(None) | Err(_) => break,
         }
     }

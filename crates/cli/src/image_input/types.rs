@@ -133,7 +133,10 @@ impl SafeDisplayName {
     pub(crate) fn from_label(raw: &str) -> Self {
         let mut safe = String::new();
         let mut characters = raw.chars();
-        for character in characters.by_ref().take(MAX_DISPLAY_CHARS) {
+        for character in characters.by_ref().take(iteron_tunables::param_integer(
+            "cli.image_input.types.max_display_chars",
+            MAX_DISPLAY_CHARS,
+        )) {
             safe.push(if unsafe_display_character(character) {
                 '\u{fffd}'
             } else {

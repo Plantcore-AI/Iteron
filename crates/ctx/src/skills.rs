@@ -200,7 +200,10 @@ impl SkillCatalog {
         let raw = match read_bounded_utf8(
             operator_home,
             &config,
-            MAX_CODEX_CONFIG_BYTES,
+            iteron_tunables::param_integer(
+                "ctx.skills.max_codex_config_bytes",
+                MAX_CODEX_CONFIG_BYTES,
+            ),
             SourceScope::User,
         ) {
             Ok(Some(raw)) => raw,
@@ -249,7 +252,10 @@ impl SkillCatalog {
                     enabled = table
                         .get("enabled")
                         .and_then(toml::Value::as_bool)
-                        .unwrap_or(DEFAULT_CODEX_SKILL_ENABLED);
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "ctx.skills.default_codex_skill_enabled",
+                            DEFAULT_CODEX_SKILL_ENABLED,
+                        ));
                 }
             }
             enabled
@@ -262,7 +268,9 @@ impl SkillCatalog {
         } else {
             SourceScope::Repository
         };
-        let listing = match list_directory_bounded(root, dir, MAX_SKILL_DIRS, scope) {
+        let max_skill_dirs =
+            iteron_tunables::param_usize("ctx.skills.max_skill_dirs", MAX_SKILL_DIRS);
+        let listing = match list_directory_bounded(root, dir, max_skill_dirs, scope) {
             Ok(Some(listing)) => listing,
             Ok(None) => return,
             Err(error) => {
@@ -276,7 +284,7 @@ impl SkillCatalog {
         if listing.truncated {
             self.errors.push(SkillError {
                 source: dir.display().to_string(),
-                reason: format!("skill discovery truncated at {MAX_SKILL_DIRS} entries"),
+                reason: format!("skill discovery truncated at {max_skill_dirs} entries"),
             });
         }
         for entry in listing.entries {
@@ -304,7 +312,18 @@ impl SkillCatalog {
                 continue;
             }
             let skill_md = p.join("SKILL.md");
-            let raw = match read_bounded_utf8(root, &skill_md, MAX_SKILL_SOURCE_BYTES, scope) {
+            let raw = match read_bounded_utf8(
+                root,
+                &skill_md,
+                iteron_tunables::param_usize(
+                    "ctx.skills.max_skill_source_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.skills.max_skill_source_bytes",
+                        MAX_SKILL_SOURCE_BYTES,
+                    ),
+                ),
+                scope,
+            ) {
                 Ok(Some(raw)) => raw,
                 Ok(None) => continue,
                 Err(error) => {

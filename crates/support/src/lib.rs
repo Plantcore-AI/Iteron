@@ -61,7 +61,7 @@ pub enum BundleError {
 /// invalid one is a programming error worth surfacing, not untrusted input worth accommodating.
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_KEY_BYTES
+        && name.len() <= iteron_tunables::param_integer("support.lib.max_key_bytes", MAX_KEY_BYTES)
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
@@ -86,8 +86,9 @@ pub fn escape_value(value: &str) -> String {
             c => out.push(c),
         }
     }
-    if out.len() > MAX_VALUE_BYTES {
-        let mut end = MAX_VALUE_BYTES;
+    if out.len() > iteron_tunables::param_integer("support.lib.max_value_bytes", MAX_VALUE_BYTES) {
+        let mut end =
+            iteron_tunables::param_integer("support.lib.max_value_bytes", MAX_VALUE_BYTES);
         while end > 0 && !out.is_char_boundary(end) {
             end -= 1;
         }
@@ -126,7 +127,12 @@ impl Section {
                 key: key.to_owned(),
             });
         }
-        if self.entries.len() >= MAX_ENTRIES_PER_SECTION {
+        if self.entries.len()
+            >= iteron_tunables::param_integer(
+                "support.lib.max_entries_per_section",
+                MAX_ENTRIES_PER_SECTION,
+            )
+        {
             return Err(BundleError::TooManyEntries);
         }
         self.entries
@@ -169,7 +175,9 @@ impl Bundle {
                 name: name.to_owned(),
             });
         }
-        if self.sections.len() >= MAX_SECTIONS {
+        if self.sections.len()
+            >= iteron_tunables::param_integer("support.lib.max_sections", MAX_SECTIONS)
+        {
             return Err(BundleError::TooManySections);
         }
         self.sections.insert(name.to_owned(), section);

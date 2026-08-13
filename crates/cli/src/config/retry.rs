@@ -122,19 +122,32 @@ where
 }
 
 fn validate_policy(policy: BackoffPolicy) -> Result<(), String> {
-    if !(1..=MAX_RETRY_BASE_MS).contains(&policy.base_ms) {
+    if !(1..=iteron_tunables::param_integer(
+        "cli.config.retry.max_retry_base_ms",
+        MAX_RETRY_BASE_MS,
+    ))
+        .contains(&policy.base_ms)
+    {
         return Err(format!(
             "retry.base_ms must be in 1..={MAX_RETRY_BASE_MS}, got {}",
             policy.base_ms
         ));
     }
-    if !(policy.base_ms..=MAX_RETRY_CAP_MS).contains(&policy.cap_ms) {
+    if !(policy.base_ms
+        ..=iteron_tunables::param_integer("cli.config.retry.max_retry_cap_ms", MAX_RETRY_CAP_MS))
+        .contains(&policy.cap_ms)
+    {
         return Err(format!(
             "retry.cap_ms must be in base_ms..={MAX_RETRY_CAP_MS}, got {} with base_ms {}",
             policy.cap_ms, policy.base_ms
         ));
     }
-    if !(1..=MAX_RETRY_ATTEMPTS).contains(&policy.max_attempts) {
+    if !(1..=iteron_tunables::param_integer(
+        "cli.config.retry.max_retry_attempts",
+        MAX_RETRY_ATTEMPTS,
+    ))
+        .contains(&policy.max_attempts)
+    {
         return Err(format!(
             "retry.max_attempts must be in 1..={MAX_RETRY_ATTEMPTS}, got {}",
             policy.max_attempts

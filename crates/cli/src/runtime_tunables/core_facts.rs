@@ -509,12 +509,12 @@ fn add_internal_defaults(
             "request_output_cap",
             FixedAuthorityId::StrategyInvariant,
             int(i64v(
-                output_reserve.min(
-                    input
-                        .budget
-                        .max_tokens
-                        .unwrap_or(ABSENT_PARENT_TOKEN_CEILING),
-                ),
+                output_reserve.min(input.budget.max_tokens.unwrap_or(
+                    iteron_tunables::param_integer(
+                        "cli.runtime_tunables.core_facts.absent_parent_token_ceiling",
+                        ABSENT_PARENT_TOKEN_CEILING,
+                    ),
+                )),
                 "request_output_cap",
             )?),
         )?;
@@ -604,7 +604,13 @@ fn add_internal_defaults(
     builder.observe_default(
         "summary_profile",
         object([
-            ("max_output_tokens", int(SUMMARY_OUTPUT_TOKENS)),
+            (
+                "max_output_tokens",
+                int(iteron_tunables::param_integer(
+                    "cli.runtime_tunables.core_facts.summary_output_tokens",
+                    SUMMARY_OUTPUT_TOKENS,
+                )),
+            ),
             ("effort", en("low")),
             ("preserve_tool_evidence", boolv(true)),
         ]),
@@ -652,7 +658,13 @@ fn add_memory_defaults(
                 "instruction_bytes",
                 int(i64u(mem.instr_bytes, "memory_instructions")?),
             ),
-            ("fact_bytes", int(MEMORY_FACT_BYTES)),
+            (
+                "fact_bytes",
+                int(iteron_tunables::param_integer(
+                    "cli.runtime_tunables.core_facts.memory_fact_bytes",
+                    MEMORY_FACT_BYTES,
+                )),
+            ),
             ("total_bytes", int(i64u(mem.total, "memory_total")?)),
         ]),
     )?;
@@ -681,11 +693,21 @@ fn add_memory_defaults(
     ]);
     builder.observe_default("bm25", bm25.clone())?;
     builder.attest_fixed_authority("bm25", FixedAuthorityId::StrategyInvariant, bm25)?;
-    builder.observe_default("skill_listing_budget", int(SKILL_LISTING_BYTES))?;
+    builder.observe_default(
+        "skill_listing_budget",
+        int(iteron_tunables::param_integer(
+            "cli.runtime_tunables.core_facts.skill_listing_bytes",
+            SKILL_LISTING_BYTES,
+        )),
+    )?;
     builder.attest_fixed_authority(
         "skill_listing_budget",
         FixedAuthorityId::StrategyInvariant,
-        int(SKILL_LISTING_BYTES.min(i64::from(
+        int(iteron_tunables::param_integer(
+            "cli.runtime_tunables.core_facts.skill_listing_bytes",
+            SKILL_LISTING_BYTES,
+        )
+        .min(i64::from(
             iteron_ctx::ContextMaterializationPolicy::default().max_bytes,
         ))),
     )?;
@@ -697,7 +719,10 @@ pub(super) fn model_output_reserve(input: &CoreFactsInput<'_>) -> u64 {
         input
             .model_capabilities
             .max_output_tokens
-            .unwrap_or(UNKNOWN_MODEL_OUTPUT_TOKENS),
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
+                UNKNOWN_MODEL_OUTPUT_TOKENS,
+            )),
     )
 }
 

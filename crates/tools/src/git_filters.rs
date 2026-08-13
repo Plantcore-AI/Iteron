@@ -38,7 +38,17 @@ pub(crate) fn parse_filter_drivers(bytes: &[u8]) -> Result<Vec<String>, String> 
         let driver = key[..key.len() - entry.len() - 1].to_owned();
         if drivers.insert(driver.clone()) {
             driver_bytes = driver_bytes.saturating_add(driver.len());
-            if drivers.len() > MAX_FILTER_DRIVERS || driver_bytes > MAX_FILTER_DRIVER_BYTES {
+            if drivers.len()
+                > iteron_tunables::param_integer(
+                    "tools.git_filters.max_filter_drivers",
+                    MAX_FILTER_DRIVERS,
+                )
+                || driver_bytes
+                    > iteron_tunables::param_integer(
+                        "tools.git_filters.max_filter_driver_bytes",
+                        MAX_FILTER_DRIVER_BYTES,
+                    )
+            {
                 return Err(format!(
                     "Git filter config exceeds the defensive limit ({MAX_FILTER_DRIVERS} drivers, \
                      {MAX_FILTER_DRIVER_BYTES} key bytes)"
@@ -56,7 +66,16 @@ pub(crate) async fn discover_filter_drivers(
     git: &ResolvedGit,
     repository: &RepositoryLayout,
 ) -> Result<Vec<String>, String> {
-    discover_filter_drivers_bounded(git, repository, GIT_TIMEOUT, FILTER_CONFIG_LIMIT).await
+    discover_filter_drivers_bounded(
+        git,
+        repository,
+        iteron_tunables::param_duration("tools.git_harness.git_timeout", GIT_TIMEOUT),
+        iteron_tunables::param_integer(
+            "tools.git_filters.filter_config_limit",
+            FILTER_CONFIG_LIMIT,
+        ),
+    )
+    .await
 }
 
 pub(crate) async fn discover_filter_drivers_bounded(
@@ -71,16 +90,27 @@ pub(crate) async fn discover_filter_drivers_bounded(
         "--name-only",
         "--includes",
         "--get-regexp",
-        FILTER_CONFIG_PATTERN,
+        iteron_tunables::param_str(
+            "tools.git_filters.filter_config_pattern",
+            FILTER_CONFIG_PATTERN,
+        ),
     ]
     .into_iter()
     .map(OsString::from);
     let args = hardened_args(&[], operation);
     let mut command = hardened_git_command(git, repository, &args);
-    let source_limit = output_max_bytes.min(FILTER_CONFIG_LIMIT);
-    let captured = run_command_bounded(&mut command, timeout, source_limit, STDERR_LIMIT)
-        .await
-        .map_err(|error| format!("could not inspect Git filter config: {error}"))?;
+    let source_limit = output_max_bytes.min(iteron_tunables::param_integer(
+        "tools.git_filters.filter_config_limit",
+        FILTER_CONFIG_LIMIT,
+    ));
+    let captured = run_command_bounded(
+        &mut command,
+        timeout,
+        source_limit,
+        iteron_tunables::param_integer("tools.git_harness.stderr_limit", STDERR_LIMIT),
+    )
+    .await
+    .map_err(|error| format!("could not inspect Git filter config: {error}"))?;
 
     if captured.status.code() == Some(1) && captured.stdout.total == 0 {
         return Ok(Vec::new());

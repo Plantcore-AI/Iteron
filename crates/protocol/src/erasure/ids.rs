@@ -18,7 +18,14 @@ fn valid_identifier(value: &str, max_bytes: usize) -> bool {
 }
 
 pub(super) fn valid_session_target(value: &str) -> bool {
-    if !valid_identifier(value, MAX_ERASURE_TARGET_ID_BYTES) || value.ends_with('.') {
+    if !valid_identifier(
+        value,
+        iteron_tunables::param_integer(
+            "protocol.erasure.ids.max_erasure_target_id_bytes",
+            MAX_ERASURE_TARGET_ID_BYTES,
+        ),
+    ) || value.ends_with('.')
+    {
         return false;
     }
     let stem = value
@@ -42,7 +49,13 @@ pub struct ErasureOperationId(String);
 impl ErasureOperationId {
     pub fn new(value: impl Into<String>) -> Result<Self, ErasureValidationError> {
         let value = value.into();
-        if !valid_identifier(&value, MAX_ERASURE_OPERATION_ID_BYTES) {
+        if !valid_identifier(
+            &value,
+            iteron_tunables::param_integer(
+                "protocol.erasure.ids.max_erasure_operation_id_bytes",
+                MAX_ERASURE_OPERATION_ID_BYTES,
+            ),
+        ) {
             return Err(ErasureValidationError::OperationId);
         }
         Ok(Self(value))
@@ -80,7 +93,13 @@ pub struct ErasureAuthorityId(String);
 impl ErasureAuthorityId {
     pub fn new(value: impl Into<String>) -> Result<Self, ErasureValidationError> {
         let value = value.into();
-        if !valid_identifier(&value, MAX_ERASURE_AUTHORITY_ID_BYTES) {
+        if !valid_identifier(
+            &value,
+            iteron_tunables::param_integer(
+                "protocol.erasure.ids.max_erasure_authority_id_bytes",
+                MAX_ERASURE_AUTHORITY_ID_BYTES,
+            ),
+        ) {
             return Err(ErasureValidationError::AuthorityId);
         }
         Ok(Self(value))
@@ -118,7 +137,13 @@ pub struct ErasureScopeId(String);
 impl ErasureScopeId {
     pub fn new(value: impl Into<String>) -> Result<Self, ErasureValidationError> {
         let value = value.into();
-        if !valid_identifier(&value, MAX_ERASURE_SCOPE_ID_BYTES) {
+        if !valid_identifier(
+            &value,
+            iteron_tunables::param_integer(
+                "protocol.erasure.ids.max_erasure_scope_id_bytes",
+                MAX_ERASURE_SCOPE_ID_BYTES,
+            ),
+        ) {
             return Err(ErasureValidationError::ScopeId);
         }
         Ok(Self(value))
@@ -156,7 +181,13 @@ pub struct ErasureTargetId(String);
 impl ErasureTargetId {
     pub fn new(value: impl Into<String>) -> Result<Self, ErasureValidationError> {
         let value = value.into();
-        if !valid_identifier(&value, MAX_ERASURE_TARGET_ID_BYTES) {
+        if !valid_identifier(
+            &value,
+            iteron_tunables::param_integer(
+                "protocol.erasure.ids.max_erasure_target_id_bytes",
+                MAX_ERASURE_TARGET_ID_BYTES,
+            ),
+        ) {
             return Err(ErasureValidationError::TargetId);
         }
         Ok(Self(value))

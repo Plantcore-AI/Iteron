@@ -92,7 +92,10 @@ impl Default for Hooks {
     fn default() -> Self {
         Self {
             by_event: BTreeMap::new(),
-            timeout_secs: DEFAULT_HOOK_TIMEOUT_SECS,
+            timeout_secs: iteron_tunables::param_integer(
+                "cli.runtime.hooks.default_hook_timeout_secs",
+                DEFAULT_HOOK_TIMEOUT_SECS,
+            ),
             sensitive_env_names: Vec::new(),
         }
     }
@@ -151,7 +154,10 @@ impl Hooks {
             .unwrap_or_default();
         Hooks {
             by_event,
-            timeout_secs: DEFAULT_HOOK_TIMEOUT_SECS,
+            timeout_secs: iteron_tunables::param_integer(
+                "cli.runtime.hooks.default_hook_timeout_secs",
+                DEFAULT_HOOK_TIMEOUT_SECS,
+            ),
             sensitive_env_names: Vec::new(),
         }
     }
@@ -177,11 +183,21 @@ impl Hooks {
         if !valid_hook_command(&command) {
             return Err("command must be visible text of 1..=4096 bytes");
         }
-        if self.command_count() >= MAX_HOOK_CATALOG_ENTRIES {
+        if self.command_count()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.hooks.max_hook_catalog_entries",
+                MAX_HOOK_CATALOG_ENTRIES,
+            )
+        {
             return Err("hook catalog exceeds 256 commands");
         }
         let commands = self.by_event.entry(event.to_owned()).or_default();
-        if commands.len() >= MAX_HOOKS_PER_EVENT {
+        if commands.len()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.hooks.max_hooks_per_event",
+                MAX_HOOKS_PER_EVENT,
+            )
+        {
             return Err("hook chain exceeds 128 commands");
         }
         commands.push(command);
@@ -417,9 +433,15 @@ impl Hooks {
             });
         };
         let timeout = if spec.hook_capability == iteron_protocol::HookCapability::Gate {
-            LIFECYCLE_GATE_TIMEOUT
+            iteron_tunables::param_duration(
+                "cli.runtime.hooks.lifecycle_gate_timeout",
+                LIFECYCLE_GATE_TIMEOUT,
+            )
         } else {
-            LIFECYCLE_OBSERVER_TIMEOUT
+            iteron_tunables::param_duration(
+                "cli.runtime.hooks.lifecycle_observer_timeout",
+                LIFECYCLE_OBSERVER_TIMEOUT,
+            )
         };
         let mut report = LifecycleHookReport {
             decision: HookDecision::Allow,
@@ -487,7 +509,12 @@ impl Hooks {
                             .ok()
                             .filter(|payload| payload.validate().is_ok());
                         if let Some(augmentation) = augmentation {
-                            if report.augmentations.len() < MAX_LIFECYCLE_HOOK_AUGMENTATIONS {
+                            if report.augmentations.len()
+                                < iteron_tunables::param_integer(
+                                    "cli.runtime.hooks.max_lifecycle_hook_augmentations",
+                                    MAX_LIFECYCLE_HOOK_AUGMENTATIONS,
+                                )
+                            {
                                 report.augmentations.push(augmentation);
                             } else {
                                 report.failed = report.failed.saturating_add(1);
@@ -540,13 +567,30 @@ fn bounded_hook_map(input: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Ve
     let mut output = BTreeMap::new();
     let mut total = 0_usize;
     for (event, commands) in input {
-        if !valid_hook_event(&event) || total >= MAX_HOOK_CATALOG_ENTRIES {
+        if !valid_hook_event(&event)
+            || total
+                >= iteron_tunables::param_integer(
+                    "cli.runtime.hooks.max_hook_catalog_entries",
+                    MAX_HOOK_CATALOG_ENTRIES,
+                )
+        {
             continue;
         }
         let admitted = commands
             .into_iter()
             .filter(|command| valid_hook_command(command))
-            .take(MAX_HOOKS_PER_EVENT.min(MAX_HOOK_CATALOG_ENTRIES - total))
+            .take(
+                iteron_tunables::param_integer(
+                    "cli.runtime.hooks.max_hooks_per_event",
+                    MAX_HOOKS_PER_EVENT,
+                )
+                .min(
+                    iteron_tunables::param_integer(
+                        "cli.runtime.hooks.max_hook_catalog_entries",
+                        MAX_HOOK_CATALOG_ENTRIES,
+                    ) - total,
+                ),
+            )
             .collect::<Vec<_>>();
         total = total.saturating_add(admitted.len());
         if !admitted.is_empty() {
@@ -565,7 +609,11 @@ fn valid_hook_event(event: &str) -> bool {
 
 fn valid_hook_command(command: &str) -> bool {
     !command.is_empty()
-        && command.len() <= MAX_HOOK_COMMAND_BYTES
+        && command.len()
+            <= iteron_tunables::param_integer(
+                "cli.runtime.hooks.max_hook_command_bytes",
+                MAX_HOOK_COMMAND_BYTES,
+            )
         && !command.chars().any(char::is_control)
 }
 
@@ -662,15 +710,29 @@ impl BoundedCapture {
     fn push(&mut self, bytes: &[u8]) {
         self.total = self.total.saturating_add(bytes.len() as u64);
 
-        let head_bytes = bytes
-            .len()
-            .min(HOOK_CAPTURE_HEAD_BYTES.saturating_sub(self.head.len()));
+        let head_bytes = bytes.len().min(
+            iteron_tunables::param_integer(
+                "cli.runtime.hooks.hook_capture_head_bytes",
+                HOOK_CAPTURE_HEAD_BYTES,
+            )
+            .saturating_sub(self.head.len()),
+        );
         self.head.extend_from_slice(&bytes[..head_bytes]);
         let remainder = &bytes[head_bytes..];
-        if remainder.len() >= HOOK_CAPTURE_TAIL_BYTES {
+        if remainder.len()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.hooks.hook_capture_tail_bytes",
+                HOOK_CAPTURE_TAIL_BYTES,
+            )
+        {
             self.tail.clear();
-            self.tail
-                .extend(&remainder[remainder.len() - HOOK_CAPTURE_TAIL_BYTES..]);
+            self.tail.extend(
+                &remainder[remainder.len()
+                    - iteron_tunables::param_integer(
+                        "cli.runtime.hooks.hook_capture_tail_bytes",
+                        HOOK_CAPTURE_TAIL_BYTES,
+                    )..],
+            );
             return;
         }
 
@@ -678,7 +740,10 @@ impl BoundedCapture {
             .tail
             .len()
             .saturating_add(remainder.len())
-            .saturating_sub(HOOK_CAPTURE_TAIL_BYTES);
+            .saturating_sub(iteron_tunables::param_integer(
+                "cli.runtime.hooks.hook_capture_tail_bytes",
+                HOOK_CAPTURE_TAIL_BYTES,
+            ));
         if overflow > 0 {
             self.tail.drain(..overflow);
         }
@@ -728,7 +793,13 @@ where
     use tokio::io::AsyncReadExt;
 
     let mut capture = BoundedCapture::default();
-    let mut chunk = [0u8; HOOK_READ_CHUNK_BYTES];
+    let mut chunk = vec![
+        0u8;
+        iteron_tunables::param_integer(
+            "cli.runtime.hooks.hook_read_chunk_bytes",
+            HOOK_READ_CHUNK_BYTES,
+        )
+    ];
     // This loop's memory is fixed by `BoundedCapture`; its wall-clock lifetime is bounded by the
     // outer per-hook timeout, which cancels the read and then kills/reaps the producer.
     loop {
@@ -889,7 +960,7 @@ async fn run_one_with_shell(
             tokio::select! {
                 result = &mut work => break WaitOutcome::Completed(result),
                 () = &mut deadline => break WaitOutcome::TimedOut,
-                () = tokio::time::sleep(HOOK_CANCEL_POLL),
+                () = tokio::time::sleep(iteron_tunables::param_duration("cli.runtime.hooks.hook_cancel_poll", HOOK_CANCEL_POLL)),
                     if cancel.is_some() || drain.is_some() =>
                 {
                     if stopped() {

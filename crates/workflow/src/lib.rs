@@ -114,7 +114,9 @@ impl RunLimits {
         if max_agent_calls == 0 {
             return Err("workflow agent-call ceiling must be non-zero");
         }
-        if max_agent_calls > LIFETIME_CAP {
+        if max_agent_calls
+            > iteron_tunables::param_usize("workflow.bindings.lifetime_cap", LIFETIME_CAP)
+        {
             return Err("workflow agent-call ceiling exceeds the hard 1000-call limit");
         }
         Ok(Self {
@@ -136,12 +138,45 @@ impl Default for RunLimits {
     fn default() -> Self {
         let cores = std::thread::available_parallelism()
             .map(|count| count.get())
-            .unwrap_or(ASSUMED_CORES_WHEN_UNKNOWN);
+            .unwrap_or(iteron_tunables::param_usize(
+                "workflow.lib.assumed_cores_when_unknown",
+                iteron_tunables::param_integer(
+                    "workflow.lib.assumed_cores_when_unknown",
+                    ASSUMED_CORES_WHEN_UNKNOWN,
+                ),
+            ));
+        let ceiling = iteron_tunables::param_usize(
+            "workflow.lib.max_derived_concurrency",
+            iteron_tunables::param_integer(
+                "workflow.lib.max_derived_concurrency",
+                MAX_DERIVED_CONCURRENCY,
+            ),
+        );
+        // `clamp` panics when the floor exceeds the ceiling, so a profile that lowers the ceiling
+        // below the floor must not become a crash. With no profile both reads are the compiled
+        // constants and `min` is a no-op.
+        let floor = iteron_tunables::param_usize(
+            "workflow.lib.min_derived_concurrency",
+            iteron_tunables::param_integer(
+                "workflow.lib.min_derived_concurrency",
+                MIN_DERIVED_CONCURRENCY,
+            ),
+        )
+        .min(ceiling);
         Self {
             max_concurrency: cores
-                .saturating_sub(CORES_RESERVED_FOR_HOST)
-                .clamp(MIN_DERIVED_CONCURRENCY, MAX_DERIVED_CONCURRENCY),
-            max_agent_calls: LIFETIME_CAP,
+                .saturating_sub(iteron_tunables::param_usize(
+                    "workflow.lib.cores_reserved_for_host",
+                    iteron_tunables::param_integer(
+                        "workflow.lib.cores_reserved_for_host",
+                        CORES_RESERVED_FOR_HOST,
+                    ),
+                ))
+                .clamp(floor, ceiling),
+            max_agent_calls: iteron_tunables::param_usize(
+                "workflow.bindings.lifetime_cap",
+                LIFETIME_CAP,
+            ),
         }
     }
 }
@@ -204,6 +239,10 @@ pub struct RunSpec {
     pub task_retry: TaskRetryPolicy,
     /// Host-owned schema-repair attempt and jitter policy.  This is distinct from provider retry.
     pub schema_retry: SchemaRetryPolicy,
+    /// The operator profile this run was resolved under, when the composition root supplied one.
+    /// It is read for prompt-artifact replacement only (`prompt/recovery@v1`); `None` is the
+    /// unprofiled run and every compiled default stands.
+    pub tunables_profile: Option<Arc<iteron_tunables::ProfileDocument>>,
 }
 
 impl RunSpec {
@@ -219,6 +258,7 @@ impl RunSpec {
             speculative_siblings: SpeculativeSiblingPolicy::default(),
             task_retry: TaskRetryPolicy::default(),
             schema_retry: SchemaRetryPolicy::default(),
+            tunables_profile: None,
         }
     }
     pub fn with_args(mut self, args: serde_json::Value) -> RunSpec {
@@ -255,6 +295,15 @@ impl RunSpec {
     }
     pub fn with_schema_retry(mut self, policy: SchemaRetryPolicy) -> RunSpec {
         self.schema_retry = policy;
+        self
+    }
+    /// Attach the operator profile this run was resolved under, so a prompt artifact it carries
+    /// replaces the compiled text. Passing `None` leaves every compiled default in place.
+    pub fn with_tunables_profile(
+        mut self,
+        profile: Option<Arc<iteron_tunables::ProfileDocument>>,
+    ) -> RunSpec {
+        self.tunables_profile = profile;
         self
     }
 }
@@ -396,6 +445,7 @@ impl WorkflowEngine {
             speculative_siblings,
             task_retry,
             schema_retry,
+            tunables_profile,
             ..
         } = spec;
         host::run_core(host::RunCoreRequest {
@@ -412,6 +462,7 @@ impl WorkflowEngine {
             task_dag,
             spawner,
             sink,
+            tunables_profile,
         })
         .await
     }
@@ -463,6 +514,7 @@ impl WorkflowEngine {
                         speculative_siblings,
                         task_retry,
                         schema_retry,
+                        tunables_profile,
                         ..
                     } = spec;
                     rt.block_on(host::run_core(host::RunCoreRequest {
@@ -479,6 +531,7 @@ impl WorkflowEngine {
                         task_dag,
                         spawner,
                         sink,
+                        tunables_profile,
                     }))
                 })();
                 let _ = tx.send(result);

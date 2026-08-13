@@ -44,18 +44,36 @@ impl McpToolFilter {
             .allow
             .len()
             .checked_add(self.deny.len())
-            .filter(|count| *count <= MAX_MCP_TOOL_FILTER_ENTRIES)
+            .filter(|count| {
+                *count
+                    <= iteron_tunables::param_integer(
+                        "mcp.tool_filter.max_mcp_tool_filter_entries",
+                        MAX_MCP_TOOL_FILTER_ENTRIES,
+                    )
+            })
             .ok_or(McpError::InvalidToolFilter {
-                limit: MAX_MCP_TOOL_FILTER_ENTRIES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.tool_filter.max_mcp_tool_filter_entries",
+                    MAX_MCP_TOOL_FILTER_ENTRIES,
+                ),
             })?;
-        debug_assert!(entries <= MAX_MCP_TOOL_FILTER_ENTRIES);
+        debug_assert!(
+            entries
+                <= iteron_tunables::param_integer(
+                    "mcp.tool_filter.max_mcp_tool_filter_entries",
+                    MAX_MCP_TOOL_FILTER_ENTRIES
+                )
+        );
 
         let mut seen_allow = BTreeSet::new();
         for name in &self.allow {
             validate_bare_tool_name(name)?;
             if !seen_allow.insert(name.as_str()) {
                 return Err(McpError::InvalidToolFilter {
-                    limit: MAX_MCP_TOOL_FILTER_ENTRIES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.tool_filter.max_mcp_tool_filter_entries",
+                        MAX_MCP_TOOL_FILTER_ENTRIES,
+                    ),
                 });
             }
         }
@@ -64,7 +82,10 @@ impl McpToolFilter {
             validate_bare_tool_name(name)?;
             if !seen_deny.insert(name.as_str()) {
                 return Err(McpError::InvalidToolFilter {
-                    limit: MAX_MCP_TOOL_FILTER_ENTRIES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.tool_filter.max_mcp_tool_filter_entries",
+                        MAX_MCP_TOOL_FILTER_ENTRIES,
+                    ),
                 });
             }
         }
@@ -89,10 +110,19 @@ pub struct CombinedToolCatalog {
 impl Default for CombinedToolCatalog {
     fn default() -> Self {
         Self {
-            limit: MAX_COMBINED_MCP_TOOLS,
-            byte_limit: MAX_COMBINED_MCP_CATALOG_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.tool_filter.max_combined_mcp_tools",
+                MAX_COMBINED_MCP_TOOLS,
+            ),
+            byte_limit: iteron_tunables::param_integer(
+                "mcp.tool_filter.max_combined_mcp_catalog_bytes",
+                MAX_COMBINED_MCP_CATALOG_BYTES,
+            ),
             names: BTreeSet::new(),
-            catalog_bytes: EMPTY_CATALOG_BYTES,
+            catalog_bytes: iteron_tunables::param_integer(
+                "mcp.tool_filter.empty_catalog_bytes",
+                EMPTY_CATALOG_BYTES,
+            ),
         }
     }
 }
@@ -101,26 +131,55 @@ impl CombinedToolCatalog {
     /// Build a catalog guard with a tighter ceiling. Production uses [`Default`]; the explicit
     /// constructor makes boundary behavior testable without manufacturing 129 processes/tools.
     pub fn with_limit(limit: usize) -> Result<Self, McpError> {
-        Self::with_limits(limit, MAX_COMBINED_MCP_CATALOG_BYTES)
+        Self::with_limits(
+            limit,
+            iteron_tunables::param_integer(
+                "mcp.tool_filter.max_combined_mcp_catalog_bytes",
+                MAX_COMBINED_MCP_CATALOG_BYTES,
+            ),
+        )
     }
 
     /// Build a guard with tighter count and serialized-byte ceilings.
     pub fn with_limits(limit: usize, byte_limit: usize) -> Result<Self, McpError> {
-        if !(1..=MAX_COMBINED_MCP_TOOLS).contains(&limit) {
+        if !(1..=iteron_tunables::param_integer(
+            "mcp.tool_filter.max_combined_mcp_tools",
+            MAX_COMBINED_MCP_TOOLS,
+        ))
+            .contains(&limit)
+        {
             return Err(McpError::InvalidCombinedToolLimit {
-                maximum: MAX_COMBINED_MCP_TOOLS,
+                maximum: iteron_tunables::param_integer(
+                    "mcp.tool_filter.max_combined_mcp_tools",
+                    MAX_COMBINED_MCP_TOOLS,
+                ),
             });
         }
-        if !(EMPTY_CATALOG_BYTES..=MAX_COMBINED_MCP_CATALOG_BYTES).contains(&byte_limit) {
+        if !(iteron_tunables::param_integer(
+            "mcp.tool_filter.empty_catalog_bytes",
+            EMPTY_CATALOG_BYTES,
+        )
+            ..=iteron_tunables::param_integer(
+                "mcp.tool_filter.max_combined_mcp_catalog_bytes",
+                MAX_COMBINED_MCP_CATALOG_BYTES,
+            ))
+            .contains(&byte_limit)
+        {
             return Err(McpError::InvalidCombinedCatalogByteLimit {
-                maximum: MAX_COMBINED_MCP_CATALOG_BYTES,
+                maximum: iteron_tunables::param_integer(
+                    "mcp.tool_filter.max_combined_mcp_catalog_bytes",
+                    MAX_COMBINED_MCP_CATALOG_BYTES,
+                ),
             });
         }
         Ok(Self {
             limit,
             byte_limit,
             names: BTreeSet::new(),
-            catalog_bytes: EMPTY_CATALOG_BYTES,
+            catalog_bytes: iteron_tunables::param_integer(
+                "mcp.tool_filter.empty_catalog_bytes",
+                EMPTY_CATALOG_BYTES,
+            ),
         })
     }
 
@@ -197,9 +256,18 @@ pub(crate) fn namespace_tool_name(server_name: &str, bare_name: &str) -> Result<
         .len()
         .checked_add(2)
         .and_then(|bytes| bytes.checked_add(bare_name.len()))
-        .filter(|bytes| *bytes <= MAX_MCP_TOOL_NAME_BYTES)
+        .filter(|bytes| {
+            *bytes
+                <= iteron_tunables::param_integer(
+                    "mcp.lib.max_mcp_tool_name_bytes",
+                    MAX_MCP_TOOL_NAME_BYTES,
+                )
+        })
         .ok_or(McpError::ToolNameTooLong {
-            limit: MAX_MCP_TOOL_NAME_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_name_bytes",
+                MAX_MCP_TOOL_NAME_BYTES,
+            ),
         })?;
     validate_bare_tool_name(bare_name)?;
     let mut name = String::with_capacity(name_bytes);
@@ -213,15 +281,25 @@ pub fn validate_server_name(name: &str) -> Result<(), McpError> {
     let mut bytes = name.bytes();
     let Some(first) = bytes.next() else {
         return Err(McpError::InvalidServerName {
-            limit: MAX_MCP_SERVER_NAME_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.tool_filter.max_mcp_server_name_bytes",
+                MAX_MCP_SERVER_NAME_BYTES,
+            ),
         });
     };
-    if name.len() > MAX_MCP_SERVER_NAME_BYTES
+    if name.len()
+        > iteron_tunables::param_integer(
+            "mcp.tool_filter.max_mcp_server_name_bytes",
+            MAX_MCP_SERVER_NAME_BYTES,
+        )
         || !first.is_ascii_lowercase()
         || !bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     {
         return Err(McpError::InvalidServerName {
-            limit: MAX_MCP_SERVER_NAME_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.tool_filter.max_mcp_server_name_bytes",
+                MAX_MCP_SERVER_NAME_BYTES,
+            ),
         });
     }
     Ok(())
@@ -244,14 +322,22 @@ pub(crate) fn validate_bare_tool_name(name: &str) -> Result<(), McpError> {
 fn validate_namespaced_tool_name(name: &str) -> Result<(), McpError> {
     let Some((server_name, bare_name)) = name.split_once("__") else {
         return Err(McpError::InvalidToolName {
-            limit: MAX_MCP_TOOL_NAME_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_name_bytes",
+                MAX_MCP_TOOL_NAME_BYTES,
+            ),
         });
     };
     validate_server_name(server_name)?;
     validate_bare_tool_name(bare_name)?;
-    if name.len() > MAX_MCP_TOOL_NAME_BYTES {
+    if name.len()
+        > iteron_tunables::param_integer("mcp.lib.max_mcp_tool_name_bytes", MAX_MCP_TOOL_NAME_BYTES)
+    {
         return Err(McpError::ToolNameTooLong {
-            limit: MAX_MCP_TOOL_NAME_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_name_bytes",
+                MAX_MCP_TOOL_NAME_BYTES,
+            ),
         });
     }
     Ok(())

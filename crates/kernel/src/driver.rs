@@ -315,7 +315,12 @@ impl<P: TurnPorts> TurnDriver<P> {
     /// Queue a port reply. Refuses rather than growing without limit — the same rule the SQ follows,
     /// applied to the queue the driver owns itself.
     fn push_reply(&mut self, command: Command) -> Result<(), DriverError> {
-        if self.replies.len() >= MAX_PENDING_REPLIES {
+        if self.replies.len()
+            >= iteron_protocol::param_integer(
+                "kernel.driver.max_pending_replies",
+                MAX_PENDING_REPLIES,
+            )
+        {
             return Err(DriverError::ReplyQueueFull);
         }
         self.replies.push_back(command);

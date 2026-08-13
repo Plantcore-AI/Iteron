@@ -164,6 +164,10 @@ pub fn read_erasure_receipt(
     runs_dir: &Path,
     operation_id: &ErasureOperationId,
 ) -> Result<Option<ErasureReceipt>, ErasureError> {
+    let max_receipt_bytes = iteron_tunables::param_integer(
+        "protocol.erasure.max_erasure_receipt_bytes",
+        MAX_ERASURE_RECEIPT_BYTES,
+    );
     let path = receipt_path(runs_dir, operation_id);
     let file = match File::open(path) {
         Ok(file) => file,
@@ -171,12 +175,12 @@ pub fn read_erasure_receipt(
         Err(error) => return Err(error.into()),
     };
     let mut bytes = Vec::new();
-    file.take((MAX_ERASURE_RECEIPT_BYTES + 1) as u64)
+    file.take((max_receipt_bytes + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_ERASURE_RECEIPT_BYTES {
+    if bytes.len() > max_receipt_bytes {
         return Err(ErasureError::ReceiptTooLarge {
             operation_id: operation_id.clone(),
-            max_bytes: MAX_ERASURE_RECEIPT_BYTES,
+            max_bytes: max_receipt_bytes,
         });
     }
     let receipt = serde_json::from_slice::<ErasureReceipt>(&bytes).map_err(|_| {
@@ -202,17 +206,31 @@ pub fn list_erasure_receipts(
     runs_dir: &Path,
     limit: usize,
 ) -> Result<Vec<ErasureReceipt>, ErasureError> {
-    let limit = limit.min(MAX_ERASURE_RECEIPTS);
+    let limit = limit.min(iteron_tunables::param_integer(
+        "record.erasure.max_erasure_receipts",
+        MAX_ERASURE_RECEIPTS,
+    ));
     if limit == 0 {
         return Ok(Vec::new());
     }
     ensure_layout(runs_dir)?;
     let dir = runs_dir.join(ERASURE_DIR).join(RECEIPTS_DIR);
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(dir)?.take(MAX_ERASURE_RECEIPTS.saturating_add(1)) {
-        if ids.len() == MAX_ERASURE_RECEIPTS {
+    for entry in std::fs::read_dir(dir)?.take(
+        iteron_tunables::param_integer("record.erasure.max_erasure_receipts", MAX_ERASURE_RECEIPTS)
+            .saturating_add(1),
+    ) {
+        if ids.len()
+            == iteron_tunables::param_integer(
+                "record.erasure.max_erasure_receipts",
+                MAX_ERASURE_RECEIPTS,
+            )
+        {
             return Err(ErasureError::ReceiptInventoryBound {
-                max: MAX_ERASURE_RECEIPTS,
+                max: iteron_tunables::param_integer(
+                    "record.erasure.max_erasure_receipts",
+                    MAX_ERASURE_RECEIPTS,
+                ),
             });
         }
         let entry = entry?;
@@ -544,10 +562,14 @@ fn persist_receipt(runs_dir: &Path, receipt: &ErasureReceipt) -> Result<(), Eras
     let bytes = serde_json::to_vec_pretty(receipt).map_err(|_| ErasureError::ReceiptCorrupt {
         operation_id: receipt.request().operation_id.clone(),
     })?;
-    if bytes.len() > MAX_ERASURE_RECEIPT_BYTES {
+    let max_receipt_bytes = iteron_tunables::param_integer(
+        "protocol.erasure.max_erasure_receipt_bytes",
+        MAX_ERASURE_RECEIPT_BYTES,
+    );
+    if bytes.len() > max_receipt_bytes {
         return Err(ErasureError::ReceiptTooLarge {
             operation_id: receipt.request().operation_id.clone(),
-            max_bytes: MAX_ERASURE_RECEIPT_BYTES,
+            max_bytes: max_receipt_bytes,
         });
     }
     crate::cache_io::atomic_replace(
@@ -615,7 +637,10 @@ fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(PRE_EPOCH_TIMESTAMP_MS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "record.erasure.pre_epoch_timestamp_ms",
+            PRE_EPOCH_TIMESTAMP_MS,
+        ))
 }
 
 #[cfg(test)]

@@ -72,7 +72,12 @@ fn load_template(
     baseline: &PolicyRef,
     candidate: &PolicyRef,
 ) -> Result<HeldOutEvalReport, TranscriptRunError> {
-    if fixture.len() > MAX_FIXTURE_BYTES {
+    if fixture.len()
+        > iteron_tunables::param_integer(
+            "evolve.transcript_target_fixture.max_fixture_bytes",
+            MAX_FIXTURE_BYTES,
+        )
+    {
         return Err(TranscriptRunError::Invariant(
             "target-model held-out observation fixture exceeds its byte limit",
         ));

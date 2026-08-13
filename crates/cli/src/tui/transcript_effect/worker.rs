@@ -269,7 +269,11 @@ async fn run_export_worker_inner(
         )
         .await;
     };
-    let deadline = tokio::time::Instant::now() + EXPORT_DEADLINE;
+    let deadline = tokio::time::Instant::now()
+        + iteron_tunables::param_duration(
+            "cli.tui.transcript_effect.worker.export_deadline",
+            EXPORT_DEADLINE,
+        );
     let write = async {
         stdin.write_all(&frame).await?;
         stdin.shutdown().await

@@ -17,10 +17,18 @@ pub(crate) fn persist(
     }
     iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
-    if bytes.len() > MAX_POLICY_CHECKPOINT_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+            MAX_POLICY_CHECKPOINT_BYTES,
+        )
+    {
         anyhow::bail!(
             "workflow policy checkpoint exceeds the {} byte bound",
-            MAX_POLICY_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+                MAX_POLICY_CHECKPOINT_BYTES
+            )
         );
     }
 
@@ -71,20 +79,41 @@ pub(crate) fn load(
 fn load_path(path: &PathBuf) -> anyhow::Result<RunGenesisPolicyBundleSnapshot> {
     let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
-    if metadata.len() > MAX_POLICY_CHECKPOINT_BYTES as u64 {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+            MAX_POLICY_CHECKPOINT_BYTES,
+        ) as u64
+    {
         anyhow::bail!(
             "policy checkpoint exceeds the {} byte bound",
-            MAX_POLICY_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+                MAX_POLICY_CHECKPOINT_BYTES
+            )
         );
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     Read::by_ref(&mut file)
-        .take((MAX_POLICY_CHECKPOINT_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+                MAX_POLICY_CHECKPOINT_BYTES,
+            ) + 1) as u64,
+        )
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_POLICY_CHECKPOINT_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+            MAX_POLICY_CHECKPOINT_BYTES,
+        )
+    {
         anyhow::bail!(
             "policy checkpoint exceeds the {} byte bound",
-            MAX_POLICY_CHECKPOINT_BYTES
+            iteron_tunables::param_integer(
+                "cli.workflow.policy_checkpoint.max_policy_checkpoint_bytes",
+                MAX_POLICY_CHECKPOINT_BYTES
+            )
         );
     }
     let snapshot: RunGenesisPolicyBundleSnapshot = serde_json::from_slice(&bytes)?;

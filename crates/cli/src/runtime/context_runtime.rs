@@ -75,11 +75,17 @@ impl Agent {
                     })
                     .fold(0usize, usize::saturating_add)
             })
-            .unwrap_or(NO_ACTIVE_TASK_TOKENS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.context_runtime.no_active_task_tokens",
+                NO_ACTIVE_TASK_TOKENS,
+            ));
         let attachment_tokens = self
             .input_file_evidence
             .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(NO_ATTACHMENT_TOKENS)
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.context_runtime.no_attachment_tokens",
+                NO_ATTACHMENT_TOKENS,
+            ))
             .min(active_task_with_attachments);
         let active_task_tokens = active_task_with_attachments.saturating_sub(attachment_tokens);
         let classified_system = instruction_tokens
@@ -118,7 +124,10 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
-            KernelError::InvalidSubmission(IMAGE_INPUT_INSPECTION_FAILED_REASON)
+            KernelError::InvalidSubmission(iteron_tunables::param_str(
+                "cli.runtime.image_input_inspection_failed_reason",
+                IMAGE_INPUT_INSPECTION_FAILED_REASON,
+            ))
         };
         if input_images.len() > self.multimodal_decode_envelope.max_images {
             return Err(reject());
@@ -155,9 +164,10 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        Err(KernelError::InvalidSubmission(
+        Err(KernelError::InvalidSubmission(iteron_tunables::param_str(
+            "cli.runtime.image_input_unsupported_reason",
             IMAGE_INPUT_UNSUPPORTED_REASON,
-        ))
+        )))
     }
 
     /// The system prompt for a turn: the base plus ONCE-resolved context (REC-INJECT).

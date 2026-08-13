@@ -107,12 +107,19 @@ impl OAuthRefreshGrant {
         }
         if let Some(client_id) = &client_id
             && (client_id.is_empty()
-                || client_id.len() > MAX_OAUTH_CLIENT_ID_BYTES
+                || client_id.len()
+                    > iteron_tunables::param_integer(
+                        "mcp.oauth.max_oauth_client_id_bytes",
+                        MAX_OAUTH_CLIENT_ID_BYTES,
+                    )
                 || client_id.chars().any(char::is_control))
         {
             return Err(McpError::InvalidEndpoint {
                 field: "oauth_client_id",
-                limit: MAX_OAUTH_CLIENT_ID_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.oauth.max_oauth_client_id_bytes",
+                    MAX_OAUTH_CLIENT_ID_BYTES,
+                ),
             });
         }
         Ok(Self {
@@ -137,8 +144,14 @@ impl OAuthClient {
     pub(crate) fn new() -> Result<Self, McpError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(OAUTH_CONNECT_TIMEOUT)
-            .timeout(OAUTH_TIMEOUT)
+            .connect_timeout(iteron_tunables::param_duration(
+                "mcp.oauth.oauth_connect_timeout",
+                OAUTH_CONNECT_TIMEOUT,
+            ))
+            .timeout(iteron_tunables::param_duration(
+                "mcp.oauth.oauth_timeout",
+                OAUTH_TIMEOUT,
+            ))
             .build()
             .map_err(|_| transport_error("client"))?;
         Ok(Self { client })
@@ -247,10 +260,20 @@ struct RefreshResponse {
 }
 
 fn validate_secret(secret: &str) -> Result<(), McpError> {
-    if secret.is_empty() || secret.len() > MAX_OAUTH_SECRET_BYTES || secret.contains('\0') {
+    if secret.is_empty()
+        || secret.len()
+            > iteron_tunables::param_integer(
+                "mcp.oauth.max_oauth_secret_bytes",
+                MAX_OAUTH_SECRET_BYTES,
+            )
+        || secret.contains('\0')
+    {
         return Err(McpError::InvalidEndpoint {
             field: "oauth_token",
-            limit: MAX_OAUTH_SECRET_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.oauth.max_oauth_secret_bytes",
+                MAX_OAUTH_SECRET_BYTES,
+            ),
         });
     }
     Ok(())

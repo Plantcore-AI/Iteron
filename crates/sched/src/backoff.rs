@@ -68,7 +68,10 @@ impl Jitter {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(GOLDEN_RATIO_64);
+            .unwrap_or(iteron_tunables::param_integer(
+                "sched.backoff.golden_ratio_64",
+                GOLDEN_RATIO_64,
+            ));
         // Concurrent turns can observe the same clock tick. Mix in a lock-free process-local
         // sequence (and the process id for cross-process diversity) so their per-call jitter
         // streams do not start in sync after removing RetryProvider's shared RNG mutex.
@@ -92,8 +95,14 @@ fn jitter_seed(nanos: u64, process_id: u64, sequence: u64) -> u64 {
     // SplitMix64 finalizer: cheap diffusion for seed material, not a cryptographic RNG.
     let mut z = nanos
         .wrapping_add(process_id.rotate_left(32))
-        .wrapping_add(sequence.wrapping_mul(GOLDEN_RATIO_64))
-        .wrapping_add(GOLDEN_RATIO_64);
+        .wrapping_add(sequence.wrapping_mul(iteron_tunables::param_integer(
+            "sched.backoff.golden_ratio_64",
+            GOLDEN_RATIO_64,
+        )))
+        .wrapping_add(iteron_tunables::param_integer(
+            "sched.backoff.golden_ratio_64",
+            GOLDEN_RATIO_64,
+        ));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     (z ^ (z >> 31)) | 1

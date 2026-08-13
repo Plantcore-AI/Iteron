@@ -28,10 +28,25 @@ pub struct AttestationKey(Vec<u8>);
 impl AttestationKey {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, VerifierError> {
         let bytes = bytes.into();
-        if !(MIN_ATTESTATION_KEY_BYTES..=MAX_ATTESTATION_KEY_BYTES).contains(&bytes.len()) {
+        if !(iteron_tunables::param_integer(
+            "evolve.verifier.min_attestation_key_bytes",
+            MIN_ATTESTATION_KEY_BYTES,
+        )
+            ..=iteron_tunables::param_integer(
+                "evolve.verifier.max_attestation_key_bytes",
+                MAX_ATTESTATION_KEY_BYTES,
+            ))
+            .contains(&bytes.len())
+        {
             return Err(VerifierError::InvalidAttestationKeyLength {
-                min: MIN_ATTESTATION_KEY_BYTES,
-                max: MAX_ATTESTATION_KEY_BYTES,
+                min: iteron_tunables::param_integer(
+                    "evolve.verifier.min_attestation_key_bytes",
+                    MIN_ATTESTATION_KEY_BYTES,
+                ),
+                max: iteron_tunables::param_integer(
+                    "evolve.verifier.max_attestation_key_bytes",
+                    MAX_ATTESTATION_KEY_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }
@@ -271,9 +286,18 @@ impl EvolutionVerifier {
         admission
             .validate()
             .map_err(VerifierError::InvalidContract)?;
-        if anchors.is_empty() || anchors.len() > MAX_TRUSTED_PRODUCERS {
+        if anchors.is_empty()
+            || anchors.len()
+                > iteron_tunables::param_integer(
+                    "evolve.verifier.max_trusted_producers",
+                    MAX_TRUSTED_PRODUCERS,
+                )
+        {
             return Err(VerifierError::InvalidTrustedProducerCount {
-                max: MAX_TRUSTED_PRODUCERS,
+                max: iteron_tunables::param_integer(
+                    "evolve.verifier.max_trusted_producers",
+                    MAX_TRUSTED_PRODUCERS,
+                ),
                 actual: anchors.len(),
             });
         }
@@ -377,9 +401,17 @@ impl EvolutionVerifier {
         if !manifest.base_model.is_admissible() {
             return Err(VerifierError::InadmissibleBaseModel);
         }
-        if artifact_bytes.len() > MAX_VERIFIED_ARTIFACT_BYTES {
+        if artifact_bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.verifier.max_verified_artifact_bytes",
+                MAX_VERIFIED_ARTIFACT_BYTES,
+            )
+        {
             return Err(VerifierError::ArtifactTooLarge {
-                max: MAX_VERIFIED_ARTIFACT_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.verifier.max_verified_artifact_bytes",
+                    MAX_VERIFIED_ARTIFACT_BYTES,
+                ),
                 actual: artifact_bytes.len(),
             });
         }

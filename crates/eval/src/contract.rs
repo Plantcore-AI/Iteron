@@ -388,7 +388,13 @@ impl<'de> Deserialize<'de> for CliInputAttachmentOrdinal {
         D: serde::Deserializer<'de>,
     {
         let ordinal = u8::deserialize(deserializer)?;
-        if ordinal == 0 || ordinal > MAX_CLI_INPUT_ATTACHMENTS {
+        if ordinal == 0
+            || ordinal
+                > iteron_tunables::param_integer(
+                    "eval.contract.max_cli_input_attachments",
+                    MAX_CLI_INPUT_ATTACHMENTS,
+                )
+        {
             return Err(<D::Error as serde::de::Error>::custom(
                 "input attachment ordinal exceeds its frozen bound",
             ));
@@ -408,7 +414,11 @@ impl<'de> Deserialize<'de> for CliImageEncodedBytes {
     {
         let encoded_bytes = u64::deserialize(deserializer)?;
         if encoded_bytes == 0
-            || encoded_bytes > MAX_CLI_IMAGE_BASE64_BYTES
+            || encoded_bytes
+                > iteron_tunables::param_integer(
+                    "eval.contract.max_cli_image_base64_bytes",
+                    MAX_CLI_IMAGE_BASE64_BYTES,
+                )
             || !encoded_bytes.is_multiple_of(4)
         {
             return Err(<D::Error as serde::de::Error>::custom(

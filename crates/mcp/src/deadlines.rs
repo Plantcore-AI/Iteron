@@ -25,14 +25,26 @@ pub struct McpTransportDeadlines {
 }
 
 impl McpTransportDeadlines {
-    pub const fn new(
+    pub fn new(
         startup_milliseconds: u64,
         tool_call_milliseconds: u64,
     ) -> Result<Self, &'static str> {
-        if startup_milliseconds == 0 || startup_milliseconds > MAX_MCP_DEADLINE_MILLISECONDS {
+        if startup_milliseconds == 0
+            || startup_milliseconds
+                > iteron_tunables::param_integer(
+                    "mcp.deadlines.max_mcp_deadline_milliseconds",
+                    MAX_MCP_DEADLINE_MILLISECONDS,
+                )
+        {
             return Err("MCP startup deadline is outside 1..=86400000 milliseconds");
         }
-        if tool_call_milliseconds == 0 || tool_call_milliseconds > MAX_MCP_DEADLINE_MILLISECONDS {
+        if tool_call_milliseconds == 0
+            || tool_call_milliseconds
+                > iteron_tunables::param_integer(
+                    "mcp.deadlines.max_mcp_deadline_milliseconds",
+                    MAX_MCP_DEADLINE_MILLISECONDS,
+                )
+        {
             return Err("MCP tool deadline is outside 1..=86400000 milliseconds");
         }
         Ok(Self {
@@ -89,12 +101,24 @@ impl Default for McpDeadlinePolicy {
     fn default() -> Self {
         Self {
             stdio: McpTransportDeadlines {
-                startup_milliseconds: DEFAULT_STDIO_STARTUP_MS,
-                tool_call_milliseconds: DEFAULT_STDIO_TOOL_CALL_MS,
+                startup_milliseconds: iteron_tunables::param_integer(
+                    "mcp.deadlines.default_stdio_startup_ms",
+                    DEFAULT_STDIO_STARTUP_MS,
+                ),
+                tool_call_milliseconds: iteron_tunables::param_integer(
+                    "mcp.deadlines.default_stdio_tool_call_ms",
+                    DEFAULT_STDIO_TOOL_CALL_MS,
+                ),
             },
             http: McpTransportDeadlines {
-                startup_milliseconds: DEFAULT_HTTP_STARTUP_MS,
-                tool_call_milliseconds: DEFAULT_HTTP_TOOL_CALL_MS,
+                startup_milliseconds: iteron_tunables::param_integer(
+                    "mcp.deadlines.default_http_startup_ms",
+                    DEFAULT_HTTP_STARTUP_MS,
+                ),
+                tool_call_milliseconds: iteron_tunables::param_integer(
+                    "mcp.deadlines.default_http_tool_call_ms",
+                    DEFAULT_HTTP_TOOL_CALL_MS,
+                ),
             },
         }
     }

@@ -274,7 +274,14 @@ fn format_microusd(value: u64) -> String {
 }
 
 fn short_digest(value: &str) -> &str {
-    value.get(..DIGEST_PREFIX_CHARS).unwrap_or(value)
+    value
+        .get(
+            ..iteron_tunables::param_integer(
+                "cli.tui.tunables_view.digest_prefix_chars",
+                DIGEST_PREFIX_CHARS,
+            ),
+        )
+        .unwrap_or(value)
 }
 
 /// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
@@ -290,7 +297,11 @@ pub(super) fn load_workspace_request(
 
 fn parse_request_path(requested_path: &str) -> Result<(Vec<String>, String), LoadError> {
     if requested_path.is_empty()
-        || requested_path.len() > MAX_REQUEST_PATH_BYTES
+        || requested_path.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.tunables_view.max_request_path_bytes",
+                MAX_REQUEST_PATH_BYTES,
+            )
         || requested_path.chars().any(char::is_control)
     {
         return Err(LoadError(
@@ -307,7 +318,12 @@ fn parse_request_path(requested_path: &str) -> Result<(Vec<String>, String), Loa
             .to_str()
             .ok_or(LoadError("request path must be valid UTF-8"))?;
         components.push(component.to_owned());
-        if components.len() > MAX_REQUEST_COMPONENTS {
+        if components.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.tunables_view.max_request_components",
+                MAX_REQUEST_COMPONENTS,
+            )
+        {
             return Err(LoadError("request path contains too many components"));
         }
     }
@@ -331,19 +347,41 @@ fn read_workspace_request_with_hook(
     use super::capability_fs;
 
     let (parents, leaf) = parse_request_path(requested_path)?;
-    let binding =
-        capability_fs::RootBinding::open(workspace).map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
-    let parent = capability_fs::traverse(binding.root(), &parents)
-        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
-    let mut file = capability_fs::open_regular_nonblocking(&parent, &leaf)
-        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
+    let binding = capability_fs::RootBinding::open(workspace).map_err(|_| {
+        LoadError(iteron_tunables::param_str(
+            "cli.tui.tunables_view.safe_load_refusal",
+            SAFE_LOAD_REFUSAL,
+        ))
+    })?;
+    let parent = capability_fs::traverse(binding.root(), &parents).map_err(|_| {
+        LoadError(iteron_tunables::param_str(
+            "cli.tui.tunables_view.safe_load_refusal",
+            SAFE_LOAD_REFUSAL,
+        ))
+    })?;
+    let mut file = capability_fs::open_regular_nonblocking(&parent, &leaf).map_err(|_| {
+        LoadError(iteron_tunables::param_str(
+            "cli.tui.tunables_view.safe_load_refusal",
+            SAFE_LOAD_REFUSAL,
+        ))
+    })?;
     acquired();
 
-    let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(REQUEST_READ_RESERVE_BYTES));
+    let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(
+        iteron_tunables::param_integer(
+            "cli.tui.tunables_view.request_read_reserve_bytes",
+            REQUEST_READ_RESERVE_BYTES,
+        ),
+    ));
     (&mut file)
         .take((RESOLUTION_INPUT_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
+        .map_err(|_| {
+            LoadError(iteron_tunables::param_str(
+                "cli.tui.tunables_view.safe_load_refusal",
+                SAFE_LOAD_REFUSAL,
+            ))
+        })?;
     if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
         return Err(LoadError("request exceeds the resolver's 1 MiB input cap"));
     }
@@ -360,10 +398,16 @@ fn read_workspace_request_with_hook(
                 let current_leaf = capability_fs::open_regular_nonblocking(&current_parent, &leaf)?;
                 capability_fs::same_file(&file, &current_leaf)
             })
-            .unwrap_or(REBIND_UNPROVEN)
+            .unwrap_or(iteron_tunables::param_bool(
+                "cli.tui.tunables_view.rebind_unproven",
+                REBIND_UNPROVEN,
+            ))
         && binding.still_bound();
     if !rebound {
-        return Err(LoadError(SAFE_LOAD_REFUSAL));
+        return Err(LoadError(iteron_tunables::param_str(
+            "cli.tui.tunables_view.safe_load_refusal",
+            SAFE_LOAD_REFUSAL,
+        )));
     }
     Ok(bytes)
 }
@@ -371,7 +415,10 @@ fn read_workspace_request_with_hook(
 #[cfg(not(target_os = "linux"))]
 fn read_workspace_request(_workspace: &Path, requested_path: &str) -> Result<Vec<u8>, LoadError> {
     let _ = parse_request_path(requested_path)?;
-    Err(LoadError(SAFE_LOAD_REFUSAL))
+    Err(LoadError(iteron_tunables::param_str(
+        "cli.tui.tunables_view.safe_load_refusal",
+        SAFE_LOAD_REFUSAL,
+    )))
 }
 
 fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
@@ -653,7 +700,11 @@ fn string_field<'a>(
         .and_then(Value::as_str)
         .filter(|value| {
             value.len() <= self::format::MAX_DETAIL_FIELD_BYTES
-                && value.chars().count() <= MAX_DETAIL_FIELD_CHARS
+                && value.chars().count()
+                    <= iteron_tunables::param_integer(
+                        "cli.tui.tunables_view.format.max_detail_field_chars",
+                        MAX_DETAIL_FIELD_CHARS,
+                    )
                 && !value.chars().any(super::is_unsafe_display_char)
         })
         .ok_or(LoadError(
@@ -698,7 +749,10 @@ fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
     let mut output = BoundedText::field();
     for (index, adjustment) in adjustments
         .iter()
-        .take(MAX_RENDERED_ADJUSTMENTS)
+        .take(iteron_tunables::param_integer(
+            "cli.tui.tunables_view.max_rendered_adjustments",
+            MAX_RENDERED_ADJUSTMENTS,
+        ))
         .enumerate()
     {
         let object = adjustment.as_object().ok_or(LoadError(
@@ -718,7 +772,13 @@ fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
             break;
         }
     }
-    if adjustments.len() > MAX_RENDERED_ADJUSTMENTS && !output.is_truncated() {
+    if adjustments.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.tunables_view.max_rendered_adjustments",
+            MAX_RENDERED_ADJUSTMENTS,
+        )
+        && !output.is_truncated()
+    {
         output.truncate();
     }
     Ok(output.finish())

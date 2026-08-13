@@ -61,7 +61,12 @@ pub(crate) fn prepare(mut input: ResolutionInput) -> Result<PreparedInput, Strin
 
     let profile_digest_sha256 = input.profile.as_ref().map(sha256_json).transpose()?;
     let input_bytes = serde_json::to_vec(&input).map_err(|_| "input encoding failed".to_owned())?;
-    if input_bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
+    if input_bytes.len()
+        > crate::param_integer(
+            "tunables.resolution_types.resolution_input_max_bytes",
+            RESOLUTION_INPUT_MAX_BYTES,
+        )
+    {
         return Err("normalized input exceeds the byte ceiling".into());
     }
     let input_digest_sha256 = sha256_bytes(&input_bytes);

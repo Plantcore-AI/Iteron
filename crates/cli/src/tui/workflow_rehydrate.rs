@@ -49,11 +49,17 @@ fn run_timestamp(run_id: &str) -> u128 {
     let first = parts
         .next()
         .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(UNPARSED_RUN_TIMESTAMP);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.tui.workflow_rehydrate.unparsed_run_timestamp",
+            UNPARSED_RUN_TIMESTAMP,
+        ));
     let second = parts
         .next()
         .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(UNPARSED_RUN_TIMESTAMP);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.tui.workflow_rehydrate.unparsed_run_timestamp",
+            UNPARSED_RUN_TIMESTAMP,
+        ));
     first.max(second)
 }
 

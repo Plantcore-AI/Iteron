@@ -41,9 +41,17 @@ impl<'a> GovernedTrainingDataset<'a> {
         if proofs.is_empty() {
             return Err(GovernedDatasetError::Empty);
         }
-        if proofs.len() > MAX_GOVERNED_DATASET_TRAJECTORIES {
+        if proofs.len()
+            > iteron_tunables::param_integer(
+                "evolve.dataset.max_governed_dataset_trajectories",
+                MAX_GOVERNED_DATASET_TRAJECTORIES,
+            )
+        {
             return Err(GovernedDatasetError::TooManyTrajectories {
-                limit: MAX_GOVERNED_DATASET_TRAJECTORIES,
+                limit: iteron_tunables::param_integer(
+                    "evolve.dataset.max_governed_dataset_trajectories",
+                    MAX_GOVERNED_DATASET_TRAJECTORIES,
+                ),
                 actual: proofs.len(),
             });
         }

@@ -138,7 +138,17 @@ async fn copy_text_with_specs(
 
     let mut last_error = ClipboardError::Unavailable;
     for spec in specs {
-        match run(spec, text.as_bytes(), CLIPBOARD_TIMEOUT, processes).await {
+        match run(
+            spec,
+            text.as_bytes(),
+            iteron_tunables::param_duration(
+                "cli.tui.clipboard.clipboard_timeout",
+                CLIPBOARD_TIMEOUT,
+            ),
+            processes,
+        )
+        .await
+        {
             Ok(()) => return Ok(adapter_name(&spec.program)),
             Err(ClipboardError::Launch) => last_error = ClipboardError::Launch,
             // Once a child starts, its clipboard side effect may have landed even if stdin, exit,
@@ -264,7 +274,15 @@ async fn post_spawn_error(child: &mut RegisteredChild, stage: PostSpawnStage) ->
 
 async fn kill_and_reap(child: &mut RegisteredChild) -> CleanupState {
     let _ = child.start_kill();
-    match tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await {
+    match tokio::time::timeout(
+        iteron_tunables::param_duration(
+            "cli.tui.clipboard.clipboard_reap_timeout",
+            CLIPBOARD_REAP_TIMEOUT,
+        ),
+        child.wait(),
+    )
+    .await
+    {
         Ok(Ok(_)) => CleanupState::Reaped,
         Ok(Err(_)) | Err(_) => match child.reap_sync() {
             ReapOutcome::Reaped => CleanupState::Reaped,
@@ -275,7 +293,12 @@ async fn kill_and_reap(child: &mut RegisteredChild) -> CleanupState {
 }
 
 fn safe_text(text: &str) -> Result<String, ClipboardError> {
-    if text.len() > MAX_CLIPBOARD_BYTES {
+    if text.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.clipboard.max_clipboard_bytes",
+            MAX_CLIPBOARD_BYTES,
+        )
+    {
         return Err(ClipboardError::TooLarge);
     }
     let scrubbed = iteron_record::redact::scrub(text);
@@ -286,7 +309,12 @@ fn safe_text(text: &str) -> Result<String, ClipboardError> {
             character if character.is_control() => safe.extend(character.escape_default()),
             character => safe.push(character),
         }
-        if safe.len() > MAX_CLIPBOARD_BYTES {
+        if safe.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.clipboard.max_clipboard_bytes",
+                MAX_CLIPBOARD_BYTES,
+            )
+        {
             return Err(ClipboardError::TooLarge);
         }
     }
@@ -296,7 +324,11 @@ fn safe_text(text: &str) -> Result<String, ClipboardError> {
 fn bounded_environment(name: &'static str) -> Option<(&'static str, OsString)> {
     let value = std::env::var_os(name)?;
     let text = value.to_string_lossy();
-    if text.is_empty() || text.len() > MAX_ENV_BYTES || text.chars().any(char::is_control) {
+    if text.is_empty()
+        || text.len()
+            > iteron_tunables::param_integer("cli.tui.clipboard.max_env_bytes", MAX_ENV_BYTES)
+        || text.chars().any(char::is_control)
+    {
         return None;
     }
     Some((name, value))

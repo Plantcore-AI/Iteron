@@ -67,7 +67,15 @@ impl Agent {
         // into a recursive `Send` obligation.
         let mut execution = Box::pin(child.run_leaf(task));
         loop {
-            match tokio::time::timeout(CHILD_CONTROL_POLL, &mut execution).await {
+            match tokio::time::timeout(
+                iteron_tunables::param_duration(
+                    "cli.runtime.subagent_control.child_control_poll",
+                    CHILD_CONTROL_POLL,
+                ),
+                &mut execution,
+            )
+            .await
+            {
                 Ok(outcome) => {
                     drop(execution);
                     let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
@@ -144,6 +152,7 @@ impl Agent {
         cx.context_budget_policy = self.context_budget_policy;
         cx.context_materialization_policy = self.context_materialization_policy;
         cx.compaction_policy = self.compaction;
+        cx.compaction_summary_prompt = self.compaction_summary_prompt.clone();
         cx.context_home_dir = self.context_home_dir.clone();
         cx.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         cx.agent_catalog = self.agent_catalog.clone();

@@ -103,14 +103,23 @@ fn violations(entries: &[ResolvedEntry]) -> Result<Vec<(&'static str, &'static s
                     break;
                 };
                 let Some(next) = sum.checked_add(value) else {
-                    violations.push((owner.id, SUM_OVERFLOW));
+                    violations.push((
+                        owner.id,
+                        crate::param_str("tunables.resolved_set_rules.sum_overflow", SUM_OVERFLOW),
+                    ));
                     complete = false;
                     break;
                 };
                 sum = next;
             }
             if complete && sum > limit {
-                violations.push((owner.id, SUM_EXCEEDS_LIMIT));
+                violations.push((
+                    owner.id,
+                    crate::param_str(
+                        "tunables.resolved_set_rules.sum_exceeds_limit",
+                        SUM_EXCEEDS_LIMIT,
+                    ),
+                ));
             }
         }
     }

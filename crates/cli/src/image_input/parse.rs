@@ -13,7 +13,13 @@ pub fn parse_explicit_image_path(input: &str) -> Result<Option<ParsedImagePath>,
     // path on to the composer as bare text. An INTERIOR line break still disqualifies it — that is
     // two references, not one.
     let input = input.trim();
-    if input.len() > MAX_PATH_INPUT_BYTES || input.contains(['\r', '\n', '\0']) {
+    if input.len()
+        > iteron_tunables::param_integer(
+            "cli.image_input.parse.max_path_input_bytes",
+            MAX_PATH_INPUT_BYTES,
+        )
+        || input.contains(['\r', '\n', '\0'])
+    {
         return Ok(None);
     }
     let Some(candidate) = decode_single_path_token(input) else {
@@ -38,7 +44,12 @@ pub fn parse_image_mentions(input: &str) -> Result<Vec<ImageMention>, ImageInput
             let Some(close) = inner
                 .as_bytes()
                 .iter()
-                .take(MAX_PATH_INPUT_BYTES + 1)
+                .take(
+                    iteron_tunables::param_integer(
+                        "cli.image_input.parse.max_path_input_bytes",
+                        MAX_PATH_INPUT_BYTES,
+                    ) + 1,
+                )
                 .position(|byte| *byte == b')')
             else {
                 return Err(ImageInputError::unnamed(
@@ -78,14 +89,24 @@ pub fn parse_image_mentions(input: &str) -> Result<Vec<ImageMention>, ImageInput
 
 fn bounded_token_end(input: &str) -> Option<usize> {
     for (offset, character) in input.char_indices() {
-        if offset > MAX_PATH_INPUT_BYTES {
+        if offset
+            > iteron_tunables::param_integer(
+                "cli.image_input.parse.max_path_input_bytes",
+                MAX_PATH_INPUT_BYTES,
+            )
+        {
             return None;
         }
         if character.is_whitespace() || ",;!?)]}".contains(character) {
             return Some(offset);
         }
     }
-    (input.len() <= MAX_PATH_INPUT_BYTES).then_some(input.len())
+    (input.len()
+        <= iteron_tunables::param_integer(
+            "cli.image_input.parse.max_path_input_bytes",
+            MAX_PATH_INPUT_BYTES,
+        ))
+    .then_some(input.len())
 }
 
 fn parse_path_candidate(candidate: &str) -> Result<Option<ParsedImagePath>, ImageInputError> {

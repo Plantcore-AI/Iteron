@@ -63,6 +63,10 @@ fn main() -> Result<()> {
             tunables_params::surface(&root, true)?;
             return Ok(());
         }
+        [group, command] if group == "tunables" && command == "artifacts-check" => {
+            tunables_params::artifacts_check(&root)?;
+            return Ok(());
+        }
         [group, command] if group == "tunables" && command == "census-check" => {
             tunables_params::census_check(&root, false)?;
             return Ok(());
@@ -73,6 +77,22 @@ fn main() -> Result<()> {
         }
         [group, command] if group == "tunables" && command == "constants-audit" => {
             tunables_params::census(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "wire-integers" => {
+            tunables_params::wire_integers(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "wire-scalars" => {
+            tunables_params::wire_scalars(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "wire-cross-file" => {
+            tunables_params::wire_cross_file(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "unwire-structural" => {
+            tunables_params::unwire_structural(&root)?;
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "check" => {
@@ -177,7 +197,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|surface|generate-surface|census-check|generate-census> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

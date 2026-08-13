@@ -175,8 +175,15 @@ impl ProcessRegistry {
         let mut state = self.lock();
         state.active_reaps = state.active_reaps.saturating_sub(count);
         self.0.reaps_settled.notify_all();
-        let deadline = Instant::now() + CLOSE_REAP_WAIT;
-        for _ in 0..CLOSE_REAP_WAKE_LIMIT {
+        let deadline = Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.tui.transcript_effect.process.close_reap_wait",
+                CLOSE_REAP_WAIT,
+            );
+        for _ in 0..iteron_tunables::param_integer(
+            "cli.tui.transcript_effect.process.close_reap_wake_limit",
+            CLOSE_REAP_WAKE_LIMIT,
+        ) {
             if state.active_reaps == 0 {
                 break;
             }
@@ -301,7 +308,12 @@ fn kill_and_reap_bounded(mut child: tokio::process::Child) -> ReapOutcome {
     let _ = child.start_kill();
     bounded_reap_poll(
         || child.try_wait().map(|status| status.is_some()),
-        || std::thread::sleep(SYNC_REAP_PAUSE),
+        || {
+            std::thread::sleep(iteron_tunables::param_duration(
+                "cli.tui.transcript_effect.process.sync_reap_pause",
+                SYNC_REAP_PAUSE,
+            ))
+        },
     )
 }
 
@@ -309,16 +321,29 @@ fn bounded_reap_poll(
     mut poll: impl FnMut() -> io::Result<bool>,
     mut pause: impl FnMut(),
 ) -> ReapOutcome {
-    for attempt in 0..SYNC_REAP_POLLS {
+    for attempt in 0..iteron_tunables::param_integer(
+        "cli.tui.transcript_effect.process.sync_reap_polls",
+        SYNC_REAP_POLLS,
+    ) {
         match poll() {
             Ok(true) => return ReapOutcome::Reaped,
             Ok(false) => {
-                if attempt + 1 < SYNC_REAP_POLLS {
+                if attempt + 1
+                    < iteron_tunables::param_integer(
+                        "cli.tui.transcript_effect.process.sync_reap_polls",
+                        SYNC_REAP_POLLS,
+                    )
+                {
                     pause();
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                if attempt + 1 < SYNC_REAP_POLLS {
+                if attempt + 1
+                    < iteron_tunables::param_integer(
+                        "cli.tui.transcript_effect.process.sync_reap_polls",
+                        SYNC_REAP_POLLS,
+                    )
+                {
                     pause();
                 }
             }

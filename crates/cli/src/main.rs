@@ -401,10 +401,141 @@ struct SystemPromptAssembly {
 /// and the tool names are all resolved elsewhere and are not reachable from here — which is what
 /// makes it safe to let an outside optimizer rewrite this string.
 fn base_system_prompt(profile: Option<&iteron_tunables::ProfileDocument>) -> String {
-    profile
+    let mut prompt = profile
         .and_then(|document| iteron_tunables::artifact_override(document, "prompt/system@v1"))
-        .unwrap_or(SYSTEM_PROMPT)
-        .to_string()
+        .unwrap_or(iteron_tunables::param_str(
+            "cli.main.system_prompt",
+            SYSTEM_PROMPT,
+        ))
+        .to_string();
+    if let Some(instruction) = profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/verification@v1"))
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(instruction);
+    }
+    if let Some(instruction) = profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/memory_write@v1"))
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(instruction);
+    }
+    prompt
+}
+
+/// The compaction summary instruction, after any operator-supplied artifact replacement.
+///
+/// Same rule as [`base_system_prompt`]: a prompt artifact is model-visible text and only that.
+/// Replacing it changes what the summarizer is asked for and nothing about what the agent may do —
+/// the compaction plan, its bounds and the coverage check are all resolved elsewhere. `None` means
+/// no profile carried a replacement, and the compiled
+/// [`iteron_ctx::CompactionPolicy::summary_prompt`] stays in force.
+fn compaction_summary_prompt(profile: Option<&iteron_tunables::ProfileDocument>) -> Option<String> {
+    profile
+        .and_then(|document| iteron_tunables::artifact_override(document, "prompt/compaction@v1"))
+        .map(str::to_owned)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TunablesExportFormat {
+    Json,
+    Table,
+}
+
+/// Render the optimization surface, optionally narrowed.
+///
+/// The unfiltered JSON is twenty-three thousand lines. That is the right shape for a machine and
+/// the wrong shape for someone looking for one knob, which is why the table exists and why both
+/// accept the same filters — an operator who finds a row in the table can re-run with `--format
+/// json` and get exactly that subset.
+fn tunables_surface_view(
+    format: TunablesExportFormat,
+    module: Option<&str>,
+    filter: Option<&str>,
+) -> anyhow::Result<String> {
+    let surface = iteron_tunables::surface();
+    let needle = filter.map(str::to_ascii_lowercase);
+    let matches_family = |entry: &iteron_tunables::export::FamilyEntry| {
+        module.is_none_or(|module| entry.module.as_str() == module)
+            && needle.as_ref().is_none_or(|needle| {
+                entry.id.to_ascii_lowercase().contains(needle)
+                    || entry.summary.to_ascii_lowercase().contains(needle)
+                    || entry.semantic_key.to_ascii_lowercase().contains(needle)
+            })
+    };
+    let matches_param = |param: &iteron_tunables::Param| {
+        module.is_none_or(|module| param.module.as_str() == module)
+            && needle
+                .as_ref()
+                .is_none_or(|needle| param.id.to_ascii_lowercase().contains(needle))
+    };
+    if let Some(module) = module
+        && iteron_tunables::ModuleId::parse(module).is_none()
+    {
+        anyhow::bail!(
+            "unknown module `{module}`; there are 28, listed by `--tunables-export --format table`"
+        );
+    }
+
+    let families: Vec<_> = surface
+        .families
+        .iter()
+        .filter(|e| matches_family(e))
+        .collect();
+    let params: Vec<_> = surface.params.iter().filter(|p| matches_param(p)).collect();
+
+    match format {
+        TunablesExportFormat::Json => {
+            if module.is_none() && filter.is_none() {
+                return Ok(iteron_tunables::surface_json()?);
+            }
+            let mut json = serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": iteron_tunables::SURFACE_SCHEMA_VERSION,
+                "filtered": true,
+                "families": families,
+                "params": params,
+            }))?;
+            json.push('\n');
+            Ok(json)
+        }
+        TunablesExportFormat::Table => {
+            let mut out = String::new();
+            if module.is_none() && filter.is_none() {
+                out.push_str("MODULES\n");
+                for entry in &surface.modules {
+                    out.push_str(&format!(
+                        "  {:<26} {:>3} families {:>5} params {:>3} artifacts\n",
+                        entry.id, entry.families, entry.params, entry.artifacts
+                    ));
+                }
+                out.push('\n');
+            }
+            out.push_str(&format!("FAMILIES ({})\n", families.len()));
+            for entry in families {
+                out.push_str(&format!(
+                    "  {:<44} {:<24} {}\n",
+                    entry.id,
+                    entry.module.as_str(),
+                    if entry.profile_addressable {
+                        "settable"
+                    } else {
+                        "read-only"
+                    }
+                ));
+            }
+            out.push_str(&format!("\nPARAMETERS ({})\n", params.len()));
+            for param in params {
+                out.push_str(&format!(
+                    "  {:<58} {:<22} {:<10} {}\n",
+                    param.id,
+                    param.module.as_str(),
+                    param.default.chars().take(10).collect::<String>(),
+                    if param.applied { "applied" } else { "INERT" }
+                ));
+            }
+            Ok(out)
+        }
+    }
 }
 
 fn assemble_system_prompt(
@@ -453,8 +584,8 @@ fn long_version() -> &'static str {
         format!(
             "{} ({} {})",
             env!("CARGO_PKG_VERSION"),
-            BUILD_COMMIT,
-            BUILD_DATE
+            iteron_tunables::param_str("cli.main.build_commit", BUILD_COMMIT),
+            iteron_tunables::param_str("cli.main.build_date", BUILD_DATE)
         )
     })
 }
@@ -485,7 +616,7 @@ fn build_date_days(date: &str) -> Option<i64> {
 /// One line, on stderr, when this binary is old enough that its compiled-in facts have aged out.
 fn staleness_note(date: &str, now_unix_secs: i64) -> Option<String> {
     let age = now_unix_secs.div_euclid(86_400) - build_date_days(date)?;
-    (age > BUILD_STALE_AFTER_DAYS).then(|| {
+    (age > iteron_tunables::param_integer("cli.main.build_stale_after_days", BUILD_STALE_AFTER_DAYS)).then(|| {
         format!(
             "warning: this iteron build is {age} days old (built {date}, commit {BUILD_COMMIT}); its compiled-in provider catalog may name retired models — reinstall with the installer in the latest release"
         )
@@ -497,7 +628,10 @@ fn warn_if_stale() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs() as i64)
         .unwrap_or_default();
-    if let Some(note) = staleness_note(BUILD_DATE, now) {
+    if let Some(note) = staleness_note(
+        iteron_tunables::param_str("cli.main.build_date", BUILD_DATE),
+        now,
+    ) {
         eprintln!("{note}");
     }
 }
@@ -649,8 +783,37 @@ struct Cli {
 
     /// Apply a tunables profile document to this run. Requires --tunables-profile-digest; a
     /// candidate that can be swapped between digesting and applying is not pinned to anything.
-    #[arg(long, value_name = "PATH", requires = "tunables_profile_digest")]
+    #[arg(long, value_name = "PATH")]
     tunables_profile: Option<PathBuf>,
+
+    /// A tunables profile as inline JSON, for a one-off experiment. Mutually exclusive with
+    /// --tunables-profile; neither can be digest-pinned, because bytes produced in the same breath
+    /// as the claim about them have nothing prior to pin to.
+    #[arg(long, value_name = "JSON", conflicts_with = "tunables_profile")]
+    tunables_profile_json: Option<String>,
+
+    /// Set one tunable for this run: `--set compaction_trigger=120000`. Repeatable. Accepts a
+    /// family id, semantic key, alias, or exposed parameter id; the source kind is inferred from
+    /// the family's own declared bindings.
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    set_tunable: Vec<String>,
+
+    /// Print the exact assembled profile and whether each tier-2 parameter has a production use
+    /// site, then exit without running anything.
+    #[arg(long)]
+    tunables_explain: bool,
+
+    /// Restrict --tunables-export to one optimization module.
+    #[arg(long, value_name = "MODULE")]
+    tunables_module: Option<String>,
+
+    /// Restrict --tunables-export to entries whose id or summary contains this substring.
+    #[arg(long, value_name = "SUBSTRING")]
+    tunables_filter: Option<String>,
+
+    /// --tunables-export output shape: json for machines, table for a human scanning the surface.
+    #[arg(long, value_enum, default_value_t = TunablesExportFormat::Json)]
+    tunables_format: TunablesExportFormat,
 
     /// The SHA-256 the profile file must have. Any mismatch refuses the run.
     #[arg(long, value_name = "SHA256")]
@@ -804,7 +967,10 @@ fn erasure_now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(UNIX_MS_ON_UNUSABLE_CLOCK)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.main.unix_ms_on_unusable_clock",
+            UNIX_MS_ON_UNUSABLE_CLOCK,
+        ))
 }
 
 fn local_erasure_request(
@@ -1009,22 +1175,71 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     let mut tunables_profile_document: Option<iteron_tunables::ProfileDocument> = None;
     if cli.tunables_export {
-        print!("{}", iteron_tunables::surface_json()?);
+        print!(
+            "{}",
+            tunables_surface_view(
+                cli.tunables_format,
+                cli.tunables_module.as_deref(),
+                cli.tunables_filter.as_deref(),
+            )?
+        );
         return Ok(output::EXIT_SUCCESS);
     }
-    if let Some(path) = cli.tunables_profile.as_deref() {
-        // Load and fully validate before anything else runs. Every refusal names its reason, so a
-        // tuner learns what to fix instead of only that it failed.
-        let digest = cli
-            .tunables_profile_digest
-            .as_deref()
-            .expect("clap requires the digest alongside the profile");
-        let bytes = std::fs::read(path).map_err(|error| {
-            anyhow::anyhow!("reading tunables profile {}: {error}", path.display())
-        })?;
-        let document = iteron_tunables::load_profile(&bytes, digest)
-            .map_err(|error| anyhow::anyhow!("tunables profile refused: {error}"))?;
-        tunables_profile_document = Some(document);
+    {
+        let loaded = runtime_tunables::adhoc::load(
+            cli.tunables_profile.as_deref(),
+            cli.tunables_profile_json.as_deref(),
+            cli.tunables_profile_digest.as_deref(),
+        )?;
+        let origin = loaded.as_ref().map(|(_, origin)| *origin);
+        let document = runtime_tunables::adhoc::apply_set_arguments(
+            loaded.map(|(document, _)| document),
+            &cli.set_tunable,
+        )?;
+        if let Some(document) = document {
+            // An unpinned profile is legitimate for debugging and must never be mistaken for a
+            // reproducible one, so it announces itself rather than being inferred from its absence
+            // in the record.
+            if !origin.is_some_and(runtime_tunables::adhoc::ProfileOrigin::is_pinned) {
+                eprintln!(
+                    "tunables: applying an UNPINNED ad-hoc profile ({} value(s), {} parameter(s), \
+                     {} artifact(s)); this run is not byte-reproducible from a digest",
+                    document.values.len(),
+                    document.params.len(),
+                    document.artifacts.len()
+                );
+            }
+            let overrides = document
+                .params
+                .iter()
+                .map(|assignment| (assignment.param.clone(), assignment.value.clone()))
+                .collect::<Vec<_>>();
+            if !overrides.is_empty() {
+                let installed =
+                    iteron_tunables::install_param_overrides(overrides).map_err(|error| {
+                        anyhow::anyhow!("tier-2 parameter override refused: {error}")
+                    })?;
+                eprintln!("tunables: installed {installed} tier-2 parameter override(s)");
+            }
+            let artifact_overrides = document
+                .artifacts
+                .iter()
+                .map(|artifact| (artifact.artifact.clone(), artifact.text.clone()))
+                .collect::<Vec<_>>();
+            if !artifact_overrides.is_empty() {
+                let installed =
+                    iteron_tunables::install_prompt_artifact_overrides(artifact_overrides)
+                        .map_err(|error| {
+                            anyhow::anyhow!("prompt artifact override refused: {error}")
+                        })?;
+                eprintln!("tunables: installed {installed} prompt artifact override(s)");
+            }
+            if cli.tunables_explain {
+                print!("{}", runtime_tunables::adhoc::render_effect(&document));
+                return Ok(output::EXIT_SUCCESS);
+            }
+            tunables_profile_document = Some(document);
+        }
     }
     if let Some(path) = cli.emit_tunables_profile.as_deref() {
         // Emit what reproduces this run. With no profile loaded the document is empty, which is
@@ -1209,7 +1424,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
 
     if matches!(cli.command, Some(LocalCommand::Doctor)) {
-        return maintenance::run_doctor(&repo, &runs_dir, BUILD_COMMIT, BUILD_DATE);
+        return maintenance::run_doctor(
+            &repo,
+            &runs_dir,
+            iteron_tunables::param_str("cli.main.build_commit", BUILD_COMMIT),
+            iteron_tunables::param_str("cli.main.build_date", BUILD_DATE),
+        );
     }
     if let Some(LocalCommand::Support {
         output: support_output,
@@ -1219,8 +1439,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             &repo,
             &runs_dir,
             support_output.as_deref(),
-            BUILD_COMMIT,
-            BUILD_DATE,
+            iteron_tunables::param_str("cli.main.build_commit", BUILD_COMMIT),
+            iteron_tunables::param_str("cli.main.build_date", BUILD_DATE),
         )
         .await;
     }
@@ -1555,7 +1775,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         cli.provider.clone(),
         config::env_string("ITERON_PROVIDER"),
         user_file.provider.clone(),
-        BUILTIN_DEFAULT_PROVIDER,
+        iteron_tunables::param_str(
+            "cli.main.builtin_default_provider",
+            BUILTIN_DEFAULT_PROVIDER,
+        ),
     );
     let mut provider_was_explicit = provider_origin != config::ConfigOrigin::Builtin;
     let model_candidate = config::pick_model_string(
@@ -2024,7 +2247,10 @@ async fn run_cli() -> anyhow::Result<u8> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.main.unix_secs_on_unusable_clock",
+            UNIX_SECS_ON_UNUSABLE_CLOCK,
+        ));
     let selected_rate_card = pricing_port
         .as_ref()
         .map(|port| port.resolve_rate_card(&pricing_route, now))
@@ -2543,6 +2769,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent
         .install_mcp_runtime(mcp_runtime)
         .map_err(anyhow::Error::msg)?;
+    // The same document that already replaced the base system prompt above, so a workflow this
+    // session starts applies the operator's `prompt/recovery@v1` instead of the compiled text.
+    agent.install_tunables_profile(tunables_profile_document.clone().map(std::sync::Arc::new));
     let session_spawn_ledger = match &fresh_composition {
         Some(fresh) => fresh.session_spawn_ledger.clone(),
         None => std::sync::Arc::new(
@@ -2628,6 +2857,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         eprintln!("verify gate: harness will run `{cmd}` before accepting 'done'");
     }
     agent.compaction = effective_settings.compaction;
+    agent.compaction_summary_prompt = compaction_summary_prompt(tunables_profile_document.as_ref());
     if let Some(msgs) = resume_messages {
         agent.set_resume(msgs)?;
         if effort_runtime_override {
@@ -3074,15 +3304,20 @@ fn safe_agent_diagnostic(value: &str) -> String {
     const TRUNCATED: &str = "[truncated]";
     const CONTENT_BYTES: usize = MAX_BYTES - TRUNCATED.len();
     let scrubbed = iteron_record::redact::scrub(value);
-    let mut safe = String::with_capacity(scrubbed.len().min(MAX_BYTES));
+    let mut safe = String::with_capacity(scrubbed.len().min(iteron_tunables::param_integer(
+        "cli.main.max_bytes",
+        MAX_BYTES,
+    )));
     for character in scrubbed.chars() {
         let rendered = if character.is_control() {
             character.escape_default().to_string()
         } else {
             character.to_string()
         };
-        if safe.len().saturating_add(rendered.len()) > CONTENT_BYTES {
-            safe.push_str(TRUNCATED);
+        if safe.len().saturating_add(rendered.len())
+            > iteron_tunables::param_integer("cli.main.content_bytes", CONTENT_BYTES)
+        {
+            safe.push_str(iteron_tunables::param_str("cli.main.truncated", TRUNCATED));
             break;
         }
         safe.push_str(&rendered);
@@ -3207,7 +3442,10 @@ async fn run_pricing_command(
                 cli.provider.clone(),
                 config::env_string("ITERON_PROVIDER"),
                 user_file.provider.clone(),
-                BUILTIN_DEFAULT_PROVIDER,
+                iteron_tunables::param_str(
+                    "cli.main.builtin_default_provider",
+                    BUILTIN_DEFAULT_PROVIDER,
+                ),
             );
             let directory = providers::ProviderDirectory::discover(&configured_providers).await?;
             let requested_model = cli
@@ -3323,7 +3561,10 @@ async fn run_workflow_command(
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(UNIX_NANOS_ON_UNUSABLE_CLOCK);
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.main.unix_nanos_on_unusable_clock",
+                    UNIX_NANOS_ON_UNUSABLE_CLOCK,
+                ));
             let run_id = format!("wf_{}_{:x}", std::process::id(), nanos);
             (src, parse_workflow_args(args)?, run_id, None)
         }
@@ -3414,7 +3655,10 @@ async fn run_workflow_command(
             cli.provider.clone(),
             config::env_string("ITERON_PROVIDER"),
             user_file.provider.clone(),
-            BUILTIN_DEFAULT_PROVIDER,
+            iteron_tunables::param_str(
+                "cli.main.builtin_default_provider",
+                BUILTIN_DEFAULT_PROVIDER,
+            ),
         ),
     };
     let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
@@ -3459,7 +3703,10 @@ async fn run_workflow_command(
     let workflow_pricing_now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.main.unix_secs_on_unusable_clock",
+            UNIX_SECS_ON_UNUSABLE_CLOCK,
+        ));
     let workflow_rate_card = workflow_pricing_port
         .as_ref()
         .map(|port| port.resolve_rate_card(&workflow_pricing_route, workflow_pricing_now))
@@ -3859,7 +4106,10 @@ async fn run_workflow_command(
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
-                .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK),
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.main.unix_secs_on_unusable_clock",
+                    UNIX_SECS_ON_UNUSABLE_CLOCK,
+                )),
         };
         workflow::persist_inputs(&workflows_dir, &manifest, &src)?;
     }

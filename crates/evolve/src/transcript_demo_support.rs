@@ -84,7 +84,12 @@ pub(super) fn evaluation_suite() -> EvaluationSuite {
             fixture_digest: format!("{:064x}", index + 1),
         })
         .collect();
-    EvaluationSuite::new(SUITE_OWNER, "suite-v1", tasks).expect("fixed suite is valid")
+    EvaluationSuite::new(
+        iteron_tunables::param_str("evolve.transcript_demo_support.suite_owner", SUITE_OWNER),
+        "suite-v1",
+        tasks,
+    )
+    .expect("fixed suite is valid")
 }
 
 pub(super) fn control_policy() -> PromotionControlPolicy {
@@ -106,13 +111,24 @@ pub(super) fn promotion_anchor() -> PromotionTrustAnchor {
         PromotionRole::Rollback,
     ]
     .into();
-    PromotionTrustAnchor::new(PROMOTION_PARTY, roles, key(0x11))
-        .expect("fixed promotion anchor is valid")
+    PromotionTrustAnchor::new(
+        iteron_tunables::param_str(
+            "evolve.transcript_demo_support.promotion_party",
+            PROMOTION_PARTY,
+        ),
+        roles,
+        key(0x11),
+    )
+    .expect("fixed promotion anchor is valid")
 }
 
 pub(super) fn evaluator_anchor() -> EvaluatorTrustAnchor {
-    EvaluatorTrustAnchor::new(EVALUATOR_ID, SUITE_OWNER, key(0x22))
-        .expect("fixed evaluator anchor is valid")
+    EvaluatorTrustAnchor::new(
+        EVALUATOR_ID,
+        iteron_tunables::param_str("evolve.transcript_demo_support.suite_owner", SUITE_OWNER),
+        key(0x22),
+    )
+    .expect("fixed evaluator anchor is valid")
 }
 
 pub(super) fn evaluator() -> IndependentEvaluator {
@@ -135,7 +151,15 @@ fn authorizer_for(
     authority_id: &str,
     policy: &PromotionControlPolicy,
 ) -> Result<PromotionAuthorizer, PromotionAuthorityError> {
-    PromotionAuthorizer::new(authority_id, policy.digest()?, PROMOTION_PARTY, key(0x11))
+    PromotionAuthorizer::new(
+        authority_id,
+        policy.digest()?,
+        iteron_tunables::param_str(
+            "evolve.transcript_demo_support.promotion_party",
+            PROMOTION_PARTY,
+        ),
+        key(0x11),
+    )
 }
 
 pub(super) fn baseline() -> Result<(PolicyRef, DeploymentBundle), PromotionAuthorityError> {

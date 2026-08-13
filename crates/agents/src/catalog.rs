@@ -102,24 +102,34 @@ impl AgentCatalog {
                 break;
             }
             let source = path.display().to_string();
-            let text =
-                match read_bounded_utf8(root, path, MAX_AGENT_SOURCE_BYTES, SourceScope::User) {
-                    Ok(Some(text)) => text,
-                    Ok(None) => {
-                        catalog.record_error(LoadError {
-                            source,
-                            reason: "verified plugin agent artifact is missing".into(),
-                        });
-                        continue;
-                    }
-                    Err(error) => {
-                        catalog.record_error(LoadError {
-                            source,
-                            reason: error.reason().to_string(),
-                        });
-                        continue;
-                    }
-                };
+            let text = match read_bounded_utf8(
+                root,
+                path,
+                iteron_tunables::param_usize(
+                    "agents.catalog.max_agent_source_bytes",
+                    iteron_tunables::param_integer(
+                        "agents.catalog.max_agent_source_bytes",
+                        MAX_AGENT_SOURCE_BYTES,
+                    ),
+                ),
+                SourceScope::User,
+            ) {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    catalog.record_error(LoadError {
+                        source,
+                        reason: "verified plugin agent artifact is missing".into(),
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    catalog.record_error(LoadError {
+                        source,
+                        reason: error.reason().to_string(),
+                    });
+                    continue;
+                }
+            };
             match parse_def(&source, &text, Trust::Trusted) {
                 Ok(def) if def.name != *expected_name => catalog.record_error(LoadError {
                     source,
@@ -239,19 +249,23 @@ impl AgentCatalog {
     }
 
     fn record_error(&mut self, error: LoadError) {
-        if self.errors.len() < MAX_LOAD_ERRORS {
+        let max_load_errors =
+            iteron_tunables::param_usize("agents.catalog.max_load_errors", MAX_LOAD_ERRORS);
+        if self.errors.len() < max_load_errors {
             self.errors.push(error);
         } else if !self.errors_truncated {
             self.errors_truncated = true;
             self.errors.push(LoadError {
                 source: "agent catalog".into(),
-                reason: format!("further load errors omitted after {MAX_LOAD_ERRORS} entries"),
+                reason: format!("further load errors omitted after {max_load_errors} entries"),
             });
         }
     }
 
     fn consume_source_slot(&mut self) -> bool {
-        if self.sources_seen < MAX_CATALOG_SOURCES {
+        let max_catalog_sources =
+            iteron_tunables::param_usize("agents.catalog.max_catalog_sources", MAX_CATALOG_SOURCES);
+        if self.sources_seen < max_catalog_sources {
             self.sources_seen += 1;
             return true;
         }
@@ -260,7 +274,7 @@ impl AgentCatalog {
             self.record_error(LoadError {
                 source: "agent catalog".into(),
                 reason: format!(
-                    "agent definition loading truncated at {MAX_CATALOG_SOURCES} source files"
+                    "agent definition loading truncated at {max_catalog_sources} source files"
                 ),
             });
         }
@@ -275,7 +289,9 @@ impl AgentCatalog {
         // An assumed window size for turning a fraction into a token budget. Documented assumption:
         // the caller passes a fraction; the absolute size is not this crate's to know precisely.
         const WINDOW_TOKENS: usize = 200_000;
-        let budget = (budget_frac.clamp(0.0, 1.0) * WINDOW_TOKENS as f64) as usize;
+        let window_tokens =
+            iteron_tunables::param_usize("agents.catalog.window_tokens", WINDOW_TOKENS);
+        let budget = (budget_frac.clamp(0.0, 1.0) * window_tokens as f64) as usize;
 
         let mut out = String::from(
             "Available agent types (a fan-out leaf may name one via `agent_type`; default = generic):\n",
@@ -315,7 +331,14 @@ impl AgentCatalog {
     /// Load every `*.md` in `dir` at trust tier `trust`. Untrusted directories are stripped without
     /// being read (do not process third-party content). Files are sorted for reproducibility.
     fn load_dir(&mut self, root: &Path, dir: &Path, trust: Trust, scope: SourceScope) {
-        let listing = match list_directory_bounded(root, dir, MAX_AGENT_FILES_PER_DIR, scope) {
+        let max_files_per_dir = iteron_tunables::param_usize(
+            "agents.catalog.max_agent_files_per_dir",
+            iteron_tunables::param_integer(
+                "agents.catalog.max_agent_files_per_dir",
+                MAX_AGENT_FILES_PER_DIR,
+            ),
+        );
+        let listing = match list_directory_bounded(root, dir, max_files_per_dir, scope) {
             Ok(Some(listing)) => listing,
             Ok(None) => return,
             Err(error) => {
@@ -330,7 +353,7 @@ impl AgentCatalog {
             self.record_error(LoadError {
                 source: dir.display().to_string(),
                 reason: format!(
-                    "agent definition discovery truncated at {MAX_AGENT_FILES_PER_DIR} entries"
+                    "agent definition discovery truncated at {max_files_per_dir} entries"
                 ),
             });
         }
@@ -372,7 +395,18 @@ impl AgentCatalog {
                 });
                 continue;
             }
-            let text = match read_bounded_utf8(root, &path, MAX_AGENT_SOURCE_BYTES, scope) {
+            let text = match read_bounded_utf8(
+                root,
+                &path,
+                iteron_tunables::param_usize(
+                    "agents.catalog.max_agent_source_bytes",
+                    iteron_tunables::param_integer(
+                        "agents.catalog.max_agent_source_bytes",
+                        MAX_AGENT_SOURCE_BYTES,
+                    ),
+                ),
+                scope,
+            ) {
                 Ok(Some(text)) => text,
                 Ok(None) => continue,
                 Err(error) => {
@@ -424,17 +458,31 @@ struct AgentDirScan {
 }
 
 fn record_scan_error(errors: &mut Vec<LoadError>, error: LoadError) {
-    if errors.len() < MAX_LOAD_ERRORS {
+    let max_load_errors =
+        iteron_tunables::param_usize("agents.catalog.max_load_errors", MAX_LOAD_ERRORS);
+    if errors.len() < max_load_errors {
         errors.push(error);
-    } else if errors.len() == MAX_LOAD_ERRORS {
+    } else if errors.len() == max_load_errors {
         errors.push(LoadError {
             source: "repository agent scan".into(),
-            reason: format!("further scan errors omitted after {MAX_LOAD_ERRORS} entries"),
+            reason: format!("further scan errors omitted after {max_load_errors} entries"),
         });
     }
 }
 
 fn find_agents_dirs(root: &Path) -> AgentDirScan {
+    let max_scan_depth =
+        iteron_tunables::param_usize("agents.catalog.max_scan_depth", MAX_SCAN_DEPTH);
+    let max_scan_dirs = iteron_tunables::param_usize("agents.catalog.max_scan_dirs", MAX_SCAN_DIRS);
+    let max_scan_entries =
+        iteron_tunables::param_usize("agents.catalog.max_scan_entries", MAX_SCAN_ENTRIES);
+    let max_files_per_dir = iteron_tunables::param_usize(
+        "agents.catalog.max_agent_files_per_dir",
+        iteron_tunables::param_integer(
+            "agents.catalog.max_agent_files_per_dir",
+            MAX_AGENT_FILES_PER_DIR,
+        ),
+    );
     let mut found = Vec::new();
     let mut errors = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
@@ -442,28 +490,28 @@ fn find_agents_dirs(root: &Path) -> AgentDirScan {
     let mut visited_entries = 0usize;
 
     while let Some((dir, depth)) = stack.pop() {
-        if depth > MAX_SCAN_DEPTH {
+        if depth > max_scan_depth {
             continue;
         }
-        if visited >= MAX_SCAN_DIRS {
+        if visited >= max_scan_dirs {
             record_scan_error(
                 &mut errors,
                 LoadError {
                     source: root.display().to_string(),
                     reason: format!(
-                        "repository agent scan truncated at {MAX_SCAN_DIRS} directories"
+                        "repository agent scan truncated at {max_scan_dirs} directories"
                     ),
                 },
             );
             break;
         }
-        if visited_entries >= MAX_SCAN_ENTRIES {
+        if visited_entries >= max_scan_entries {
             record_scan_error(
                 &mut errors,
                 LoadError {
                     source: root.display().to_string(),
                     reason: format!(
-                        "repository agent scan truncated at {MAX_SCAN_ENTRIES} directory entries"
+                        "repository agent scan truncated at {max_scan_entries} directory entries"
                     ),
                 },
             );
@@ -471,11 +519,11 @@ fn find_agents_dirs(root: &Path) -> AgentDirScan {
         }
         visited += 1;
 
-        let remaining = MAX_SCAN_ENTRIES - visited_entries;
+        let remaining = max_scan_entries - visited_entries;
         let listing = match list_directory_bounded(
             root,
             &dir,
-            remaining.min(MAX_AGENT_FILES_PER_DIR),
+            remaining.min(max_files_per_dir),
             SourceScope::Repository,
         ) {
             Ok(Some(listing)) => listing,
@@ -499,7 +547,7 @@ fn find_agents_dirs(root: &Path) -> AgentDirScan {
                     source: dir.display().to_string(),
                     reason: format!(
                         "repository agent scan truncated directory at {} entries",
-                        remaining.min(MAX_AGENT_FILES_PER_DIR)
+                        remaining.min(max_files_per_dir)
                     ),
                 },
             );

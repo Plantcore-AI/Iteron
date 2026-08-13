@@ -318,9 +318,17 @@ impl AuthorityState {
             return Err(PromotionAuthorityError::InvalidRequestTransition);
         }
         bundle.validate()?;
-        if self.candidates.len() >= MAX_PROMOTION_CANDIDATES {
+        if self.candidates.len()
+            >= iteron_tunables::param_integer(
+                "evolve.promotion.max_promotion_candidates",
+                MAX_PROMOTION_CANDIDATES,
+            )
+        {
             return Err(PromotionAuthorityError::CandidateLimit {
-                max: MAX_PROMOTION_CANDIDATES,
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_candidates",
+                    MAX_PROMOTION_CANDIDATES,
+                ),
             });
         }
         if self.candidates.contains_key(&identity.bundle_digest)
@@ -390,9 +398,17 @@ impl AuthorityState {
         {
             return Err(PromotionAuthorityError::InvalidRequestTransition);
         }
-        if self.candidates.len() >= MAX_PROMOTION_CANDIDATES {
+        if self.candidates.len()
+            >= iteron_tunables::param_integer(
+                "evolve.promotion.max_promotion_candidates",
+                MAX_PROMOTION_CANDIDATES,
+            )
+        {
             return Err(PromotionAuthorityError::CandidateLimit {
-                max: MAX_PROMOTION_CANDIDATES,
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_candidates",
+                    MAX_PROMOTION_CANDIDATES,
+                ),
             });
         }
         if self.candidates.contains_key(&identity.bundle_digest)

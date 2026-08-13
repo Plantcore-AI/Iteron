@@ -1260,7 +1260,7 @@
     "mode": "exact",
     "packages": {
       "iteron-agents": {
-        "normal": ["iteron-ctx", "iteron-protocol"],
+        "normal": ["iteron-ctx", "iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
@@ -1291,7 +1291,7 @@
         "build": []
       },
       "iteron-ctx": {
-        "normal": ["iteron-protocol"],
+        "normal": ["iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
@@ -1308,7 +1308,7 @@
         "build": []
       },
       "iteron-evolve": {
-        "normal": ["iteron-protocol", "iteron-record"],
+        "normal": ["iteron-protocol", "iteron-record", "iteron-tunables"],
         "dev": [],
         "build": []
       },
@@ -1321,47 +1321,47 @@
         "build": []
       },
       "iteron-lsp": {
-        "normal": [],
+        "normal": ["iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-mcp": {
-        "normal": ["iteron-protocol", "iteron-sandbox"],
+        "normal": ["iteron-protocol", "iteron-sandbox", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-obs": {
-        "normal": ["iteron-protocol"],
+        "normal": ["iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-changeset": {
-        "normal": [],
+        "normal": ["iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-marketplace": {
-        "normal": ["iteron-protocol"],
+        "normal": ["iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-statusline": {
-        "normal": [],
+        "normal": ["iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-support": {
-        "normal": ["iteron-record"],
+        "normal": ["iteron-record", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-protocol": {
-        "normal": [],
+        "normal": ["iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-provider": {
-        "normal": ["iteron-protocol"],
+        "normal": ["iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
@@ -1371,17 +1371,17 @@
         "build": []
       },
       "iteron-sandbox": {
-        "normal": [],
+        "normal": ["iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-sched": {
-        "normal": ["iteron-protocol", "iteron-provider"],
+        "normal": ["iteron-protocol", "iteron-provider", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-tools": {
-        "normal": ["iteron-ctx", "iteron-lsp", "iteron-protocol", "iteron-sandbox"],
+        "normal": ["iteron-ctx", "iteron-lsp", "iteron-protocol", "iteron-sandbox", "iteron-tunables"],
         "dev": [],
         "build": []
       },
@@ -1391,12 +1391,12 @@
         "build": []
       },
       "iteron-verify": {
-        "normal": ["iteron-protocol", "iteron-sandbox"],
+        "normal": ["iteron-protocol", "iteron-sandbox", "iteron-tunables"],
         "dev": [],
         "build": []
       },
       "iteron-workflow": {
-        "normal": ["iteron-protocol", "iteron-sched"],
+        "normal": ["iteron-protocol", "iteron-sched", "iteron-tunables"],
         "dev": [],
         "build": []
       },

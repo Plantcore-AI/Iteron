@@ -194,9 +194,18 @@ impl Anthropic {
         if req.thinking_budget > 0 && capabilities.extended_thinking {
             body["thinking"] =
                 serde_json::json!({"type":"enabled","budget_tokens": req.thinking_budget});
-            let need = req
-                .thinking_budget
-                .saturating_add(THINKING_OUTPUT_HEADROOM_TOKENS);
+            let headroom = u32::try_from(iteron_tunables::param_i128(
+                "provider.anthropic.thinking_output_headroom_tokens",
+                i128::from(iteron_tunables::param_integer(
+                    "provider.anthropic.thinking_output_headroom_tokens",
+                    THINKING_OUTPUT_HEADROOM_TOKENS,
+                )),
+            ))
+            .unwrap_or(iteron_tunables::param_integer(
+                "provider.anthropic.thinking_output_headroom_tokens",
+                THINKING_OUTPUT_HEADROOM_TOKENS,
+            ));
+            let need = req.thinking_budget.saturating_add(headroom);
             if req.max_tokens < need {
                 body["max_tokens"] = serde_json::json!(need);
             }
@@ -228,7 +237,11 @@ fn direct_route_scope() -> String {
 
 fn validate_route_scope(route_scope: &str) -> Result<(), ProviderError> {
     if route_scope.is_empty()
-        || route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+        || route_scope.len()
+            > iteron_tunables::param_integer(
+                "provider.anthropic.max_route_scope_bytes",
+                MAX_ROUTE_SCOPE_BYTES,
+            )
         || route_scope.chars().any(char::is_control)
     {
         return Err(ProviderError::Configuration(
@@ -452,10 +465,18 @@ fn matching_native_content(
 
 fn validate_state_envelope(state: &ProviderState) -> Result<(), ProviderError> {
     if state.route_scope.is_empty()
-        || state.route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+        || state.route_scope.len()
+            > iteron_tunables::param_integer(
+                "provider.anthropic.max_route_scope_bytes",
+                MAX_ROUTE_SCOPE_BYTES,
+            )
         || state.route_scope.chars().any(char::is_control)
         || state.format.is_empty()
-        || state.format.len() > MAX_STATE_FORMAT_BYTES
+        || state.format.len()
+            > iteron_tunables::param_integer(
+                "provider.anthropic.max_state_format_bytes",
+                MAX_STATE_FORMAT_BYTES,
+            )
         || state.format.chars().any(char::is_control)
     {
         return Err(ProviderError::Decode(
@@ -465,7 +486,12 @@ fn validate_state_envelope(state: &ProviderState) -> Result<(), ProviderError> {
     let encoded = serde_json::to_vec(&state.payload).map_err(|_| {
         ProviderError::Decode("Anthropic provider state could not be encoded".into())
     })?;
-    if encoded.len() > MAX_NATIVE_STATE_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer(
+            "provider.anthropic.max_native_state_bytes",
+            MAX_NATIVE_STATE_BYTES,
+        )
+    {
         return Err(ProviderError::Decode(format!(
             "Anthropic provider state exceeded {MAX_NATIVE_STATE_BYTES} bytes"
         )));
@@ -474,7 +500,12 @@ fn validate_state_envelope(state: &ProviderState) -> Result<(), ProviderError> {
 }
 
 fn validate_native_content(content: &[serde_json::Value]) -> Result<(), ProviderError> {
-    if content.len() > MAX_NATIVE_CONTENT_BLOCKS {
+    if content.len()
+        > iteron_tunables::param_integer(
+            "provider.anthropic.max_native_content_blocks",
+            MAX_NATIVE_CONTENT_BLOCKS,
+        )
+    {
         return Err(ProviderError::Decode(format!(
             "Anthropic provider state exceeded {MAX_NATIVE_CONTENT_BLOCKS} content blocks"
         )));
@@ -482,7 +513,12 @@ fn validate_native_content(content: &[serde_json::Value]) -> Result<(), Provider
     let encoded = serde_json::to_vec(content).map_err(|_| {
         ProviderError::Decode("Anthropic native content could not be encoded".into())
     })?;
-    if encoded.len() > MAX_NATIVE_STATE_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer(
+            "provider.anthropic.max_native_state_bytes",
+            MAX_NATIVE_STATE_BYTES,
+        )
+    {
         return Err(ProviderError::Decode(format!(
             "Anthropic native content exceeded {MAX_NATIVE_STATE_BYTES} bytes"
         )));
@@ -492,15 +528,43 @@ fn validate_native_content(content: &[serde_json::Value]) -> Result<(), Provider
         let object = block.as_object().ok_or_else(|| {
             ProviderError::Decode("Anthropic native content block was not an object".into())
         })?;
-        let kind = required_native_string(object, "type", MAX_STATE_FORMAT_BYTES)?;
+        let kind = required_native_string(
+            object,
+            "type",
+            iteron_tunables::param_integer(
+                "provider.anthropic.max_state_format_bytes",
+                MAX_STATE_FORMAT_BYTES,
+            ),
+        )?;
         let allowed: &[&str] = match kind {
             "text" => {
-                required_native_string(object, "text", MAX_NATIVE_STATE_BYTES)?;
+                required_native_string(
+                    object,
+                    "text",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_native_state_bytes",
+                        MAX_NATIVE_STATE_BYTES,
+                    ),
+                )?;
                 &["type", "text"]
             }
             "thinking" => {
-                required_native_string(object, "thinking", MAX_NATIVE_STATE_BYTES)?;
-                let signature = required_native_string(object, "signature", MAX_SIGNATURE_BYTES)?;
+                required_native_string(
+                    object,
+                    "thinking",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_native_state_bytes",
+                        MAX_NATIVE_STATE_BYTES,
+                    ),
+                )?;
+                let signature = required_native_string(
+                    object,
+                    "signature",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_signature_bytes",
+                        MAX_SIGNATURE_BYTES,
+                    ),
+                )?;
                 if signature.is_empty() {
                     return Err(ProviderError::Decode(
                         "Anthropic thinking block had an empty signature".into(),
@@ -509,7 +573,14 @@ fn validate_native_content(content: &[serde_json::Value]) -> Result<(), Provider
                 &["type", "thinking", "signature"]
             }
             "redacted_thinking" => {
-                let data = required_native_string(object, "data", MAX_NATIVE_STATE_BYTES)?;
+                let data = required_native_string(
+                    object,
+                    "data",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_native_state_bytes",
+                        MAX_NATIVE_STATE_BYTES,
+                    ),
+                )?;
                 if data.is_empty() {
                     return Err(ProviderError::Decode(
                         "Anthropic redacted thinking block had empty data".into(),
@@ -518,8 +589,22 @@ fn validate_native_content(content: &[serde_json::Value]) -> Result<(), Provider
                 &["type", "data"]
             }
             "tool_use" => {
-                let id = required_native_string(object, "id", MAX_TOOL_ID_OR_NAME_BYTES)?;
-                let name = required_native_string(object, "name", MAX_TOOL_ID_OR_NAME_BYTES)?;
+                let id = required_native_string(
+                    object,
+                    "id",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_tool_id_or_name_bytes",
+                        MAX_TOOL_ID_OR_NAME_BYTES,
+                    ),
+                )?;
+                let name = required_native_string(
+                    object,
+                    "name",
+                    iteron_tunables::param_integer(
+                        "provider.anthropic.max_tool_id_or_name_bytes",
+                        MAX_TOOL_ID_OR_NAME_BYTES,
+                    ),
+                )?;
                 if id.is_empty() || name.is_empty() {
                     return Err(ProviderError::Decode(
                         "Anthropic tool block lacked an id or name".into(),
@@ -671,9 +756,12 @@ impl Provider for Anthropic {
         {
             request = request.header("anthropic-beta", header);
         }
-        let header_timeout = deadline
-            .saturating_duration_since(Instant::now())
-            .min(RESPONSE_HEADER_TIMEOUT);
+        let header_timeout = deadline.saturating_duration_since(Instant::now()).min(
+            iteron_tunables::param_duration(
+                "provider.anthropic.response_header_timeout",
+                RESPONSE_HEADER_TIMEOUT,
+            ),
+        );
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Http("Anthropic response headers timed out".into()))?
@@ -684,9 +772,12 @@ impl Provider for Anthropic {
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
             let error = tokio::time::timeout(
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(RESPONSE_HEADER_TIMEOUT),
+                deadline.saturating_duration_since(Instant::now()).min(
+                    iteron_tunables::param_duration(
+                        "provider.anthropic.response_header_timeout",
+                        RESPONSE_HEADER_TIMEOUT,
+                    ),
+                ),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::AnthropicMessages,
@@ -714,6 +805,8 @@ impl Provider for Anthropic {
             .map_err(ProviderError::Configuration)?; // persistent across chunks
         let mut result: Option<TurnResult> = None;
         let mut total_stream_bytes = 0usize;
+        let max_stream_bytes =
+            iteron_tunables::param_usize("provider.anthropic.max_stream_bytes", MAX_STREAM_BYTES);
 
         loop {
             // Idle timeout: a server that accepts the request then stalls (no bytes, no FIN)
@@ -739,9 +832,9 @@ impl Provider for Anthropic {
             total_stream_bytes = total_stream_bytes
                 .checked_add(bytes.len())
                 .ok_or_else(|| ProviderError::Decode("stream byte counter overflow".into()))?;
-            if total_stream_bytes > MAX_STREAM_BYTES {
+            if total_stream_bytes > max_stream_bytes {
                 return Err(ProviderError::Decode(format!(
-                    "Anthropic stream exceeded {MAX_STREAM_BYTES} bytes"
+                    "Anthropic stream exceeded {max_stream_bytes} bytes"
                 )));
             }
             byte_buf.extend_from_slice(&bytes);
@@ -771,7 +864,12 @@ impl Provider for Anthropic {
                         "Anthropic stream emitted data after message_stop".into(),
                     ));
                 }
-                if frame.event.len().saturating_add(frame.data.len()) > MAX_SSE_FRAME_BYTES {
+                if frame.event.len().saturating_add(frame.data.len())
+                    > iteron_tunables::param_integer(
+                        "provider.anthropic.max_sse_frame_bytes",
+                        MAX_SSE_FRAME_BYTES,
+                    )
+                {
                     return Err(ProviderError::Decode(format!(
                         "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
                     )));
@@ -807,7 +905,12 @@ impl Provider for Anthropic {
                     on_item(item);
                 }
             }
-            if buf.len() > MAX_SSE_FRAME_BYTES {
+            if buf.len()
+                > iteron_tunables::param_integer(
+                    "provider.anthropic.max_sse_frame_bytes",
+                    MAX_SSE_FRAME_BYTES,
+                )
+            {
                 return Err(ProviderError::Decode(format!(
                     "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
                 )));

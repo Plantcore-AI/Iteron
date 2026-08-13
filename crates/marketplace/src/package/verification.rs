@@ -53,8 +53,14 @@ where
             path: path.join(MANIFEST_FILE),
             reason: error.to_string(),
         })?;
-    let signature_bytes = read_bounded(&path.join(SIGNATURE_FILE), MAX_SIGNATURE_BYTES)
-        .map_err(|_| PackageError::MalformedSignature)?;
+    let signature_bytes = read_bounded(
+        &path.join(SIGNATURE_FILE),
+        iteron_tunables::param_integer(
+            "marketplace.package.verification.max_signature_bytes",
+            MAX_SIGNATURE_BYTES,
+        ),
+    )
+    .map_err(|_| PackageError::MalformedSignature)?;
     let envelope: SignatureEnvelope =
         serde_json::from_slice(&signature_bytes).map_err(|_| PackageError::MalformedSignature)?;
     if !valid_name(&envelope.key_id) {
@@ -86,7 +92,12 @@ pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    if files.len() > MAX_PACKAGE_FILES {
+    if files.len()
+        > iteron_tunables::param_integer(
+            "marketplace.package.verification.max_package_files",
+            MAX_PACKAGE_FILES,
+        )
+    {
         return Err(invalid(root, "too many files"));
     }
     let mut total = 0u64;
@@ -95,7 +106,12 @@ pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
         total = total
             .checked_add(size)
             .ok_or_else(|| invalid(root, "package byte count overflow"))?;
-        if total > MAX_PACKAGE_BYTES {
+        if total
+            > iteron_tunables::param_integer(
+                "marketplace.package.verification.max_package_bytes",
+                MAX_PACKAGE_BYTES,
+            )
+        {
             return Err(invalid(root, "package exceeds the total byte limit"));
         }
         hash.update((relative.len() as u64).to_be_bytes());
@@ -143,11 +159,21 @@ fn collect_files(
             continue;
         }
         let size = entry.metadata()?.len();
-        if size > MAX_PACKAGE_FILE_BYTES {
+        if size
+            > iteron_tunables::param_integer(
+                "marketplace.package.verification.max_package_file_bytes",
+                MAX_PACKAGE_FILE_BYTES,
+            )
+        {
             return Err(invalid(&path, "file exceeds the per-file byte limit"));
         }
         files.push((relative, path, size));
-        if files.len() > MAX_PACKAGE_FILES {
+        if files.len()
+            > iteron_tunables::param_integer(
+                "marketplace.package.verification.max_package_files",
+                MAX_PACKAGE_FILES,
+            )
+        {
             return Err(invalid(root, "too many files"));
         }
     }

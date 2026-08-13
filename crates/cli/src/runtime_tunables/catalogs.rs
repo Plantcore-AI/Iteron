@@ -200,18 +200,75 @@ pub(crate) fn collect_scalar_catalogs(
         .collect::<BTreeSet<_>>();
 
     let observations = [
-        (PROVIDERS, observed(PROVIDER_DIRECTORY_OWNER, providers)),
-        (MODELS, observed(PROVIDER_DIRECTORY_OWNER, models)),
-        (REASONING_LEVELS, reasoning),
-        (TOKEN_ESTIMATORS, input.token_estimators.clone()),
         (
-            TOOL_CAPABILITIES,
+            iteron_tunables::param_str("cli.runtime_tunables.catalogs.providers", PROVIDERS),
+            observed(
+                iteron_tunables::param_str(
+                    "cli.runtime_tunables.catalogs.provider_directory_owner",
+                    PROVIDER_DIRECTORY_OWNER,
+                ),
+                providers,
+            ),
+        ),
+        (
+            MODELS,
+            observed(
+                iteron_tunables::param_str(
+                    "cli.runtime_tunables.catalogs.provider_directory_owner",
+                    PROVIDER_DIRECTORY_OWNER,
+                ),
+                models,
+            ),
+        ),
+        (
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.reasoning_levels",
+                REASONING_LEVELS,
+            ),
+            reasoning,
+        ),
+        (
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.token_estimators",
+                TOKEN_ESTIMATORS,
+            ),
+            input.token_estimators.clone(),
+        ),
+        (
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.tool_capabilities",
+                TOOL_CAPABILITIES,
+            ),
             observed_or_empty(TOOL_REGISTRY_OWNER, tool_capabilities),
         ),
-        (MODEL_ROUTES, observed(PROVIDER_DIRECTORY_OWNER, routes)),
-        (SERVICE_TIERS, input.provider_service_tiers.clone()),
-        (AGENT_ROLES, observed_or_empty(AGENT_CATALOG_OWNER, roles)),
-        (BINARY_INSPECTORS, input.binary_inspectors.clone()),
+        (
+            MODEL_ROUTES,
+            observed(
+                iteron_tunables::param_str(
+                    "cli.runtime_tunables.catalogs.provider_directory_owner",
+                    PROVIDER_DIRECTORY_OWNER,
+                ),
+                routes,
+            ),
+        ),
+        (
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.service_tiers",
+                SERVICE_TIERS,
+            ),
+            input.provider_service_tiers.clone(),
+        ),
+        (
+            iteron_tunables::param_str("cli.runtime_tunables.catalogs.agent_roles", AGENT_ROLES),
+            observed_or_empty(AGENT_CATALOG_OWNER, roles),
+        ),
+        (
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.binary_inspectors",
+                BINARY_INSPECTORS,
+            ),
+            input.binary_inspectors.clone(),
+        ),
     ];
 
     let mut snapshots = Vec::with_capacity(observations.len());
@@ -266,7 +323,10 @@ fn provider_catalog_values(
 fn reasoning_observation(model: &ModelCapabilities) -> CatalogObservation {
     match model.semantic_effort {
         Some(true) => observed(
-            PROVIDER_REASONING_OWNER,
+            iteron_tunables::param_str(
+                "cli.runtime_tunables.catalogs.provider_reasoning_owner",
+                PROVIDER_REASONING_OWNER,
+            ),
             [
                 ReasoningEffort::Low,
                 ReasoningEffort::Medium,
@@ -278,13 +338,19 @@ fn reasoning_observation(model: &ModelCapabilities) -> CatalogObservation {
             .map(|effort| effort.label().to_owned())
             .collect(),
         ),
-        Some(false) => CatalogObservation::observed_empty(PROVIDER_REASONING_OWNER),
+        Some(false) => CatalogObservation::observed_empty(iteron_tunables::param_str(
+            "cli.runtime_tunables.catalogs.provider_reasoning_owner",
+            PROVIDER_REASONING_OWNER,
+        )),
         // Route admission is the authoritative boundary here. An explicitly admitted route whose
         // discovery metadata does not attest semantic-effort control exposes no selectable effort
         // levels in this process. This is an owner-observed empty catalog, not a claim about every
         // capability the remote service might have and not an unavailable fact that should abort
         // unrelated runs.
-        None => CatalogObservation::observed_empty(PROVIDER_REASONING_OWNER),
+        None => CatalogObservation::observed_empty(iteron_tunables::param_str(
+            "cli.runtime_tunables.catalogs.provider_reasoning_owner",
+            PROVIDER_REASONING_OWNER,
+        )),
     }
 }
 
@@ -339,7 +405,11 @@ fn materialize(
 
 fn validate_owner(catalog_id: &'static str, owner_id: &str) -> Result<(), CatalogFactError> {
     let valid = !owner_id.is_empty()
-        && owner_id.len() <= MAX_OWNER_ID_BYTES
+        && owner_id.len()
+            <= iteron_tunables::param_integer(
+                "cli.runtime_tunables.catalogs.max_owner_id_bytes",
+                MAX_OWNER_ID_BYTES,
+            )
         && owner_id.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'+')
         });
@@ -352,12 +422,21 @@ fn validate_values(
     catalog_id: &'static str,
     values: &BTreeSet<String>,
 ) -> Result<(), CatalogFactError> {
-    if values.len() > MAX_CATALOG_VALUES {
+    if values.len()
+        > iteron_tunables::param_integer(
+            "cli.runtime_tunables.catalogs.max_catalog_values",
+            MAX_CATALOG_VALUES,
+        )
+    {
         return Err(CatalogFactError::TooManyValues { catalog_id });
     }
     let valid = values.iter().all(|value| {
         !value.is_empty()
-            && value.len() <= MAX_CATALOG_VALUE_BYTES
+            && value.len()
+                <= iteron_tunables::param_integer(
+                    "cli.runtime_tunables.catalogs.max_catalog_value_bytes",
+                    MAX_CATALOG_VALUE_BYTES,
+                )
             && value.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/')
             })

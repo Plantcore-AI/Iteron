@@ -191,10 +191,12 @@ pub struct Locations {
 
 /// Normalize `Location | Location[] | LocationLink[] | null` into a deterministic bounded list.
 pub fn parse_locations(value: &Value, limit: usize) -> Result<Locations, LspError> {
-    if !(1..=MAX_LOCATIONS).contains(&limit) {
+    if !(1..=iteron_tunables::param_integer("lsp.lib.max_locations", MAX_LOCATIONS))
+        .contains(&limit)
+    {
         return Err(LspError::InvalidLocationLimit {
             value: limit,
-            max: MAX_LOCATIONS,
+            max: iteron_tunables::param_integer("lsp.lib.max_locations", MAX_LOCATIONS),
         });
     }
     match value {
@@ -205,7 +207,10 @@ pub fn parse_locations(value: &Value, limit: usize) -> Result<Locations, LspErro
 }
 
 fn parse_location_items(items: &[Value], limit: usize) -> Locations {
-    let inspected = items.len().min(MAX_LOCATION_INPUTS);
+    let inspected = items.len().min(iteron_tunables::param_integer(
+        "lsp.lib.max_location_inputs",
+        MAX_LOCATION_INPUTS,
+    ));
     let mut out = Locations {
         uninspected: items.len() - inspected,
         ..Locations::default()
@@ -298,7 +303,10 @@ pub fn parse_hover_text(value: &Value) -> HoverText {
     let mut output = String::new();
     match contents {
         Value::Array(items) => {
-            let inspected = items.len().min(MAX_HOVER_FRAGMENTS);
+            let inspected = items.len().min(iteron_tunables::param_integer(
+                "lsp.lib.max_hover_fragments",
+                MAX_HOVER_FRAGMENTS,
+            ));
             result.uninspected = items.len() - inspected;
             for item in &items[..inspected] {
                 append_hover_item(item, &mut output, &mut result);
@@ -324,7 +332,8 @@ fn append_hover_item(item: &Value, output: &mut String, result: &mut HoverText) 
     }
 
     let separator = if output.is_empty() { "" } else { "\n\n" };
-    let remaining = MAX_HOVER_BYTES.saturating_sub(output.len());
+    let remaining = iteron_tunables::param_integer("lsp.lib.max_hover_bytes", MAX_HOVER_BYTES)
+        .saturating_sub(output.len());
     if separator.len() > remaining {
         result.truncated_bytes = result.truncated_bytes.saturating_add(fragment.len());
         return;
@@ -412,7 +421,7 @@ pub fn ensure_fresh(store: &DocumentStore, completed: &CompletedRequest) -> Resu
 }
 
 pub fn default_limit() -> usize {
-    MAX_LOCATIONS
+    iteron_tunables::param_integer("lsp.lib.max_locations", MAX_LOCATIONS)
 }
 
 #[cfg(test)]

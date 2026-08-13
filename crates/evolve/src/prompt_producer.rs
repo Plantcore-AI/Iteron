@@ -73,7 +73,10 @@ impl PromptPreferenceCandidate {
         validate_nonempty_string(
             "prompt_preference.prompt_template",
             &self.prompt_template,
-            MAX_PROMPT_TEMPLATE_BYTES,
+            iteron_tunables::param_integer(
+                "evolve.prompt_producer.max_prompt_template_bytes",
+                MAX_PROMPT_TEMPLATE_BYTES,
+            ),
         )?;
         Ok(())
     }
@@ -135,9 +138,17 @@ impl PromptPreferenceSpec {
         if candidates.is_empty() {
             return Err(PromptPreferenceError::EmptyCandidateSet);
         }
-        if candidates.len() > MAX_PROMPT_PREFERENCE_CANDIDATES {
+        if candidates.len()
+            > iteron_tunables::param_integer(
+                "evolve.prompt_producer.max_prompt_preference_candidates",
+                MAX_PROMPT_PREFERENCE_CANDIDATES,
+            )
+        {
             return Err(PromptPreferenceError::TooManyCandidates {
-                max: MAX_PROMPT_PREFERENCE_CANDIDATES,
+                max: iteron_tunables::param_integer(
+                    "evolve.prompt_producer.max_prompt_preference_candidates",
+                    MAX_PROMPT_PREFERENCE_CANDIDATES,
+                ),
                 actual: candidates.len(),
             });
         }
@@ -183,9 +194,17 @@ impl PromptPreferenceProducer {
         }
         let search_space =
             serde_json::to_vec(&spec.candidates).map_err(PromptPreferenceError::Encoding)?;
-        if search_space.len() > MAX_PROMPT_SEARCH_SPACE_BYTES {
+        if search_space.len()
+            > iteron_tunables::param_integer(
+                "evolve.prompt_producer.max_prompt_search_space_bytes",
+                MAX_PROMPT_SEARCH_SPACE_BYTES,
+            )
+        {
             return Err(PromptPreferenceError::SearchSpaceTooLarge {
-                max: MAX_PROMPT_SEARCH_SPACE_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.prompt_producer.max_prompt_search_space_bytes",
+                    MAX_PROMPT_SEARCH_SPACE_BYTES,
+                ),
             });
         }
         let selected = select_candidate(dataset, &spec.candidates);
@@ -203,9 +222,17 @@ impl PromptPreferenceProducer {
         };
         let artifact_bytes =
             serde_json::to_vec(&artifact).map_err(PromptPreferenceError::Encoding)?;
-        if artifact_bytes.len() > MAX_INERT_PROMPT_ARTIFACT_BYTES {
+        if artifact_bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.prompt_producer.max_inert_prompt_artifact_bytes",
+                MAX_INERT_PROMPT_ARTIFACT_BYTES,
+            )
+        {
             return Err(PromptPreferenceError::ArtifactTooLarge {
-                max: MAX_INERT_PROMPT_ARTIFACT_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.prompt_producer.max_inert_prompt_artifact_bytes",
+                    MAX_INERT_PROMPT_ARTIFACT_BYTES,
+                ),
                 actual: artifact_bytes.len(),
             });
         }

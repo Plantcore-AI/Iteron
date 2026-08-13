@@ -69,7 +69,7 @@ pub(super) fn inspect_as(
         bytes,
         media_type,
         decode::MAX_IMAGE_DIMENSION,
-        decode::MAX_ANIMATION_FRAMES,
+        decode::max_animation_frames(),
     )
 }
 

@@ -153,7 +153,10 @@ impl Driver {
         }
         if self.stderr_limit_hit.load(Ordering::Acquire) {
             return Err(LspToolError::StderrLimit {
-                limit: STDERR_OBSERVED_LIMIT,
+                limit: iteron_tunables::param_integer(
+                    "tools.lsp.session.stderr_observed_limit",
+                    STDERR_OBSERVED_LIMIT,
+                ),
             });
         }
         Ok(value)
@@ -223,7 +226,8 @@ impl Driver {
         let correlation = self.pending.issue(
             "shutdown",
             self.now_ms(),
-            SHUTDOWN_TIMEOUT.as_millis() as u64,
+            iteron_tunables::param_duration("tools.lsp.session.shutdown_timeout", SHUTDOWN_TIMEOUT)
+                .as_millis() as u64,
         )?;
         self.write(&json!({
             "jsonrpc": "2.0",
@@ -232,7 +236,15 @@ impl Driver {
             "params": null
         }))
         .await?;
-        let _ = self.read(correlation.id(), SHUTDOWN_TIMEOUT).await?;
+        let _ = self
+            .read(
+                correlation.id(),
+                iteron_tunables::param_duration(
+                    "tools.lsp.session.shutdown_timeout",
+                    SHUTDOWN_TIMEOUT,
+                ),
+            )
+            .await?;
         let _ = accepted(self.pending.resolve(
             self.epoch.generation(),
             correlation.id(),
@@ -243,17 +255,28 @@ impl Driver {
         self.lifecycle.apply(Event::ExitSent, self.now_ms())?;
         drop(self.stdin.take());
 
-        let eof = tokio::time::timeout(SHUTDOWN_TIMEOUT, framing::read_message(&mut self.stdout))
-            .await
-            .map_err(|_| LspToolError::ShutdownTimeout)?
-            .map_err(LspToolError::Protocol)?;
+        let eof = tokio::time::timeout(
+            iteron_tunables::param_duration("tools.lsp.session.shutdown_timeout", SHUTDOWN_TIMEOUT),
+            framing::read_message(&mut self.stdout),
+        )
+        .await
+        .map_err(|_| LspToolError::ShutdownTimeout)?
+        .map_err(LspToolError::Protocol)?;
         if eof.is_some() {
             return Err(LspToolError::OutputAfterExit);
         }
         self.lifecycle.apply(Event::StreamClosed, self.now_ms())?;
 
         let mut process = self.process.take().ok_or(LspToolError::CleanupUnknown)?;
-        let status = match tokio::time::timeout(PROCESS_EXIT_TIMEOUT, process.wait()).await {
+        let status = match tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "tools.lsp.session.process_exit_timeout",
+                PROCESS_EXIT_TIMEOUT,
+            ),
+            process.wait(),
+        )
+        .await
+        {
             Ok(Ok(status)) => status,
             Ok(Err(_)) => {
                 self.process = Some(process);
@@ -295,9 +318,15 @@ impl Driver {
         let Some(mut task) = self.stderr_task.take() else {
             return;
         };
-        if tokio::time::timeout(STDERR_JOIN_TIMEOUT, &mut task)
-            .await
-            .is_err()
+        if tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "tools.lsp.session.stderr_join_timeout",
+                STDERR_JOIN_TIMEOUT,
+            ),
+            &mut task,
+        )
+        .await
+        .is_err()
         {
             task.abort();
             let _ = task.await;
@@ -339,7 +368,12 @@ async fn drain_stderr(mut stderr: tokio::process::ChildStderr, limit_hit: Arc<At
             return;
         }
         observed = observed.saturating_add(read as u64);
-        if observed > STDERR_OBSERVED_LIMIT {
+        if observed
+            > iteron_tunables::param_integer(
+                "tools.lsp.session.stderr_observed_limit",
+                STDERR_OBSERVED_LIMIT,
+            )
+        {
             limit_hit.store(true, Ordering::Release);
             return;
         }

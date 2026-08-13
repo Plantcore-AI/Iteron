@@ -97,7 +97,12 @@ impl Acceptance {
     }
 
     fn validate(&self) -> Result<(), &'static str> {
-        if self.checks.len() > MAX_ACCEPTANCE_CHECKS {
+        if self.checks.len()
+            > iteron_tunables::param_integer(
+                "protocol.task.max_acceptance_checks",
+                MAX_ACCEPTANCE_CHECKS,
+            )
+        {
             return Err("too many acceptance checks");
         }
         let mut seen: Vec<&str> = Vec::with_capacity(self.checks.len());
@@ -207,7 +212,12 @@ impl TaskEnvelope {
     pub fn validate(&self) -> Result<(), &'static str> {
         match &self.input {
             TaskInput::Text { text } => {
-                if text.len() > MAX_TASK_TEXT_BYTES {
+                if text.len()
+                    > iteron_tunables::param_integer(
+                        "protocol.task.max_task_text_bytes",
+                        MAX_TASK_TEXT_BYTES,
+                    )
+                {
                     return Err("task text exceeds its declared bound");
                 }
             }

@@ -66,9 +66,17 @@ impl MultimodalDecodeEnvelope {
             return Err("multimodal image count exceeds the protocol envelope");
         }
         if per_image_raw_bytes == 0
-            || per_image_raw_bytes > MAX_IMAGE_FILE_BYTES
+            || per_image_raw_bytes
+                > iteron_tunables::param_integer(
+                    "cli.image_input.max_image_file_bytes",
+                    MAX_IMAGE_FILE_BYTES,
+                )
             || aggregate_raw_bytes == 0
-            || aggregate_raw_bytes > MAX_TOTAL_IMAGE_FILE_BYTES
+            || aggregate_raw_bytes
+                > iteron_tunables::param_integer(
+                    "cli.image_input.max_total_image_file_bytes",
+                    MAX_TOTAL_IMAGE_FILE_BYTES,
+                )
             || per_image_raw_bytes > aggregate_raw_bytes
         {
             return Err("multimodal raw-byte limits exceed the protocol envelope");
@@ -76,7 +84,7 @@ impl MultimodalDecodeEnvelope {
         if max_dimension == 0
             || max_dimension > decode::MAX_IMAGE_DIMENSION
             || max_frames == 0
-            || max_frames > decode::MAX_ANIMATION_FRAMES
+            || max_frames > decode::max_animation_frames()
         {
             return Err("multimodal decode work exceeds the fixed safety envelope");
         }
@@ -90,13 +98,19 @@ impl MultimodalDecodeEnvelope {
     }
 }
 
-pub(crate) const fn multimodal_decode_envelope() -> MultimodalDecodeEnvelope {
+pub(crate) fn multimodal_decode_envelope() -> MultimodalDecodeEnvelope {
     MultimodalDecodeEnvelope {
         max_images: MAX_INPUT_IMAGES,
-        per_image_raw_bytes: MAX_IMAGE_FILE_BYTES,
-        aggregate_raw_bytes: MAX_TOTAL_IMAGE_FILE_BYTES,
+        per_image_raw_bytes: iteron_tunables::param_integer(
+            "cli.image_input.max_image_file_bytes",
+            MAX_IMAGE_FILE_BYTES,
+        ),
+        aggregate_raw_bytes: iteron_tunables::param_integer(
+            "cli.image_input.max_total_image_file_bytes",
+            MAX_TOTAL_IMAGE_FILE_BYTES,
+        ),
         max_dimension: decode::MAX_IMAGE_DIMENSION,
-        max_frames: decode::MAX_ANIMATION_FRAMES,
+        max_frames: decode::max_animation_frames(),
     }
 }
 
@@ -124,9 +138,17 @@ impl ImageLoadLimits {
         if max_attachments == 0
             || max_attachments > MAX_INPUT_IMAGES
             || max_file_bytes == 0
-            || max_file_bytes > MAX_IMAGE_FILE_BYTES
+            || max_file_bytes
+                > iteron_tunables::param_integer(
+                    "cli.image_input.max_image_file_bytes",
+                    MAX_IMAGE_FILE_BYTES,
+                )
             || max_total_file_bytes == 0
-            || max_total_file_bytes > MAX_TOTAL_IMAGE_FILE_BYTES
+            || max_total_file_bytes
+                > iteron_tunables::param_integer(
+                    "cli.image_input.max_total_image_file_bytes",
+                    MAX_TOTAL_IMAGE_FILE_BYTES,
+                )
             || max_file_encoded_bytes == 0
             || max_file_encoded_bytes > MAX_IMAGE_BASE64_BYTES
             || max_total_encoded_bytes == 0
@@ -148,8 +170,14 @@ impl Default for ImageLoadLimits {
     fn default() -> Self {
         Self {
             max_attachments: MAX_INPUT_IMAGES,
-            max_file_bytes: MAX_IMAGE_FILE_BYTES,
-            max_total_file_bytes: MAX_TOTAL_IMAGE_FILE_BYTES,
+            max_file_bytes: iteron_tunables::param_integer(
+                "cli.image_input.max_image_file_bytes",
+                MAX_IMAGE_FILE_BYTES,
+            ),
+            max_total_file_bytes: iteron_tunables::param_integer(
+                "cli.image_input.max_total_image_file_bytes",
+                MAX_TOTAL_IMAGE_FILE_BYTES,
+            ),
             max_file_encoded_bytes: MAX_IMAGE_BASE64_BYTES,
             max_total_encoded_bytes: MAX_TOTAL_IMAGE_BASE64_BYTES,
         }
@@ -623,11 +651,23 @@ fn read_capped(mut reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
     let ceiling = limit
         .checked_add(1)
         .expect("image limits are capped below usize::MAX");
-    let mut bytes = Vec::with_capacity(ceiling.min(READ_CHUNK_BYTES));
-    let mut chunk = [0u8; READ_CHUNK_BYTES];
+    let mut bytes = Vec::with_capacity(ceiling.min(iteron_tunables::param_integer(
+        "cli.image_input.read_chunk_bytes",
+        READ_CHUNK_BYTES,
+    )));
+    let mut chunk =
+        vec![
+            0u8;
+            iteron_tunables::param_integer("cli.image_input.read_chunk_bytes", READ_CHUNK_BYTES)
+        ];
     while bytes.len() < ceiling {
         let remaining = ceiling - bytes.len();
-        let read = reader.read(&mut chunk[..remaining.min(READ_CHUNK_BYTES)])?;
+        let read = reader.read(
+            &mut chunk[..remaining.min(iteron_tunables::param_integer(
+                "cli.image_input.read_chunk_bytes",
+                READ_CHUNK_BYTES,
+            ))],
+        )?;
         if read == 0 {
             break;
         }
@@ -694,10 +734,14 @@ impl Drop for FileReadPermit {
 /// place for one of the three to go missing.
 pub(crate) fn read_path_capped(path: &Path, limit: usize) -> Result<Vec<u8>, ImageInputErrorKind> {
     let path = path.to_path_buf();
-    run_file_read_helper(Arc::clone(&FILE_READ_GATE), FILE_READ_TIMEOUT, move || {
-        let file = open_regular_file(&path).map_err(|_| ImageInputErrorKind::OpenFailed)?;
-        read_capped(file, limit).map_err(|_| ImageInputErrorKind::ReadFailed)
-    })
+    run_file_read_helper(
+        Arc::clone(&FILE_READ_GATE),
+        iteron_tunables::param_duration("cli.image_input.file_read_timeout", FILE_READ_TIMEOUT),
+        move || {
+            let file = open_regular_file(&path).map_err(|_| ImageInputErrorKind::OpenFailed)?;
+            read_capped(file, limit).map_err(|_| ImageInputErrorKind::ReadFailed)
+        },
+    )
 }
 
 /// Run one potentially blocking path open/read behind the process-wide single-flight gate.

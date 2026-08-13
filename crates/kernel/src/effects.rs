@@ -74,13 +74,30 @@ pub enum ToolCallContractError {
 
 impl ToolCallAdmission {
     pub fn admit(&mut self, tool: &ToolUse) -> Result<(), ToolCallContractError> {
-        if self.ids.len() >= MAX_TOOL_CALLS_PER_TURN {
+        if self.ids.len()
+            >= iteron_protocol::param_integer(
+                "kernel.effects.max_tool_calls_per_turn",
+                MAX_TOOL_CALLS_PER_TURN,
+            )
+        {
             return Err(ToolCallContractError::TooMany);
         }
-        if tool.id.trim().is_empty() || tool.id.len() > MAX_TOOL_USE_ID_BYTES {
+        if tool.id.trim().is_empty()
+            || tool.id.len()
+                > iteron_protocol::param_integer(
+                    "kernel.effects.max_tool_use_id_bytes",
+                    MAX_TOOL_USE_ID_BYTES,
+                )
+        {
             return Err(ToolCallContractError::InvalidId);
         }
-        if tool.name.trim().is_empty() || tool.name.len() > MAX_TOOL_NAME_BYTES {
+        if tool.name.trim().is_empty()
+            || tool.name.len()
+                > iteron_protocol::param_integer(
+                    "kernel.effects.max_tool_name_bytes",
+                    MAX_TOOL_NAME_BYTES,
+                )
+        {
             return Err(ToolCallContractError::InvalidName);
         }
         if unsafe_identity(&tool.id) || unsafe_identity(&tool.name) {
@@ -107,7 +124,13 @@ impl ToolCallAdmission {
             return Err(ToolCallContractError::DuplicateId);
         }
         if serde_json::to_vec(&tool.input)
-            .map(|bytes| bytes.len() > MAX_TOOL_ARGUMENT_BYTES)
+            .map(|bytes| {
+                bytes.len()
+                    > iteron_protocol::param_integer(
+                        "kernel.effects.max_tool_argument_bytes",
+                        MAX_TOOL_ARGUMENT_BYTES,
+                    )
+            })
             .unwrap_or(true)
         {
             return Err(ToolCallContractError::ArgumentsTooLarge);
@@ -160,7 +183,12 @@ impl ArtifactAdmission {
         artifact
             .validate()
             .map_err(ArtifactContractError::Invalid)?;
-        if self.hashes.len() >= MAX_ARTIFACTS_PER_RUN {
+        if self.hashes.len()
+            >= iteron_protocol::param_integer(
+                "kernel.effects.max_artifacts_per_run",
+                MAX_ARTIFACTS_PER_RUN,
+            )
+        {
             self.refused = self.refused.saturating_add(1);
             return Err(ArtifactContractError::TooMany);
         }

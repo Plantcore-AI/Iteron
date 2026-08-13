@@ -27,7 +27,7 @@ pub const WORKFLOW_TOOL: &str = "Workflow";
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(
         ToolSpec {
-            name: WORKFLOW_TOOL.into(),
+            name: iteron_tunables::param_str("tools.workflow_tool.workflow_tool", WORKFLOW_TOOL).into(),
             description: "Launch an ultracode workflow: use the built-in dynamic planner with \
                           `name: \"ultracode\"`, or provide an ESM script that orchestrates parallel \
                           sub-agents via agent()/parallel()/pipeline()/phase()/log(). Provide the \

@@ -37,7 +37,13 @@ pub struct LifecycleEventId(String);
 impl LifecycleEventId {
     pub fn new(value: impl Into<String>) -> Result<Self, LifecycleIdError> {
         let value = value.into();
-        if value.is_empty() || value.len() > MAX_LIFECYCLE_EVENT_ID_BYTES {
+        if value.is_empty()
+            || value.len()
+                > iteron_tunables::param_integer(
+                    "protocol.lifecycle.max_lifecycle_event_id_bytes",
+                    MAX_LIFECYCLE_EVENT_ID_BYTES,
+                )
+        {
             return Err(LifecycleIdError);
         }
         if !value.bytes().all(|byte| {
@@ -251,7 +257,11 @@ impl LifecyclePayload {
             .flatten()
         {
             if value.is_empty()
-                || value.len() > MAX_LIFECYCLE_CODE_BYTES
+                || value.len()
+                    > iteron_tunables::param_integer(
+                        "protocol.lifecycle.max_lifecycle_code_bytes",
+                        MAX_LIFECYCLE_CODE_BYTES,
+                    )
                 || !value.bytes().all(|byte| {
                     byte.is_ascii_lowercase()
                         || byte.is_ascii_digit()

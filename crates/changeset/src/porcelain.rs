@@ -197,7 +197,10 @@ pub fn parse_porcelain_v1_z(bytes: &[u8], limit: usize) -> Result<ChangeSet, Par
 
 /// Convenience wrapper at the default bound.
 pub fn parse_default(bytes: &[u8]) -> Result<ChangeSet, ParseError> {
-    parse_porcelain_v1_z(bytes, MAX_ENTRIES)
+    parse_porcelain_v1_z(
+        bytes,
+        iteron_tunables::param_integer("changeset.lib.max_entries", MAX_ENTRIES),
+    )
 }
 
 fn utf8(bytes: &[u8]) -> Result<String, ParseError> {

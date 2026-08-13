@@ -76,7 +76,11 @@ pub(super) struct SourceBinding {
 impl RootBinding {
     pub(super) fn open(canonical_path: &Path) -> io::Result<Self> {
         if !canonical_path.is_absolute()
-            || canonical_path.as_os_str().as_bytes().len() > MAX_CAPABILITY_PATH_BYTES
+            || canonical_path.as_os_str().as_bytes().len()
+                > iteron_tunables::param_integer(
+                    "tools.lsp.capability.max_capability_path_bytes",
+                    MAX_CAPABILITY_PATH_BYTES,
+                )
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -89,7 +93,12 @@ impl RootBinding {
                 Component::RootDir => {}
                 Component::Normal(component) => {
                     components.push(component.to_os_string());
-                    if components.len() > MAX_CAPABILITY_COMPONENTS {
+                    if components.len()
+                        > iteron_tunables::param_integer(
+                            "tools.lsp.capability.max_capability_components",
+                            MAX_CAPABILITY_COMPONENTS,
+                        )
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "workspace path has too many components",
@@ -152,7 +161,10 @@ impl RootBinding {
             let Ok(reopened) = open_directory_at(&current, component) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
+            if !same_directory(expected, &reopened).unwrap_or(iteron_tunables::param_bool(
+                "tools.lsp.capability.identity_unprovable",
+                IDENTITY_UNPROVABLE,
+            )) {
                 return false;
             }
             current = reopened;
@@ -185,7 +197,10 @@ impl SourceBinding {
             let Ok(reopened) = open_directory_at(&current, name) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
+            if !same_directory(expected, &reopened).unwrap_or(iteron_tunables::param_bool(
+                "tools.lsp.capability.identity_unprovable",
+                IDENTITY_UNPROVABLE,
+            )) {
                 return false;
             }
             current = reopened;
@@ -193,13 +208,21 @@ impl SourceBinding {
         let Ok(leaf) = open_regular_nonblocking_at(&current, leaf_name) else {
             return false;
         };
-        same_file(&self.leaf, &leaf).unwrap_or(IDENTITY_UNPROVABLE)
-            && FileStamp::capture(&leaf).is_ok_and(|stamp| stamp == self.stamp)
+        same_file(&self.leaf, &leaf).unwrap_or(iteron_tunables::param_bool(
+            "tools.lsp.capability.identity_unprovable",
+            IDENTITY_UNPROVABLE,
+        )) && FileStamp::capture(&leaf).is_ok_and(|stamp| stamp == self.stamp)
     }
 }
 
 fn relative_components(path: &Path) -> io::Result<Vec<OsString>> {
-    if path.is_absolute() || path.as_os_str().as_bytes().len() > MAX_CAPABILITY_PATH_BYTES {
+    if path.is_absolute()
+        || path.as_os_str().as_bytes().len()
+            > iteron_tunables::param_integer(
+                "tools.lsp.capability.max_capability_path_bytes",
+                MAX_CAPABILITY_PATH_BYTES,
+            )
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "source path is not a bounded relative path",
@@ -210,7 +233,12 @@ fn relative_components(path: &Path) -> io::Result<Vec<OsString>> {
         match component {
             Component::Normal(component) => {
                 components.push(component.to_os_string());
-                if components.len() > MAX_CAPABILITY_COMPONENTS {
+                if components.len()
+                    > iteron_tunables::param_integer(
+                        "tools.lsp.capability.max_capability_components",
+                        MAX_CAPABILITY_COMPONENTS,
+                    )
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "source path has too many components",

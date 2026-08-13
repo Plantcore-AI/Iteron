@@ -69,7 +69,7 @@ use crate::runtime::{
 };
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
-use block::SPINNER;
+use block::spinner;
 use command_surfaces::*;
 use composer_images::*;
 use control_submission::*;
@@ -720,7 +720,16 @@ impl Picker {
         let mut scanned_bytes = 0usize;
         for source in text.chars() {
             scanned_bytes = scanned_bytes.saturating_add(source.len_utf8());
-            if scanned_bytes > MAX_PICKER_PASTE_SCAN_BYTES || query_chars >= MAX_PICKER_QUERY_CHARS
+            if scanned_bytes
+                > iteron_tunables::param_integer(
+                    "cli.tui.max_picker_paste_scan_bytes",
+                    MAX_PICKER_PASTE_SCAN_BYTES,
+                )
+                || query_chars
+                    >= iteron_tunables::param_integer(
+                        "cli.tui.max_picker_query_chars",
+                        MAX_PICKER_QUERY_CHARS,
+                    )
             {
                 break;
             }
@@ -734,7 +743,12 @@ impl Picker {
             } else {
                 source
             };
-            if self.query.len().saturating_add(character.len_utf8()) > MAX_PICKER_QUERY_BYTES {
+            if self.query.len().saturating_add(character.len_utf8())
+                > iteron_tunables::param_integer(
+                    "cli.tui.max_picker_query_bytes",
+                    MAX_PICKER_QUERY_BYTES,
+                )
+            {
                 break;
             }
             self.query.push(character);
@@ -890,7 +904,10 @@ impl Picker {
         visible
             .iter()
             .position(|&index| index == self.sel)
-            .unwrap_or(SELECTION_OFFSCREEN_ROW)
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.tui.selection_offscreen_row",
+                SELECTION_OFFSCREEN_ROW,
+            ))
     }
 
     fn ancestor_breadcrumb(&self, index: usize) -> String {
@@ -1067,6 +1084,10 @@ const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_se
 /// The one-keystroke retry offer printed under a failed run (I-39).
 const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
 recorded as an interrupted message, so a retry continues from it rather than from nothing.";
+
+fn retry_hint() -> &'static str {
+    iteron_tunables::param_str("cli.tui.retry_hint", RETRY_HINT)
+}
 const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Row a list falls back to when the selected item is not in the visible window. The first row,
@@ -1738,7 +1759,7 @@ pub async fn run(
             }
             term.draw(|f| draw(f, &mut app))?;
             redraw = false;
-            next_frame_at = now + FRAME_COALESCE;
+            next_frame_at = now + iteron_tunables::param_duration("cli.tui.driver_support.frame_coalesce", FRAME_COALESCE);
         }
 
         if !input_open && !eq_open {
@@ -2604,7 +2625,10 @@ pub async fn run(
         // forever. Bounded, because a signal must not be answered by hanging — with no live run
         // this resolves immediately, so the wait exists exactly when it is earning something.
         let stopped = tokio::time::timeout(
-            crate::workflow::SHUTDOWN_GRACE + SHUTDOWN_WAIT_SLACK,
+            iteron_tunables::param_duration(
+                "cli.workflow.shutdown_grace",
+                crate::workflow::SHUTDOWN_GRACE,
+            ) + iteron_tunables::param_duration("cli.tui.shutdown_wait_slack", SHUTDOWN_WAIT_SLACK),
             server_task,
         )
         .await
@@ -2667,7 +2691,13 @@ fn clipboard_commands(environment: &[(OsString, OsString)]) -> Vec<ClipboardComm
         .map(|program| {
             vec![ClipboardCommand {
                 program,
-                args: &["-NoProfile", "-NonInteractive", "-Sta", "-Command", SCRIPT],
+                args: &[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Sta",
+                    "-Command",
+                    iteron_tunables::param_str("cli.tui.script", SCRIPT),
+                ],
             }]
         })
         .unwrap_or_default()
@@ -2683,7 +2713,8 @@ const MAX_CLIPBOARD_ENV_BYTES: usize = 4 * 1024;
 const MAX_WINDOWS_SYSTEM_ROOT_BYTES: usize = 1_024;
 
 fn bounded_clipboard_environment_value(value: OsString) -> Option<OsString> {
-    if value.as_encoded_bytes().len() > MAX_CLIPBOARD_ENV_BYTES
+    if value.as_encoded_bytes().len()
+        > iteron_tunables::param_integer("cli.tui.max_clipboard_env_bytes", MAX_CLIPBOARD_ENV_BYTES)
         || value
             .to_str()
             .is_some_and(|text| text.chars().any(char::is_control))
@@ -2824,7 +2855,13 @@ fn trusted_windows_directory() -> Option<OsString> {
 
     // The OS, not an inherited environment variable, selects the executable trust root. Refuse an
     // unexpectedly large path instead of allocating from an unbounded native return value.
-    let mut buffer = vec![0_u16; MAX_WINDOWS_SYSTEM_ROOT_BYTES + 1];
+    let mut buffer = vec![
+        0_u16;
+        iteron_tunables::param_integer(
+            "cli.tui.max_windows_system_root_bytes",
+            MAX_WINDOWS_SYSTEM_ROOT_BYTES
+        ) + 1
+    ];
     // SAFETY: `buffer` is writable for its declared length and retained until the call returns.
     let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
     if length == 0 || length >= buffer.len() {
@@ -2879,7 +2916,15 @@ async fn clipboard_image_bytes() -> Result<Option<Vec<u8>>, &'static str> {
                 .map_err(|_| "could not finish clipboard image capture")?;
             Ok::<_, &'static str>((status.success(), bytes))
         };
-        match tokio::time::timeout(CLIPBOARD_CAPTURE_TIMEOUT, capture).await {
+        match tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "cli.tui.clipboard_capture_timeout",
+                CLIPBOARD_CAPTURE_TIMEOUT,
+            ),
+            capture,
+        )
+        .await
+        {
             Ok(Ok((true, bytes))) if !bytes.is_empty() => return Ok(Some(bytes)),
             Ok(Ok(_)) => continue,
             Ok(Err(error)) => {
@@ -3023,7 +3068,10 @@ fn render_list_popup(
     // navigable row before selected detail so a short popup remains an actionable control.
     let footer_h = u16::from(inner_h.saturating_sub(query_h) >= 2);
     let min_list_h = u16::try_from(total.clamp(1, 2))
-        .unwrap_or(MIN_LIST_ROWS_ON_OVERFLOW)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.tui.min_list_rows_on_overflow",
+            MIN_LIST_ROWS_ON_OVERFLOW,
+        ))
         .min(inner_h.saturating_sub(query_h).saturating_sub(footer_h));
     let detail_budget = if max_h >= 6 {
         inner_h
@@ -3483,7 +3531,7 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             FirstTokenState::Stalled => warn,
         };
         vec![
-            Span::styled(format!("{} ", SPINNER[app.spin % SPINNER.len()]), style),
+            Span::styled(format!("{} ", spinner()[app.spin % spinner().len()]), style),
             Span::styled(stall.label(), style),
         ]
     } else if app.running {
@@ -3492,7 +3540,10 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             other => other,
         };
         let mut spans = vec![
-            Span::styled(format!("{} ", SPINNER[app.spin % SPINNER.len()]), accent),
+            Span::styled(
+                format!("{} ", spinner()[app.spin % spinner().len()]),
+                accent,
+            ),
             Span::styled(phase.to_string(), accent),
         ];
         if let Some((_, activity)) = app.active_tools.back() {

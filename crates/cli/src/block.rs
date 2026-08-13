@@ -35,10 +35,18 @@ const HUNK_DEFAULT_START_LINE: u32 = 1;
 /// frames (`· ✢ ✳ ✶ ✻ ✽`) — every glyph is a guaranteed width-1 dingbat (TUI v3 §2).
 pub const SPINNER: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
 
+pub fn spinner() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("cli.block.spinner", &SPINNER)
+}
+
 /// Claude Code's braille-dot activity spinner (WORKFLOW-REPLICATION-DESIGN.md §3.3), advanced every
 /// ~80ms. Drives the live phase→agent tree's running indicators (the QuickJS `iteron-workflow` runtime,
 /// distinct from the native ultracode `SPINNER` above). Every frame is a guaranteed width-1 glyph.
 pub const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn braille_spinner() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("cli.block.braille_spinner", &BRAILLE_SPINNER)
+}
 
 /// The primary machine-line marker (TUI v3 §1/§2). Claude Code ships `⏺` (U+23FA) on macOS and falls
 /// back to `●` (U+25CF) elsewhere — precisely because `⏺` has emoji-presentation (double-width) on
@@ -526,25 +534,29 @@ pub(crate) fn render_assistant_doc(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     const GUTTER: u16 = 2;
-    if width < GUTTER.saturating_add(1) {
+    if width < iteron_tunables::param_integer("cli.block.gutter", GUTTER).saturating_add(1) {
         return render_doc(doc, width, theme);
     }
-    render_doc(doc, width.saturating_sub(GUTTER), theme)
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut row)| {
-            let mut spans = vec![Span::styled(
-                if index == 0 { "● " } else { "  " },
-                if index == 0 {
-                    Style::default().fg(theme.role_assistant)
-                } else {
-                    Style::default()
-                },
-            )];
-            spans.append(&mut row.spans);
-            Line::from(spans)
-        })
-        .collect()
+    render_doc(
+        doc,
+        width.saturating_sub(iteron_tunables::param_integer("cli.block.gutter", GUTTER)),
+        theme,
+    )
+    .into_iter()
+    .enumerate()
+    .map(|(index, mut row)| {
+        let mut spans = vec![Span::styled(
+            if index == 0 { "● " } else { "  " },
+            if index == 0 {
+                Style::default().fg(theme.role_assistant)
+            } else {
+                Style::default()
+            },
+        )];
+        spans.append(&mut row.spans);
+        Line::from(spans)
+    })
+    .collect()
 }
 
 pub(crate) fn render_assistant_doc_with_hyperlinks(
@@ -554,12 +566,16 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
     hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
     const GUTTER: u16 = 2;
-    if width < GUTTER.saturating_add(1) {
+    if width < iteron_tunables::param_integer("cli.block.gutter", GUTTER).saturating_add(1) {
         return render_doc_with_hyperlinks(doc, width, theme, hyperlinks);
     }
-    let mut rendered =
-        render_doc_with_hyperlinks(doc, width.saturating_sub(GUTTER), theme, hyperlinks);
-    rendered.shift_columns(GUTTER);
+    let mut rendered = render_doc_with_hyperlinks(
+        doc,
+        width.saturating_sub(iteron_tunables::param_integer("cli.block.gutter", GUTTER)),
+        theme,
+        hyperlinks,
+    );
+    rendered.shift_columns(iteron_tunables::param_integer("cli.block.gutter", GUTTER));
     for (index, row) in rendered.lines.iter_mut().enumerate() {
         let mut spans = vec![Span::styled(
             if index == 0 { "● " } else { "  " },
@@ -644,7 +660,10 @@ fn indent_wrap(indent: &str, content: &[Span], width: u16) -> Vec<Line<'static>>
 /// wraps within `width` (TUI v3 §1 — Claude Code's connector tree).
 fn connector_lines(lines: &[Vec<Span>], width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    let iw = CONNECTOR.chars().map(crate::tui::char_width).sum::<u16>();
+    let iw = iteron_tunables::param_str("cli.block.connector", CONNECTOR)
+        .chars()
+        .map(crate::tui::char_width)
+        .sum::<u16>();
     let indent = " ".repeat(iw as usize);
     for (li, spans) in lines.iter().enumerate() {
         // width measured via char_width (not byte .len()) — one shared width table everywhere (findings 9).
@@ -654,7 +673,10 @@ fn connector_lines(lines: &[Vec<Span>], width: u16, theme: &Theme) -> Vec<Line<'
                 // The `⎿` connector is `muted`, NOT `faint`: it anchors the result line, the most
                 // important line of a settled tool run, so it must stay scannable rather than dimmer
                 // than the body preview (findings 2).
-                Span::styled(CONNECTOR.to_string(), Style::default().fg(theme.muted))
+                Span::styled(
+                    iteron_tunables::param_str("cli.block.connector", CONNECTOR).to_string(),
+                    Style::default().fg(theme.muted),
+                )
             } else {
                 Span::raw(indent.clone())
             };
@@ -756,7 +778,7 @@ fn render_workflow(
 ) -> Vec<Line<'static>> {
     let running = !card.status.is_terminal();
     let marker = if running {
-        format!("{} ", SPINNER[spin % SPINNER.len()])
+        format!("{} ", spinner()[spin % spinner().len()])
     } else {
         format!("{} ", primary_marker())
     };
@@ -897,7 +919,7 @@ fn render_workflow(
             let branch = if last { "└─ " } else { "├─ " };
             let (glyph, color) = match task.status {
                 WorkflowTaskStatus::Queued => ("○", theme.faint),
-                WorkflowTaskStatus::Running => (SPINNER[spin % SPINNER.len()], theme.accent),
+                WorkflowTaskStatus::Running => (spinner()[spin % spinner().len()], theme.accent),
                 WorkflowTaskStatus::Done => ("✓", theme.success),
                 WorkflowTaskStatus::Failed => ("×", theme.error),
                 WorkflowTaskStatus::Interrupted => ("■", theme.warn),
@@ -1027,7 +1049,7 @@ fn render_workflow(
 
 /// The current braille spinner frame (advanced ~80ms by the caller).
 fn braille_frame(spin: usize) -> &'static str {
-    BRAILLE_SPINNER[spin % BRAILLE_SPINNER.len()]
+    braille_spinner()[spin % braille_spinner().len()]
 }
 
 const BRAND_ICON_WIDTH: u16 = 16;
@@ -1035,9 +1057,13 @@ const BRAND_ICON_WIDTH: u16 = 16;
 /// One terminal row of the public Plantcore icon: a fixed canvas prefix followed by its layered
 /// planes. Color, rather than texture, distinguishes overlap on normal terminals.
 fn brand_icon_row(width: u16, prefix: &str, parts: &[(&str, Color)]) -> Line<'static> {
-    let mut spans = vec![Span::raw(
-        " ".repeat(width.saturating_sub(BRAND_ICON_WIDTH) as usize / 2),
-    )];
+    let mut spans = vec![Span::raw(" ".repeat(
+        width.saturating_sub(iteron_tunables::param_integer(
+            "cli.block.brand_icon_width",
+            BRAND_ICON_WIDTH,
+        )) as usize
+            / 2,
+    ))];
     spans.push(Span::raw(prefix.to_string()));
     spans.extend(parts.iter().map(|(shape, color)| {
         Span::styled(
@@ -1169,7 +1195,10 @@ fn render_panel(title: &str, rows: &[PanelRow], width: u16, theme: &Theme) -> Ve
             _ => None,
         })
         .max()
-        .unwrap_or(EMPTY_KEY_COLUMN_WIDTH)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.block.empty_key_column_width",
+            EMPTY_KEY_COLUMN_WIDTH,
+        ))
         .min(24);
     let row_lines: Vec<Vec<Span<'static>>> = rows
         .iter()
@@ -1432,7 +1461,7 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
     // failure=error, settled=faint. No duplicated rail, status glyph, tool icon or snake_case id.
     let marker_color = tool_marker_color(card, theme);
     let marker = if card.status == ToolStatus::Running {
-        format!("{} ", SPINNER[spin % SPINNER.len()])
+        format!("{} ", spinner()[spin % spinner().len()])
     } else {
         format!("{} ", primary_marker())
     };
@@ -1588,21 +1617,29 @@ fn render_diff(diff: &FileDiff, width: u16, theme: &Theme) -> Vec<Line<'static>>
 /// `from_replacement` header (`@@ {path} @@`) has no ranges, so both default to 1 (sequential
 /// numbering from the top of the change). Never panics on a malformed header.
 fn hunk_start(header: &str) -> (u32, u32) {
-    let mut old = HUNK_DEFAULT_START_LINE;
-    let mut new = HUNK_DEFAULT_START_LINE;
+    let mut old = iteron_tunables::param_integer(
+        "cli.block.hunk_default_start_line",
+        HUNK_DEFAULT_START_LINE,
+    );
+    let mut new = iteron_tunables::param_integer(
+        "cli.block.hunk_default_start_line",
+        HUNK_DEFAULT_START_LINE,
+    );
     for tok in header.split_whitespace() {
         if let Some(n) = tok.strip_prefix('-') {
-            old = n
-                .split(',')
-                .next()
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(HUNK_DEFAULT_START_LINE);
+            old = n.split(',').next().and_then(|x| x.parse().ok()).unwrap_or(
+                iteron_tunables::param_integer(
+                    "cli.block.hunk_default_start_line",
+                    HUNK_DEFAULT_START_LINE,
+                ),
+            );
         } else if let Some(n) = tok.strip_prefix('+') {
-            new = n
-                .split(',')
-                .next()
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(HUNK_DEFAULT_START_LINE);
+            new = n.split(',').next().and_then(|x| x.parse().ok()).unwrap_or(
+                iteron_tunables::param_integer(
+                    "cli.block.hunk_default_start_line",
+                    HUNK_DEFAULT_START_LINE,
+                ),
+            );
         }
     }
     (old, new)
@@ -3222,7 +3259,7 @@ mod tests {
         );
 
         let spin = 3usize;
-        let arm = SPINNER[spin % SPINNER.len()];
+        let arm = spinner()[spin % spinner().len()];
         let text = plain(workflow.render(120, &theme, spin));
         for label in labels {
             assert!(

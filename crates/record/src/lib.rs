@@ -472,7 +472,7 @@ pub(crate) fn validate_run_id(run: &RunId) -> Result<(), RecordError> {
             reason: "must not be empty",
         });
     }
-    if id.len() > MAX_RUN_ID_BYTES {
+    if id.len() > iteron_tunables::param_integer("record.lib.max_run_id_bytes", MAX_RUN_ID_BYTES) {
         return Err(RecordError::InvalidRunId {
             reason: "is too long",
         });
@@ -557,6 +557,14 @@ fn hash_line(prev: &str, seq: u64, payload: &serde_json::Value) -> String {
 /// Frontend setters are not sufficient: records can be produced by embedders, copied between
 /// versions, or be independently hash-valid while carrying a hostile nested field.
 pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
+    let max_environment_bytes = iteron_tunables::param_integer(
+        "protocol.event.max_durable_environment_context_bytes",
+        MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,
+    );
+    let max_agent_tag_bytes = iteron_tunables::param_integer(
+        "protocol.event.max_agent_definition_tag_bytes",
+        MAX_AGENT_DEFINITION_TAG_BYTES,
+    );
     let environment = match &event.kind {
         EventKind::RunStart { environment, .. } => environment.as_ref(),
         EventKind::ContextInjection { instructions, .. } => instructions
@@ -566,10 +574,10 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
     };
     if let Some(environment) = environment {
         let bytes = environment.text.len();
-        if bytes > MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES {
+        if bytes > max_environment_bytes {
             return Err(RecordError::EnvironmentContextTooLarge {
                 bytes,
-                max: MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,
+                max: max_environment_bytes,
             });
         }
     }
@@ -578,7 +586,7 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
         ..
     } = &event.kind
         && (tag.trim().is_empty()
-            || tag.len() > MAX_AGENT_DEFINITION_TAG_BYTES
+            || tag.len() > max_agent_tag_bytes
             || tag.chars().any(char::is_control)
             || crate::redact::scrub_route_identifier(tag) != *tag)
     {
@@ -728,10 +736,15 @@ fn validate_terminal_identity(kind: &EventKind) -> Result<(), &'static str> {
 }
 
 pub(crate) fn ensure_record_line_size(bytes: usize) -> Result<(), RecordError> {
-    if bytes > MAX_RECORD_LINE_BYTES {
+    if bytes
+        > iteron_tunables::param_integer("record.lib.max_record_line_bytes", MAX_RECORD_LINE_BYTES)
+    {
         Err(RecordError::RecordLineTooLarge {
             bytes,
-            max: MAX_RECORD_LINE_BYTES,
+            max: iteron_tunables::param_integer(
+                "record.lib.max_record_line_bytes",
+                MAX_RECORD_LINE_BYTES,
+            ),
         })
     } else {
         Ok(())
@@ -739,10 +752,10 @@ pub(crate) fn ensure_record_line_size(bytes: usize) -> Result<(), RecordError> {
 }
 
 pub(crate) fn ensure_rollout_size(bytes: u64) -> Result<(), RecordError> {
-    if bytes > MAX_ROLLOUT_BYTES {
+    if bytes > iteron_tunables::param_integer("record.lib.max_rollout_bytes", MAX_ROLLOUT_BYTES) {
         Err(RecordError::RolloutTooLarge {
             bytes,
-            max: MAX_ROLLOUT_BYTES,
+            max: iteron_tunables::param_integer("record.lib.max_rollout_bytes", MAX_ROLLOUT_BYTES),
         })
     } else {
         Ok(())
@@ -754,7 +767,7 @@ fn admit_stream_bytes(total: &mut u64, bytes: usize) -> Result<(), RecordError> 
         .checked_add(bytes as u64)
         .ok_or(RecordError::RolloutTooLarge {
             bytes: u64::MAX,
-            max: MAX_ROLLOUT_BYTES,
+            max: iteron_tunables::param_integer("record.lib.max_rollout_bytes", MAX_ROLLOUT_BYTES),
         })?;
     ensure_rollout_size(*total)
 }
@@ -766,7 +779,10 @@ fn read_bounded_line<R: BufRead>(
     reader: &mut R,
 ) -> Result<Option<(Vec<u8>, bool, usize)>, RecordError> {
     let mut bytes = Vec::new();
-    let mut bounded = (&mut *reader).take((MAX_RECORD_LINE_BYTES + 1) as u64);
+    let mut bounded = (&mut *reader).take(
+        (iteron_tunables::param_integer("record.lib.max_record_line_bytes", MAX_RECORD_LINE_BYTES)
+            + 1) as u64,
+    );
     let consumed = bounded.read_until(b'\n', &mut bytes)?;
     if consumed == 0 {
         return Ok(None);
@@ -791,7 +807,10 @@ fn visit_record_lines_with_budget(
             .checked_add(file.metadata()?.len())
             .ok_or(RecordError::RolloutTooLarge {
                 bytes: u64::MAX,
-                max: MAX_ROLLOUT_BYTES,
+                max: iteron_tunables::param_integer(
+                    "record.lib.max_rollout_bytes",
+                    MAX_ROLLOUT_BYTES,
+                ),
             })?;
     ensure_rollout_size(declared_total)?;
     #[cfg(test)]
@@ -810,9 +829,17 @@ fn visit_record_lines_with_budget(
             break;
         }
         *total_physical_lines = total_physical_lines.saturating_add(1);
-        if *total_physical_lines > MAX_ROLLOUT_PHYSICAL_LINES {
+        if *total_physical_lines
+            > iteron_tunables::param_integer(
+                "record.lib.max_rollout_physical_lines",
+                MAX_ROLLOUT_PHYSICAL_LINES,
+            )
+        {
             return Err(RecordError::TooManyRecordLines {
-                max: MAX_ROLLOUT_PHYSICAL_LINES,
+                max: iteron_tunables::param_integer(
+                    "record.lib.max_rollout_physical_lines",
+                    MAX_ROLLOUT_PHYSICAL_LINES,
+                ),
             });
         }
         let text = std::str::from_utf8(&bytes).map_err(|error| {
@@ -820,9 +847,17 @@ fn visit_record_lines_with_budget(
         })?;
         if !text.trim().is_empty() {
             events = events.saturating_add(1);
-            if events > MAX_ROLLOUT_EVENTS {
+            if events
+                > iteron_tunables::param_integer(
+                    "record.lib.max_rollout_events",
+                    MAX_ROLLOUT_EVENTS,
+                )
+            {
                 return Err(RecordError::TooManyEvents {
-                    max: MAX_ROLLOUT_EVENTS,
+                    max: iteron_tunables::param_integer(
+                        "record.lib.max_rollout_events",
+                        MAX_ROLLOUT_EVENTS,
+                    ),
                 });
             }
         }
@@ -1027,7 +1062,8 @@ impl Rollout {
     /// predicate to configure a fresh agent's genesis policy; runtime policy changes must use the
     /// kernel's write-ahead transition APIs instead.
     pub fn is_empty(&self) -> bool {
-        self.seq == Seq::ZERO && self.last_hash == ZERO_HASH
+        self.seq == Seq::ZERO
+            && self.last_hash == iteron_tunables::param_str("record.lib.zero_hash", ZERO_HASH)
     }
 
     /// Sequence that will be assigned to the next durable event. Checkpoint producers bind a
@@ -1303,7 +1339,7 @@ impl Rollout {
     ) -> Result<(Seq, usize, usize, String), RecordError> {
         file.seek(SeekFrom::Start(0))?;
         let mut next_seq = Seq::ZERO;
-        let mut last = ZERO_HASH.to_string();
+        let mut last = iteron_tunables::param_str("record.lib.zero_hash", ZERO_HASH).to_string();
         let mut event_count = 0usize;
         let mut physical_line_count = 0usize;
         let mut good_len = 0u64; // byte length of the verified, newline-terminated prefix
@@ -1317,9 +1353,17 @@ impl Rollout {
                 break;
             }
             physical_line_count = physical_line_count.saturating_add(1);
-            if physical_line_count > MAX_ROLLOUT_PHYSICAL_LINES {
+            if physical_line_count
+                > iteron_tunables::param_integer(
+                    "record.lib.max_rollout_physical_lines",
+                    MAX_ROLLOUT_PHYSICAL_LINES,
+                )
+            {
                 return Err(RecordError::TooManyRecordLines {
-                    max: MAX_ROLLOUT_PHYSICAL_LINES,
+                    max: iteron_tunables::param_integer(
+                        "record.lib.max_rollout_physical_lines",
+                        MAX_ROLLOUT_PHYSICAL_LINES,
+                    ),
                 });
             }
             let text = std::str::from_utf8(&line).map_err(|error| {
@@ -1330,9 +1374,17 @@ impl Rollout {
                 continue;
             }
             event_count = event_count.saturating_add(1);
-            if event_count > MAX_ROLLOUT_EVENTS {
+            if event_count
+                > iteron_tunables::param_integer(
+                    "record.lib.max_rollout_events",
+                    MAX_ROLLOUT_EVENTS,
+                )
+            {
                 return Err(RecordError::TooManyEvents {
-                    max: MAX_ROLLOUT_EVENTS,
+                    max: iteron_tunables::param_integer(
+                        "record.lib.max_rollout_events",
+                        MAX_ROLLOUT_EVENTS,
+                    ),
                 });
             }
             match serde_json::from_str::<ChainLine>(text) {
@@ -1391,14 +1443,27 @@ impl Rollout {
         if self.poisoned {
             return Err(RecordError::WriterPoisoned);
         }
-        if self.event_count >= MAX_ROLLOUT_EVENTS {
+        if self.event_count
+            >= iteron_tunables::param_integer("record.lib.max_rollout_events", MAX_ROLLOUT_EVENTS)
+        {
             return Err(RecordError::TooManyEvents {
-                max: MAX_ROLLOUT_EVENTS,
+                max: iteron_tunables::param_integer(
+                    "record.lib.max_rollout_events",
+                    MAX_ROLLOUT_EVENTS,
+                ),
             });
         }
-        if self.physical_line_count >= MAX_ROLLOUT_PHYSICAL_LINES {
+        if self.physical_line_count
+            >= iteron_tunables::param_integer(
+                "record.lib.max_rollout_physical_lines",
+                MAX_ROLLOUT_PHYSICAL_LINES,
+            )
+        {
             return Err(RecordError::TooManyRecordLines {
-                max: MAX_ROLLOUT_PHYSICAL_LINES,
+                max: iteron_tunables::param_integer(
+                    "record.lib.max_rollout_physical_lines",
+                    MAX_ROLLOUT_PHYSICAL_LINES,
+                ),
             });
         }
         if matches!(&event.kind, EventKind::PolicyBundleSnapshot { .. }) && self.seq != Seq(2) {
@@ -1467,7 +1532,10 @@ impl Rollout {
                 .checked_add(line.len() as u64)
                 .ok_or(RecordError::RolloutTooLarge {
                     bytes: u64::MAX,
-                    max: MAX_ROLLOUT_BYTES,
+                    max: iteron_tunables::param_integer(
+                        "record.lib.max_rollout_bytes",
+                        MAX_ROLLOUT_BYTES,
+                    ),
                 })?;
         ensure_rollout_size(next_bytes)?;
         // After this point an error is ambiguous: write(2) may have committed any prefix and an
@@ -1609,7 +1677,7 @@ pub struct TimedEvent {
 pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
     require_strict_replay_policy()?;
     let mut events = Vec::new();
-    let mut prev = ZERO_HASH.to_string();
+    let mut prev = iteron_tunables::param_str("record.lib.zero_hash", ZERO_HASH).to_string();
     let mut expected_seq = 0u64;
     let mut tenant: Option<TenantId> = None;
     visit_record_lines(path, |line| {
@@ -1667,7 +1735,7 @@ pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
 pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
     require_strict_replay_policy()?;
     let mut events = Vec::new();
-    let mut prev = ZERO_HASH.to_string();
+    let mut prev = iteron_tunables::param_str("record.lib.zero_hash", ZERO_HASH).to_string();
     let mut expected_seq = 0u64;
     let mut tenant: Option<TenantId> = None;
     // A crash mid-append can leave a partial FINAL line (no trailing newline). Tolerate it — drop a

@@ -20,11 +20,14 @@ pub(crate) fn wilson_interval(successes: u64, trials: u64) -> [f64; 2] {
     let successes = successes.min(trials) as f64;
     let trials = trials as f64;
     let proportion = successes / trials;
-    let z_squared = Z_95 * Z_95;
+    let z_squared = iteron_tunables::param_f64("eval.statistics.z_95", Z_95)
+        * iteron_tunables::param_f64("eval.statistics.z_95", Z_95);
     let denominator = 1.0 + z_squared / trials;
     let center = (proportion + z_squared / (2.0 * trials)) / denominator;
     let variance = proportion * (1.0 - proportion) / trials + z_squared / (4.0 * trials * trials);
-    let spread = Z_95 * variance.max(0.0).sqrt() / denominator;
+    let spread = iteron_tunables::param_f64("eval.statistics.z_95", Z_95)
+        * variance.max(0.0).sqrt()
+        / denominator;
 
     [
         (center - spread).clamp(0.0, 1.0),
@@ -100,8 +103,14 @@ pub(crate) fn paired_bootstrap_interval(pairs: &[(bool, bool)]) -> [f64; 2] {
         .into_iter()
         .map(|bits| i16::from(bits & 1) - i16::from((bits >> 1) & 1))
         .collect::<Vec<_>>();
-    let mut samples = Vec::with_capacity(PAIRED_BOOTSTRAP_SAMPLES);
-    for _ in 0..PAIRED_BOOTSTRAP_SAMPLES {
+    let mut samples = Vec::with_capacity(iteron_tunables::param_integer(
+        "eval.statistics.paired_bootstrap_samples",
+        PAIRED_BOOTSTRAP_SAMPLES,
+    ));
+    for _ in 0..iteron_tunables::param_integer(
+        "eval.statistics.paired_bootstrap_samples",
+        PAIRED_BOOTSTRAP_SAMPLES,
+    ) {
         let mut sum = 0_i64;
         for _ in 0..pair_deltas.len() {
             state = xorshift64_star(state);

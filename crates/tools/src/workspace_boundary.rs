@@ -34,9 +34,16 @@ fn collect_paths<'a>(
     value: &'a serde_json::Value,
     paths: &mut Vec<&'a str>,
 ) -> Result<(), String> {
-    if paths.len() > MAX_BOUNDARY_PATHS_PER_CALL {
+    let max_boundary_paths = iteron_tunables::param_usize(
+        "tools.workspace_boundary.max_boundary_paths_per_call",
+        iteron_tunables::param_integer(
+            "tools.workspace_boundary.max_boundary_paths_per_call",
+            MAX_BOUNDARY_PATHS_PER_CALL,
+        ),
+    );
+    if paths.len() > max_boundary_paths {
         return Err(format!(
-            "isolated writer path count exceeds {MAX_BOUNDARY_PATHS_PER_CALL}"
+            "isolated writer path count exceeds {max_boundary_paths}"
         ));
     }
     match value {

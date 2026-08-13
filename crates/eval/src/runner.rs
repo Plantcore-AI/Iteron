@@ -328,7 +328,7 @@ pub async fn run_evaluation_parallel(
         .checked_mul(CONFIGS.len())
         .and_then(|count| count.checked_mul(seeds))
         .ok_or_else(|| RunnerError::InvalidOption("evaluation cell count overflow".into()))?;
-    if total_cells > MAX_EVAL_CELLS {
+    if total_cells > iteron_tunables::param_integer("eval.runner.max_eval_cells", MAX_EVAL_CELLS) {
         return Err(RunnerError::InvalidOption(format!(
             "evaluation expands to {total_cells} cells; maximum is {MAX_EVAL_CELLS}"
         )));
@@ -555,17 +555,26 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
         (
             "run_timeout",
             options.run_timeout,
-            MAX_ITERON_AGENT_WALL_SECS,
+            iteron_tunables::param_integer(
+                "eval.runner.max_iteron_agent_wall_secs",
+                MAX_ITERON_AGENT_WALL_SECS,
+            ),
         ),
         (
             "checkout_timeout",
             options.checkout_timeout,
-            MAX_CHECKOUT_TIMEOUT_SECS,
+            iteron_tunables::param_integer(
+                "eval.runner.max_checkout_timeout_secs",
+                MAX_CHECKOUT_TIMEOUT_SECS,
+            ),
         ),
         (
             "oracle_timeout",
             options.oracle_timeout,
-            MAX_ORACLE_TIMEOUT_SECS,
+            iteron_tunables::param_integer(
+                "eval.runner.max_oracle_timeout_secs",
+                MAX_ORACLE_TIMEOUT_SECS,
+            ),
         ),
     ] {
         validate_whole_second_duration(name, duration, maximum_secs)?;
@@ -628,12 +637,29 @@ struct CoreProcessTiming {
 fn core_process_timing(agent_wall: Duration) -> Option<CoreProcessTiming> {
     if agent_wall.is_zero()
         || agent_wall.subsec_nanos() != 0
-        || agent_wall.as_secs() > MAX_ITERON_AGENT_WALL_SECS
+        || agent_wall.as_secs()
+            > iteron_tunables::param_integer(
+                "eval.runner.max_iteron_agent_wall_secs",
+                MAX_ITERON_AGENT_WALL_SECS,
+            )
     {
         return None;
     }
-    let grace_secs = (agent_wall.as_secs() / ITERON_PROCESS_GRACE_DIVISOR)
-        .clamp(ITERON_PROCESS_MIN_GRACE_SECS, ITERON_PROCESS_MAX_GRACE_SECS);
+    let grace_secs = (agent_wall.as_secs()
+        / iteron_tunables::param_integer(
+            "eval.runner.iteron_process_grace_divisor",
+            ITERON_PROCESS_GRACE_DIVISOR,
+        ))
+    .clamp(
+        iteron_tunables::param_integer(
+            "eval.runner.iteron_process_min_grace_secs",
+            ITERON_PROCESS_MIN_GRACE_SECS,
+        ),
+        iteron_tunables::param_integer(
+            "eval.runner.iteron_process_max_grace_secs",
+            ITERON_PROCESS_MAX_GRACE_SECS,
+        ),
+    );
     let grace = Duration::from_secs(grace_secs);
     let process_ceiling = agent_wall.checked_add(grace)?;
     Some(CoreProcessTiming {
@@ -665,21 +691,29 @@ fn snapshot_bundle(source: &Path, destination: &Path) -> Result<String, RunnerEr
             source.display()
         ))
     })?;
-    if !metadata.is_file() || metadata.len() > MAX_BUNDLE_BYTES {
+    if !metadata.is_file()
+        || metadata.len()
+            > iteron_tunables::param_integer("eval.runner.max_bundle_bytes", MAX_BUNDLE_BYTES)
+    {
         return Err(RunnerError::InvalidOption(format!(
             "bundle `{}` must be a regular file no larger than {MAX_BUNDLE_BYTES} bytes",
             source.display()
         )));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    let mut bounded_input = std::io::Read::take(input, MAX_BUNDLE_BYTES + 1);
+    let mut bounded_input = std::io::Read::take(
+        input,
+        iteron_tunables::param_integer("eval.runner.max_bundle_bytes", MAX_BUNDLE_BYTES) + 1,
+    );
     std::io::Read::read_to_end(&mut bounded_input, &mut bytes).map_err(|error| {
         RunnerError::InvalidOption(format!(
             "cannot read bundle `{}`: {error}",
             source.display()
         ))
     })?;
-    if bytes.len() as u64 > MAX_BUNDLE_BYTES {
+    if bytes.len() as u64
+        > iteron_tunables::param_integer("eval.runner.max_bundle_bytes", MAX_BUNDLE_BYTES)
+    {
         return Err(RunnerError::InvalidOption(format!(
             "bundle `{}` grew beyond the {MAX_BUNDLE_BYTES}-byte bound while reading",
             source.display()
@@ -1093,7 +1127,12 @@ async fn apply_candidate_diff(
     if candidate_diff.is_empty() {
         return Ok(());
     }
-    if candidate_diff.len() > MAX_CANDIDATE_DIFF_BYTES {
+    if candidate_diff.len()
+        > iteron_tunables::param_integer(
+            "eval.runner.max_candidate_diff_bytes",
+            MAX_CANDIDATE_DIFF_BYTES,
+        )
+    {
         return Err(format!(
             "candidate diff exceeds the {MAX_CANDIDATE_DIFF_BYTES}-byte bound"
         ));
@@ -1321,7 +1360,10 @@ fn core_process_spec(
         inherit_env,
         env,
         timeout: timing.process_ceiling,
-        max_output_bytes: PROCESS_OUTPUT_LIMIT,
+        max_output_bytes: iteron_tunables::param_integer(
+            "eval.runner.process_output_limit",
+            PROCESS_OUTPUT_LIMIT,
+        ),
     })
 }
 
@@ -1451,7 +1493,8 @@ struct OracleObservation {
 async fn evaluate_command(workspace: &Path, command: &str, timeout: Duration) -> OracleObservation {
     let mut confinement = Confinement::egress_off(workspace);
     confinement.timeout_secs = timeout.as_secs().max(1);
-    confinement.max_output_bytes = ORACLE_OUTPUT_LIMIT;
+    confinement.max_output_bytes =
+        iteron_tunables::param_integer("eval.runner.oracle_output_limit", ORACLE_OUTPUT_LIMIT);
     match iteron_sandbox::platform_sandbox()
         .run(command, &confinement)
         .await
@@ -1522,7 +1565,10 @@ async fn collect_candidate_diff(workspace: &Path, timeout: Duration) -> Option<S
         ],
         Some(workspace),
         timeout,
-        MAX_CANDIDATE_DIFF_BYTES,
+        iteron_tunables::param_integer(
+            "eval.runner.max_candidate_diff_bytes",
+            MAX_CANDIDATE_DIFF_BYTES,
+        ),
     )
     .await
     .ok()?;

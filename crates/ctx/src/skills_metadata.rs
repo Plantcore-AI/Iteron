@@ -89,8 +89,16 @@ impl SkillMetadata {
 /// This is selection metadata only: it never reads the named paths or grants filesystem access.
 pub fn active_paths_from_text(text: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for raw in text.split_whitespace().take(MAX_TASK_TOKENS) {
-        if paths.len() == MAX_ACTIVE_PATHS {
+    for raw in text.split_whitespace().take(iteron_tunables::param_integer(
+        "ctx.skills_metadata.max_task_tokens",
+        MAX_TASK_TOKENS,
+    )) {
+        if paths.len()
+            == iteron_tunables::param_integer(
+                "ctx.skills_metadata.max_active_paths",
+                MAX_ACTIVE_PATHS,
+            )
+        {
             break;
         }
         let token = raw
@@ -109,7 +117,11 @@ pub fn active_paths_from_text(text: &str) -> Vec<PathBuf> {
             }));
         let token = strip_line_suffix(token);
         if token.is_empty()
-            || token.len() > MAX_ACTIVE_PATH_BYTES
+            || token.len()
+                > iteron_tunables::param_integer(
+                    "ctx.skills_metadata.max_active_path_bytes",
+                    MAX_ACTIVE_PATH_BYTES,
+                )
             || !(token.contains('/')
                 || Path::new(token)
                     .file_name()
@@ -228,7 +240,12 @@ fn parse_tools(value: &str) -> Result<Vec<String>, String> {
         if name.is_empty() {
             continue;
         }
-        if tools.len() >= MAX_SKILL_TOOLS {
+        if tools.len()
+            >= iteron_tunables::param_integer(
+                "ctx.skills_metadata.max_skill_tools",
+                MAX_SKILL_TOOLS,
+            )
+        {
             return Err(format!(
                 "skill frontmatter `tools` exceeds {MAX_SKILL_TOOLS} entries"
             ));
@@ -264,7 +281,9 @@ fn parse_text(key: &str, value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err(format!("skill frontmatter `{key}` must not be empty"));
     }
-    if value.len() > MAX_HINT_BYTES {
+    if value.len()
+        > iteron_tunables::param_integer("ctx.skills_metadata.max_hint_bytes", MAX_HINT_BYTES)
+    {
         return Err(format!(
             "skill frontmatter `{key}` exceeds {MAX_HINT_BYTES} bytes"
         ));
@@ -292,7 +311,12 @@ fn parse_paths(value: &str) -> Result<Vec<String>, String> {
     }
     let mut paths = Vec::new();
     for raw in inner.split(',') {
-        if paths.len() == MAX_PATH_PATTERNS {
+        if paths.len()
+            == iteron_tunables::param_integer(
+                "ctx.skills_metadata.max_path_patterns",
+                MAX_PATH_PATTERNS,
+            )
+        {
             return Err(format!(
                 "skill frontmatter `paths` exceeds {MAX_PATH_PATTERNS} patterns"
             ));
@@ -310,7 +334,12 @@ fn normalize_pattern(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("skill frontmatter `paths` contains an empty pattern".into());
     }
-    if value.len() > MAX_PATH_PATTERN_BYTES {
+    if value.len()
+        > iteron_tunables::param_integer(
+            "ctx.skills_metadata.max_path_pattern_bytes",
+            MAX_PATH_PATTERN_BYTES,
+        )
+    {
         return Err(format!(
             "skill path pattern exceeds {MAX_PATH_PATTERN_BYTES} bytes"
         ));
@@ -351,7 +380,10 @@ impl SkillMetadata {
         }
         active_paths
             .iter()
-            .take(MAX_ACTIVE_PATHS)
+            .take(iteron_tunables::param_integer(
+                "ctx.skills_metadata.max_active_paths",
+                MAX_ACTIVE_PATHS,
+            ))
             .filter_map(|path| normalize_active_path(path))
             .any(|path| {
                 self.paths
@@ -363,7 +395,14 @@ impl SkillMetadata {
 
 fn normalize_active_path(path: &Path) -> Option<String> {
     let value = path.to_string_lossy().replace('\\', "/");
-    if value.is_empty() || value.len() > MAX_ACTIVE_PATH_BYTES || path.is_absolute() {
+    if value.is_empty()
+        || value.len()
+            > iteron_tunables::param_integer(
+                "ctx.skills_metadata.max_active_path_bytes",
+                MAX_ACTIVE_PATH_BYTES,
+            )
+        || path.is_absolute()
+    {
         return None;
     }
     if path

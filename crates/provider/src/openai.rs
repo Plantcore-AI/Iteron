@@ -204,7 +204,11 @@ fn direct_chat_route_scope() -> String {
 
 fn validate_chat_route_scope(route_scope: &str) -> Result<(), ProviderError> {
     if route_scope.is_empty()
-        || route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+        || route_scope.len()
+            > iteron_tunables::param_integer(
+                "provider.openai.max_route_scope_bytes",
+                MAX_ROUTE_SCOPE_BYTES,
+            )
         || route_scope.chars().any(char::is_control)
     {
         return Err(ProviderError::Configuration(
@@ -539,7 +543,13 @@ fn reasoning_content_from_payload(value: &serde_json::Value) -> Result<&str, Pro
     let reasoning = payload["reasoning_content"].as_str().ok_or_else(|| {
         ProviderError::Decode("Chat reasoning state content was not a string".into())
     })?;
-    if reasoning.is_empty() || reasoning.len() > MAX_REASONING_STATE_PAYLOAD_BYTES {
+    if reasoning.is_empty()
+        || reasoning.len()
+            > iteron_tunables::param_integer(
+                "provider.openai.max_reasoning_state_payload_bytes",
+                MAX_REASONING_STATE_PAYLOAD_BYTES,
+            )
+    {
         return Err(ProviderError::Decode(format!(
             "Chat reasoning state content was empty or exceeded {MAX_REASONING_STATE_PAYLOAD_BYTES} bytes"
         )));
@@ -547,7 +557,12 @@ fn reasoning_content_from_payload(value: &serde_json::Value) -> Result<&str, Pro
     let encoded = serde_json::to_vec(value).map_err(|_| {
         ProviderError::Decode("Chat reasoning state payload could not be encoded".into())
     })?;
-    if encoded.len() > MAX_REASONING_STATE_PAYLOAD_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer(
+            "provider.openai.max_reasoning_state_payload_bytes",
+            MAX_REASONING_STATE_PAYLOAD_BYTES,
+        )
+    {
         return Err(ProviderError::Decode(format!(
             "Chat reasoning state content was empty or exceeded {MAX_REASONING_STATE_PAYLOAD_BYTES} bytes"
         )));
@@ -908,9 +923,12 @@ impl Provider for OpenAiCompat {
             .post(api_root.endpoint("chat/completions")?)
             .bearer_auth(&self.key)
             .json(&body);
-        let header_timeout = deadline
-            .saturating_duration_since(Instant::now())
-            .min(RESPONSE_HEADER_TIMEOUT);
+        let header_timeout = deadline.saturating_duration_since(Instant::now()).min(
+            iteron_tunables::param_duration(
+                "provider.openai.response_header_timeout",
+                RESPONSE_HEADER_TIMEOUT,
+            ),
+        );
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| {
@@ -922,9 +940,12 @@ impl Provider for OpenAiCompat {
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
             let error = tokio::time::timeout(
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(RESPONSE_HEADER_TIMEOUT),
+                deadline.saturating_duration_since(Instant::now()).min(
+                    iteron_tunables::param_duration(
+                        "provider.openai.response_header_timeout",
+                        RESPONSE_HEADER_TIMEOUT,
+                    ),
+                ),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::OpenAiCompatibleChat,
@@ -957,6 +978,17 @@ impl Provider for OpenAiCompat {
         let mut saw_done = false;
         let mut total_stream_bytes = 0usize;
         let mut assembled_output_bytes = 0usize;
+        let max_stream_bytes =
+            iteron_tunables::param_usize("provider.openai.max_stream_bytes", MAX_STREAM_BYTES);
+        let max_assembled_output_bytes = iteron_tunables::param_usize(
+            "provider.openai.max_assembled_output_bytes",
+            iteron_tunables::param_integer(
+                "provider.openai.max_assembled_output_bytes",
+                MAX_ASSEMBLED_OUTPUT_BYTES,
+            ),
+        );
+        let max_tool_calls =
+            iteron_tunables::param_usize("provider.openai.max_tool_calls", MAX_TOOL_CALLS);
 
         'stream: loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -982,9 +1014,9 @@ impl Provider for OpenAiCompat {
             total_stream_bytes = total_stream_bytes
                 .checked_add(bytes.len())
                 .ok_or_else(|| ProviderError::Decode("stream byte counter overflow".into()))?;
-            if total_stream_bytes > MAX_STREAM_BYTES {
+            if total_stream_bytes > max_stream_bytes {
                 return Err(ProviderError::Decode(format!(
-                    "OpenAI-compatible stream exceeded {MAX_STREAM_BYTES} bytes"
+                    "OpenAI-compatible stream exceeded {max_stream_bytes} bytes"
                 )));
             }
             byte_buf.extend_from_slice(&bytes);
@@ -1006,7 +1038,12 @@ impl Provider for OpenAiCompat {
             };
             byte_buf.drain(..valid);
             while let Some(nl) = buf.find('\n') {
-                if nl > MAX_SSE_LINE_BYTES {
+                if nl
+                    > iteron_tunables::param_integer(
+                        "provider.openai.max_sse_line_bytes",
+                        MAX_SSE_LINE_BYTES,
+                    )
+                {
                     return Err(ProviderError::Decode(format!(
                         "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
                     )));
@@ -1086,9 +1123,9 @@ impl Provider for OpenAiCompat {
                         .ok_or_else(|| {
                             ProviderError::Decode("assembled output byte counter overflow".into())
                         })?;
-                    if assembled_output_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+                    if assembled_output_bytes > max_assembled_output_bytes {
                         return Err(ProviderError::Decode(format!(
-                            "OpenAI-compatible output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                            "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
                         )));
                     }
                     thinking.push_str(reasoning);
@@ -1102,9 +1139,9 @@ impl Provider for OpenAiCompat {
                         assembled_output_bytes.checked_add(t.len()).ok_or_else(|| {
                             ProviderError::Decode("assembled output byte counter overflow".into())
                         })?;
-                    if assembled_output_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+                    if assembled_output_bytes > max_assembled_output_bytes {
                         return Err(ProviderError::Decode(format!(
-                            "OpenAI-compatible output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                            "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
                         )));
                     }
                     text.push_str(t);
@@ -1115,16 +1152,18 @@ impl Provider for OpenAiCompat {
                     .and_then(|x| x.as_array())
                 {
                     for tc in tcs {
-                        let raw_index = tc
-                            .get("index")
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(DEFAULT_TOOL_CALL_INDEX);
+                        let raw_index = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(
+                            iteron_tunables::param_integer(
+                                "provider.openai.default_tool_call_index",
+                                DEFAULT_TOOL_CALL_INDEX,
+                            ),
+                        );
                         let idx = usize::try_from(raw_index).map_err(|_| {
                             ProviderError::Decode("tool call index exceeded platform bounds".into())
                         })?;
-                        if idx >= MAX_TOOL_CALLS {
+                        if idx >= max_tool_calls {
                             return Err(ProviderError::Decode(format!(
-                                "OpenAI-compatible output exceeded {MAX_TOOL_CALLS} tool calls"
+                                "OpenAI-compatible output exceeded {max_tool_calls} tool calls"
                             )));
                         }
                         while tools.len() <= idx {
@@ -1162,9 +1201,9 @@ impl Provider for OpenAiCompat {
                                 tools[idx].args.push_str(a);
                             }
                         }
-                        if assembled_output_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+                        if assembled_output_bytes > max_assembled_output_bytes {
                             return Err(ProviderError::Decode(format!(
-                                "OpenAI-compatible output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                                "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
                             )));
                         }
                     }
@@ -1173,7 +1212,12 @@ impl Provider for OpenAiCompat {
                     stop = Some(frame_stop);
                 }
             }
-            if buf.len() > MAX_SSE_LINE_BYTES {
+            if buf.len()
+                > iteron_tunables::param_integer(
+                    "provider.openai.max_sse_line_bytes",
+                    MAX_SSE_LINE_BYTES,
+                )
+            {
                 return Err(ProviderError::Decode(format!(
                     "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
                 )));

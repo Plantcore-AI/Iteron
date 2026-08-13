@@ -41,7 +41,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
         let block::BlockKind::WorkflowRun(card) = &entry.kind else {
             continue;
         };
-        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::max_runs() {
             continue;
         }
         let owned = app.workflows_panel.owned(&card.run_id);
@@ -147,7 +147,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
         let block::BlockKind::Workflow(card) = &entry.kind else {
             continue;
         };
-        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::max_runs() {
             continue;
         }
         let state = match card.status {
@@ -206,7 +206,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
 
     // The supervisor can know a run a frame before its first progress event creates a card.
     for owned in app.workflows_panel.owned_runs() {
-        if !seen.insert(owned.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+        if !seen.insert(owned.run_id.clone()) || runs.len() >= workflows_panel::max_runs() {
             continue;
         }
         let mut agents = Vec::new();
@@ -246,7 +246,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
     }
 
     for restored in app.workflow_monitor.restored_runs() {
-        if !seen.insert(restored.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+        if !seen.insert(restored.run_id.clone()) || runs.len() >= workflows_panel::max_runs() {
             continue;
         }
         let state = match restored.status {

@@ -126,7 +126,14 @@ impl PolicyManifest {
     /// Load bounded persisted JSON, migrating schema N-1 and rejecting every other version.
     pub fn load_json(bytes: &[u8]) -> Result<Self, EvolutionLoadError> {
         let document = EvolutionDocumentKind::PolicyManifest;
-        match schema_version(bytes, document, MAX_POLICY_MANIFEST_JSON_BYTES)? {
+        match schema_version(
+            bytes,
+            document,
+            iteron_tunables::param_integer(
+                "evolve.schema.max_policy_manifest_json_bytes",
+                MAX_POLICY_MANIFEST_JSON_BYTES,
+            ),
+        )? {
             EVOLUTION_SCHEMA_VERSION => validate_manifest(decode_json(bytes, document)?),
             EVOLUTION_PREVIOUS_SCHEMA_VERSION => {
                 let legacy: PolicyManifestV2 = decode_json(bytes, document)?;
@@ -150,7 +157,14 @@ impl TrajectoryEnvelope {
     /// Load bounded persisted JSON, migrating schema N-1 and rejecting every other version.
     pub fn load_json(bytes: &[u8]) -> Result<Self, EvolutionLoadError> {
         let document = EvolutionDocumentKind::Trajectory;
-        match schema_version(bytes, document, MAX_TRAJECTORY_JSON_BYTES)? {
+        match schema_version(
+            bytes,
+            document,
+            iteron_tunables::param_integer(
+                "evolve.schema.max_trajectory_json_bytes",
+                MAX_TRAJECTORY_JSON_BYTES,
+            ),
+        )? {
             EVOLUTION_SCHEMA_VERSION => validate_trajectory(decode_json(bytes, document)?),
             EVOLUTION_PREVIOUS_SCHEMA_VERSION => {
                 let legacy: TrajectoryEnvelopeV2 = decode_json(bytes, document)?;

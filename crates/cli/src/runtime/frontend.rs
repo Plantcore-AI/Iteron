@@ -8,7 +8,13 @@ const WORKFLOW_LABEL_MAX_BYTES: usize = 240;
 pub(super) fn ui_workflow_label(content: &str) -> String {
     let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
     let scrubbed = iteron_record::redact::scrub(&one_line);
-    strict_utf8_head(&scrubbed, WORKFLOW_LABEL_MAX_BYTES)
+    strict_utf8_head(
+        &scrubbed,
+        iteron_tunables::param_integer(
+            "cli.runtime.frontend.workflow_label_max_bytes",
+            WORKFLOW_LABEL_MAX_BYTES,
+        ),
+    )
 }
 
 impl Agent {

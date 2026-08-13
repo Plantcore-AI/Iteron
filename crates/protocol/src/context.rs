@@ -228,27 +228,49 @@ impl ContextRequest {
     /// Validate bounds and internal consistency. Pure.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.slot.validate()?;
-        if self.selectors.len() > MAX_SELECTORS {
+        if self.selectors.len()
+            > iteron_tunables::param_integer("protocol.context.max_selectors", MAX_SELECTORS)
+        {
             return Err("too many context selectors");
         }
-        if self.max_bytes > MAX_CONTEXT_GRANT_BYTES {
+        if self.max_bytes
+            > iteron_tunables::param_integer(
+                "protocol.context.max_context_grant_bytes",
+                MAX_CONTEXT_GRANT_BYTES,
+            )
+        {
             return Err("requested context bytes exceed the protocol ceiling");
         }
         for selector in &self.selectors {
             match selector {
                 ContextSelector::RepoOutline { root, .. } => {
-                    if root.is_empty() || root.len() > MAX_SELECTOR_ROOT_BYTES {
+                    if root.is_empty()
+                        || root.len()
+                            > iteron_tunables::param_integer(
+                                "protocol.context.max_selector_root_bytes",
+                                MAX_SELECTOR_ROOT_BYTES,
+                            )
+                    {
                         return Err("selector root must be 1..=4096 bytes");
                     }
                 }
                 ContextSelector::MemoryKeys { keys } => {
-                    if keys.len() > MAX_MEMORY_KEYS {
+                    if keys.len()
+                        > iteron_tunables::param_integer(
+                            "protocol.context.max_memory_keys",
+                            MAX_MEMORY_KEYS,
+                        )
+                    {
                         return Err("too many memory keys in one selector");
                     }
-                    if keys
-                        .iter()
-                        .any(|key| key.is_empty() || key.len() > MAX_MEMORY_KEY_BYTES)
-                    {
+                    if keys.iter().any(|key| {
+                        key.is_empty()
+                            || key.len()
+                                > iteron_tunables::param_integer(
+                                    "protocol.context.max_memory_key_bytes",
+                                    MAX_MEMORY_KEY_BYTES,
+                                )
+                    }) {
                         return Err("memory key must be 1..=256 bytes");
                     }
                 }
@@ -310,10 +332,20 @@ impl ContextGrant {
         if self.request_id != request.request_id {
             return Err("grant does not answer this request");
         }
-        if self.segments.len() > MAX_CONTEXT_SEGMENTS {
+        if self.segments.len()
+            > iteron_tunables::param_integer(
+                "protocol.context.max_context_segments",
+                MAX_CONTEXT_SEGMENTS,
+            )
+        {
             return Err("too many context segments");
         }
-        if self.bytes > MAX_CONTEXT_GRANT_BYTES {
+        if self.bytes
+            > iteron_tunables::param_integer(
+                "protocol.context.max_context_grant_bytes",
+                MAX_CONTEXT_GRANT_BYTES,
+            )
+        {
             return Err("granted context bytes exceed the protocol ceiling");
         }
         if self.bytes > request.max_bytes {

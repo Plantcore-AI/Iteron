@@ -61,7 +61,11 @@ impl LspDeadlines {
         let active = started + std::time::Duration::from_millis(request_timeout_milliseconds);
         Self {
             active,
-            total: active + LSP_TOOL_CLEANUP_RESERVE,
+            total: active
+                + iteron_tunables::param_duration(
+                    "tools.lsp.mod.lsp_tool_cleanup_reserve",
+                    LSP_TOOL_CLEANUP_RESERVE,
+                ),
         }
     }
 }
@@ -347,7 +351,10 @@ async fn execute_inner(
                 .input
                 .get("include_declaration")
                 .and_then(Value::as_bool)
-                .unwrap_or(DEFAULT_INCLUDE_DECLARATION),
+                .unwrap_or(iteron_tunables::param_bool(
+                    "tools.lsp.mod.default_include_declaration",
+                    DEFAULT_INCLUDE_DECLARATION,
+                )),
         },
         "hover" => QueryKind::Hover { position },
         _ => return Err((LspToolError::InvalidArguments, false)),
@@ -390,10 +397,12 @@ async fn execute_inner(
     });
     let rendered =
         serde_json::to_string_pretty(&output).map_err(|_| (LspToolError::Serialization, false))?;
-    if rendered.len() > MAX_TOOL_OUTPUT_BYTES {
+    let max_tool_output_bytes =
+        iteron_tunables::param_usize("tools.lsp.mod.max_tool_output_bytes", MAX_TOOL_OUTPUT_BYTES);
+    if rendered.len() > max_tool_output_bytes {
         return Err((
             LspToolError::ToolOutputTooLarge {
-                limit: MAX_TOOL_OUTPUT_BYTES,
+                limit: max_tool_output_bytes,
             },
             false,
         ));
@@ -430,7 +439,15 @@ fn location_limit(input: &Value) -> Result<usize, (LspToolError, bool)> {
     let value = input
         .get("limit")
         .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_LOCATION_LIMIT as u64);
+        .unwrap_or_else(|| {
+            iteron_tunables::param_u64(
+                "tools.lsp.mod.default_location_limit",
+                iteron_tunables::param_integer(
+                    "tools.lsp.mod.default_location_limit",
+                    DEFAULT_LOCATION_LIMIT,
+                ) as u64,
+            )
+        });
     usize::try_from(value)
         .ok()
         .filter(|limit| (1..=iteron_lsp::MAX_LOCATIONS).contains(limit))

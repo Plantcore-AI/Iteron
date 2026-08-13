@@ -139,7 +139,9 @@ fn validate_file_path(path: &str) -> Result<(), &'static str> {
     if path.is_empty() {
         return Err("attached file path must not be empty");
     }
-    if path.len() > MAX_FILE_PATH_BYTES {
+    if path.len()
+        > iteron_tunables::param_integer("protocol.input.max_file_path_bytes", MAX_FILE_PATH_BYTES)
+    {
         return Err("attached file path exceeds its declared bound");
     }
     if path.chars().any(unsafe_path_character) {
@@ -167,7 +169,9 @@ fn validate_file_path(path: &str) -> Result<(), &'static str> {
 }
 
 fn validate_file_text(text: &str) -> Result<(), &'static str> {
-    if text.len() > MAX_FILE_TEXT_BYTES {
+    if text.len()
+        > iteron_tunables::param_integer("protocol.input.max_file_text_bytes", MAX_FILE_TEXT_BYTES)
+    {
         return Err("attached file text exceeds its declared bound");
     }
     if text.contains('\0') {
@@ -220,7 +224,9 @@ pub fn validate_file_submission(
     if files.is_empty() {
         return Err("a file submission must carry at least one file");
     }
-    if files.len() > MAX_INPUT_FILES {
+    if files.len()
+        > iteron_tunables::param_integer("protocol.input.max_input_files", MAX_INPUT_FILES)
+    {
         return Err("too many input files");
     }
     let mut file_text_bytes = 0usize;
@@ -240,10 +246,20 @@ pub fn validate_file_submission(
         carried_bytes = carried_bytes
             .checked_add(file.text.len())
             .and_then(|bytes| bytes.checked_add(file.path.len()))
-            .and_then(|bytes| bytes.checked_add(FILE_ATTACHMENT_FRAMING_BYTES))
+            .and_then(|bytes| {
+                bytes.checked_add(iteron_tunables::param_integer(
+                    "protocol.input.file_attachment_framing_bytes",
+                    FILE_ATTACHMENT_FRAMING_BYTES,
+                ))
+            })
             .ok_or("attached file byte count overflowed")?;
     }
-    if file_text_bytes > MAX_TOTAL_FILE_TEXT_BYTES {
+    if file_text_bytes
+        > iteron_tunables::param_integer(
+            "protocol.input.max_total_file_text_bytes",
+            MAX_TOTAL_FILE_TEXT_BYTES,
+        )
+    {
         return Err("attached file text exceeds its aggregate bound");
     }
     if carried_bytes > crate::task::MAX_TASK_TEXT_BYTES {
@@ -345,7 +361,12 @@ fn validate_base64(encoded: &str) -> Result<(), &'static str> {
     if encoded.is_empty() {
         return Err("image base64 payload must not be empty");
     }
-    if encoded.len() > MAX_IMAGE_BASE64_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer(
+            "protocol.input.max_image_base64_bytes",
+            MAX_IMAGE_BASE64_BYTES,
+        )
+    {
         return Err("image base64 payload exceeds its declared bound");
     }
     if !encoded.len().is_multiple_of(4) {

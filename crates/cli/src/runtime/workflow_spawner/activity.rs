@@ -397,7 +397,10 @@ impl KernelSpawner {
                     .collect::<Vec<_>>();
                 (
                     tasks,
-                    plan.truncated.unwrap_or(NO_LEAVES_TRUNCATED),
+                    plan.truncated.unwrap_or(iteron_tunables::param_integer(
+                        "cli.runtime.workflow_spawner.activity.no_leaves_truncated",
+                        NO_LEAVES_TRUNCATED,
+                    )),
                     plan.duplicates_removed,
                     plan.invalid_removed,
                 )

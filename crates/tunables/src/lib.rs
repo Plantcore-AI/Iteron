@@ -17,10 +17,11 @@
 mod benchmark_metadata;
 mod binding_metadata;
 mod canonical;
-mod export;
+pub mod export;
 mod families;
 mod metadata;
 mod modules;
+mod param_runtime;
 mod params;
 mod profile_io;
 mod requirements;
@@ -51,9 +52,17 @@ pub use export::{
 };
 pub use families::families;
 pub use modules::{ModuleId, ModuleKind, family_module};
+pub use param_runtime::{
+    ParamInstallError, PromptArtifactInstallError, install_param_overrides,
+    install_prompt_artifact_overrides, installed_param_count, installed_prompt_artifact_count,
+    param_bool, param_bytes, param_char, param_duration, param_f32, param_f64, param_i128,
+    param_integer, param_is_overridden, param_str, param_str_list, param_u64, param_usize,
+    param_value, prompt_artifact,
+};
 pub use params::{
     PARAM_REGISTRY_ID, PARAM_SCHEMA_VERSION, Param, ParamClass, ParamDomain, ParamDomainViolation,
-    ParamType, param, param_count, param_registry_digest_sha256, params,
+    ParamType, ParamUnit, ParamValueViolation, param, param_count, param_registry_digest_sha256,
+    params,
 };
 pub use profile_io::{
     ArtifactOverride, MAX_ARTIFACT_TEXT_BYTES, MAX_PROFILE_BYTES, PROFILE_DOCUMENT_SCHEMA_VERSION,

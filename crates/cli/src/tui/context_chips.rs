@@ -240,7 +240,14 @@ fn preview(app: &mut App, one_based: usize) {
     ];
     let mut consumed = 0_usize;
     for (lines, line) in chip.text().lines().enumerate() {
-        if lines == PREVIEW_LINES || consumed.saturating_add(line.len()) > PREVIEW_BYTES {
+        if lines
+            == iteron_tunables::param_integer("cli.tui.context_chips.preview_lines", PREVIEW_LINES)
+            || consumed.saturating_add(line.len())
+                > iteron_tunables::param_integer(
+                    "cli.tui.context_chips.preview_bytes",
+                    PREVIEW_BYTES,
+                )
+        {
             break;
         }
         rows.push(block::PanelRow::Note(line.into()));
@@ -374,7 +381,10 @@ fn show_stats(app: &mut App, session: &Session) {
             let estimated_input = app
                 .last_context
                 .map(|context| context.total_tokens as u64)
-                .unwrap_or(UNREPORTED_INPUT_TOKENS);
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.tui.context_chips.unreported_input_tokens",
+                    UNREPORTED_INPUT_TOKENS,
+                ));
             let reserve = u64::from(app.reserved_output_tokens.unwrap_or_default());
             let remaining = window.saturating_sub(estimated_input.saturating_add(reserve));
             let pct_left = remaining as f64 / window as f64 * 100.0;

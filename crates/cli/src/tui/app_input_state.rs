@@ -18,8 +18,11 @@ impl App {
         // workflow region draws, and the region renders that card rather than a copy of it (see
         // `workflow_region`). Evicting it would blank the region mid-run — the failure this pin
         // already existed to prevent, on the surface the operator is actually watching.
-        if self.transcript.len() > MAX_BLOCKS {
-            let mut drop = self.transcript.len() - MAX_BLOCKS;
+        if self.transcript.len()
+            > iteron_tunables::param_integer("cli.tui.driver_support.max_blocks", MAX_BLOCKS)
+        {
+            let mut drop = self.transcript.len()
+                - iteron_tunables::param_integer("cli.tui.driver_support.max_blocks", MAX_BLOCKS);
             let pinned = self
                 .workflow_index
                 .values()
@@ -128,7 +131,12 @@ impl App {
                 self.queued.push_back(input);
             }
             SubmissionAdmission::IgnoreEmpty if has_attachments => {
-                if pending >= MAX_PENDING_SUBMISSIONS {
+                if pending
+                    >= iteron_tunables::param_integer(
+                        "cli.tui.driver_support.max_pending_submissions",
+                        MAX_PENDING_SUBMISSIONS,
+                    )
+                {
                     return Err(text);
                 }
                 let mut input = self.pending_input(text);
@@ -156,7 +164,12 @@ impl App {
         if text.trim().is_empty() {
             return SubmissionAdmission::IgnoreEmpty;
         }
-        if text.len() > MAX_SUBMISSION_BYTES {
+        if text.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.driver_support.max_submission_bytes",
+                MAX_SUBMISSION_BYTES,
+            )
+        {
             self.note(
                 block::NoticeLevel::Warn,
                 format!(
@@ -165,7 +178,12 @@ impl App {
             );
             return SubmissionAdmission::Reject;
         }
-        if pending >= MAX_PENDING_SUBMISSIONS {
+        if pending
+            >= iteron_tunables::param_integer(
+                "cli.tui.driver_support.max_pending_submissions",
+                MAX_PENDING_SUBMISSIONS,
+            )
+        {
             self.note(
                 block::NoticeLevel::Warn,
                 format!("{lane} is full; the draft was preserved"),
@@ -177,8 +195,20 @@ impl App {
 
     pub(super) fn track_steer(&mut self, text: String) {
         debug_assert!(!text.trim().is_empty());
-        debug_assert!(text.len() <= MAX_SUBMISSION_BYTES);
-        debug_assert!(self.steer_previews.len() < MAX_PENDING_SUBMISSIONS);
+        debug_assert!(
+            text.len()
+                <= iteron_tunables::param_integer(
+                    "cli.tui.driver_support.max_submission_bytes",
+                    MAX_SUBMISSION_BYTES
+                )
+        );
+        debug_assert!(
+            self.steer_previews.len()
+                < iteron_tunables::param_integer(
+                    "cli.tui.driver_support.max_pending_submissions",
+                    MAX_PENDING_SUBMISSIONS
+                )
+        );
         let input = self.pending_input(text);
         self.steer_previews.push_back(input);
     }
@@ -218,7 +248,13 @@ impl App {
         let unmatched_previews = self.steer_previews.len();
         self.queued.extend(self.steer_previews.drain(..));
         self.queued.make_contiguous().sort_by_key(|input| input.seq);
-        debug_assert!(self.queued.len() <= MAX_PENDING_SUBMISSIONS);
+        debug_assert!(
+            self.queued.len()
+                <= iteron_tunables::param_integer(
+                    "cli.tui.driver_support.max_pending_submissions",
+                    MAX_PENDING_SUBMISSIONS
+                )
+        );
         (count, unmatched_previews)
     }
 }

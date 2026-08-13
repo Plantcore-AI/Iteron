@@ -29,15 +29,33 @@ pub(super) fn verify_source_owner_locked(
         }
     })?;
     let mut count = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         count = count.saturating_add(1);
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&entry?.path(), MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &entry?.path(),
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != source.owner {
             return Err(ContentStoreError::Corrupt);
         }
@@ -80,15 +98,33 @@ pub fn guard_private_content_for_run(
     let mut digests = BTreeSet::new();
     let mut sources = BTreeSet::new();
     let mut edge_count = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if edge_count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if edge_count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         edge_count = edge_count.saturating_add(1);
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&entry?.path(), MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &entry?.path(),
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *run {
             return Err(ContentStoreError::Corrupt);
         }
@@ -113,7 +149,10 @@ pub fn guard_private_content_for_run(
         let _ = load_bytes(&layout, digest)?;
     }
     u32::try_from(digests.len()).map_err(|_| ContentStoreError::ReferenceBound {
-        max: MAX_CONTENT_REFERENCES,
+        max: iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ),
     })
 }
 
@@ -138,15 +177,33 @@ pub fn private_content_sources_for_run(
     };
     let mut sources = BTreeSet::new();
     let mut edge_count = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if edge_count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if edge_count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         edge_count = edge_count.saturating_add(1);
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&entry?.path(), MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &entry?.path(),
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *run {
             return Err(ContentStoreError::Corrupt);
         }
@@ -174,9 +231,17 @@ pub fn retain_private_content_references(
     desired: &[(Seq, ErasureContentDigest)],
 ) -> Result<u32, ContentStoreError> {
     crate::validate_run_id(owner).map_err(|_| ContentStoreError::Corrupt)?;
-    if desired.len() > MAX_CONTENT_REFERENCES {
+    if desired.len()
+        > iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        )
+    {
         return Err(ContentStoreError::ReferenceBound {
-            max: MAX_CONTENT_REFERENCES,
+            max: iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            ),
         });
     }
     let desired = desired
@@ -208,16 +273,34 @@ pub fn retain_private_content_references(
     let mut seen = BTreeSet::new();
     let mut stale = Vec::new();
     let mut edge_count = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if edge_count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if edge_count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         edge_count = edge_count.saturating_add(1);
         let reverse_path = entry?.path();
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&reverse_path, MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &reverse_path,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *owner {
             return Err(ContentStoreError::Corrupt);
         }
@@ -280,7 +363,10 @@ pub fn retain_private_content_references(
     }
     crate_sync_dir(&layout.run_refs)?;
     u32::try_from(removed).map_err(|_| ContentStoreError::ReferenceBound {
-        max: MAX_CONTENT_REFERENCES,
+        max: iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ),
     })
 }
 
@@ -307,16 +393,34 @@ pub(super) fn release_private_content_reference(
     };
     let mut count = 0usize;
     let mut found = None;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         count = count.saturating_add(1);
         let reverse_path = entry?.path();
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&reverse_path, MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &reverse_path,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *owner {
             return Err(ContentStoreError::Corrupt);
         }

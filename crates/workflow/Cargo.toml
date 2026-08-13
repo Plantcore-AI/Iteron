@@ -13,6 +13,10 @@ publish.workspace = true
 [dependencies]
 iteron-protocol = { path = "../protocol" }
 iteron-sched = { path = "../sched" }
+# Prompt-artifact replacement only (`prompt/recovery@v1`). `iteron-tunables` is a leaf crate, so
+# this edge still points INTO the engine and adds no runtime authority: the document is read for
+# model-visible text and nothing else.
+iteron-tunables = { path = "../tunables" }
 # QuickJS embed — the PROVEN spike pattern (features ["futures","macro"]): AsyncRuntime + LocalSet +
 # spawn_local(rt.drive()); inline `Async(async_fn)` host fns; eval -> Promise -> into_future.
 rquickjs = { version = "0.12", features = ["futures", "macro"] }

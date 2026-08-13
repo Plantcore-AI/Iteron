@@ -71,7 +71,11 @@ pub fn validate_policy_bundle_snapshot(
             return invalid("slot order or identity is invalid");
         }
         if row.implementation.is_empty()
-            || row.implementation.len() > iteron_protocol::MAX_POLICY_IMPLEMENTATION_ID_BYTES
+            || row.implementation.len()
+                > iteron_tunables::param_integer(
+                    "protocol.policy_bundle_checkpoint.max_policy_implementation_id_bytes",
+                    iteron_protocol::MAX_POLICY_IMPLEMENTATION_ID_BYTES,
+                )
             || row.implementation.chars().any(char::is_control)
         {
             return invalid("implementation identity is invalid");
