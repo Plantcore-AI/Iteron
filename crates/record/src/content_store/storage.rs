@@ -63,6 +63,10 @@ impl Layout {
             .join(hex::encode(Sha256::digest(run.0.as_bytes())))
     }
 
+    pub(super) fn store_exists(&self) -> Result<bool, ContentStoreError> {
+        self.scope.try_exists().map_err(ContentStoreError::from)
+    }
+
     fn owner_lock_path(&self, owner: &RunId) -> PathBuf {
         self.owner_locks
             .join(hex::encode(Sha256::digest(owner.0.as_bytes())))
