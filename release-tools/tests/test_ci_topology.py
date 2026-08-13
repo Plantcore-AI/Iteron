@@ -38,6 +38,20 @@ class CiTopologyTest(unittest.TestCase):
         self.assertEqual(ci.count(toolchain_action), 6)
         self.assertEqual(review.count(toolchain_action), 1)
         self.assertNotIn('test -x "$HOME/.cargo/bin/rustup"', ci + review)
+        self.assertIn("GH_CLI_VERSION: 2.97.0", ci)
+        self.assertIn(
+            "GH_CLI_LINUX_ARM64_SHA256: "
+            "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
+            ci,
+        )
+        self.assertEqual(
+            ci.count("install pinned GitHub CLI with release-attestation support"),
+            1,
+        )
+        self.assertIn("gh_${GH_CLI_VERSION}_linux_arm64.tar.gz", ci)
+        self.assertIn("sha256sum --check -", ci)
+        self.assertIn('release verify --help >/dev/null', ci)
+        self.assertIn('echo "$gh_root/bin" >> "$GITHUB_PATH"', ci)
 
     def test_required_check_proves_routed_jobs_executed(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
