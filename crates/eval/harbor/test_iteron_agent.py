@@ -106,7 +106,7 @@ class IteronAgentTests(unittest.TestCase):
             ):
                 with (
                     self.subTest(dangerous=dangerous),
-                    self.assertRaisesRegex(ValueError, "HARBOR_CORE"),
+                    self.assertRaisesRegex(ValueError, "HARBOR_ITERON"),
                 ):
                     self._agent(
                         root,
@@ -226,7 +226,7 @@ class IteronAgentTests(unittest.TestCase):
             self.assertEqual(run_call["cwd"], "/app")
             self.assertEqual(set(run_call["env"]), {"HOME", "ITERON_CONFIG_HOME"})
             self.assertIn("refusing task-provided Core project state", run_command)
-            self.assertIn("exec 8> /logs/agent/core.stream.jsonl", run_command)
+            self.assertIn("exec 8> /logs/agent/iteron.stream.jsonl", run_command)
             self.assertIn("| tee /proc/self/fd/8", run_command)
             self.assertNotIn("2>&1", run_command)
             self.assertNotIn("credential-fixture-value", run_command)

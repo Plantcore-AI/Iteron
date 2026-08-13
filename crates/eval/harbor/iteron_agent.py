@@ -27,7 +27,7 @@ from harbor.models.trial.paths import EnvironmentPaths
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
 _SHA256_RE = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
 _CREDENTIAL_ENV_RE = re.compile(
-    r"HARBOR_CORE_[A-Z0-9]{1,32}_(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|TOKEN|SECRET|CREDENTIAL)\Z"
+    r"HARBOR_ITERON_[A-Z0-9]{1,32}_(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|TOKEN|SECRET|CREDENTIAL)\Z"
 )
 _BUILTIN_KEY_ENVS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -231,7 +231,7 @@ class IteronAgent(BaseInstalledAgent):
         if (base_url is None) != (key_env is None):
             raise ValueError("base_url and key_env must be supplied together")
         if key_env is not None and _CREDENTIAL_ENV_RE.fullmatch(key_env) is None:
-            raise ValueError("key_env must use HARBOR_CORE_<LABEL>_<SENSITIVE_SUFFIX>")
+            raise ValueError("key_env must use HARBOR_ITERON_<LABEL>_<SENSITIVE_SUFFIX>")
         if base_url is not None:
             parsed = urlsplit(base_url)
             if (
