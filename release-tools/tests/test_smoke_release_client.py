@@ -248,8 +248,8 @@ class ReleaseClientSmokeTest(unittest.TestCase):
         self.assertIn(
             '${{ matrix.target }}/release/${{ matrix.binary }}', smoke_step
         )
-        self.assertEqual(build.count("          - runner:"), 4)
-        self.assertEqual(build.count("            python: python3"), 4)
+        self.assertEqual(build.count("          - runner:"), 3)
+        self.assertEqual(build.count("            python: python3"), 3)
         self.assertEqual(build.count("            python: python\n"), 0)
         self.assertNotIn("$latestHash -ne $exactHash", workflow)
 

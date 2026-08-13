@@ -1,0 +1,33 @@
+# Exact synthetic credential fingerprints retained to test redaction and refusal paths.
+# Do not replace these entries with path-wide or rule-wide allowlists.
+087247c17a112d74d9af5855d970160031aeafe4:crates/cli/src/runtime/tests.rs:generic-api-key:10207
+08c0ee8d5768453a001b5daeb17f59cabdc5006a:crates/cli/src/runtime.rs:generic-api-key:11588
+1b5828e9d3c7091577fe2356ca2bd710d2e8cb6a:crates/cli/src/workflow.rs:generic-api-key:692
+35806f1d2a139eebe74f3550ecf1d6be33402e3b:crates/record/src/redact.rs:gcp-api-key:815
+35806f1d2a139eebe74f3550ecf1d6be33402e3b:crates/record/src/redact.rs:jwt:816
+35806f1d2a139eebe74f3550ecf1d6be33402e3b:crates/record/src/redact.rs:slack-legacy-bot-token:813
+b727c9c54d71a6c5925c4475f292ba67343e0876:crates/cli/src/main.rs:generic-api-key:2597
+b934cd255ae1a2f14216dd382a03210a8ae447ef:crates/record/src/redact.rs:gcp-api-key:815
+b934cd255ae1a2f14216dd382a03210a8ae447ef:crates/record/src/redact.rs:jwt:816
+b934cd255ae1a2f14216dd382a03210a8ae447ef:crates/record/src/redact.rs:slack-legacy-bot-token:813
+c2b8ef0326e806389fd02c0273191df0ea73744f:crates/cli/src/runtime/tests.rs:generic-api-key:2399
+c2b8ef0326e806389fd02c0273191df0ea73744f:crates/cli/src/runtime/tests.rs:generic-api-key:7102
+c3f90f26c99e4d78970280112e162a6b881cedb5:crates/cli/src/runtime/tests.rs:generic-api-key:2399
+c3f90f26c99e4d78970280112e162a6b881cedb5:crates/cli/src/runtime/tests.rs:generic-api-key:7102
+c8c9d04ec2df4f35e2bfe4d4e63ebbe7a317e448:crates/cli/src/runtime.rs:generic-api-key:10937
+c8c9d04ec2df4f35e2bfe4d4e63ebbe7a317e448:crates/cli/src/runtime/workflow_spawner.rs:generic-api-key:658
+c8c9d04ec2df4f35e2bfe4d4e63ebbe7a317e448:crates/cli/src/runtime/workflow_spawner.rs:generic-api-key:699
+c8c9d04ec2df4f35e2bfe4d4e63ebbe7a317e448:crates/workflow/src/spawner.rs:generic-api-key:207
+c8c9d04ec2df4f35e2bfe4d4e63ebbe7a317e448:crates/workflow/tests/engine_depth.rs:generic-api-key:120
+de39913b69f1d13a641c21a59d2398e79dd0b5a6:crates/kernel/src/lib.rs:generic-api-key:10132
+de39913b69f1d13a641c21a59d2398e79dd0b5a6:crates/record/src/lib.rs:generic-api-key:1739
+de39913b69f1d13a641c21a59d2398e79dd0b5a6:crates/record/src/redact.rs:generic-api-key:705
+de39913b69f1d13a641c21a59d2398e79dd0b5a6:crates/record/src/session.rs:generic-api-key:2955
+f3a4e391198f1ddef91588717a4aebbad8bf713d:crates/cli/src/runtime.rs:generic-api-key:11588
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/cli/src/main.rs:generic-api-key:2612
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/cli/src/runtime.rs:generic-api-key:10938
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/cli/src/runtime/workflow_spawner.rs:generic-api-key:658
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/cli/src/runtime/workflow_spawner.rs:generic-api-key:699
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/cli/src/workflow.rs:generic-api-key:692
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/workflow/src/spawner.rs:generic-api-key:207
+f87ecef6ce334d8acf3150a66ce0942ce7e43949:crates/workflow/tests/engine_depth.rs:generic-api-key:120

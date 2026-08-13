@@ -7,6 +7,7 @@
 /xtask/** @fr0m-scratch
 /.gitattributes @fr0m-scratch
 /.gitignore @fr0m-scratch
+/.gitleaksignore @fr0m-scratch
 /AGENTS.md @fr0m-scratch
 /CHANGELOG.md @fr0m-scratch
 /CODE_OF_CONDUCT.md @fr0m-scratch

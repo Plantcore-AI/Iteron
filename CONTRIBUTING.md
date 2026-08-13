@@ -125,7 +125,9 @@ repository-scoped DGX Spark:
 
 `ci / required` always executes and verifies that every routed lane actually
 completed successfully. Individual skipped jobs are not branch-protection
-evidence. `review / required-humans` is called by the same protected-base entry
+evidence. The protected ruleset also requires the emitted
+`review / required-humans / review / required-humans` context. Its inner
+`review / required-humans` job is called by the same protected-base entry
 workflow and reads the pull request's current review records.
 
 External fork code does not run on the persistent DGX. Such a pull request stays

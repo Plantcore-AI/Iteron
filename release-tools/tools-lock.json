@@ -39,6 +39,12 @@
           "sha256": "6a38fe166d17a674269d4373256c0b6bd93acc2553e12de0517cb9ecc73c9c02",
           "url": "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.1/cargo-about-0.9.1-aarch64-apple-darwin.tar.gz"
         },
+        "linux-arm64": {
+          "archive": "tar.gz",
+          "binary": "cargo-about",
+          "sha256": "d13ff19fedb566f859831c0b71c22120e7c598c7753d5f1018dd7353c6ced02a",
+          "url": "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.1/cargo-about-0.9.1-aarch64-unknown-linux-musl.tar.gz"
+        },
         "linux-x86_64": {
           "archive": "tar.gz",
           "binary": "cargo-about",

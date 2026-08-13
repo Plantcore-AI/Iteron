@@ -352,11 +352,14 @@ fn validate_platform_smoke(root: &Path, rows: &[PlatformSmoke]) -> Result<()> {
             );
         }
         validate_evidence(root, &row.workflow, &["workflow"])?;
-        if row.workflow.path != ".github/workflows/release.yml"
-            || row.workflow.selector != row.target
-        {
+        let expected_workflow = if row.platform == "macos-x86_64" {
+            ".github/workflows/runtime-receipt.yml"
+        } else {
+            ".github/workflows/release.yml"
+        };
+        if row.workflow.path != expected_workflow || row.workflow.selector != row.target {
             bail!(
-                "platform smoke `{}` must bind its native release workflow target",
+                "platform smoke `{}` must bind its native workflow target",
                 row.platform
             );
         }

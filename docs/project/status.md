@@ -24,10 +24,10 @@ The repository currently contains:
   for `aarch64-apple-darwin` with manifest, receipt, checksums, legal evidence,
   and SBOM; each release note and manifest explicitly records the absence of
   GitHub OIDC attestation, and `v0.0.2` through `v0.0.4` also carry an offline
-  provenance asset. These are not accepted workflow-native four-target release
+  provenance asset. These are not accepted workflow-native three-target release
   evidence;
-- a macOS/Linux four-target release workflow, installer, checksums, license
-  evidence, SBOMs, provenance, and public-install canaries; accepted four-target
+- a macOS/Linux three-target release workflow, installer, checksums, license
+  evidence, SBOMs, provenance, and public-install canaries; accepted three-target
   evidence still awaits usable native release capacity.
 
 ## Not accepted as complete

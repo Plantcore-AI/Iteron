@@ -30,7 +30,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
@@ -63,7 +63,7 @@ walkdir = "2"
 ignore = "0.4"
 regex = "1"
 # Terminal UI: the de-facto standard Rust stack (same as Codex), admitted at the standard-UI layer.
-ratatui = "0.29"
+ratatui = "0.30.2"
 crossterm = "0.29"
 getrandom = "0.4"
 ring = "0.17"

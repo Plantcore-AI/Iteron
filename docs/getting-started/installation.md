@@ -2,8 +2,8 @@
 
 Iteron's supported distribution matrix is macOS and Linux. Windows is not
 supported. The current `v0.0.4` release contains only the macOS Apple Silicon
-archive; the other three entries in the four-target matrix remain pending until
-the hosted release workflow can run successfully.
+archive; the two Linux entries in the three-target matrix remain pending until
+the DGX release workflow can run successfully.
 
 !!! warning "Pre-alpha release"
     A downloadable release is not a compatibility or unattended-safety promise.
@@ -17,11 +17,10 @@ When the repository and selected release archive are publicly accessible, a
 host for which the latest release actually contains an archive can use:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
-
-iteron --version
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
+
+Then run `iteron --version`.
 
 The installer:
 
@@ -59,12 +58,11 @@ code-execution sandbox. See [supported platforms](../reference/platforms.md).
 | Host | Release target | Native release runner | In `v0.0.4` |
 | --- | --- | --- | --- |
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | available |
-| macOS, Intel | `x86_64-apple-darwin` | `macos-15-intel` | pending |
-| Linux, arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | pending |
-| Linux, x86-64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` | pending |
+| Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | pending |
+| Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | pending |
 
-The release workflow requires all four targets to be built, tested, packaged,
-and smoke-tested on native hosted runners before a release counts as accepted
+The release workflow requires all three targets to be built, tested, packaged,
+and smoke-tested before a release counts as accepted
 multi-target evidence. Release notes remain authoritative for the archives a
 particular tag actually contains.
 
@@ -88,11 +86,11 @@ The four published tags through `v0.0.4` were built locally and contain only an
 legal material, and an SPDX SBOM. Each tag's release notes and manifest record
 the absence of GitHub OIDC attestation; `v0.0.2` through `v0.0.4` also carry a
 per-archive offline provenance document. They are historical pre-alpha
-artifacts, not accepted four-target release evidence.
+artifacts, not accepted three-target release evidence.
 
 An accepted workflow release is expected to publish:
 
-- deterministic archives for all four macOS/Linux targets;
+- deterministic archives for all three macOS/Linux targets;
 - `SHA256SUMS`, `release-manifest.json`, and
   `release-manifest.receipt.json`;
 - the Apache-2.0 license and audited third-party notices;

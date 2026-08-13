@@ -18,7 +18,7 @@ assets attached to each tag.
 
 All four were produced while hosted Actions capacity was unavailable. They carry
 content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
-not GitHub OIDC attestations or the complete four-target matrix. They are useful
+not GitHub OIDC attestations or the complete three-target matrix. They are useful
 historical pre-alpha artifacts and do **not** satisfy the accepted workflow
 release contract below.
 
@@ -26,13 +26,13 @@ release contract below.
 
 The supported distribution matrix is macOS and Linux:
 
-- `aarch64-apple-darwin` and `x86_64-apple-darwin`;
+- `aarch64-apple-darwin`;
 - `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`.
 
 An accepted release contains the targets named by its release notes and, for the
 complete supported matrix:
 
-- four native macOS/Linux archives;
+- three native macOS/Linux archives;
 - a version-bound `install.sh` and `SHA256SUMS`;
 - `release-manifest.json` with commit, CLI stream, target, size, and digest
   evidence;
@@ -64,12 +64,12 @@ A release is accepted only when all of the following are true:
 
 - the annotated SemVer tag resolves to the current protected `main` commit;
 - source, ownership, formatting, clippy, and full workspace tests pass;
-- all four macOS/Linux targets are built, tested, packaged, and smoke-tested
-  natively;
+- all three macOS/Linux targets are built, tested, packaged, and smoke-tested on
+  their declared release runners;
 - archive structure, licenses, notices, checksums, SBOMs, and provenance pass;
 - the Owner approves the protected `release` environment;
 - the published release reports itself immutable;
 - content-addressed artifact canaries and fixed-version plus `latest` installer
-  canaries pass on all four targets.
+  canaries pass on all three targets.
 
 Maintainers follow the detailed [release guide](../development/releasing.md).

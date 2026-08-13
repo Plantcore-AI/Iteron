@@ -7,6 +7,8 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-08-14
+
 ### Added
 
 - Offline evolution evidence, checkpoint algebra, recorded-run projection,
@@ -15,16 +17,25 @@ interfaces may change between releases.
   `context_window_tokens` with operator provenance.
 - A complete, addressable tunables surface plus runtime binding and trainable
   harness acceptance evidence.
+- A reproducible, redacted public-history audit with exact synthetic-fixture
+  fingerprints instead of path-wide secret-scanner exceptions.
 
 ### Changed
 
 - Reduced the declared kernel trusted base to its two actual crates, pinned the
   nine core slot bindings, and corrected the corresponding specification claims.
+- Routed normal Linux CI and Pages work to the repository DGX runner while
+  pausing regular macOS and Windows pull-request lanes.
+- Made the human-review and aggregate CI contexts the exact protected-main
+  requirements.
 
 ### Fixed
 
 - Restored the release-manifest receipt guard to the release path and drove
   build-info generation through the real argument parser.
+- Hardened persistent-runner worktree cleanup, release verification tooling, and
+  unchanged-schema inheritance from the trusted base.
+- Upgraded the terminal UI dependency chain to a patched LRU implementation.
 
 ## [0.0.4] - 2026-08-10
 
@@ -116,7 +127,8 @@ interfaces may change between releases.
 - The release was built locally for `aarch64-apple-darwin` only and has no GitHub
   OIDC attestation.
 
-[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.1...v0.0.2

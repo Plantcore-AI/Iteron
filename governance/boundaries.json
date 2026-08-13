@@ -127,6 +127,7 @@
         { "kind": "file", "path": ".github/dependabot.yml" },
         { "kind": "tree", "path": ".github/workflows" },
         { "kind": "file", "path": ".gitattributes" },
+        { "kind": "file", "path": ".gitleaksignore" },
         { "kind": "file", "path": ".gitignore" },
         { "kind": "file", "path": "CHANGELOG.md" },
         { "kind": "file", "path": "Cargo.lock" },
