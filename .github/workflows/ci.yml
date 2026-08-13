@@ -157,10 +157,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       - name: check grouped dependency update on Linux
         run: cargo check --workspace --all-targets --locked
 
@@ -180,10 +179,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       - name: enforce the complete microkernel conformance matrix
         run: cargo run --locked -p iteron-xtask -- conformance kernel
       # The CLI reference is generated from the argument parser. A shipped flag with no doc entry
@@ -644,12 +642,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
-        shell: bash
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
-            --component clippy --component rustfmt
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          components: clippy,rustfmt
       # The runner administrator provisions this host boundary once. CI verifies it instead of
       # mutating the persistent DGX with passwordless sudo on every pull request.
       - name: verify bubblewrap boundary is provisioned
@@ -691,10 +687,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       # `--ignored` is the whole gate: the merge lane never spends wall-clock time on timing, and
       # this job never blocks a merge on a runner having a bad minute.
       - name: harness-attributable latency budget
@@ -719,10 +714,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       # Fails on any row that names no plane placement, cites a test that does not exist, names a
       # world module that is not on disk, or leaves a proven module or algebra operator unclaimed.
       # There is no target-only state to suppress: an unbacked row is a red gate.
@@ -754,11 +748,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: install pinned Rust toolchain
-        shell: bash
-        run: |
-          test -x "$HOME/.cargo/bin/rustup"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
       - name: build release
         shell: bash
         run: cargo build --release -p iteron-cli --locked

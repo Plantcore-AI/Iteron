@@ -29,6 +29,13 @@ class CiTopologyTest(unittest.TestCase):
         )
         self.assertIn("External fork code is not permitted", ci)
         self.assertIn("External fork pull requests require", review)
+        toolchain_action = (
+            "dtolnay/rust-toolchain@"
+            "4360b52568e2003a75bf9bc1d59f33a8e3fc893c"
+        )
+        self.assertEqual(ci.count(toolchain_action), 6)
+        self.assertEqual(review.count(toolchain_action), 1)
+        self.assertNotIn('test -x "$HOME/.cargo/bin/rustup"', ci + review)
 
     def test_required_check_proves_routed_jobs_executed(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
