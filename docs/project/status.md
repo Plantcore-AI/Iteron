@@ -1,8 +1,7 @@
 # Project status
 
-Iteron is Apache-2.0 licensed and **pre-alpha**. The repository remains private
-while its public-launch checklist is open. The current `main` branch is the only
-development line; there is no stable compatibility or support promise.
+Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
+only development line; there is no stable compatibility or support promise.
 
 ## Delivered baseline
 
@@ -28,8 +27,8 @@ The repository currently contains:
   provenance asset. These are not accepted workflow-native four-target release
   evidence;
 - a macOS/Linux four-target release workflow, installer, checksums, license
-  evidence, SBOMs, provenance, and public-install canaries awaiting usable hosted
-  Actions capacity and the repository's public visibility.
+  evidence, SBOMs, provenance, and public-install canaries; accepted four-target
+  evidence still awaits usable native release capacity.
 
 ## Not accepted as complete
 

@@ -54,8 +54,8 @@ verification command before accepting completion.
 ## Start here
 
 1. [Install or build Iteron](getting-started/installation.md).
-2. [Configure a provider](getting-started/providers.md) without storing a key in
-   the repository.
+2. Run the [setup and BYOK guide](getting-started/setup-and-byok.md) to validate
+   and store a provider key outside the repository.
 3. Follow the [quickstart](getting-started/quickstart.md) in a disposable test
    repository.
 4. Review [permissions and sandbox limitations](using/permissions-and-sandbox.md)

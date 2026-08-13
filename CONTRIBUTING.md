@@ -110,75 +110,55 @@ cargo test --workspace --all-targets --locked
 The [testing guide](docs/development/testing.md) explains focused crate tests,
 all-target tests, PTY evidence, sandbox tests, network opt-ins, and CI parity.
 
-### Required checks run off GitHub Actions
+### Required checks run on DGX Spark
 
-Most gates no longer run on a GitHub-hosted runner. They need no property a
-hosted runner provides, so they run on hardware the project already owns and
-publish the same status contexts from there:
+The protected-base `ci.yml` workflow is the only pull-request CI entry point. It
+classifies each change and runs only the required Linux lanes on the
+repository-scoped DGX Spark:
+
+- documentation-only: boundary, strict docs, and human-review policy;
+- grouped dependency update: Linux check, dependency audit, supply validation,
+  and human-review policy;
+- workflow/release infrastructure: boundary, supply validation, relevant docs,
+  and human-review policy;
+- runtime: the full Linux Rust lane plus affected specialist gates.
+
+`ci / required` always executes and verifies that every routed lane actually
+completed successfully. Individual skipped jobs are not branch-protection
+evidence. `review / required-humans` is called by the same protected-base entry
+workflow and reads the pull request's current review records.
+
+External fork code does not run on the persistent DGX. Such a pull request stays
+blocked until a maintainer provides an isolated ephemeral runner; approving a
+fork workflow on persistent company hardware is not an accepted workaround.
+
+`local_gate.sh` remains a manual Linux parity/evidence tool:
 
 ```sh
-./release-tools/local_gate.sh macos   # rust / macos-15
-./release-tools/local_gate.sh linux   # rust / ubuntu-24.04, boundary / validate,
-                                      # supply / validate, docs / strict-build
+./release-tools/local_gate.sh linux
 ```
 
-A runner does not need a credential. If the machine running a lane is shared, or
-has no `gh`, record the run there and publish it from a machine that is
-authenticated — a `statuses: write` token on a shared box would let anyone on it
-mint a green check for this repository:
+If a shared runner should not hold a status-writing credential, record the run
+there and publish it from a separately authenticated machine:
 
 ```sh
 runner$ ./release-tools/local_gate.sh linux --emit /tmp/gate.json
 local$  scp runner:/tmp/gate.json . && ./release-tools/local_gate.sh --publish gate.json
 ```
 
-The linux lane's `boundaries check-pr` reads the pull request body, so run that
-lane **after** opening the pull request. Where `gh` is available the body is
-fetched automatically; where it is not, hand it over explicitly:
+The manual lane's `boundaries check-pr` reads the pull request body, so run that
+lane after opening the pull request. Where `gh` is unavailable, hand it over:
 
 ```sh
 local$  gh pr view --json body --jq .body > /tmp/body.txt
 runner$ GATE_PR_BODY_FILE=/tmp/body.txt ./release-tools/local_gate.sh linux --emit /tmp/gate.json
 ```
 
-The lane fails rather than skipping that check. `boundary / validate` is a
-required context, and publishing it after quietly dropping one of its checks
-would be exactly the silent downgrade this arrangement exists to prevent.
-
-A branch ruleset matches a required check by context *name*, not by producer, so
-the protection is unchanged. Two consequences you need to know about, because
-neither is discoverable from a red pull request:
-
-- **A pull request nobody gates stays blocked.** The contexts never appear, so
-  the merge button stays disabled. That is the design, not a broken repository.
-  If you do not have a machine that can run a lane, say so on the pull request
-  and a maintainer will run it for you.
-- **A published status is executor-attested, not machine-enforced.** Anyone with
-  push access could post a green status without running anything. The status
-  description records the host and the commit that was actually tested, so this
-  is auditable after the fact, but it is weaker than a hosted runner and is
-  accepted deliberately.
-
-`review / required-humans` still runs on Actions: it reads the pull request's own
-review state, which has no local equivalent. `windows / check` runs there too,
-since Windows is the one platform this project cannot self-host.
-
-**Windows is not supported, and nothing has landed toward supporting it.** The
-sandbox returns `Unsupported` for every non-macOS, non-Linux target, no release
-target is Windows, and the runtime lifecycle still assumes a POSIX shell.
-`.github/workflows/windows.yml` runs a **non-blocking** `cargo check` only: it
-reports whether the workspace still compiles for `x86_64-pc-windows-msvc`, so the
-gap between the tree and any Windows claim stays visible instead of being
-asserted. It is deliberately not a required context, and a green check is not a
-support claim. Do not read a closed Windows tracking issue as delivered work;
-`docs/reference/platforms.md` is the authority on what actually runs.
-
-`ci.yml` retains every lane behind `workflow_dispatch`. It is the reference
-definition these local lanes mirror, and the fallback when hosted capacity is
-available. Note that a manual dispatch skips the base-relative boundary steps,
-which are guarded on `pull_request`/`merge_group`; `local_gate.sh linux`
-reproduces those against `git merge-base origin/main HEAD`, including building
-the validator from the base commit so a change cannot loosen the rule judging it.
+Manual results are executor-attested evidence, not a substitute for the
+protected `ci / required` check. macOS and Windows PR runners are paused. Release
+workflows remain separately protected and only run for explicit tag or manual
+release events; platform support claims remain governed by the release evidence
+matrix, not by PR CI.
 
 ### Evidence by change type
 

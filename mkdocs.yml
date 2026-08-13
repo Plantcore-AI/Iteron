@@ -76,6 +76,7 @@ nav:
   - Getting Started:
       - Overview: getting-started/overview.md
       - Installation: getting-started/installation.md
+      - Setup and BYOK: getting-started/setup-and-byok.md
       - Quickstart: getting-started/quickstart.md
       - Configure a provider: getting-started/providers.md
       - First session: getting-started/first-session.md

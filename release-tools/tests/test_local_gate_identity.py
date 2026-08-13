@@ -81,7 +81,7 @@ class LocalGateIdentityTest(unittest.TestCase):
         )
 
     def test_gating_a_commit_that_is_not_head_is_refused_before_any_lane_runs(self) -> None:
-        finished = self.run_gate("macos", "--dry-run", GATE_SHA=self.parent)
+        finished = self.run_gate("linux", "--dry-run", GATE_SHA=self.parent)
         self.assertNotEqual(finished.returncode, 0, "a mislabelled run must not succeed")
         self.assertIn("refusing to gate", finished.stderr)
         self.assertIn(self.parent[:12], finished.stderr)
@@ -100,7 +100,7 @@ class LocalGateIdentityTest(unittest.TestCase):
     def test_a_clean_worktree_at_the_wrong_commit_is_still_refused(self) -> None:
         """The guard this replaced tested cleanliness, which this case satisfies."""
         self.assertEqual(git(self.root, "status", "--porcelain"), "")
-        finished = self.run_gate("macos", "--dry-run", GATE_SHA=self.parent)
+        finished = self.run_gate("linux", "--dry-run", GATE_SHA=self.parent)
         self.assertNotEqual(finished.returncode, 0)
         self.assertNotIn(
             "dirty worktree",
@@ -116,7 +116,7 @@ class LocalGateIdentityTest(unittest.TestCase):
         """
         for environment in ({"GATE_SHA": self.head}, {}):
             with self.subTest(environment=environment or "unset"):
-                finished = self.run_gate("macos", "--dry-run", **environment)
+                finished = self.run_gate("linux", "--dry-run", **environment)
                 self.assertNotIn("refusing to gate", finished.stderr)
 
     def test_a_second_lane_in_the_same_repository_does_not_start_while_one_holds_the_lock(
@@ -128,7 +128,7 @@ class LocalGateIdentityTest(unittest.TestCase):
         lock_path = Path(git(self.root, "rev-parse", "--git-common-dir"))
         if not lock_path.is_absolute():
             lock_path = self.root / lock_path
-        lock_path = lock_path / "gate-macos.lock"
+        lock_path = lock_path / "gate-linux.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(lock_path, "w", encoding="utf-8") as held:
@@ -137,7 +137,7 @@ class LocalGateIdentityTest(unittest.TestCase):
             except OSError:  # pragma: no cover - the file is freshly created
                 self.skipTest("could not take the gate lock")
             finished = self.run_gate(
-                "macos", "--dry-run", GATE_SHA=self.head, GATE_LOCK_WAIT_SECS="1"
+                "linux", "--dry-run", GATE_SHA=self.head, GATE_LOCK_WAIT_SECS="1"
             )
             fcntl.flock(held, fcntl.LOCK_UN)
 
@@ -151,7 +151,7 @@ class LocalGateIdentityTest(unittest.TestCase):
         gate never takes the lock at all -- which is exactly what shipped: the helper's stdin was
         the heredoc carrying its own program, so it reached end-of-file the moment that text was
         consumed, exited, and released the lock before the first lane started. Two more defects hid
-        behind the same one-sided test: `exec {VAR}>` needs bash 4 and macOS ships 3.2, and the
+        behind the same one-sided test: `exec {VAR}>` needs bash 4 and the legacy implementation assumed bash 3.2, and the
         helper's program file was unlinked before the FIFO handshake let the helper open it.
         """
         import fcntl
@@ -160,10 +160,10 @@ class LocalGateIdentityTest(unittest.TestCase):
         lock_path = Path(git(self.root, "rev-parse", "--git-common-dir"))
         if not lock_path.is_absolute():
             lock_path = self.root / lock_path
-        lock_path = lock_path / "gate-macos.lock"
+        lock_path = lock_path / "gate-linux.lock"
 
         running = subprocess.Popen(
-            ["bash", str(self.gate), "macos", "--dry-run"],
+            ["bash", str(self.gate), "linux", "--dry-run"],
             cwd=self.root,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

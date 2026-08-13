@@ -47,6 +47,7 @@ completed production evidence.
 ## Next steps
 
 - [Install from source](installation.md)
-- [Configure the default or another provider](providers.md)
+- [Set up a provider key with BYOK](setup-and-byok.md)
+- [Configure a custom provider](providers.md)
 - [Open a first session](first-session.md)
 - [Understand permission modes](../using/permissions-and-sandbox.md)

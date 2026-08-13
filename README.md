@@ -20,13 +20,14 @@
   <a href="docs/index.md">Documentation</a>
   · <a href="#install">Install</a>
   · <a href="#quickstart">Quickstart</a>
+  · <a href="docs/getting-started/setup-and-byok.md">BYOK</a>
   · <a href="docs/architecture.md">Architecture</a>
   · <a href="docs/roadmap.md">Roadmap</a>
   · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 > [!WARNING]
-> **Private pre-launch, pre-alpha, and unconfined by default.** Iteron is ready for
+> **Pre-alpha and unconfined by default.** Iteron is ready for
 > development and evaluation, not unattended use on sensitive repositories.
 > Interfaces may change before the first compatibility-stable release.
 >
@@ -50,9 +51,8 @@ observability, evaluation, and future evolution strategies.
 
 Four pre-alpha tags through `v0.0.4` exist, but each was built locally for macOS
 Apple Silicon only while hosted Actions capacity was unavailable. They are not
-accepted four-target workflow release evidence. While the repository remains
-private—or on any macOS/Linux target absent from the latest tag—build the current
-source with Rust 1.90 or newer:
+accepted four-target workflow release evidence. On any macOS/Linux target absent
+from the latest tag, build the current source with Rust 1.90 or newer:
 
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
@@ -62,18 +62,22 @@ iteron --version
 ```
 
 The repository includes an installer and a four-target macOS/Linux release
-pipeline. The unauthenticated installer becomes a public path only after the
-repository visibility flip and only for archives present on the selected tag. An
-accepted release additionally requires native build, test, packaging,
-smoke-test, SBOM, and attestation evidence for all four targets. See the
+pipeline. The unauthenticated installer works only while the selected tag and
+its archive are publicly accessible. An accepted release additionally requires
+native build, test,
+packaging, smoke-test, SBOM, and attestation evidence for all four targets. See the
 [installation guide](docs/getting-started/installation.md) for current
 availability and the verification contract.
 
 ## Quickstart
 
 Iteron defaults to the GLM provider and the source-versioned GLM 5.2 catalog
-default. Make `GLM_API_KEY` available through your shell or secret manager, then
-open a repository:
+default. Validate and store a provider key outside the repository, then open a
+repository:
+
+```sh
+iteron setup --byok glm
+```
 
 ```sh
 cd /path/to/repository
@@ -117,7 +121,8 @@ iteron -p -C /path/to/untrusted-repository --confine \
 ```
 
 Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
-[provider setup](docs/getting-started/providers.md), and
+[setup and BYOK guide](docs/getting-started/setup-and-byok.md),
+[custom provider setup](docs/getting-started/providers.md), and
 [permissions and sandbox guide](docs/using/permissions-and-sandbox.md).
 
 ## Why Iteron
@@ -209,11 +214,9 @@ production coding agent.
 
 ## Documentation
 
-The complete documentation source lives under [`docs/`](docs/index.md). Pages is
-configured to deploy from GitHub Actions at
-**[plantcore-ai.github.io/Iteron](https://plantcore-ai.github.io/Iteron/)**, but
-the address remains unavailable until hosted Actions can complete a deployment.
-The repository also remains private pending its public-launch checklist.
+The complete documentation source lives under [`docs/`](docs/index.md). Pages
+deploys from the repository-scoped DGX runner at
+**[plantcore-ai.github.io/Iteron](https://plantcore-ai.github.io/Iteron/)**.
 
 | Start | Use | Build and govern |
 | --- | --- | --- |
