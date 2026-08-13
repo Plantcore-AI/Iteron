@@ -497,6 +497,17 @@ jobs:
             exit 0
           fi
 
+          candidate_schema=$CANDIDATE_ROOT/governance/schema-compatibility.json
+          policy_schema=$POLICY_ROOT/governance/schema-compatibility.json
+          for schema in "$candidate_schema" "$policy_schema"; do
+            test ! -L "$schema"
+            test -f "$schema"
+          done
+          if cmp -s "$policy_schema" "$candidate_schema"; then
+            printf 'schema contract is unchanged from trusted base\n'
+            exit 0
+          fi
+
           api_version=2026-03-10
           pages=$RUNNER_TEMP/core-schema-release-pages.jsonl
           releases=$RUNNER_TEMP/core-schema-releases.json
