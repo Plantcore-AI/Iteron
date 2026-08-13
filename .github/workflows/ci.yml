@@ -319,7 +319,7 @@ jobs:
               and .runtime_builder == null
               and .runtime_receipt == null
               and .version_independence.status == "pending"
-              and (.platform_smoke | length == 5)
+              and (.platform_smoke | length == 4)
               and ([.platform_smoke[].status] | all(. == "pending"))
             ' < <(git cat-file blob "$candidate_oid") >/dev/null
             evidence_paths=$RUNNER_TEMP/core-runtime-bootstrap-evidence-paths
@@ -484,35 +484,17 @@ jobs:
     name: rust / ${{ matrix.os }}
     strategy:
       matrix:
-        # windows-2025 is NON-GATING on purpose (#38): the branch ruleset requires
-        # `rust / ubuntu-24.04` and `rust / macos-15` by name, so adding a third context cannot
-        # block a merge until someone decides it should. It exists so Windows breakage is visible
-        # instead of being discovered at release time -- `release.yml` skips the full suite on
-        # that target and runs a single test.
         include:
           - os: ubuntu-24.04
             advisory: false
           - os: macos-15
             advisory: false
-          # Advisory until #38's follow-up lands. Windows has never compiled here, and the
-          # POSIX surface the suite still assumes is large: 9 files reach for /bin/bash, 3 for
-          # /bin/sh, 34 touch symlinks, 8 hardcode /tmp, and 12 golden fixtures are compared
-          # byte-for-byte with no .gitattributes pinning LF. Reporting that list every run is
-          # worth having now; blocking on it before it is fixed is not.
-          - os: windows-2025
-            advisory: true
       fail-fast: false
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.advisory }}
-    # Windows is the slowest of the three; a cold cargo build there does not fit in 30.
     timeout-minutes: 50
     defaults:
       run:
-        # Windows runners default to PowerShell, where `$RUSTUP_TOOLCHAIN` is a PowerShell
-        # variable rather than the environment one (that is `$env:`). It expanded to the empty
-        # string and rustup died with `invalid toolchain name: ''` before compiling anything.
-        # Pinning bash for the whole job keeps one set of commands across all three runners
-        # instead of forking the syntax per OS.
         shell: bash
     steps:
       # `cargo test --workspace` runs the xtask conformance suite, and
@@ -551,37 +533,13 @@ jobs:
         run: cargo fmt --all -- --check
       - name: check
         shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo check --locked -p iteron-cli --all-targets
-          else
-            cargo check --workspace --all-targets --locked
-          fi
-      - name: build the explicit windows-msvc client target
-        if: runner.os == 'Windows'
-        shell: bash
-        run: cargo build --locked --target x86_64-pc-windows-msvc -p iteron-cli
+        run: cargo check --workspace --all-targets --locked
       - name: clippy (deny warnings)
         shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo clippy --locked -p iteron-cli --all-targets -- -D warnings
-          else
-            cargo clippy --workspace --all-targets --locked -- -D warnings
-          fi
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo test --locked -p iteron-cli --test windows_conpty
-            cargo test --locked -p iteron-cli --test headless_serve \
-              no_tty_skew_reconnect_and_result_v5_share_one_headless_server -- --exact
-            cargo test --locked -p iteron-cli --test one_shot_output \
-              text_one_shot_process_contract_is_byte_exact -- --exact
-            cargo test --locked -p iteron-cli
-          else
-            cargo test --workspace --all-targets --locked
-          fi
+        run: cargo test --workspace --all-targets --locked
 
   # Non-blocking by construction (`continue-on-error`). The suite has 1613 functional tests and
   # not one wall-clock bound, so a one-line concurrency hazard — a lock held across an await, an
@@ -647,7 +605,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

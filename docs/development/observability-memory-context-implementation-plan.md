@@ -8,11 +8,11 @@ Depends on: [Control, benchmark, tunables, and trainable-harness implementation 
 
 Build a versioned lifecycle and observability plane that is literally 5-10x larger than the
 strongest publicly verifiable comparator in each signal class, while making memory and context
-window decisions the most deeply observable parts of Core.
+window decisions the most deeply observable parts of Iteron.
 
 The hard catalog targets are:
 
-| Signal | Comparator baseline | Required 5-10x range | Core target |
+| Signal | Comparator baseline | Required 5-10x range | Iteron target |
 | --- | ---: | ---: | ---: |
 | Hook event types | Claude Code public lifecycle: 31 | 155-310 | **192** |
 | OTel metric instruments | Codex 0.146.1: 51 | 255-510 | **320** |
@@ -91,7 +91,7 @@ Invariant overlays:
 
 ## 4. Current gap
 
-Core currently has:
+Iteron currently has:
 
 - 5 declared Hook names: `PreToolUse`, `PostToolUse`, `Stop`, `UserPromptSubmit`,
   `SessionStart`;

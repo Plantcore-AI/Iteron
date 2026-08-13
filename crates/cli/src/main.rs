@@ -720,7 +720,7 @@ struct Cli {
 
     /// Verification gate: a test command the harness runs itself when the agent claims done.
     /// If it fails, "done" is refused and the failure is fed back (don't trust the self-report).
-    /// e.g. --verify "python3 -m pytest -q". Requires --allow-code.
+    /// e.g. --verify "python3 -m pytest -q". Code execution must remain enabled (the default).
     #[arg(long)]
     verify: Option<String>,
 
@@ -1708,7 +1708,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // the file, polluting `--sessions` with phantom untitled rows and poisoning `--continue`).
     // Nothing here reads the rollout or the agent.
     if cli.verify.is_some() && !allow_code {
-        anyhow::bail!("--verify runs a command and requires --allow-code");
+        anyhow::bail!("--verify runs a command and requires code execution to be enabled");
     }
     // The file config already rejects a zero here; the flag must not be the one path that admits a
     // ceiling every submission breaches before its first provider call.

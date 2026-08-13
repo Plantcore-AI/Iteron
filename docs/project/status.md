@@ -1,8 +1,8 @@
 # Project status
 
-Iteron is public, Apache-2.0 licensed, and **pre-alpha**. The current `main`
-branch is the only development line; there is no stable compatibility or support
-promise.
+Iteron is Apache-2.0 licensed and **pre-alpha**. The repository remains private
+while its public-launch checklist is open. The current `main` branch is the only
+development line; there is no stable compatibility or support promise.
 
 ## Delivered baseline
 
@@ -17,12 +17,19 @@ The repository currently contains:
 - workspace read/search/edit, shell, Git, memory, skills, hooks, initial MCP, and
   verification primitives;
 - hash-chained local records with sessions, continuation, resume, and fork;
-- four permission modes, capability-based approval, bounded runs, and macOS/Linux
-  sandbox backends;
+- four permission modes, an optional capability gate, bounded runs, and
+  macOS/Linux sandbox backends selected with `--confine`; the shipped default is
+  unconfined and bypasses permission prompts;
 - machine-validated human ownership boundaries and repository review policy;
-- release tooling for a future native target matrix, installer, checksums,
-  license evidence, SBOMs, provenance, and public-install canaries. No accepted
-  binary release or native receipt currently exists.
+- four published pre-alpha tags (`v0.0.1` through `v0.0.4`), each locally built
+  for `aarch64-apple-darwin` with manifest, receipt, checksums, legal evidence,
+  and SBOM; each release note and manifest explicitly records the absence of
+  GitHub OIDC attestation, and `v0.0.2` through `v0.0.4` also carry an offline
+  provenance asset. These are not accepted workflow-native four-target release
+  evidence;
+- a macOS/Linux four-target release workflow, installer, checksums, license
+  evidence, SBOMs, provenance, and public-install canaries awaiting usable hosted
+  Actions capacity and the repository's public visibility.
 
 ## Not accepted as complete
 

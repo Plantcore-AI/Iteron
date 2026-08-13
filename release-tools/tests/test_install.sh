@@ -101,7 +101,7 @@ chmod +x "$temporary/fakebin/mv"
 
 install_dir="$temporary/install with spaces"
 mkdir "$temporary/tmp with spaces"
-if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE_VERSION=v0.0.1 \
+if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_VERSION=v0.0.1 \
   sh "$repo_root/install.sh" --bin-dir "$install_dir" >/dev/null 2>&1; then
   printf 'environment unexpectedly overrode the embedded installer version\n' >&2
   exit 1
@@ -112,6 +112,20 @@ PATH="$temporary/fakebin:$PATH" TMPDIR="$temporary/tmp with spaces" ITERON_CODE_
 test -x "$install_dir/iteron"
 test "$("$install_dir/iteron" -V)" = 'iteron 0.0.1'
 grep -q '0123456789abcdef' <<<"$("$install_dir/iteron" --version)"
+
+preferred_dir="$temporary/preferred install"
+PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture \
+  ITERON_INSTALL_DIR="$preferred_dir" \
+  sh "$repo_root/install.sh" --version v0.0.1 >/dev/null
+test -x "$preferred_dir/iteron"
+
+legacy_dir="$temporary/legacy install"
+legacy_log="$temporary/legacy-install.log"
+PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture \
+  ITERON_CODE_INSTALL_DIR="$legacy_dir" \
+  sh "$repo_root/install.sh" --version v0.0.1 >/dev/null 2>"$legacy_log"
+test -x "$legacy_dir/iteron"
+grep -q 'ITERON_CODE_INSTALL_DIR is deprecated' "$legacy_log"
 
 printf 'existing\n' > "$install_dir/iteron"
 if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE_TEST_TAMPER=1 \

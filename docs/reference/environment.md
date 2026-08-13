@@ -44,14 +44,14 @@ An `env` credential is read once, when the process starts: a running process's
 own environment is not a rotation channel. A `file` credential is re-read at
 call time — always when it declares no expiry, and otherwise as soon as it is
 within a minute of expiring — so a hosted subscription token can rotate without
-restarting Core. The file must be a regular file at mode 0600 holding either one
+restarting Iteron. The file must be a regular file at mode 0600 holding either one
 token line or `{"token": "...", "expires_at_unix": N}`.
 
 `iteron setup` writes that file for you; `iteron auth status` reports which source
 is in use and when it expires.
 
 A signed `rate_cards` entry also names its HMAC variable through `key_env`. Its
-value is exactly 64 hexadecimal characters (32 bytes). Core authenticates the
+value is exactly 64 hexadecimal characters (32 bytes). Iteron authenticates the
 configured artifact before opening a run, never persists or logs the key, and
 removes the named variable from sandboxed shell and verification environments.
 
@@ -60,6 +60,8 @@ removes the named variable from sandboxed shell and verification environments.
 | Variable | Meaning |
 | --- | --- |
 | `ITERON_THEME` | Explicit TUI theme selection where supported |
+| `ITERON_SCREEN_READER` | Any non-empty value selects semantic presentation without layout glyphs or padding |
+| `ITERON_NO_KBD_ENHANCEMENT` | Any non-empty value other than `0` skips the progressive-keyboard probe and keeps portable input |
 | `NO_COLOR` | Select monochrome rendering |
 | `COLORFGBG` | Terminal light/dark hint when no explicit theme is set |
 | `HOME` | Preferred operator home for `~/.iteron` config, skills, agents, and memory |
@@ -67,9 +69,27 @@ removes the named variable from sandboxed shell and verification environments.
 | `HOMEDRIVE` + `HOMEPATH` | Final native Windows fallback when their combined path is absolute |
 
 On Unix, an absent or non-absolute `HOME` means user-level sources are unavailable.
-On Windows, Core next tries an absolute `USERPROFILE`, then an absolute path formed
+On Windows, Iteron next tries an absolute `USERPROFILE`, then an absolute path formed
 from `HOMEDRIVE` and `HOMEPATH`. Repository operation can still use explicit CLI
 settings when no operator home is available.
+
+## Diagnostics and integration
+
+| Variable | Meaning |
+| --- | --- |
+| `ITERON_STARTUP_TIMING` | Any non-empty value other than `0` prints the bounded startup phase breakdown to stderr |
+| `ITERON_STRICT_PROVIDER_METADATA` | `1`, `true`, or `yes` makes a bad static provider-metadata override fail closed instead of falling back |
+| `ITERON_APP_SERVER_PROTOCOL_VERSION` | Diagnostic version-skew injection; a numeric value changes the server's advertised protocol and normally makes mismatched clients refuse the connection |
+
+`ITERON_APP_SERVER_PROTOCOL_VERSION` is for compatibility testing and integration
+diagnostics, not routine configuration.
+
+Two source identifiers that resemble environment variables are deliberately not
+runtime settings. `ITERON_CLI_SCHEMA_VERSION` is a Rust constant naming the
+current machine-output schema, and the process never reads an environment value
+with that name. `ITERON_SANDBOX_ROUTE` appears only in confinement tests as an
+exact sensitive-name fixture and is removed from confined child environments;
+setting it does not select a sandbox route.
 
 ## Environment facts in the model context
 
@@ -95,7 +115,7 @@ or replaced from live state.
 The TUI emits OSC 8 hyperlinks only when the inherited terminal environment gives
 positive evidence for a supported terminal (for example iTerm2, WezTerm, Kitty,
 Ghostty, VS Code, Windows Terminal, recent VTE, or recent Konsole). Unknown
-terminals, `TERM=dumb`, tmux, and screen use the plain `text (url)` rendering; Core
+terminals, `TERM=dumb`, tmux, and screen use the plain `text (url)` rendering; Iteron
 does not assume passthrough support through a multiplexer.
 
 Clickable targets are limited to bounded HTTP(S) URLs without embedded

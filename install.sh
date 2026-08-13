@@ -3,11 +3,11 @@
 # an immutable tag such as v0.0.1. Keep the entire mutating path behind main so
 # a truncated `curl | sh` stream cannot perform a partial installation.
 
-ITERON_CODE_EMBEDDED_VERSION='@ITERON_CODE_VERSION@'
-ITERON_CODE_RELEASE_ROOT='https://github.com/Plantcore-AI/Iteron/releases/download'
-ITERON_CODE_MAX_MANIFEST_BYTES=1048576
-ITERON_CODE_MAX_ARCHIVE_BYTES=268435456
-ITERON_CODE_MAX_UNPACKED_BYTES=134217728
+ITERON_EMBEDDED_VERSION='@ITERON_VERSION@'
+ITERON_RELEASE_ROOT='https://github.com/Plantcore-AI/Iteron/releases/download'
+ITERON_MAX_MANIFEST_BYTES=1048576
+ITERON_MAX_ARCHIVE_BYTES=268435456
+ITERON_MAX_UNPACKED_BYTES=134217728
 
 iteron_usage() {
     cat <<'EOF'
@@ -20,7 +20,8 @@ Options:
   --version VERSION  Install an exact release tag. The release asset embeds its
                      own version, so this is optional for normal curl installs.
   --bin-dir PATH     Install the `iteron` command into PATH. Defaults to
-                     $ITERON_CODE_INSTALL_DIR, $XDG_BIN_HOME, or ~/.local/bin.
+                     $ITERON_INSTALL_DIR, legacy $ITERON_CODE_INSTALL_DIR,
+                     $XDG_BIN_HOME, or ~/.local/bin.
   -h, --help         Show this help.
 
 The installer never invokes sudo and never edits shell startup files.
@@ -36,12 +37,11 @@ iteron_warn() {
     printf 'iteron: warning: %s\n' "$*" >&2
 }
 
-# Code execution is confined by bubblewrap on Linux, and the backend fails CLOSED: no usable
-# `bwrap`, no bash/build/test tool at all. Two things break it, and neither was mentioned anywhere
-# a new user would look. The package may simply be absent, and Ubuntu 24.04 restricts unprivileged
-# user namespaces unless the invoking binary has an AppArmor profile — the project's own CI has to
-# install one. Run the same probe the backend runs and print the exact remedy. A WARNING, never a
-# hard failure: `iteron` is perfectly usable for reading and editing without a sandbox.
+# The shipped default is unconfined. When the operator selects `--confine` on Linux, the bubblewrap
+# backend fails CLOSED: no usable `bwrap`, no bash/build/test tool at all. The package may be absent,
+# and Ubuntu 24.04 restricts unprivileged user namespaces unless the invoking binary has an AppArmor
+# profile. Run the same probe the backend runs and print the exact remedy. A WARNING, never a hard
+# failure: installation and an explicitly unconfined run do not depend on bubblewrap.
 iteron_linux_preflight() {
     [ "$1" = Linux ] || return 0
 
@@ -129,14 +129,14 @@ iteron_unpack_archive() {
     # POSIX ulimit -f uses 512-byte blocks. Bounding the decompressor's output
     # prevents a small, checksum-valid gzip bomb from exhausting the filesystem
     # before tar ever has a chance to inspect member paths and types.
-    iteron_file_blocks=$(( (ITERON_CODE_MAX_UNPACKED_BYTES + 511) / 512 ))
+    iteron_file_blocks=$(( (ITERON_MAX_UNPACKED_BYTES + 511) / 512 ))
     (
         ulimit -f "$iteron_file_blocks" || exit 1
         gzip -dc "$iteron_compressed" > "$iteron_unpacked"
     ) || iteron_die 'release archive exceeds the safe unpacked size limit or is corrupt'
     iteron_unpacked_size=$(iteron_file_size "$iteron_unpacked")
     if [ "$iteron_unpacked_size" -le 0 ] \
-        || [ "$iteron_unpacked_size" -gt "$ITERON_CODE_MAX_UNPACKED_BYTES" ]; then
+        || [ "$iteron_unpacked_size" -gt "$ITERON_MAX_UNPACKED_BYTES" ]; then
         iteron_die 'release archive is empty or exceeds the safe unpacked size limit'
     fi
 }
@@ -189,8 +189,11 @@ iteron_validate_archive() {
 iteron_main() {
     set -eu
 
-    iteron_version=$ITERON_CODE_EMBEDDED_VERSION
-    iteron_bin_dir=${ITERON_CODE_INSTALL_DIR:-}
+    iteron_version=$ITERON_EMBEDDED_VERSION
+    iteron_bin_dir=${ITERON_INSTALL_DIR:-${ITERON_CODE_INSTALL_DIR:-}}
+    if [ -z "${ITERON_INSTALL_DIR:-}" ] && [ -n "${ITERON_CODE_INSTALL_DIR:-}" ]; then
+        iteron_warn 'ITERON_CODE_INSTALL_DIR is deprecated; use ITERON_INSTALL_DIR'
+    fi
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -272,7 +275,7 @@ iteron_main() {
     iteron_version_number=${iteron_version#v}
     iteron_archive_root="iteron-${iteron_version}-${iteron_target}"
     iteron_archive_name="${iteron_archive_root}.tar.gz"
-    iteron_base_url="${ITERON_CODE_RELEASE_ROOT}/${iteron_version}"
+    iteron_base_url="${ITERON_RELEASE_ROOT}/${iteron_version}"
 
     iteron_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/iteron.XXXXXXXX") \
         || iteron_die 'could not create a temporary directory'
@@ -292,22 +295,22 @@ iteron_main() {
     iteron_download \
         "$iteron_base_url/SHA256SUMS" \
         "$iteron_checksums" \
-        "$ITERON_CODE_MAX_MANIFEST_BYTES" \
+        "$ITERON_MAX_MANIFEST_BYTES" \
         || iteron_die 'could not download SHA256SUMS'
     iteron_manifest_size=$(iteron_file_size "$iteron_checksums")
     if [ "$iteron_manifest_size" -le 0 ] \
-        || [ "$iteron_manifest_size" -gt "$ITERON_CODE_MAX_MANIFEST_BYTES" ]; then
+        || [ "$iteron_manifest_size" -gt "$ITERON_MAX_MANIFEST_BYTES" ]; then
         iteron_die 'SHA256SUMS is empty or unexpectedly large'
     fi
 
     iteron_download \
         "$iteron_base_url/$iteron_archive_name" \
         "$iteron_archive" \
-        "$ITERON_CODE_MAX_ARCHIVE_BYTES" \
+        "$ITERON_MAX_ARCHIVE_BYTES" \
         || iteron_die "could not download $iteron_archive_name"
     iteron_archive_size=$(iteron_file_size "$iteron_archive")
     if [ "$iteron_archive_size" -le 0 ] \
-        || [ "$iteron_archive_size" -gt "$ITERON_CODE_MAX_ARCHIVE_BYTES" ]; then
+        || [ "$iteron_archive_size" -gt "$ITERON_MAX_ARCHIVE_BYTES" ]; then
         iteron_die 'release archive is empty or unexpectedly large'
     fi
 
@@ -358,7 +361,7 @@ iteron_main() {
         || iteron_die "installation path is not a directory: $iteron_bin_dir"
     [ ! -d "$iteron_bin_dir/iteron" ] \
         || iteron_die 'installation destination is a directory'
-    iteron_install_tmp=$(mktemp "$iteron_bin_dir/.core.new.XXXXXXXX") \
+    iteron_install_tmp=$(mktemp "$iteron_bin_dir/.iteron.new.XXXXXXXX") \
         || iteron_die 'could not create an atomic installation staging file'
     install -m 0755 "$iteron_binary" "$iteron_install_tmp" \
         || iteron_die 'could not stage the installed binary'

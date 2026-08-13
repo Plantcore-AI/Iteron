@@ -6,7 +6,7 @@ Companion: [Hooks, OpenTelemetry, memory, and context observability implementati
 
 ## 1. Outcome
 
-Implement a Core runtime whose interactive control path is as deterministic and responsive as the
+Implement an Iteron runtime whose interactive control path is as deterministic and responsive as the
 Codex control model, whose effective prompt/context/memory/budget settings come from one runtime
 truth, and whose SWE-bench Pro and Terminal-Bench 2.1 results can support a defensible trainable
 harness paper.
@@ -23,7 +23,7 @@ This plan is complete when all of the following are true:
    from one typed source of truth.
 6. Interactive, benchmark, and research profiles have different, explicit defaults.
 7. Prompt, context, memory, and tool-catalog choices are bounded and attributable.
-8. Core can run the pinned SWE-bench Pro corpus and Terminal-Bench 2.1 through real scoring paths,
+8. Iteron can run the pinned SWE-bench Pro corpus and Terminal-Bench 2.1 through real scoring paths,
    not only adapter fixtures.
 9. Benchmark tasks cannot share memory, workspace state, credentials, or learned policy state.
 10. The trainable harness optimizes a small typed policy over a byte-identical frozen safety
@@ -91,7 +91,7 @@ those boundaries before implementation begins.
 - The production CLI has no live policy-bundle selection matching the adapter's intended trained
   arm.
 - An older, separate evaluation harness recorded SWE-bench Pro `0/4` and Terminal-Bench `8/24`.
-  Those are warnings and priors, not Core benchmark results.
+  Those are warnings and priors, not Iteron benchmark results.
 
 Engineering priors to replace with measurements:
 
@@ -191,7 +191,7 @@ Pinned references:
 - `codex-rs/tui/src/chatwidget.rs`
 
 Copy the state-machine idea and terminal semantics. Do not copy source text or internal names
-blindly; Core's durable record and effect ledger remain authoritative.
+blindly; Iteron's durable record and effect ledger remain authoritative.
 
 ## 4. Target architecture
 
@@ -621,7 +621,7 @@ Tasks:
    separate manifest only if Terminal-Bench 2.0 is deliberately required.
 2. Reproduce benchmark-authorized network conditions without granting broader egress.
 3. Implement live policy-bundle selection and attest its digest.
-4. Emit the benchmark's real task score and aggregate, not a Core proxy metric.
+4. Emit the benchmark's real task score and aggregate, not an Iteron proxy metric.
 5. Persist model/provider/version, profile, kernel hash, prompt/context/memory digests, tool catalog,
    workspace image and evaluator version.
 6. If provider seed is unavailable, record that fact and rely on the required repeated attempts.

@@ -1,11 +1,13 @@
 # Configuration
 
-Iteron uses strict JSON configuration. Unknown fields are rejected and each
-file is limited to 1 MiB.
+Iteron uses bounded JSON configuration and limits each file to 1 MiB. Unknown
+top-level fields are retained, warned about, and ignored so a newer dotfile does
+not brick an older binary; security- and spend-sensitive nested objects reject
+unknown fields.
 
 The current file schema is `schema_version: 2`. Configs written before the version field existed
 are treated as v0; v1 configs are also migrated losslessly in memory. A config from a newer schema
-is rejected with an upgrade-or-downgrade instruction before strict field decoding; Core never
+is rejected with an upgrade-or-downgrade instruction before strict field decoding; Iteron never
 guesses at future semantics.
 
 ## Locations and trust
@@ -33,15 +35,26 @@ their own user config, but its contents are still bounded and strictly parsed.
 | `effort` | string | allowed | ignored |
 | `compaction_trigger_tokens` | positive integer | allowed | ignored |
 | `retry` | object | operator-owned policy | parsed and ignored |
+| `provider_governor` | object | bounded failover, circuit, hedge, request-control, and admission policy | parsed and ignored |
+| `verification` | object | bounded incremental feedback, checkpoint, quorum, and rollback policy | parsed and ignored |
 | `completion_notifications` | boolean | bounded run/approval/long-idle attention notifications; default `false` | parsed and ignored |
 | `prompt_history` | `project`, `global`, or `disabled` | scrubbed, bounded TUI prompt history and text-draft retention; default `project` | parsed and ignored |
 | `tui_keymap` | object | `standard` or `vim` input mode plus a closed, conflict-checked action map | parsed and ignored |
 | `external_editor` | string array | direct executable argv used by Ctrl-G; no shell parsing | parsed and ignored |
 | `providers` | array | allowed, maximum 64 | ignored |
 | `rate_cards` | array | allowed, maximum 256 | ignored |
+| `active_policy_bundle` | object | exact promoted policy-bundle identities and digests | parsed and ignored |
 | `mcp_servers` | array | allowed | ignored |
 | `hooks` | object of command arrays | allowed | ignored for execution |
 | `egress_allow` | string array | schema field only | schema field only |
+
+`provider_governor`, `verification`, and `active_policy_bundle` are consumed only
+from the operator-owned user configuration. The provider governor admits bounded
+fallback and request-control policy. Verification may add narrower feedback but
+cannot replace the exact operator-owned `--verify` completion command.
+`active_policy_bundle` carries validated identities and digests, never policy
+bodies or credentials. A repository value for any of these fields is parsed so
+errors remain visible, then ignored for authority.
 
 !!! warning "No active egress-allow contract"
     `egress_allow` is accepted by the current schema but is not wired to a public
@@ -141,7 +154,7 @@ trying a second adapter. Every failure before a successful wait explicitly kills
 the exact child handle; a nonzero exit has already been reaped. If the kernel does not confirm exit
 inside the one-second async window plus the finite synchronous poll budget, cleanup is truthfully
 outcome-unknown rather than falsely reported as joined. Export runs in a separately killable copy of the
-current Core executable with a cleared environment and bounded stdin/stdout protocol. Its
+current Iteron executable with a cleared environment and bounded stdin/stdout protocol. Its
 five-second deadline, frontend shutdown, and every post-spawn error kill that helper, use a
 one-second async reap window, and then make the same finite exact-handle cleanup attempt; every
 normal and error return from the TUI crosses that cleanup scope before returning.
@@ -165,7 +178,7 @@ every component of its absolute visible path; the complete chain is reopened and
 before and after publication. Renaming, unlinking, or replacing either the workspace or any ancestor
 therefore cannot turn detached-inode publication into reported success. It creates no
 temporary workspace pathname and never issues a cleanup unlink,
-so an unlink/replace or symlink race cannot redirect publication or cause Core to remove an
+so an unlink/replace or symlink race cannot redirect publication or cause Iteron to remove an
 attacker-owned replacement. Parent symlink swaps cannot redirect the write. Existing explicit
 filenames are refused; default viewer and `/export` filenames allocate a bounded `-2`, `-3`, …
 version instead of overwriting. Filesystems without anonymous-inode publication and non-Linux
@@ -176,8 +189,8 @@ draw. Cached grapheme-aware row starts keep steady-frame work and allocation pro
 rows. A bounded reflow runs only when the selected block or terminal width changes.
 
 Ctrl-G invokes `external_editor` as an exact argv with the current repository as its working
-directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or
-`EDITOR` value is accepted; environment values containing arguments are refused. Core writes only
+directory. Iteron never shell-splits this array. If the field is absent, a single-token `VISUAL` or
+`EDITOR` value is accepted; environment values containing arguments are refused. Iteron writes only
 the text draft (never image attachments or paths) to a private, uniquely created file below
 `~/.iteron/tmp`, temporarily restores the native terminal, strips provider/pricing names and ambient
 secret-shaped variables from the child, and accepts at most 64 KiB of valid UTF-8 on a successful
@@ -193,7 +206,7 @@ environment overrides use `ITERON_RETRY_BASE_MS`, `ITERON_RETRY_CAP_MS`, and
 policy is always ignored because it can change paid-request timing and count.
 
 !!! warning "Retry overrides are staged, not active"
-    Core validates and resolves trusted retry policy, but does not yet install the transparent
+    Iteron validates and resolves trusted retry policy, but does not yet install the transparent
     `RetryProvider` decorator in production. The kernel rejects opaque internal retries until each
     physical provider attempt can receive its own durable write-ahead intent. The CLI emits a
     warning when a trusted override is present; default production behavior remains one physical
@@ -220,7 +233,7 @@ the same bound as a `models` id. Two fields are declarable:
 - `context_window_tokens`: positive integer, at most 1000000000.
 - `image_input`: boolean for this exact route/model pair.
 
-Core cannot discover this. A `GET models` response is not capability evidence, and the
+Iteron cannot discover this. A `GET models` response is not capability evidence, and the
 [static provider metadata](provider-metadata.md) document is a bounded set of official vendor
 snapshots, so it can only speak for the vendors it ships. Declaring the window is what turns on
 two behaviours that are otherwise silently unavailable: window-relative compaction, which triggers
@@ -257,7 +270,7 @@ contains:
 - `key_env`, the uppercase environment-variable name containing the corresponding 32-byte key as
   64 hexadecimal characters.
 
-Plaintext key fields are rejected by the strict schema. Core reads only the named environment
+Plaintext key fields are rejected by the strict schema. Iteron reads only the named environment
 variable, authenticates the artifact before opening a rollout, and injects an opaque pricing port;
 the kernel never receives key bytes or fetches a price. The artifact's full route must match the
 catalog and capability digests recorded by `ModelSelected`, and its half-open validity interval must

@@ -5492,6 +5492,24 @@
       "decl": "crates/cli/src/tui/transcript_effect.rs"
     },
     {
+      "id": "cli.tui.transcript_effect.export_store_busy_retry_attempts",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "401",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_effect.rs"
+    },
+    {
+      "id": "cli.tui.transcript_effect.export_store_busy_retry_delay",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "duration",
+      "default": "std::time::Duration::from_millis(5)",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_effect.rs"
+    },
+    {
       "id": "cli.tui.transcript_effect.next_export_sequence",
       "module": "session_stop",
       "class": "structural",

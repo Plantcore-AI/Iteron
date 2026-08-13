@@ -21,7 +21,7 @@ is funded or entitled to every listed model. Without a credential, its leaves ar
 visible but unavailable.
 
 The GLM schema/capability snapshots and Anthropic effort beta metadata are dated
-world data. Core emits one preflight notice per selected provider showing the age
+world data. Iteron emits one preflight notice per selected provider showing the age
 of every static snapshot used by that run and whether an operator replacement
 changed its provider revision. See [static provider metadata](../reference/provider-metadata.md)
 for the offline refresh path; no network response silently rewrites these claims.
@@ -76,8 +76,8 @@ Operator-defined providers also live only in `~/.iteron/config.json`:
 }
 ```
 
-`model_capabilities` is optional. Core has no portable way to discover a context window or image
-support. Fireworks' typed `supportsImageInput` catalog field and Core's static vendor snapshots are
+`model_capabilities` is optional. Iteron has no portable way to discover a context window or image
+support. Fireworks' typed `supportsImageInput` catalog field and Iteron's static vendor snapshots are
 used when present; custom gateways can declare the exact model capability here. Without a window,
 compaction falls back to the absolute
 `compaction_trigger_tokens` instead of a share of the window, and the pre-flight admission check

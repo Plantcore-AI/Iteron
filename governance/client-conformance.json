@@ -172,7 +172,7 @@
   "version_independence": {
     "status": "pending",
     "clients": ["tui", "one-shot", "headless"],
-    "operating_systems": ["unix", "windows-msvc"],
+    "operating_systems": ["unix"],
     "evidence": [
       {
         "kind": "test",
@@ -188,11 +188,6 @@
         "kind": "test",
         "path": "crates/cli/tests/one_shot_output.rs",
         "selector": "fn one_shot_refuses_app_server_version_skew_before_provider_dispatch()"
-      },
-      {
-        "kind": "test",
-        "path": "crates/cli/tests/windows_conpty.rs",
-        "selector": "fn native_conpty_rejects_version_skew_before_terminal_takeover()"
       }
     ]
   },
@@ -243,18 +238,6 @@
         "kind": "workflow",
         "path": ".github/workflows/release.yml",
         "selector": "x86_64-unknown-linux-musl"
-      }
-    },
-    {
-      "platform": "windows-x86_64",
-      "target": "x86_64-pc-windows-msvc",
-      "runner": "windows-2022",
-      "status": "pending",
-      "native": true,
-      "workflow": {
-        "kind": "workflow",
-        "path": ".github/workflows/release.yml",
-        "selector": "x86_64-pc-windows-msvc"
       }
     }
   ]

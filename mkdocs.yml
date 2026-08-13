@@ -141,6 +141,7 @@ nav:
           - TUI testing: development/tui-testing.md
           - Control, benchmark, tunables, and trainable harness plan: development/control-benchmark-harness-implementation-plan.md
           - Hooks, OpenTelemetry, memory, and context observability plan: development/observability-memory-context-implementation-plan.md
+          - Trainable harness runtime acceptance: development/trainable-harness-runtime-acceptance.md
           - Releasing: development/releasing.md
       - License: project/license.md
 

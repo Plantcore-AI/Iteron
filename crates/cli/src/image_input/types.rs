@@ -22,7 +22,21 @@ pub enum ImageInputErrorKind {
     TruncatedImage,
     ExtensionMismatch,
     HeicConversionUnavailable,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(
+            dead_code,
+            reason = "the cross-platform error vocabulary includes macOS conversion failures"
+        )
+    )]
     HeicConversionFailed,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(
+            dead_code,
+            reason = "the cross-platform error vocabulary includes macOS conversion timeouts"
+        )
+    )]
     HeicConversionTimedOut,
     ProtocolRejected,
 }

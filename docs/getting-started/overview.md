@@ -38,8 +38,8 @@ Iteron evaluates mechanisms against five project invariants:
    regenerated.
 4. **Observable** — phase, usage, effects, verification, and strategy attribution
    are emitted where implemented.
-5. **Security-bounded** — authority is deny-by-default and its blast radius is
-   explicit.
+5. **Security-bounded** — authority can only narrow from its operator-set ceiling,
+   never self-widen, and its blast radius is explicit.
 
 These are design requirements, not a claim that every current code path has
 completed production evidence.

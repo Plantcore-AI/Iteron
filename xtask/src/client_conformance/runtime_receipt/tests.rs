@@ -88,14 +88,6 @@ fn valid_receipt_value() -> Value {
                 104,
                 204,
                 "success",
-            ),
-            platform(
-                "windows-x86_64",
-                "x86_64-pc-windows-msvc",
-                "windows-2022",
-                105,
-                205,
-                "success",
             )
         ],
         "version_independence": [
@@ -103,13 +95,6 @@ fn valid_receipt_value() -> Value {
                 "operating_system": "unix",
                 "platform": "linux-x86_64",
                 "job_id": 104,
-                "clients": ["headless", "one-shot", "tui"],
-                "conclusion": "success"
-            },
-            {
-                "operating_system": "windows-msvc",
-                "platform": "windows-x86_64",
-                "job_id": 105,
                 "clients": ["headless", "one-shot", "tui"],
                 "conclusion": "success"
             }
@@ -188,7 +173,13 @@ fn receipt_row_order_must_match_the_canonical_collector_schema() {
     assert!(validate_receipt(&receipt, &valid_builder()).is_err());
 
     let mut receipt = parse_valid_receipt();
-    receipt.version_independence.swap(0, 1);
+    receipt.version_independence.push(VersionIndependence {
+        operating_system: "unix".into(),
+        platform: "linux-x86_64".into(),
+        job_id: 104,
+        clients: vec!["headless".into(), "one-shot".into(), "tui".into()],
+        conclusion: "success".into(),
+    });
     assert!(validate_receipt(&receipt, &valid_builder()).is_err());
 }
 

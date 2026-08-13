@@ -14,14 +14,8 @@ const MAX_ATTESTATION_BYTES: u64 = 2 * 1024 * 1024;
 const REPOSITORY: &str = "Plantcore-AI/Iteron";
 const BUILDER_WORKFLOW: &str = ".github/workflows/runtime-receipt.yml";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-const PLATFORM_ORDER: [&str; 5] = [
-    "macos-arm64",
-    "macos-x86_64",
-    "linux-arm64",
-    "linux-x86_64",
-    "windows-x86_64",
-];
-const VERSION_ORDER: [&str; 2] = ["unix", "windows-msvc"];
+const PLATFORM_ORDER: [&str; 4] = ["macos-arm64", "macos-x86_64", "linux-arm64", "linux-x86_64"];
+const VERSION_ORDER: [&str; 1] = ["unix"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,7 +148,7 @@ fn require_pending_state(matrix: &Matrix) -> Result<()> {
             .any(|row| row.status != "pending")
     {
         bail!(
-            "a null runtime_receipt requires pending version independence and all five pending platform smokes"
+            "a null runtime_receipt requires pending version independence and all four pending platform smokes"
         );
     }
     Ok(())
@@ -168,7 +162,7 @@ fn require_green_state(matrix: &Matrix) -> Result<()> {
             .any(|row| row.status != "green")
     {
         bail!(
-            "a runtime_receipt requires green version independence and all five green platform smokes"
+            "a runtime_receipt requires green version independence and all four green platform smokes"
         );
     }
     Ok(())
@@ -292,7 +286,7 @@ fn validate_run(run: &Run) -> Result<()> {
 fn validate_platforms(platforms: &[Platform]) -> Result<BTreeMap<&str, u64>> {
     let required = platform_contract();
     if platforms.len() != required.len() {
-        bail!("runtime receipt must contain exactly five native platforms");
+        bail!("runtime receipt must contain exactly four native platforms");
     }
     if platforms
         .iter()
@@ -369,9 +363,9 @@ fn validate_version_independence(
     versions: &[VersionIndependence],
     jobs: &BTreeMap<&str, u64>,
 ) -> Result<()> {
-    let required = BTreeMap::from([("unix", "linux-x86_64"), ("windows-msvc", "windows-x86_64")]);
+    let required = BTreeMap::from([("unix", "linux-x86_64")]);
     if versions.len() != required.len() {
-        bail!("runtime receipt must contain exactly Unix and Windows version-independence runs");
+        bail!("runtime receipt must contain exactly one Unix version-independence run");
     }
     if versions
         .iter()
@@ -420,10 +414,6 @@ fn platform_contract() -> BTreeMap<&'static str, (&'static str, &'static str, &'
         (
             "macos-x86_64",
             ("x86_64-apple-darwin", "macos-15-intel", "skipped"),
-        ),
-        (
-            "windows-x86_64",
-            ("x86_64-pc-windows-msvc", "windows-2022", "success"),
         ),
     ])
 }

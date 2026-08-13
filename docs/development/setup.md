@@ -2,12 +2,11 @@
 
 ## Prerequisites
 
-The Iteron source tree targets macOS, Linux, and 64-bit Windows. Install Git,
+The supported Iteron source and release targets are macOS and Linux. Install Git,
 a Rust toolchain at version 1.90 or newer, and the compiler/linker required by
-the target. Windows source paths use the MSVC toolchain and require the Visual
-Studio Build Tools C++ workload, but native `windows-2022` qualification and its
-release receipt remain pending. The repository does not use a JavaScript build
-for the product runtime.
+the target. Windows is not supported; the repository retains only an advisory
+`windows / check` cross-compilation lane on `windows-latest` so gaps remain
+visible. The repository does not use a JavaScript build for the product runtime.
 
 ```sh
 rustup toolchain install 1.90.0 --profile minimal \
@@ -29,37 +28,36 @@ to make a test pass.
 
 macOS uses the system `sandbox-exec`/Seatbelt boundary and needs no extra package.
 
-The Windows source uses the `x86_64-pc-windows-msvc` target and contains client,
-ConPTY TUI, and loopback App Server paths. Those paths still require native
-`windows-2022` qualification. Code-execution operations whose WS5 Confinement
-backend is not yet available fail closed rather than running unconfined.
+The advisory Windows lane runs
+`cargo check --workspace --locked --target x86_64-pc-windows-msvc`. It is
+non-blocking, does not package a release, and is not support evidence. There is
+no Windows code-execution sandbox backend.
 
 ## Fork and clone
 
 Create a GitHub fork, then:
 
 ```sh
-git clone https://github.com/YOUR-ACCOUNT/core.git
-cd iteron
+git clone https://github.com/YOUR-ACCOUNT/Iteron.git
+cd Iteron
 git remote add upstream https://github.com/Plantcore-AI/Iteron.git
 git fetch upstream
 ```
 
-Keep `origin` pointed at your fork and `upstream` pointed at the public project.
+Keep `origin` pointed at your fork and `upstream` pointed at the upstream project.
 
 ## Build and run
 
 ```sh
 cargo build --locked -p iteron-cli
-./target/debug/core --help
-./target/debug/core -C /path/to/a/test/repository
+./target/debug/iteron --help
+./target/debug/iteron -C /path/to/a/test/repository
 ```
 
-In PowerShell, run the built executable as `.\target\debug\iteron.exe`.
-
 Use a disposable test repository for changes involving edits, shell execution,
-permissions, hooks, or sandboxing. Code execution remains off unless explicitly
-granted.
+permissions, hooks, or sandboxing. Code execution and the permission bypass are
+on by default; use `--confine`, `--ask-permissions`, or `--mode plan` to narrow
+the posture under test.
 
 The default provider is GLM. A real interactive model call requires a provider
 credential in the process environment, but builds and default tests require no
@@ -67,7 +65,7 @@ credential and make no provider request.
 
 ## Local configuration
 
-User configuration lives below `~/.iteron`; repository-local `.core` state is
+User configuration lives below `~/.iteron`; repository-local `.iteron` state is
 untrusted input and cannot grant itself new authority or redirect provider
 credentials. Never commit either location or copy a real session into a fixture.
 
@@ -80,9 +78,8 @@ public push-protection scanners do not mistake them for live credentials.
 - Use `cargo metadata --locked --no-deps` to catch workspace configuration errors.
 - If Linux sandbox tests report `Unsupported`, run the exact capability probe in
   `crates/sandbox/src/bubblewrap.rs` and inspect local AppArmor policy.
-- If a PTY test hangs, rerun only `cargo test -p iteron-cli --test tui_pty --locked
-  -- --nocapture` on Unix, or `cargo test -p iteron-cli --test windows_conpty
-  --locked -- --nocapture` on Windows, and capture the terminal size and OS.
+- If a PTY test hangs, rerun only `cargo test -p iteron-cli --test tui_pty
+  --locked -- --nocapture` and capture the terminal size and OS.
 - If generated ownership is stale, run `cargo run --locked -p iteron-xtask --
   boundaries generate`, then validate the resulting diff.
 

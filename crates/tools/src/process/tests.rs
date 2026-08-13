@@ -189,6 +189,34 @@ async fn wait_stdout_contains_from(
     );
 }
 
+#[cfg(target_os = "linux")]
+async fn wait_supervisor_stdout_contains(
+    supervisor: &Supervisor,
+    job_id: &str,
+    needle: &str,
+) -> ProcessSnapshot {
+    let mut stdout_cursor = 0;
+    let mut stderr_cursor = 0;
+    let mut observed = String::new();
+    let mut last = None;
+    for _ in 0..12 {
+        let snapshot = supervisor
+            .poll(job_id, stdout_cursor, stderr_cursor, 250)
+            .await
+            .unwrap();
+        observed.push_str(&snapshot.stdout.text);
+        stdout_cursor = snapshot.stdout.next_cursor;
+        stderr_cursor = snapshot.stderr.next_cursor;
+        if observed.contains(needle) {
+            return snapshot;
+        }
+        last = Some(snapshot);
+    }
+    panic!(
+        "job `{job_id}` did not emit {needle:?} within the fixed test budget; observed: {observed:?}; last snapshot: {last:?}"
+    );
+}
+
 fn cleanup(root: &Path) {
     let _ = std::fs::remove_dir_all(root);
 }
@@ -728,8 +756,8 @@ async fn registry_drop_kills_the_owned_group_before_a_delayed_descendant_can_esc
         return;
     };
     let job_id = started["job_id"].as_str().unwrap();
-    let armed = poll(&registry, job_id, 2_000).await;
-    assert!(armed["stdout"]["text"].as_str().unwrap().contains("armed"));
+    let (_, armed) = wait_stdout_contains_from(&registry, job_id, 0, "armed").await;
+    assert!(armed.contains("armed"));
     drop(registry);
     tokio::time::sleep(Duration::from_millis(1_200)).await;
     assert!(
@@ -762,8 +790,7 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
         }
         Err(error) => panic!("start failed: {error:?}"),
     };
-    let armed = supervisor.poll(&started.job_id, 0, 0, 2_000).await.unwrap();
-    assert!(armed.stdout.text.contains("armed"));
+    let armed = wait_supervisor_stdout_contains(&supervisor, &started.job_id, "armed").await;
     supervisor.abort_actor(&started.job_id).unwrap();
     let after_abort = supervisor
         .poll(

@@ -1,6 +1,6 @@
 # Release engineering
 
-Only the human Project Owner can authorize a Iteron release. A release is a
+Only the human Project Owner can authorize an Iteron release. A release is a
 supply-chain event, not a local `cargo build` plus an uploaded binary.
 
 ## Preconditions
@@ -18,13 +18,13 @@ supply-chain event, not a local `cargo build` plus an uploaded binary.
 
 Before creating an immutable tag, dispatch `release.yml` against the exact
 candidate commit. This preflight runs the same validation, legal-evidence, native
-five-target test/package, SBOM, and attestation graph, but the publish and canary
-canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
+four-target macOS/Linux test/package, SBOM, and attestation graph, but the publish
+and canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
 be green before the Owner creates the tag.
 
 ## Required artifacts
 
-Every platform archive contains the `iteron` or `iteron.exe` binary, `LICENSE`, `README.md`, audited
+Every platform archive contains the `iteron` binary, `LICENSE`, `README.md`, audited
 third-party licenses and notices, an SPDX SBOM, and build metadata. The release
 also publishes `SHA256SUMS`, a versioned machine-readable manifest, a receipt containing the
 SHA-256 and size of the final canonical manifest bytes, the POSIX installer, and GitHub artifact
@@ -72,7 +72,12 @@ corruption but is not independent publisher authentication.
 
 The manifest receipt is a stable content identifier, not a signature. It lets a consumer reject
 one changed byte before execution, while repository controls and attestations provide separate
-source-authenticity evidence. Windows Authenticode and other platform signing remain outside this
-bounded artifact addition.
+source-authenticity evidence. Platform signing remains outside this bounded
+artifact addition.
 
-Manual uploads and local-machine release builds are not accepted release evidence.
+Manual uploads and local-machine release builds are not accepted release
+evidence. The published `v0.0.1` through `v0.0.4` tags were built locally during
+the hosted Actions outage and contain only `aarch64-apple-darwin`; their release
+notes and manifests record that limitation, and `v0.0.2` through `v0.0.4` also
+carry offline provenance documents. They remain historical pre-alpha downloads,
+not exceptions to this four-target acceptance rule.

@@ -1,35 +1,59 @@
 # Releases and changelog
 
-Iteron publishes immutable pre-alpha releases. A published artifact has passed
-the release workflow; it does not imply stable CLI, configuration, record, or
-runtime compatibility.
+Iteron publishes immutable pre-alpha artifacts. Availability does not imply a
+stable CLI, configuration, record, or runtime compatibility promise.
 
-## Release artifacts
+## Published history
 
 The [GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases) page is the
-canonical binary distribution channel. Each accepted release contains:
+canonical binary channel. Its release notes are authoritative for the exact
+assets attached to each tag.
 
-- native macOS/Linux archives and the bounded Windows x86-64 one-shot ZIP;
+| Tag | Published | Build origin | Native archives |
+| --- | --- | --- | --- |
+| `v0.0.1` | 2026-08-06 | local macOS build | `aarch64-apple-darwin` |
+| `v0.0.2` | 2026-08-07 | local macOS build | `aarch64-apple-darwin` |
+| `v0.0.3` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
+| `v0.0.4` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
+
+All four were produced while hosted Actions capacity was unavailable. They carry
+content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
+not GitHub OIDC attestations or the complete four-target matrix. They are useful
+historical pre-alpha artifacts and do **not** satisfy the accepted workflow
+release contract below.
+
+## Accepted release artifacts
+
+The supported distribution matrix is macOS and Linux:
+
+- `aarch64-apple-darwin` and `x86_64-apple-darwin`;
+- `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`.
+
+An accepted release contains the targets named by its release notes and, for the
+complete supported matrix:
+
+- four native macOS/Linux archives;
 - a version-bound `install.sh` and `SHA256SUMS`;
-- `release-manifest.json` with commit, CLI stream, target, size, and digest evidence;
+- `release-manifest.json` with commit, CLI stream, target, size, and digest
+  evidence;
 - `release-manifest.receipt.json` identifying the exact final manifest bytes;
 - Apache-2.0 and third-party license and notice material;
 - per-target SPDX SBOMs;
-- build provenance, SBOM attestations, and offline bundles.
+- GitHub build provenance, SBOM attestations, and offline bundles.
 
-Published releases are protected by GitHub immutable releases. Version tags are
-Owner-created and cannot be moved or deleted. If a correction is required, the
-project publishes a new patch version.
+Windows is not a release target. Published releases are expected to use GitHub's
+immutable-release control; if a correction is required, the project publishes a
+new patch version rather than moving a tag or editing assets.
 
-See the [installation guide](../getting-started/installation.md) for curl,
-version pinning, supported targets, verification, and uninstall instructions.
+See the [installation guide](../getting-started/installation.md) for current
+availability, version pinning, verification, and uninstall instructions.
 
 ## Changelog
 
 The source repository's
-[CHANGELOG.md](https://github.com/Plantcore-AI/Iteron/blob/main/CHANGELOG.md) is the
-canonical human-readable change history. GitHub release notes identify the exact
-artifact set for a tag.
+[CHANGELOG.md](https://github.com/Plantcore-AI/Iteron/blob/main/CHANGELOG.md) is
+the canonical human-readable change history. GitHub release notes identify the
+exact artifact set for a tag.
 
 Do not infer release support from the workspace version alone. During `0.0.x`,
 public interfaces may change between releases.
@@ -40,11 +64,12 @@ A release is accepted only when all of the following are true:
 
 - the annotated SemVer tag resolves to the current protected `main` commit;
 - source, ownership, formatting, clippy, and full workspace tests pass;
-- every target is built, tested, packaged, and smoke-tested natively;
+- all four macOS/Linux targets are built, tested, packaged, and smoke-tested
+  natively;
 - archive structure, licenses, notices, checksums, SBOMs, and provenance pass;
 - the Owner approves the protected `release` environment;
 - the published release reports itself immutable;
-- content-addressed native artifact canaries pass on all five targets, and fixed-version plus
-  `latest` curl canaries pass on the four POSIX installer targets.
+- content-addressed artifact canaries and fixed-version plus `latest` installer
+  canaries pass on all four targets.
 
 Maintainers follow the detailed [release guide](../development/releasing.md).

@@ -4,14 +4,14 @@
   "registry_revision": 17,
   "registry_digest": "fee22a629e6bb95f190c75ec25e63e198a2eb44a7dfb1bf839828e5c397d93db",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "9b4cfbbe5579f47c081e2095bfcf67ca6c6833d819035a294de492821f8923da",
+  "param_registry_digest": "d3024eeb067bb36a0a7fd9ee2f6acb345b4a308b60b31627870b6fae18c704f1",
   "counts": {
     "families": 160,
     "families_full": 97,
     "families_fixed_hidden": 63,
     "families_profile_addressable": 91,
-    "params": 1777,
-    "params_searchable": 857,
+    "params": 1779,
+    "params_searchable": 859,
     "params_bounded": 714,
     "params_structural": 206,
     "modules": 28,
@@ -197,7 +197,7 @@
       "id": "session.stop",
       "kind": "structured",
       "families": 3,
-      "params": 193,
+      "params": 195,
       "artifacts": 0
     },
     {
@@ -9086,6 +9086,26 @@
       "class": "searchable",
       "type": "integer",
       "default": "(1_u64 << 63) | (1_u64 << 61)",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_effect.rs"
+    },
+    {
+      "id": "cli.tui.transcript_effect.export_store_busy_retry_attempts",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "integer",
+      "default": "401",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/transcript_effect.rs"
+    },
+    {
+      "id": "cli.tui.transcript_effect.export_store_busy_retry_delay",
+      "module": "session_stop",
+      "class": "searchable",
+      "type": "duration",
+      "default": "std::time::Duration::from_millis(5)",
       "domain": {},
       "krate": "cli",
       "decl": "crates/cli/src/tui/transcript_effect.rs"

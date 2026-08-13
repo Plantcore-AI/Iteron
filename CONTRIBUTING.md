@@ -60,8 +60,8 @@ Supported development hosts are macOS and Linux. You need:
 Fork the repository in GitHub, then clone your fork:
 
 ```sh
-git clone https://github.com/YOUR-ACCOUNT/core.git
-cd iteron
+git clone https://github.com/YOUR-ACCOUNT/Iteron.git
+cd Iteron
 git remote add upstream https://github.com/Plantcore-AI/Iteron.git
 cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked
