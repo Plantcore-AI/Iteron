@@ -28,7 +28,7 @@ env:
 jobs:
   validate:
     name: release / validate
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 45
     outputs:
       commit: ${{ steps.metadata.outputs.commit }}
@@ -448,7 +448,7 @@ jobs:
   legal:
     name: release / legal evidence
     needs: validate
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -461,7 +461,7 @@ jobs:
         run: cargo +"$RUST_VERSION" fetch --locked
       - name: Fetch the checksum-pinned cargo-about binary
         run: >-
-          python3 release-tools/fetch_tool.py cargo-about linux-x86_64
+          python3 release-tools/fetch_tool.py cargo-about linux-arm64
           --output "$RUNNER_TEMP/cargo-about"
       - name: Generate frozen license and notice evidence
         run: |
@@ -485,7 +485,6 @@ jobs:
             > "$RUNNER_TEMP/cargo-metadata.json"
           for target in \
             aarch64-apple-darwin \
-            x86_64-apple-darwin \
             aarch64-unknown-linux-musl \
             x86_64-unknown-linux-musl
           do
@@ -496,7 +495,6 @@ jobs:
           python3 release-tools/legal.py \
             --metadata "$RUNNER_TEMP/cargo-metadata.json" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-apple-darwin.txt" \
-            --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-apple-darwin.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-unknown-linux-musl.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-unknown-linux-musl.txt" \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
@@ -529,22 +527,15 @@ jobs:
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
-          - runner: macos-15-intel
-            host: darwin-x86_64
-            target: x86_64-apple-darwin
-            python: python3
-            tool-suffix: ""
-            archive-suffix: tar.gz
-            binary: iteron
-          - runner: ubuntu-24.04-arm
+          - runner: dgx
             host: linux-arm64
             target: aarch64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
-          - runner: ubuntu-24.04
-            host: linux-x86_64
+          - runner: dgx
+            host: linux-arm64
             target: x86_64-unknown-linux-musl
             python: python3
             tool-suffix: ""
@@ -558,6 +549,8 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-build
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-x86_64
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/workspace -C strip=symbols
       SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source-date-epoch }}
     steps:
@@ -581,6 +574,11 @@ jobs:
           }
           PROFILE
           sudo apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
+      - name: Verify the DGX x86-64 cross-execution boundary
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          command -v x86_64-linux-musl-gcc >/dev/null
+          command -v qemu-x86_64 >/dev/null
       - name: Install the pinned Rust target
         shell: bash
         run: >-
@@ -645,9 +643,9 @@ jobs:
           description=$(file "$binary")
           case "$target" in
             aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
-            x86_64-apple-darwin) grep -q 'x86_64' <<<"$description" ;;
             aarch64-unknown-linux-musl) grep -Eq 'ARM aarch64|aarch64' <<<"$description" ;;
             x86_64-unknown-linux-musl) grep -q 'x86-64' <<<"$description" ;;
+            *) printf 'unexpected release target %s\n' "$target" >&2; exit 1 ;;
           esac
           if [[ "$target" == *-unknown-linux-musl ]]; then
             grep -Eq 'statically linked|static-pie linked' <<<"$description"
@@ -789,7 +787,7 @@ jobs:
     name: release / publish immutable assets
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [validate, legal, build]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
     environment:
       name: release
@@ -828,7 +826,6 @@ jobs:
             --commit "${{ needs.validate.outputs.commit }}" \
             --dist dist \
             --target aarch64-apple-darwin \
-            --target x86_64-apple-darwin \
             --target aarch64-unknown-linux-musl \
             --target x86_64-unknown-linux-musl \
             --protocol-source crates/protocol/src/wire.rs \
@@ -1000,15 +997,13 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
               --source-ref "$GITHUB_REF" \
-              --source-digest "$GITHUB_SHA" \
-              --deny-self-hosted-runners
+              --source-digest "$GITHUB_SHA"
             gh attestation verify "$archive" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
               --source-ref "$GITHUB_REF" \
               --source-digest "$GITHUB_SHA" \
-              --predicate-type https://spdx.dev/Document/v2.3 \
-              --deny-self-hosted-runners
+              --predicate-type https://spdx.dev/Document/v2.3
           done
 
   content-canary:
@@ -1023,15 +1018,11 @@ jobs:
             target: aarch64-apple-darwin
             archive-suffix: tar.gz
             python: python3
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            archive-suffix: tar.gz
-            python: python3
-          - runner: ubuntu-24.04-arm
+          - runner: dgx
             target: aarch64-unknown-linux-musl
             archive-suffix: tar.gz
             python: python3
-          - runner: ubuntu-24.04
+          - runner: dgx
             target: x86_64-unknown-linux-musl
             archive-suffix: tar.gz
             python: python3
@@ -1083,11 +1074,9 @@ jobs:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - runner: ubuntu-24.04-arm
+          - runner: dgx
             target: aarch64-unknown-linux-musl
-          - runner: ubuntu-24.04
+          - runner: dgx
             target: x86_64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10

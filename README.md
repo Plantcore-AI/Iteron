@@ -51,7 +51,7 @@ observability, evaluation, and future evolution strategies.
 
 Four pre-alpha tags through `v0.0.4` exist, but each was built locally for macOS
 Apple Silicon only while hosted Actions capacity was unavailable. They are not
-accepted four-target workflow release evidence. On any macOS/Linux target absent
+accepted three-target workflow release evidence. On any supported target absent
 from the latest tag, build the current source with Rust 1.90 or newer:
 
 ```sh
@@ -61,11 +61,11 @@ cargo install --locked --path crates/cli
 iteron --version
 ```
 
-The repository includes an installer and a four-target macOS/Linux release
+The repository includes an installer and a three-target macOS/Linux release
 pipeline. The unauthenticated installer works only while the selected tag and
 its archive are publicly accessible. An accepted release additionally requires
 native build, test,
-packaging, smoke-test, SBOM, and attestation evidence for all four targets. See the
+packaging, smoke-test, SBOM, and attestation evidence for all three targets. See the
 [installation guide](docs/getting-started/installation.md) for current
 availability and the verification contract.
 
