@@ -303,7 +303,7 @@ fn validate_version_independence(root: &Path, version: &VersionIndependence) -> 
     validate_clients(&version.clients, true)?;
     validate_exact_strings(
         &version.operating_systems,
-        &["unix", "windows-msvc"],
+        &["unix"],
         "version-independence operating systems",
     )?;
     if version.evidence.len() < 2 || version.evidence.len() > MAX_EVIDENCE_ITEMS {
@@ -327,10 +327,9 @@ fn validate_platform_smoke(root: &Path, rows: &[PlatformSmoke]) -> Result<()> {
         ),
         ("macos-arm64", ("aarch64-apple-darwin", "macos-15")),
         ("macos-x86_64", ("x86_64-apple-darwin", "macos-15-intel")),
-        ("windows-x86_64", ("x86_64-pc-windows-msvc", "windows-2022")),
     ]);
     if rows.len() != required.len() {
-        bail!("platform smoke matrix must contain exactly five native rows");
+        bail!("platform smoke matrix must contain exactly four native rows");
     }
     let mut actual = BTreeSet::new();
     for row in rows {

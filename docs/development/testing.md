@@ -50,12 +50,11 @@ bubblewrap and loads a path-specific AppArmor user-namespace profile so the live
 network-denial test must execute rather than skip. macOS runs live Seatbelt
 confinement tests.
 
-The native `windows-2022` job runs format plus all-target check, clippy, and tests
-for `iteron-cli`, including the real ConPTY Unicode/resize oracle, one-shot
-completion, and the loopback `iteron serve` version-skew/reconnect/result-v5
-oracle. It also performs the explicit
-`cargo build --target x86_64-pc-windows-msvc -p iteron-cli` acceptance build.
-Unavailable Windows confinement operations remain fall-closed.
+Windows is unsupported. The only always-on Windows lane is the non-blocking
+`windows / check` job on `windows-latest`, which runs
+`cargo check --workspace --locked --target x86_64-pc-windows-msvc`. It keeps
+compile drift visible but is not native runtime, ConPTY, sandbox, installer, or
+release evidence.
 
 Do not treat a local macOS or DGX Linux pass as native Windows evidence, or any
 one operating-system pass as evidence for another.

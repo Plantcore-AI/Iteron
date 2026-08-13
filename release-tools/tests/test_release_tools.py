@@ -522,7 +522,14 @@ exit 1
             workflow.count("git rev-parse 'HEAD^{commit}'"), 2
         )
         self.assertIn("core-release-workspace-status", workflow)
-        self.assertIn("x86_64-pc-windows-msvc", workflow)
+        self.assertNotIn("x86_64-pc-windows-msvc", workflow)
+        for target in (
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+        ):
+            self.assertIn(f"--target {target}", workflow)
         self.assertIn("content-canary:", workflow)
         self.assertIn("release-manifest.receipt.json", workflow)
         self.assertIn("verify_release.py artifact", workflow)
@@ -619,10 +626,12 @@ exit 1
             ("x86_64-apple-darwin", "macos-15-intel"),
             ("aarch64-unknown-linux-musl", "ubuntu-24.04-arm"),
             ("x86_64-unknown-linux-musl", "ubuntu-24.04"),
-            ("x86_64-pc-windows-msvc", "windows-2022"),
         ):
             self.assertIn(f"target: {target}", receipt)
             self.assertIn(f"runner: {runner}", receipt)
+        self.assertNotIn("x86_64-pc-windows-msvc", receipt)
+        self.assertNotIn("windows-2022", receipt)
+        self.assertNotIn("runner.os == 'Windows'", receipt)
         self.assertIn(
             "name: native client runtime / ${{ matrix.target }}", receipt
         )
@@ -659,7 +668,7 @@ exit 1
         ):
             self.assertIn(f"- name: {step}", receipt)
         self.assertIn("../builder/release-tools/smoke_release_client.py", receipt)
-        self.assertIn("$builder/release-tools/verify_pe.py", receipt)
+        self.assertNotIn("$builder/release-tools/verify_pe.py", receipt)
         self.assertIn(
             "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
             receipt,
@@ -979,7 +988,7 @@ exit 1
         self.assertEqual(process.stdout, "pathlib\n")
 
     def test_installer_render_is_exact(self) -> None:
-        template = "version='@ITERON_CODE_VERSION@'\n"
+        template = "version='@ITERON_VERSION@'\n"
         self.assertEqual(render_installer.render(template, "0.0.1"), "version='v0.0.1'\n")
         with self.assertRaises(ReleaseToolError):
             render_installer.render("no marker", "0.0.1")

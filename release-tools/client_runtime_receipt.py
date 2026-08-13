@@ -273,7 +273,7 @@ def collect(arguments: argparse.Namespace) -> None:
                 "clients": list(CLIENTS),
                 "conclusion": "success",
             }
-            for index in (3, 4)
+            for index in (3,)
         ],
     }
     validate_receipt(receipt, tested_commit, builder_commit)

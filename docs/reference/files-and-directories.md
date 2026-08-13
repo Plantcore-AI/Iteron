@@ -1,6 +1,6 @@
 # Files and directories
 
-Iteron uses one product state-directory name: `.core`. It does not merge
+Iteron uses one product state-directory name: `.iteron`. It does not merge
 historical product directories.
 
 ## Operator-owned state

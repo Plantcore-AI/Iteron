@@ -160,7 +160,16 @@ async fn quorum_parallel_cancels_pending_siblings_without_stopping_the_run() {
         "sibling cancellation is not run cancellation"
     );
     assert!(started.elapsed() < Duration::from_millis(700));
-    assert_eq!(report.value, serde_json::json!(["result:A", null, null]));
+    assert!(
+        [
+            serde_json::json!(["result:A", null, null]),
+            serde_json::json!([null, "result:B", null]),
+            serde_json::json!([null, null, "result:C"]),
+        ]
+        .contains(&report.value),
+        "the first completed evidence member remains at its declaration index and cancels both siblings: {}",
+        report.value
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

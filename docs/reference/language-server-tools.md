@@ -1,6 +1,6 @@
 # Language-server tools
 
-On Linux, Core's coding-agent registry includes one lazy `lsp_query` tool with a typed `query`
+On Linux, Iteron's coding-agent registry includes one lazy `lsp_query` tool with a typed `query`
 selector for `definition`, `references`, or `hover`. It is registered as
 **Effecting / CodeExecuting**, not pure reads. A third-party language-server executable can write
 inside its workspace even when the request itself is observational, so the normal code-execution
@@ -20,9 +20,9 @@ The built-in adapter map is intentionally closed and does not accept a model-sup
 
 Each call starts the adapter only after admission. The workspace is retained as a descriptor and
 mounted with bubblewrap's native `--bind-fd`; path replacement after admission cannot redirect the
-server. The process runs under Core's egress-off Linux bubblewrap PID namespace, uses bounded stdio
+server. The process runs under Iteron's egress-off Linux bubblewrap PID namespace, uses bounded stdio
 framing, completes initialize/open/query/shutdown/exit, and is joined before a natural result is
-returned. If persistent confinement is unavailable, Core refuses before starting an unconfined
+returned. If persistent confinement is unavailable, Iteron refuses before starting an unconfined
 server.
 
 The input must be a control-free relative workspace path to a UTF-8 source file of at most 2 MiB.
@@ -38,7 +38,7 @@ hover text, including quoted paths containing spaces; ordinary documentation URL
 The operation has a 70-second user-visible async budget: 67 seconds are available to admission,
 spawn, protocol work, and projection, with three seconds reserved for forced process and stderr
 cleanup, which run concurrently. The supervisor awaits that owned lifecycle task through the
-absolute 70-second deadline. If terminal cleanup has not been confirmed then, Core returns an
+absolute 70-second deadline. If terminal cleanup has not been confirmed then, Iteron returns an
 Unknown outcome and detaches rather than aborting the runtime-owned cleanup task; that task
 continues to own the process lifecycle, spends the process-group capability before any
 direct-child reap, and completes the bounded reap and stderr-retirement attempts. Caller

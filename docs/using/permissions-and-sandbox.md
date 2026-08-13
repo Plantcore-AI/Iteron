@@ -119,5 +119,6 @@ runs that had nothing wrong with them.
     command. Declared tool-level classification cannot parse and prove every
     nested effect of arbitrary code.
 
-`yolo` is therefore a deliberate operator tradeoff, not a bypass-permissions
-mode. Prefer `default` or `plan` for an unfamiliar repository.
+`yolo` is therefore a deliberate operator tradeoff, not the shipped bypass.
+For an unfamiliar repository, use `--ask-permissions --confine`, use
+`--mode plan`, or do not run it.

@@ -22,8 +22,8 @@ before opening a pull request.
 ## Local start
 
 ```sh
-git clone https://github.com/YOUR-ACCOUNT/core.git
-cd iteron
+git clone https://github.com/YOUR-ACCOUNT/Iteron.git
+cd Iteron
 cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked
 ```

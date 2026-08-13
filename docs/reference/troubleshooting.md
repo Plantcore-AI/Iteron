@@ -26,17 +26,20 @@ provider and tighten selected ceilings.
 
 ## Code execution is refused
 
-Confirm that `--allow-code` or a trusted user grant is active, that the mode does
-not deny it, and that the platform sandbox probe succeeds. On Linux, install and
-enable a usable bubblewrap boundary. Iteron will not silently fall back to an
-unconfined shell.
+Code execution is granted by default. Confirm that trusted configuration has not
+set `allow_code` to `false`, that `--mode plan` or an explicit deny rule is not
+active, and use `--allow-code` to grant it explicitly if needed. When
+`--confine` is selected on Linux, also install and enable a usable bubblewrap
+boundary; the confined posture does not silently fall back to an unconfined
+shell.
 
 ## `--verify` is rejected
 
-Verification runs a command and therefore requires `--allow-code`:
+Verification runs a command and therefore requires code execution to remain
+enabled (the shipped default):
 
 ```sh
-iteron -p --allow-code --verify "cargo test --locked" "Fix the test"
+iteron -p --verify "cargo test --locked" "Fix the test"
 ```
 
 ## Resume reports an invalid record

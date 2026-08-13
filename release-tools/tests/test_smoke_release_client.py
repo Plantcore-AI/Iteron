@@ -248,10 +248,10 @@ class ReleaseClientSmokeTest(unittest.TestCase):
         self.assertIn(
             '${{ matrix.target }}/release/${{ matrix.binary }}', smoke_step
         )
-        self.assertEqual(build.count("          - runner:"), 5)
+        self.assertEqual(build.count("          - runner:"), 4)
         self.assertEqual(build.count("            python: python3"), 4)
-        self.assertEqual(build.count("            python: python\n"), 1)
-        self.assertIn("$latestHash -ne $exactHash", workflow)
+        self.assertEqual(build.count("            python: python\n"), 0)
+        self.assertNotIn("$latestHash -ne $exactHash", workflow)
 
     def test_result_validation_requires_every_current_terminal_field(self) -> None:
         authority = smoke.load_result_authority()

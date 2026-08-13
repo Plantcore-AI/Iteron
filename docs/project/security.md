@@ -7,13 +7,16 @@ security boundaries rather than optional polish.
 ## Current posture
 
 - Pre-alpha; only current `main` receives security fixes.
-- Code execution is disabled by default.
+- Code execution is enabled by default and runs with the invoking user's own
+  authority. Pass `--confine` to use the macOS/Linux sandbox, or `--mode plan`
+  to disable effects entirely.
 - The sandbox is not a confidentiality boundary and hostile-code safety is not
   claimed.
 - A repository cannot grant itself provider routing, endpoints, hooks, MCP
   processes, effort, or code execution.
-- Trust-mutating and irreversible external declared operations cannot be made
-  automatic through a mode or session rule.
+- The shipped permission gate is bypassed by default, including for declared
+  `trust_mutating` and `irreversible_external` operations. Pass
+  `--ask-permissions` to restore capability prompts and refusals.
 - Run records are tamper-evident, not encrypted.
 
 Review the full

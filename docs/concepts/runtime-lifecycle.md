@@ -85,7 +85,7 @@ durable record sequence numbers are presentation events.
 stops at the next turn-safe point and records `Interrupted`. Drain stops admitting
 new turns, lets already admitted work quiesce, writes a synchronous Git-backed
 workspace `Checkpoint` into the rollout, and records `Drained`. A drained rollout
-can be resumed normally; Core never treats the checkpoint as reconciliation proof
+can be resumed normally; Iteron never treats the checkpoint as reconciliation proof
 for an unresolved external effect. The checkpoint contract requires a Git
 worktree; the TUI probes that capability before entering raw mode and refuses
 Ctrl-D drain explicitly in a non-Git directory. No new Stop hook is admitted after

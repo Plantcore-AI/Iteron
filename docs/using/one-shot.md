@@ -32,7 +32,7 @@ version is `5`; consumers must inspect `schema_version` rather than Rust enum or
 debug text.
 
 `--image PATH` is repeatable for up to eight PNG, JPEG, GIF, or WebP files. On macOS, HEIC/HEIF
-is locally resized when needed and normalized to JPEG before it reaches the provider. Core
+is locally resized when needed and normalized to JPEG before it reaches the provider. Iteron
 streams each file through a hard limit, checks its magic bytes and container
 minimums, and refuses extension spoofing before constructing the SQ submission.
 The limits are 6 MiB raw / 8 MiB base64 per image and 24 MiB raw / 32 MiB base64
@@ -80,7 +80,7 @@ iteron -p \
 ```
 
 `max_usd: 0` blocks provider calls immediately. A positive ceiling requires an
-active operator-signed rate card for the exact selected route; otherwise Core
+active operator-signed rate card for the exact selected route; otherwise Iteron
 fails closed before a provider request. A priced run stops with
 `BudgetExhausted("max_usd")` as soon as its durable signed projections cross the
 ceiling. Unknown accounting is never converted into a false exact amount.

@@ -1,6 +1,6 @@
 # Executable agent definitions
 
-Core discovers agent definitions once when a run or standalone workflow starts. The accepted set
+Iteron discovers agent definitions once when a run or standalone workflow starts. The accepted set
 is immutable for that runtime. User definitions live in `~/.iteron/agents/*.md`; repository
 definitions live under `.iteron/agents/*.md`. Definitions below dependency/vendor directories are
 reported and stripped.
@@ -29,7 +29,7 @@ letters, digits, period, underscore, and hyphen. Request-side `agentType` values
 grammar before catalog lookup. Unknown or duplicate frontmatter keys are errors. `tools` and
 `disallowedTools` are mutually exclusive:
 
-- `tools` retains only named tools from Core's built-in read-only registry.
+- `tools` retains only named tools from Iteron's built-in read-only registry.
 - `disallowedTools` removes named tools from that registry.
 - Omitting both keeps the complete read-only registry.
 

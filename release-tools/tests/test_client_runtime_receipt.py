@@ -284,13 +284,6 @@ class ClientRuntimeReceiptTest(unittest.TestCase):
                     "clients": ["headless", "one-shot", "tui"],
                     "conclusion": "success",
                 },
-                {
-                    "operating_system": "windows-msvc",
-                    "platform": "windows-x86_64",
-                    "job_id": 1004,
-                    "clients": ["headless", "one-shot", "tui"],
-                    "conclusion": "success",
-                },
             ],
         )
         schema.validate_receipt(

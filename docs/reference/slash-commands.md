@@ -12,8 +12,10 @@ rather than dispatching an incomplete operation.
 | `/clear` | Clear the visible transcript; the run remains resumable |
 | `/compact [focus]` | Summarize the transcript now |
 | `/context` | Context token estimate and cache state |
+| `/telemetry` | Show local lifecycle, hook, and exporter health without content |
 | `/cost` | Spend and token usage known so far |
 | `/status` | Model, effort, mode, cost, directory, and run id |
+| `/budget [turns]` | Show the turn ceiling or raise it for this session |
 | `/model [id\|retry [id]]` | Show, select, or retry a model |
 | `/effort [level]` | Show or select effort |
 | `/mode [mode]` | Show or select permission mode |
@@ -24,6 +26,7 @@ rather than dispatching an incomplete operation.
 | `/sessions` | List repository sessions |
 | `/side [question\|status\|close]` | Ask on the side: a second conversation with its own context, cost and record |
 | `/workflows` | Summarize the workflow cards already in this transcript |
+| `/jobs [list\|attach\|refresh\|detach\|write\|eof\|stop]` | Inspect and control background process jobs |
 | `/fork` | Branch the current session |
 | `/rewind` | Branch the conversation from the current point |
 | `/resume [run-id]` | Resume a recorded session in this terminal: the live session adopts that run's journal, transcript and identity |
@@ -36,6 +39,8 @@ rather than dispatching an incomplete operation.
 | `/hooks` | Show user-configured lifecycle hooks |
 | `/config` | Show resolved session and file configuration |
 | `/tunables [query\|load <file>]` | Search all 160 canonical families, or inspect a workspace-relative frozen-request simulation |
+| `/lab [list\|request\|compare\|promote]` | Inspect offline experiment requests and signed evidence comparisons |
+| `/login` | Check the current credential against the selected provider |
 | `/theme` | Select a color theme with preview |
 | `/init` | Scaffold repository `.iteron/config.json` and `AGENTS.md` |
 | `/quit` | Leave the TUI |

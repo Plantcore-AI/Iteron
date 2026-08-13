@@ -1,15 +1,22 @@
 # Installation
 
-Iteron publishes pre-alpha binaries for macOS and Linux plus a bounded Windows x86-64
-one-shot artifact. Rust 1.90 or newer is required only when building from source.
+Iteron's supported distribution matrix is macOS and Linux. Windows is not
+supported. The current `v0.0.4` release contains only the macOS Apple Silicon
+archive; the other three entries in the four-target matrix remain pending until
+the hosted release workflow can run successfully.
 
-!!! warning "Pre-alpha software"
-    A verified release is not a compatibility or unattended-safety promise.
-    Review the [project status](../project/status.md) and
+!!! warning "Pre-alpha and pre-public"
+    A downloadable release is not a compatibility or unattended-safety promise.
+    The repository is currently private, so the unauthenticated public installer
+    below will not work until the public-launch checklist is complete. Review the
+    [project status](../project/status.md) and
     [sandbox limitations](../using/permissions-and-sandbox.md) before using
     Iteron on important work.
 
-## Install the latest release
+## Install the latest public release
+
+Once the repository is public, a host for which the latest release actually
+contains an archive can use:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
@@ -29,92 +36,93 @@ The installer:
 - installs atomically without `sudo` and never edits a shell profile.
 
 An explicit `--bin-dir` wins. Otherwise the destination is
-`$ITERON_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or `$HOME/.local/bin`, in that order.
-Ensure that directory is already on `PATH`.
+`$ITERON_INSTALL_DIR`, the legacy `$ITERON_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or
+`$HOME/.local/bin`, in that order. Ensure that directory is already on `PATH`.
 
 ## Pin a version or destination
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.2/install.sh \
-  | sh -s -- --version v0.0.2 --bin-dir "$HOME/bin"
+  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.4/install.sh \
+  | sh -s -- --version v0.0.4 --bin-dir "$HOME/bin"
 ```
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
 downloaded release asset with `--help` to inspect the complete interface.
 
-## Install the Windows one-shot archive
+Windows is not supported: there is no Windows release target, installer, or
+code-execution sandbox. See [supported platforms](../reference/platforms.md).
 
-The POSIX `install.sh` does not run on Windows. Download the
-`iteron-vVERSION-x86_64-pc-windows-msvc.zip` asset and `SHA256SUMS` from the
-same immutable release, verify the archive's exact lowercase SHA-256 row with
-`Get-FileHash`, and use `Expand-Archive`. The archive contains
-`iteron-vVERSION-x86_64-pc-windows-msvc\iteron.exe`; move that executable to a
-directory already on `PATH`. Release acceptance runs the same checksum,
-extraction, `--version`, and `--machine-contract` content canary on
-`windows-2025`.
+## Release matrix and current availability
 
-## Supported release targets
+| Host | Release target | Native release runner | In `v0.0.4` |
+| --- | --- | --- | --- |
+| macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | available |
+| macOS, Intel | `x86_64-apple-darwin` | `macos-15-intel` | pending |
+| Linux, arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | pending |
+| Linux, x86-64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` | pending |
 
-| Host | Release target | Native release runner |
-| --- | --- | --- |
-| macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` |
-| macOS, Intel | `x86_64-apple-darwin` | `macos-15-intel` |
-| Linux, arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
-| Linux, x86-64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
-| Windows, x86-64 one-shot CLI | `x86_64-pc-windows-msvc` | `windows-2025` |
+The release workflow requires all four targets to be built, tested, packaged,
+and smoke-tested on native hosted runners before a release counts as accepted
+multi-target evidence. Release notes remain authoritative for the archives a
+particular tag actually contains.
 
-Each target is built, compatibility-tested, packaged, and smoke-tested on a native hosted runner.
-The POSIX `install.sh` remains limited to macOS and Linux. The Windows ZIP is the verified
-`iteron.exe` one-shot boundary used by downstream installers; it does not claim Windows TUI,
-ConPTY, resident-server, or sandbox support.
+## Linux prerequisite for confined code execution
 
-## Linux prerequisite for code execution
+The shipped default is unconfined. When `--confine` is selected on Linux, code
+execution (`bash`, builds, and tests) uses bubblewrap and fails **closed** if a
+usable `bwrap` boundary cannot be established. Install the `bubblewrap` package;
+on Ubuntu 24.04, also grant it an AppArmor profile for unprivileged user
+namespaces.
 
-Code execution (`bash`, builds, tests) is confined by bubblewrap on Linux, and the
-sandbox fails **closed**: without a usable `bwrap` the agent can read and edit but
-cannot run anything. Install the `bubblewrap` package, and on Ubuntu 24.04 also
-grant it an AppArmor profile for unprivileged user namespaces.
-
-The installer runs the sandbox's own probe after installing and prints the exact
+The installer probes the confined backend after installing and prints the exact
 remedy as a warning when it fails; installation itself still succeeds. See
 [supported platforms](../reference/platforms.md#linux-requirements) for the
 commands.
 
 ## Verify a release independently
 
-Every release publishes:
+The four published tags through `v0.0.4` were built locally and contain only an
+`aarch64-apple-darwin` archive. They include checksums, a manifest and receipt,
+legal material, and an SPDX SBOM. Each tag's release notes and manifest record
+the absence of GitHub OIDC attestation; `v0.0.2` through `v0.0.4` also carry a
+per-archive offline provenance document. They are historical pre-alpha
+artifacts, not accepted four-target release evidence.
 
-- deterministic platform archives;
-- `SHA256SUMS`, `release-manifest.json`, and `release-manifest.receipt.json`;
+An accepted workflow release is expected to publish:
+
+- deterministic archives for all four macOS/Linux targets;
+- `SHA256SUMS`, `release-manifest.json`, and
+  `release-manifest.receipt.json`;
 - the Apache-2.0 license and audited third-party notices;
 - an SPDX SBOM for each target;
 - GitHub artifact attestations and offline provenance bundles.
 
 Download the desired archive and verification material from the
 [release page](https://github.com/Plantcore-AI/Iteron/releases). Check its exact
-row in `SHA256SUMS`, then verify the GitHub attestation:
+row in `SHA256SUMS`. For a future workflow-built release that advertises GitHub
+attestation, also run:
 
 ```sh
-gh attestation verify iteron-v0.0.2-aarch64-apple-darwin.tar.gz \
+gh attestation verify iteron-vX.Y.Z-aarch64-apple-darwin.tar.gz \
   --repo Plantcore-AI/Iteron
 ```
 
-For the Windows asset, pass its `.zip` name to the same
-`gh attestation verify` command.
-
-A checksum fetched from the same release detects corruption. The GitHub
-attestation additionally binds an artifact to this repository and its release
-workflow. The receipt identifies the exact final manifest bytes; the manifest identifies each
-archive and the CLI stream versions reported by every packaged binary. This content addressing
-proves byte integrity, not publisher authenticity by itself. Platform signing is outside this
-release slice.
+A checksum fetched from the same release detects corruption. GitHub attestation
+additionally binds an artifact to this repository and its release workflow. The
+receipt identifies the exact final manifest bytes; the manifest identifies each
+archive and the CLI stream versions reported by every packaged binary. This
+content addressing proves byte integrity, not publisher authenticity by itself.
+Platform signing is outside the current release slice.
 
 ## Build from source
 
+Building from source is the available path on the private repository and on any
+macOS/Linux target missing from the latest release:
+
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
-cd iteron
+cd Iteron
 cargo install --locked --path crates/cli
 iteron --version
 ```
@@ -129,17 +137,11 @@ Run the installer again to upgrade to the latest release, or pass `--version` to
 install a specific release. The existing executable is preserved if download,
 verification, extraction, or smoke testing fails.
 
-On Windows, repeat the verified archive procedure and replace only `iteron.exe`
-after the downloaded binary passes `iteron.exe --version`.
-
 To uninstall, remove only the executable from the destination you selected:
 
 ```sh
 rm "$HOME/.local/bin/iteron"
 ```
-
-On Windows, remove only the `iteron.exe` file from the directory where you placed
-it.
 
 Iteron does not remove `.iteron/` session and recovery data automatically.
 Review that evidence before deleting it.

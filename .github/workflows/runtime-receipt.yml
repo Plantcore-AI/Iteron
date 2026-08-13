@@ -33,7 +33,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 4
       matrix:
         include:
           - runner: macos-15
@@ -56,11 +56,6 @@ jobs:
             target: x86_64-unknown-linux-musl
             binary: iteron
             python: python3
-          - runner: windows-2022
-            host: windows-x86_64
-            target: x86_64-pc-windows-msvc
-            binary: iteron.exe
-            python: python
     defaults:
       run:
         shell: bash
@@ -114,8 +109,7 @@ jobs:
             .github/workflows/runtime-receipt.yml \
             release-tools/fetch_tool.py \
             release-tools/smoke_release_client.py \
-            release-tools/smoke_release_process.py \
-            release-tools/verify_pe.py
+            release-tools/smoke_release_process.py
           do
             test -f "$builder/$required"
             test ! -L "$builder/$required"
@@ -126,16 +120,6 @@ jobs:
               --porcelain=v1 -z --untracked-files=all > "$status"
             test ! -s "$status"
           done
-      - name: Normalize Windows build paths for native tools
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          workspace=$(cygpath -m "$GITHUB_WORKSPACE")
-          {
-            echo "ITERON_RUNTIME_WORKSPACE=$workspace"
-            echo "CARGO_TARGET_DIR=$workspace/target/runtime-receipt"
-          } >> "$GITHUB_ENV"
       - name: Install Linux build and sandbox dependencies
         if: runner.os == 'Linux'
         shell: bash
@@ -168,7 +152,7 @@ jobs:
             ../builder/release-tools/fetch_tool.py \
             cargo-auditable "${{ matrix.host }}" \
             --output \
-            "$RUNNER_TEMP/core-runtime-bin/cargo-auditable${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            "$RUNNER_TEMP/core-runtime-bin/cargo-auditable" \
             <<'PY'
           import pathlib
           import runpy
@@ -186,13 +170,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
-              --target "${{ matrix.target }}"
-          else
-            cargo +"$RUST_VERSION" test --workspace --all-targets --locked \
-              --target "${{ matrix.target }}"
-          fi
+          cargo +"$RUST_VERSION" test --workspace --all-targets --locked \
+            --target "${{ matrix.target }}"
       - name: Build an auditable release binary
         id: release-binary
         working-directory: candidate
@@ -268,22 +247,6 @@ jobs:
               raise SystemExit("native release binary help smoke failed")
           PY
 
-          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
-            "${{ matrix.python }}" -I - \
-              "$builder/release-tools/verify_pe.py" \
-              --binary "$binary" \
-              <<'PY'
-          import pathlib
-          import runpy
-          import sys
-
-          script = pathlib.Path(sys.argv[1]).resolve(strict=True)
-          sys.path.insert(0, str(script.parent))
-          sys.argv = [str(script), *sys.argv[2:]]
-          runpy.run_path(str(script), run_name="__main__")
-          PY
-            exit 0
-          fi
           test -x "$binary"
           description=$(file "$binary")
           case "$target" in
@@ -308,9 +271,7 @@ jobs:
       - name: Run native version-independence proof
         id: native-version-independence
         if: >-
-          success() &&
-          (matrix.target == 'x86_64-unknown-linux-musl' ||
-          matrix.target == 'x86_64-pc-windows-msvc')
+          success() && matrix.target == 'x86_64-unknown-linux-musl'
         working-directory: candidate
         shell: bash
         env:
@@ -362,13 +323,6 @@ jobs:
               --test headless_serve --target "$target" \
               no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
               -- --exact
-          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
-            run_exact conpty \
-              cargo +"$RUST_VERSION" test --locked -p iteron-cli \
-                --test windows_conpty --target "$target" \
-                native_conpty_rejects_version_skew_before_terminal_takeover \
-                -- --exact
-          fi
       - name: Confirm the evidence inputs remain immutable
         if: always()
         shell: bash

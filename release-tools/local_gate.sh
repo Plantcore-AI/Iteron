@@ -407,6 +407,11 @@ boundary_lane() {
 docs_lane() {
   # Hash-locked, same as the workflow. The venv is cached next to the target dir, not in the tree.
   local venv="${GATE_DOCS_VENV:-${TMPDIR:-/tmp}/core-docs-venv}"
+  bash release-tools/check_docs.sh || return 1
+  cargo run --locked -p iteron-xtask -- docs check || return 1
+  cargo run --locked -p iteron-xtask -- tunables check-params || return 1
+  cargo run --locked -p iteron-xtask -- tunables surface || return 1
+  cargo run --locked -p iteron-xtask -- tunables census-check || return 1
   if [[ ! -x "$venv/bin/mkdocs" ]]; then
     python3 -m venv "$venv" || return 1
     "$venv/bin/python" -m pip install --disable-pip-version-check --require-hashes \

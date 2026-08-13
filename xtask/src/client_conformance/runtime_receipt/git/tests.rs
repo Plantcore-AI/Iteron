@@ -163,11 +163,6 @@ fn base_matrix() -> Value {
                 "linux-x86_64",
                 "x86_64-unknown-linux-musl",
                 "ubuntu-24.04",
-            ),
-            platform(
-                "windows-x86_64",
-                "x86_64-pc-windows-msvc",
-                "windows-2022",
             )
         ]
     })

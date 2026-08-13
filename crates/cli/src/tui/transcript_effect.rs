@@ -28,6 +28,24 @@ pub(super) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};
 
 const EXPORT_SEQUENCE_BASE: u64 = (1_u64 << 63) | (1_u64 << 61);
 static NEXT_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(EXPORT_SEQUENCE_BASE);
+const EXPORT_STORE_BUSY_RETRY_ATTEMPTS: usize = 401;
+const EXPORT_STORE_BUSY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn retry_export_store_busy<T>(
+    mut operation: impl FnMut() -> Result<T, iteron_record::ContentStoreError>,
+) -> Result<T, iteron_record::ContentStoreError> {
+    for attempt in 0..EXPORT_STORE_BUSY_RETRY_ATTEMPTS {
+        match operation() {
+            Err(iteron_record::ContentStoreError::Busy)
+                if attempt + 1 < EXPORT_STORE_BUSY_RETRY_ATTEMPTS =>
+            {
+                std::thread::sleep(EXPORT_STORE_BUSY_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the bounded transcript export store retry loop always returns")
+}
 
 /// One invocation-scoped transcript export rooted in the record private-content graph.
 ///
@@ -65,8 +83,7 @@ impl ManagedExportPayload {
             transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES,
         )
         .map_err(|_| "transcript export private store is unavailable")?;
-        let handle = store
-            .put_derived_from_run(seq, bytes, &run)
+        let handle = retry_export_store_busy(|| store.put_derived_from_run(seq, bytes, &run))
             .map_err(|_| "transcript export source lineage is unavailable")?;
         Ok(Self {
             store,

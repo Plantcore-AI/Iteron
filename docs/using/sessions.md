@@ -13,7 +13,7 @@ iteron --continue -C /path/to/repository
 `--sessions` lists local run metadata. `--continue` selects the most recent valid
 session for that repository and continues from its durable tail.
 
-Core maintains a bounded `.meta.json` sidecar per run and one compact
+Iteron maintains a bounded `.meta.json` sidecar per run and one compact
 `sessions.index`. The record writer refreshes these rebuildable projections at
 turn and terminal boundaries, so covered sessions can be listed or selected
 without replaying their historical rollout. Each projection is bound to the

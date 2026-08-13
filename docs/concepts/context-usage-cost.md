@@ -32,11 +32,11 @@ fixed-point micro-USD projection; the record stores its card digest, timestamp,
 usage, amount, content digest, and HMAC. The kernel records and enforces that
 evidence but does not fetch prices or hold the signing key.
 
-Without an exact active verified card, Core does not infer a dollar amount from
+Without an exact active verified card, Iteron does not infer a dollar amount from
 token counts. Such runs remain `Unknown{NoVerifiedRateCard}`, and a positive
 `max_usd` fails closed before a provider request. With a verified card, crossing
 the ceiling stops the run as `BudgetExhausted("max_usd")`. The ceiling bounds
-Core's signed projection, not an independent guarantee about a provider invoice.
+Iteron's signed projection, not an independent guarantee about a provider invoice.
 
 The effective monetary ceiling is recorded in session genesis, inherited by
 forks, and restored monotonically on resume: a later invocation may tighten it

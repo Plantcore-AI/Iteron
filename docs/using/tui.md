@@ -43,9 +43,9 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   the most recent chip, and an image's anchors go with it. The chip carries the
   `#N`, the file name and the byte count; image bytes, file text and pasted
   blocks are never rendered in the preview.
-- Core starts as a complete alternate-screen TUI with application mouse mode enabled.
+- Iteron starts as a complete alternate-screen TUI with application mouse mode enabled.
   The wheel or trackpad scrolls only the current session's transcript; it cannot fall
-  through into shell output from before Core started and never navigates the composer's
+  through into shell output from before Iteron started and never navigates the composer's
   prompt history. Press ++ctrl+t++ to release mouse capture for native drag selection and
   copy without leaving the full-screen TUI; press it again to restore application
   scrolling. The status line reports `mouse:on · wheel:transcript` or `selection:on`

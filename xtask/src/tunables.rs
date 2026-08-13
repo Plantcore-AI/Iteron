@@ -89,7 +89,7 @@ fn render_markdown() -> Result<String> {
     )?;
     writeln!(
         out,
-        "This is the versioned semantic registry and contract source for Core's deterministic provider-free resolver. It describes **{}** stable families. The resolver consumes only an explicit frozen input and returns a simulation: neither this artifact nor a resolved set reads or changes runtime configuration, grants authority, or makes a parameter trainable. The runtime remains the sole admission authority.\n",
+        "This is the versioned semantic registry and contract source for Iteron's deterministic provider-free resolver. It describes **{}** stable families. The resolver consumes only an explicit frozen input and returns a simulation: neither this artifact nor a resolved set reads or changes runtime configuration, grants authority, or makes a parameter trainable. The runtime remains the sole admission authority.\n",
         registry.len()
     )?;
     writeln!(

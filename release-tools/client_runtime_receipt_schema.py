@@ -46,12 +46,6 @@ PLATFORMS = (
     Platform("macos-x86_64", "x86_64-apple-darwin", "macos-15-intel", None),
     Platform("linux-arm64", "aarch64-unknown-linux-musl", "ubuntu-24.04-arm", None),
     Platform("linux-x86_64", "x86_64-unknown-linux-musl", "ubuntu-24.04", "unix"),
-    Platform(
-        "windows-x86_64",
-        "x86_64-pc-windows-msvc",
-        "windows-2022",
-        "windows-msvc",
-    ),
 )
 
 
@@ -277,10 +271,10 @@ def validate_receipt(
         raise ReleaseToolError("receipt platform jobs contain duplicate runner ids")
 
     rows = receipt["version_independence"]
-    if not isinstance(rows, list) or len(rows) != 2:
-        raise ReleaseToolError("receipt must contain two version-independence rows")
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise ReleaseToolError("receipt must contain one version-independence row")
     for value, platform, job_id in zip(
-        rows, (PLATFORMS[3], PLATFORMS[4]), (job_ids[3], job_ids[4])
+        rows, (PLATFORMS[3],), (job_ids[3],)
     ):
         row = _exact(
             value,

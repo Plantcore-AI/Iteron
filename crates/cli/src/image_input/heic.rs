@@ -6,7 +6,15 @@
 
 use super::ImageInputErrorKind;
 
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    allow(dead_code, reason = "the HEIC converter is macOS-only")
+)]
 const HEIC_SOURCE_MAX_DIMENSION: u32 = 16 * 1024;
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    allow(dead_code, reason = "the HEIC converter is macOS-only")
+)]
 const HEIC_SOURCE_MAX_PIXELS: u64 = 64 * 1024 * 1024;
 
 pub(super) fn transcode_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ImageInputErrorKind> {
@@ -47,6 +55,10 @@ fn validate_container(bytes: &[u8]) -> Result<(), ImageInputErrorKind> {
         .ok_or(ImageInputErrorKind::InvalidImage)
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    allow(dead_code, reason = "the HEIC converter is macOS-only")
+)]
 fn bounded_output_dimensions(
     width: u32,
     height: u32,

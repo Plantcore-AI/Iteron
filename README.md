@@ -3,9 +3,9 @@
 </h1>
 
 <p align="center">
-  <strong>An open-source coding agent for the terminal, built on a modular Rust runtime.</strong>
+  <strong>An Apache-2.0 coding agent for the terminal, built on a modular Rust runtime.</strong>
   <br>
-  Bounded execution, durable evidence, observable work, and deny-by-default authority.
+  Bounded execution, durable evidence, observable work, and explicit authority.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://plantcore-ai.github.io/Iteron/">Documentation</a>
+  <a href="docs/index.md">Documentation</a>
   · <a href="#install">Install</a>
   · <a href="#quickstart">Quickstart</a>
   · <a href="docs/architecture.md">Architecture</a>
@@ -26,7 +26,7 @@
 </p>
 
 > [!WARNING]
-> **Public pre-alpha, and unconfined by default.** Iteron is ready for
+> **Private pre-launch, pre-alpha, and unconfined by default.** Iteron is ready for
 > development and evaluation, not unattended use on sensitive repositories.
 > Interfaces may change before the first compatibility-stable release.
 >
@@ -48,22 +48,26 @@ observability, evaluation, and future evolution strategies.
 
 ## Install
 
-Iteron does not currently publish an accepted binary release. Build the
-current source with Rust 1.90 or newer:
+Four pre-alpha tags through `v0.0.4` exist, but each was built locally for macOS
+Apple Silicon only while hosted Actions capacity was unavailable. They are not
+accepted four-target workflow release evidence. While the repository remains
+private—or on any macOS/Linux target absent from the latest tag—build the current
+source with Rust 1.90 or newer:
 
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
-cd iteron
+cd Iteron
 cargo install --locked --path crates/cli
 iteron --version
 ```
 
-The repository includes an installer and native release pipeline, but neither
-is a currently available binary installation path. A binary release will be
-accepted only after every required platform has native build, test, packaging,
-and smoke-test evidence and the corresponding public assets exist. See the
-[installation guide](docs/getting-started/installation.md) for the proposed
-target matrix and verification contract.
+The repository includes an installer and a four-target macOS/Linux release
+pipeline. The unauthenticated installer becomes a public path only after the
+repository visibility flip and only for archives present on the selected tag. An
+accepted release additionally requires native build, test, packaging,
+smoke-test, SBOM, and attestation evidence for all four targets. See the
+[installation guide](docs/getting-started/installation.md) for current
+availability and the verification contract.
 
 ## Quickstart
 
@@ -179,8 +183,8 @@ Every mechanism is judged against five invariants:
 3. **Reproducible** — replay does not silently re-derive nondeterministic output.
 4. **Observable** — phase, usage, effects, verification, and strategy attribution
    are represented as evidence.
-5. **Security-bounded** — authority is deny-by-default and its blast radius is
-   explicit.
+5. **Security-bounded** — authority can only narrow from its operator-set ceiling,
+   never self-widen, and its blast radius is explicit.
 
 Read the [architecture](docs/architecture.md),
 [evolution boundary](docs/concepts/evolution-boundary.md),
@@ -205,8 +209,11 @@ production coding agent.
 
 ## Documentation
 
-The complete documentation lives at
-**[plantcore-ai.github.io/Iteron](https://plantcore-ai.github.io/Iteron/)**.
+The complete documentation source lives under [`docs/`](docs/index.md). Pages is
+configured to deploy from GitHub Actions at
+**[plantcore-ai.github.io/Iteron](https://plantcore-ai.github.io/Iteron/)**, but
+the address remains unavailable until hosted Actions can complete a deployment.
+The repository also remains private pending its public-launch checklist.
 
 | Start | Use | Build and govern |
 | --- | --- | --- |
