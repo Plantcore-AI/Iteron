@@ -581,6 +581,30 @@ exit 1
         )
         self.assertIn("github.event_name == 'merge_group'", ci)
 
+    def test_ci_inherits_an_unchanged_schema_from_the_trusted_base(self) -> None:
+        ci = (TOOLS.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        chronology = ci.split(
+            "- name: validate candidate against published schema chronology", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "candidate_schema=$CANDIDATE_ROOT/governance/schema-compatibility.json",
+            chronology,
+        )
+        self.assertIn(
+            "policy_schema=$POLICY_ROOT/governance/schema-compatibility.json",
+            chronology,
+        )
+        self.assertIn('test ! -L "$schema"', chronology)
+        self.assertIn('test -f "$schema"', chronology)
+        self.assertIn(
+            'if cmp -s "$policy_schema" "$candidate_schema"', chronology
+        )
+        guard = chronology.index(
+            'if cmp -s "$policy_schema" "$candidate_schema"'
+        )
+        self.assertLess(guard, chronology.index("gh api \\"))
+        self.assertLess(guard, chronology.index('gh release verify "$previous"'))
+
     def test_release_manual_dispatch_preserves_selected_ref_preflight_and_exports_tree(
         self,
     ) -> None:
