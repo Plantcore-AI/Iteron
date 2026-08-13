@@ -1,5 +1,7 @@
 # Testing
 
+<!-- DGX docs-only CI canary for #223; close this pull request without merging. -->
+
 Iteron uses layered tests so local iteration stays fast while merge gates cover
 the complete workspace and platform boundaries.
 
