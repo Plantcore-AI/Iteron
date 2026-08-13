@@ -35,6 +35,7 @@ interfaces may change between releases.
   build-info generation through the real argument parser.
 - Hardened persistent-runner worktree cleanup, release verification tooling, and
   unchanged-schema inheritance from the trusted base.
+- Upgraded the terminal UI dependency chain to a patched LRU implementation.
 
 ## [0.0.4] - 2026-08-10
 
