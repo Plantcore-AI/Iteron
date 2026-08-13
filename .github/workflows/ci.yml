@@ -25,6 +25,8 @@ permissions:
   pull-requests: read
 
 env:
+  GH_CLI_LINUX_ARM64_SHA256: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+  GH_CLI_VERSION: 2.97.0
   RUSTUP_TOOLCHAIN: 1.90.0
 
 concurrency:
@@ -182,6 +184,23 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+      - name: install pinned GitHub CLI with release-attestation support
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root=$(mktemp -d "$RUNNER_TEMP/iteron-gh-cli.XXXXXX")
+          archive=$tool_root/gh.tar.gz
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_arm64.tar.gz"
+          printf '%s  %s\n' "$GH_CLI_LINUX_ARM64_SHA256" "$archive" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$archive" --directory "$tool_root"
+          gh_root=$tool_root/gh_${GH_CLI_VERSION}_linux_arm64
+          test -x "$gh_root/bin/gh"
+          "$gh_root/bin/gh" release verify --help >/dev/null
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
       - name: enforce the complete microkernel conformance matrix
         run: cargo run --locked -p iteron-xtask -- conformance kernel
       # The CLI reference is generated from the argument parser. A shipped flag with no doc entry
