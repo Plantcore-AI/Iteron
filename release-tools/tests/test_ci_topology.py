@@ -29,6 +29,8 @@ class CiTopologyTest(unittest.TestCase):
         )
         self.assertIn("External fork code is not permitted", ci)
         self.assertIn("External fork pull requests require", review)
+        self.assertEqual(ci.count("git worktree prune --expire now"), 1)
+        self.assertEqual(review.count("git worktree prune --expire now"), 1)
         toolchain_action = (
             "dtolnay/rust-toolchain@"
             "4360b52568e2003a75bf9bc1d59f33a8e3fc893c"

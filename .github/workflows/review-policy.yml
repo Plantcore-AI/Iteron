@@ -52,6 +52,8 @@ jobs:
           candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$BASE_SHA" "$candidate_sha"
+          # Persistent runners retain Git's worktree registration after RUNNER_TEMP is removed.
+          git worktree prune --expire now
           git worktree add --detach "$POLICY_ROOT" "$BASE_SHA"
           echo "policy-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: materialize one-time trusted-policy compatibility projection
