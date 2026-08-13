@@ -48,5 +48,8 @@ Include, where possible:
 - the expected and observed security boundary;
 - impact and any known workaround.
 
-The maintainers will acknowledge a complete report, triage severity, coordinate a
-fix and disclosure, and credit the reporter if requested.
+The human Project Owner monitors this private queue and is accountable for
+triage, fix coordination, disclosure, and reporter credit when requested. This
+pre-alpha project provides best-effort handling and no guaranteed acknowledgement
+or resolution time. If that ownership or service level changes, this policy must
+change before the repository promises a different response.
