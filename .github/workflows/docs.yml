@@ -4,8 +4,8 @@ on:
   # The strict docs build is still a required check, but pull requests no longer build it here:
   # `release-tools/local_gate.sh linux` runs `mkdocs build --strict --clean` against the same
   # hash-locked `requirements-docs.lock` and publishes the `docs / strict-build` context itself.
-  # Only the main-branch build stays on Actions, because publishing to GitHub Pages is the one
-  # step that genuinely requires a GitHub-hosted runner.
+  # The main-branch build and Pages deployment run through the repository-scoped DGX runner.
+  # Pages publication still uses GitHub's short-lived GITHUB_TOKEN and OIDC deployment identity.
   push:
     branches: [main]
     paths:
@@ -26,7 +26,7 @@ concurrency:
 jobs:
   build:
     name: docs / strict-build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx, iteron-pages]
     timeout-minutes: 10
     steps:
       - name: Check out source
@@ -64,7 +64,7 @@ jobs:
     name: docs / deploy-pages
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, dgx, iteron-pages]
     timeout-minutes: 10
     permissions:
       contents: read
