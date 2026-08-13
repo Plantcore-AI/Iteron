@@ -40,7 +40,8 @@ impl fmt::Display for SchemaError {
 
 /// Check once at registration that every asserted constraint belongs to the supported subset.
 pub(crate) fn validate_schema(schema: &Value) -> Result<(), SchemaError> {
-    let mut remaining_nodes = MAX_SCHEMA_NODES;
+    let mut remaining_nodes =
+        iteron_tunables::param_integer("tools.schema.max_schema_nodes", MAX_SCHEMA_NODES);
     validate_schema_at(schema, "$", 0, &mut remaining_nodes)
 }
 
@@ -50,7 +51,7 @@ fn validate_schema_at(
     depth: usize,
     remaining_nodes: &mut usize,
 ) -> Result<(), SchemaError> {
-    if depth > MAX_SCHEMA_DEPTH {
+    if depth > iteron_tunables::param_integer("tools.schema.max_schema_depth", MAX_SCHEMA_DEPTH) {
         return Err(SchemaError::new(
             path,
             format!("schema exceeds maximum depth of {MAX_SCHEMA_DEPTH}"),
@@ -135,7 +136,12 @@ fn validate_schema_at(
                     "`properties` must be an object",
                 )
             })?;
-            if properties.len() > MAX_OBJECT_FIELDS {
+            if properties.len()
+                > iteron_tunables::param_integer(
+                    "tools.schema.max_object_fields",
+                    MAX_OBJECT_FIELDS,
+                )
+            {
                 return Err(SchemaError::new(
                     &format!("{path}.properties"),
                     format!("object schema exceeds maximum of {MAX_OBJECT_FIELDS} properties"),
@@ -157,7 +163,12 @@ fn validate_schema_at(
                     "`required` must be an array of unique strings",
                 )
             })?;
-            if required.len() > MAX_OBJECT_FIELDS {
+            if required.len()
+                > iteron_tunables::param_integer(
+                    "tools.schema.max_object_fields",
+                    MAX_OBJECT_FIELDS,
+                )
+            {
                 return Err(SchemaError::new(
                     &format!("{path}.required"),
                     format!("object schema exceeds maximum of {MAX_OBJECT_FIELDS} required fields"),
@@ -220,7 +231,8 @@ fn validate_schema_at(
                 "array schemas require bounded `maxItems` in the supported subset",
             )
         })?;
-        if maximum > MAX_ARRAY_ITEMS {
+        if maximum > iteron_tunables::param_integer("tools.schema.max_array_items", MAX_ARRAY_ITEMS)
+        {
             return Err(SchemaError::new(
                 &format!("{path}.maxItems"),
                 format!("`maxItems` exceeds supported maximum of {MAX_ARRAY_ITEMS}"),

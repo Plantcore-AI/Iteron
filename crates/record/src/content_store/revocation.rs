@@ -47,9 +47,17 @@ impl ContentRevocationGuard {
         let mut edges = Vec::new();
         for affected in &digests {
             let next = read_edges(&layout, affected)?;
-            if edges.len().saturating_add(next.len()) > MAX_CONTENT_LINEAGE_EDGES {
+            if edges.len().saturating_add(next.len())
+                > iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_lineage_edges",
+                    MAX_CONTENT_LINEAGE_EDGES,
+                )
+            {
                 return Err(ContentStoreError::ReferenceBound {
-                    max: MAX_CONTENT_LINEAGE_EDGES,
+                    max: iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_lineage_edges",
+                        MAX_CONTENT_LINEAGE_EDGES,
+                    ),
                 });
             }
             edges.extend(next);
@@ -121,9 +129,17 @@ impl ContentRevocationGuard {
             .iter()
             .filter(|digest| state.tombstone(digest).is_none())
             .count();
-        if state.tombstones.len().saturating_add(missing) > MAX_CONTENT_REVOCATIONS {
+        if state.tombstones.len().saturating_add(missing)
+            > iteron_tunables::param_integer(
+                "record.content_store.model.max_content_revocations",
+                MAX_CONTENT_REVOCATIONS,
+            )
+        {
             return Err(ContentStoreError::RevocationBound {
-                max: MAX_CONTENT_REVOCATIONS,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_revocations",
+                    MAX_CONTENT_REVOCATIONS,
+                ),
             });
         }
         state.generation = state.generation.max(generation);
@@ -234,16 +250,32 @@ fn collect_closure(
         if !visited.insert(digest.clone()) {
             continue;
         }
-        if visited.len() > MAX_CONTENT_REVOCATIONS {
+        if visited.len()
+            > iteron_tunables::param_integer(
+                "record.content_store.model.max_content_revocations",
+                MAX_CONTENT_REVOCATIONS,
+            )
+        {
             return Err(ContentStoreError::RevocationBound {
-                max: MAX_CONTENT_REVOCATIONS,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_revocations",
+                    MAX_CONTENT_REVOCATIONS,
+                ),
             });
         }
         for edge in lineage::descendants(layout, &digest)? {
             edge_count = edge_count.saturating_add(1);
-            if edge_count > MAX_CONTENT_LINEAGE_EDGES {
+            if edge_count
+                > iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_lineage_edges",
+                    MAX_CONTENT_LINEAGE_EDGES,
+                )
+            {
                 return Err(ContentStoreError::ReferenceBound {
-                    max: MAX_CONTENT_LINEAGE_EDGES,
+                    max: iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_lineage_edges",
+                        MAX_CONTENT_LINEAGE_EDGES,
+                    ),
                 });
             }
             if !visited.contains(&edge.derivative_digest) {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::DagError;
 use super::hash::config_digest;
 use super::reducer::{ApplyReceipt, LogEntry, Prepared, TaskDag};
-use super::types::{Command, CommandId, Config, MAX_LOG_BYTES};
+use super::types::{Command, CommandId, Config, max_log_bytes};
 
 const STORE_VERSION: u32 = 1;
 const MAX_LOG_LINE_BYTES: usize = 256 * 1024;
@@ -116,18 +116,22 @@ impl TaskDagStore {
             Err(TryLockError::Error(error)) => return Err(DagError::Io(error)),
         }
 
+        // One read of the ceiling for the whole open: the size check, the bounded read and the
+        // post-read check have to agree about the same number, and three independent lookups could
+        // not be made to disagree today but would be a trap for a later edit.
+        let log_ceiling = max_log_bytes();
         let length = file.metadata()?.len();
-        if length > MAX_LOG_BYTES {
+        if length > log_ceiling {
             return Err(DagError::Corrupt(format!(
-                "log is {length} bytes, over the {MAX_LOG_BYTES}-byte ceiling"
+                "log is {length} bytes, over the {log_ceiling}-byte ceiling"
             )));
         }
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::with_capacity(length as usize);
         std::io::Read::by_ref(&mut file)
-            .take(MAX_LOG_BYTES + 1)
+            .take(log_ceiling + 1)
             .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_LOG_BYTES {
+        if bytes.len() as u64 > log_ceiling {
             return Err(DagError::Corrupt("log exceeded its read ceiling".into()));
         }
 
@@ -177,7 +181,12 @@ impl TaskDagStore {
         let first = lines
             .next()
             .ok_or_else(|| DagError::Corrupt("log has no genesis".into()))?;
-        if first.len() > MAX_LOG_LINE_BYTES {
+        if first.len()
+            > iteron_tunables::param_integer(
+                "workflow.task_dag.store.max_log_line_bytes",
+                MAX_LOG_LINE_BYTES,
+            )
+        {
             return Err(DagError::Corrupt(
                 "genesis line exceeds its byte ceiling".into(),
             ));
@@ -208,7 +217,12 @@ impl TaskDagStore {
         }
 
         for raw in lines {
-            if raw.len() > MAX_LOG_LINE_BYTES {
+            if raw.len()
+                > iteron_tunables::param_integer(
+                    "workflow.task_dag.store.max_log_line_bytes",
+                    MAX_LOG_LINE_BYTES,
+                )
+            {
                 return Err(DagError::Corrupt(
                     "command line exceeds its byte ceiling".into(),
                 ));
@@ -274,7 +288,7 @@ impl TaskDagStore {
         let encoded = encode_line(&StoredLine::Command {
             entry: entry.clone(),
         })?;
-        if self.bytes.saturating_add(encoded.len() as u64) > MAX_LOG_BYTES {
+        if self.bytes.saturating_add(encoded.len() as u64) > max_log_bytes() {
             return Err(DagError::Capacity { kind: "log bytes" });
         }
         #[cfg(all(test, unix))]
@@ -378,7 +392,12 @@ fn complete_prefix_len(bytes: &[u8]) -> usize {
 fn encode_line(line: &StoredLine) -> Result<Vec<u8>, DagError> {
     let mut encoded = serde_json::to_vec(line)?;
     encoded.push(b'\n');
-    if encoded.len() > MAX_LOG_LINE_BYTES {
+    if encoded.len()
+        > iteron_tunables::param_integer(
+            "workflow.task_dag.store.max_log_line_bytes",
+            MAX_LOG_LINE_BYTES,
+        )
+    {
         return Err(DagError::Capacity { kind: "log line" });
     }
     Ok(encoded)

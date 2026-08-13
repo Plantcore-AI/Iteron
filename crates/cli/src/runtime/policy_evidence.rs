@@ -128,8 +128,12 @@ impl PolicyDecisionDraft {
                 .map_err(|error| KernelError::PolicyEvidence(error.to_string()))?,
             disposition,
             selected_score_micros: None,
-            propensity_ppm: (disposition == PolicyDecisionDisposition::Selected)
-                .then_some(DETERMINISTIC_PROPENSITY_PPM),
+            propensity_ppm: (disposition == PolicyDecisionDisposition::Selected).then_some(
+                iteron_tunables::param_integer(
+                    "cli.runtime.policy_evidence.deterministic_propensity_ppm",
+                    DETERMINISTIC_PROPENSITY_PPM,
+                ),
+            ),
             feature_schema_id: feature_schema_id.to_owned(),
             feature_digest_sha256: digest_json("iteron:policy-features:v1", features)?,
             fixed_invariants_digest_sha256: digest_json(

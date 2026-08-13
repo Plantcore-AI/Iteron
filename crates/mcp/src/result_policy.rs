@@ -67,7 +67,13 @@ impl McpResultPolicy {
         spill_max_bytes: usize,
         cleanup: McpSpillCleanup,
     ) -> Result<Self, McpError> {
-        if visible_max_bytes > spill_max_bytes || spill_max_bytes > MAX_MCP_SPILL_RESULT_BYTES {
+        if visible_max_bytes > spill_max_bytes
+            || spill_max_bytes
+                > iteron_tunables::param_integer(
+                    "mcp.result_policy.max_mcp_spill_result_bytes",
+                    MAX_MCP_SPILL_RESULT_BYTES,
+                )
+        {
             return Err(McpError::InvalidResultPolicy);
         }
         Ok(Self {
@@ -93,7 +99,10 @@ impl McpResultPolicy {
 impl Default for McpResultPolicy {
     fn default() -> Self {
         Self::new(
-            DEFAULT_MCP_VISIBLE_RESULT_BYTES,
+            iteron_tunables::param_integer(
+                "mcp.result_policy.default_mcp_visible_result_bytes",
+                DEFAULT_MCP_VISIBLE_RESULT_BYTES,
+            ),
             DEFAULT_MCP_SPILL_RESULT_BYTES,
             McpSpillCleanup::SessionEnd,
         )
@@ -260,10 +269,17 @@ impl McpSpillStore {
     }
 
     fn create_temporary(&self) -> Result<(PathBuf, File), McpError> {
-        let first = self
-            .next_temporary
-            .fetch_add(MAX_TEMP_CREATE_ATTEMPTS, Ordering::Relaxed);
-        for offset in 0..MAX_TEMP_CREATE_ATTEMPTS {
+        let first = self.next_temporary.fetch_add(
+            iteron_tunables::param_integer(
+                "mcp.result_policy.max_temp_create_attempts",
+                MAX_TEMP_CREATE_ATTEMPTS,
+            ),
+            Ordering::Relaxed,
+        );
+        for offset in 0..iteron_tunables::param_integer(
+            "mcp.result_policy.max_temp_create_attempts",
+            MAX_TEMP_CREATE_ATTEMPTS,
+        ) {
             let path = self.root.join(format!(
                 ".spill-{}-{}.tmp",
                 std::process::id(),

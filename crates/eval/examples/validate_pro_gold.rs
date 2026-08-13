@@ -169,9 +169,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn read_bounded(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
-    file.take(MAX_GOLD_PATCH_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_GOLD_PATCH_BYTES {
+    file.take(
+        iteron_tunables::param_integer(
+            "eval.crates.eval.examples.validate_pro_gold.max_gold_patch_bytes",
+            MAX_GOLD_PATCH_BYTES,
+        ) + 1,
+    )
+    .read_to_end(&mut bytes)?;
+    if bytes.len() as u64
+        > iteron_tunables::param_integer(
+            "eval.crates.eval.examples.validate_pro_gold.max_gold_patch_bytes",
+            MAX_GOLD_PATCH_BYTES,
+        )
+    {
         return Err("gold patch exceeds 8 MiB".into());
     }
     Ok(String::from_utf8(bytes)?)

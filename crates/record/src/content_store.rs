@@ -175,7 +175,12 @@ fn put_private_content_at_surface_with_sources(
     preview_bytes: usize,
     sources: &[PrivateContentSource],
 ) -> Result<PrivateContentHandle, ContentStoreError> {
-    if preview_bytes > MAX_PRIVATE_CONTENT_PREVIEW_BYTES {
+    if preview_bytes
+        > iteron_tunables::param_integer(
+            "record.content_store.model.max_private_content_preview_bytes",
+            MAX_PRIVATE_CONTENT_PREVIEW_BYTES,
+        )
+    {
         return Err(ContentStoreError::InvalidPreviewBound);
     }
     crate::validate_run_id(run).map_err(|_| ContentStoreError::Corrupt)?;
@@ -285,15 +290,33 @@ fn read_private_content_at_reference_locked(
     })?;
     let mut found = false;
     let mut count = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if count == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if count
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         count = count.saturating_add(1);
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&entry?.path(), MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &entry?.path(),
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *owner {
             return Err(ContentStoreError::Corrupt);
         }
@@ -415,15 +438,33 @@ impl ExactRunContentRelease {
         };
         let mut digests = std::collections::BTreeSet::new();
         let mut edge_count = 0usize;
-        for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-            if edge_count == MAX_CONTENT_REFERENCES {
+        for entry in entries.take(
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            ) + 1,
+        ) {
+            if edge_count
+                == iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                )
+            {
                 return Err(ContentStoreError::ReferenceBound {
-                    max: MAX_CONTENT_REFERENCES,
+                    max: iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_references",
+                        MAX_CONTENT_REFERENCES,
+                    ),
                 });
             }
             edge_count = edge_count.saturating_add(1);
-            let edge: ReferenceEdge =
-                serde_json::from_slice(&read_limited(&entry?.path(), MAX_REFERENCE_EDGE_BYTES)?)?;
+            let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+                &entry?.path(),
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_reference_edge_bytes",
+                    MAX_REFERENCE_EDGE_BYTES,
+                ),
+            )?)?;
             if edge.version != STORE_VERSION || edge.run_id != *run {
                 return Err(ContentStoreError::Corrupt);
             }
@@ -450,7 +491,10 @@ impl ExactRunContentRelease {
                 run_id: run.clone(),
                 owners: u32::try_from(owners.len()).map_err(|_| {
                     ContentStoreError::ReferenceBound {
-                        max: MAX_CONTENT_REFERENCES,
+                        max: iteron_tunables::param_integer(
+                            "record.content_store.model.max_content_references",
+                            MAX_CONTENT_REFERENCES,
+                        ),
                     }
                 })?,
             });
@@ -498,16 +542,34 @@ pub(crate) fn release_private_content_for_absent_runs(
         let mut owner = None;
         let mut has_record_edge = false;
         let mut edge_count = 0usize;
-        for entry in std::fs::read_dir(&run_dir)?.take(MAX_CONTENT_REFERENCES + 1) {
-            if edge_count == MAX_CONTENT_REFERENCES {
+        for entry in std::fs::read_dir(&run_dir)?.take(
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            ) + 1,
+        ) {
+            if edge_count
+                == iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                )
+            {
                 return Err(ContentStoreError::ReferenceBound {
-                    max: MAX_CONTENT_REFERENCES,
+                    max: iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_references",
+                        MAX_CONTENT_REFERENCES,
+                    ),
                 });
             }
             edge_count = edge_count.saturating_add(1);
             let path = entry?.path();
-            let edge: ReferenceEdge =
-                serde_json::from_slice(&read_limited(&path, MAX_REFERENCE_EDGE_BYTES)?)?;
+            let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+                &path,
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_reference_edge_bytes",
+                    MAX_REFERENCE_EDGE_BYTES,
+                ),
+            )?)?;
             if edge.version != STORE_VERSION
                 || layout.run_reference_dir(&edge.run_id) != run_dir
                 || crate::validate_run_id(&edge.run_id).is_err()
@@ -536,7 +598,10 @@ pub(crate) fn release_private_content_for_absent_runs(
             released = released
                 .checked_add(release_run_locked(&layout, &owner)?)
                 .ok_or(ContentStoreError::ReferenceBound {
-                    max: MAX_CONTENT_REFERENCES,
+                    max: iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_references",
+                        MAX_CONTENT_REFERENCES,
+                    ),
                 })?;
         }
     }
@@ -551,15 +616,33 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
         Err(error) => return Err(error.into()),
     };
     let mut released = 0usize;
-    for entry in entries.take(MAX_CONTENT_REFERENCES + 1) {
-        if released == MAX_CONTENT_REFERENCES {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ) + 1,
+    ) {
+        if released
+            == iteron_tunables::param_integer(
+                "record.content_store.model.max_content_references",
+                MAX_CONTENT_REFERENCES,
+            )
+        {
             return Err(ContentStoreError::ReferenceBound {
-                max: MAX_CONTENT_REFERENCES,
+                max: iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ),
             });
         }
         let run_edge = entry?.path();
-        let edge: ReferenceEdge =
-            serde_json::from_slice(&read_limited(&run_edge, MAX_REFERENCE_EDGE_BYTES)?)?;
+        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
+            &run_edge,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?)?;
         if edge.version != STORE_VERSION || edge.run_id != *run {
             return Err(ContentStoreError::Corrupt);
         }
@@ -588,7 +671,10 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
     let _ = std::fs::remove_dir(&run_dir);
     crate_sync_dir(&layout.run_refs)?;
     u32::try_from(released).map_err(|_| ContentStoreError::ReferenceBound {
-        max: MAX_CONTENT_REFERENCES,
+        max: iteron_tunables::param_integer(
+            "record.content_store.model.max_content_references",
+            MAX_CONTENT_REFERENCES,
+        ),
     })
 }
 
@@ -695,10 +781,22 @@ pub(crate) fn externalize_event_payload(
 }
 
 fn lock_store_for_record(layout: &Layout) -> Result<StoreLock, ContentStoreError> {
-    for attempt in 0..RECORD_LOCK_RETRY_ATTEMPTS {
+    for attempt in 0..iteron_tunables::param_integer(
+        "record.content_store.record_lock_retry_attempts",
+        RECORD_LOCK_RETRY_ATTEMPTS,
+    ) {
         match lock_store(layout) {
-            Err(ContentStoreError::Busy) if attempt + 1 < RECORD_LOCK_RETRY_ATTEMPTS => {
-                std::thread::sleep(RECORD_LOCK_RETRY_DELAY);
+            Err(ContentStoreError::Busy)
+                if attempt + 1
+                    < iteron_tunables::param_integer(
+                        "record.content_store.record_lock_retry_attempts",
+                        RECORD_LOCK_RETRY_ATTEMPTS,
+                    ) =>
+            {
+                std::thread::sleep(iteron_tunables::param_duration(
+                    "record.content_store.record_lock_retry_delay",
+                    RECORD_LOCK_RETRY_DELAY,
+                ));
             }
             result => return result,
         }
@@ -893,10 +991,12 @@ fn class_label(class: PrivateContentClass) -> &'static str {
 }
 
 fn ensure_content_bound(bytes: &[u8]) -> Result<(), ContentStoreError> {
-    if bytes.len() > MAX_CONTENT_JSON_BYTES {
-        Err(ContentStoreError::ContentTooLarge {
-            max: MAX_CONTENT_JSON_BYTES,
-        })
+    let max = iteron_tunables::param_integer(
+        "record.content_store.model.max_private_content_bytes",
+        MAX_CONTENT_JSON_BYTES,
+    );
+    if bytes.len() > max {
+        Err(ContentStoreError::ContentTooLarge { max })
     } else {
         Ok(())
     }

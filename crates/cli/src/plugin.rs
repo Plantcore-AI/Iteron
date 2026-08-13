@@ -166,9 +166,19 @@ fn read_public_key(path: &Path) -> anyhow::Result<[u8; 32]> {
         .map_err(|error| anyhow::anyhow!("public key {}: {error}", path.display()))?;
     let mut bytes = Vec::new();
     file.by_ref()
-        .take((MAX_PUBLIC_KEY_FILE_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "cli.plugin.max_public_key_file_bytes",
+                MAX_PUBLIC_KEY_FILE_BYTES,
+            ) + 1) as u64,
+        )
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PUBLIC_KEY_FILE_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.plugin.max_public_key_file_bytes",
+            MAX_PUBLIC_KEY_FILE_BYTES,
+        )
+    {
         anyhow::bail!("public key file exceeds {MAX_PUBLIC_KEY_FILE_BYTES} bytes");
     }
     if let Ok(raw) = <[u8; 32]>::try_from(bytes.as_slice()) {

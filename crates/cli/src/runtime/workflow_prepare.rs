@@ -81,7 +81,12 @@ impl Agent {
         }
         self.validate_workflow_graph_identity()
             .map_err(|error| error.public_summary())?;
-        if self.delegation_depth >= MAX_DELEGATION_DEPTH {
+        if self.delegation_depth
+            >= iteron_tunables::param_integer(
+                "cli.runtime.max_delegation_depth",
+                MAX_DELEGATION_DEPTH,
+            )
+        {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
         // Resolve exactly one workflow selector. Named built-ins are harness-owned source, not a
@@ -110,7 +115,11 @@ impl Agent {
             );
         }
         let script = match (name, inline, path) {
-            (Some(ULTRACODE_WORKFLOW_NAME), None, None) => ULTRACODE_DYNAMIC_SCRIPT.to_string(),
+            (Some(ULTRACODE_WORKFLOW_NAME), None, None) => iteron_tunables::param_str(
+                "cli.runtime.ultracode_dynamic_script",
+                ULTRACODE_DYNAMIC_SCRIPT,
+            )
+            .to_string(),
             (Some(other), None, None) => {
                 return Err(format!("Workflow: unknown built-in workflow `{other}`"));
             }
@@ -122,7 +131,12 @@ impl Agent {
             }
             _ => unreachable!("selector_count enforces one workflow source"),
         };
-        let builtin_ultracode = script.trim() == ULTRACODE_DYNAMIC_SCRIPT.trim();
+        let builtin_ultracode = script.trim()
+            == iteron_tunables::param_str(
+                "cli.runtime.ultracode_dynamic_script",
+                ULTRACODE_DYNAMIC_SCRIPT,
+            )
+            .trim();
         let mut args = input
             .get("args")
             .cloned()
@@ -137,7 +151,10 @@ impl Agent {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| "Workflow ultracode: `args.task` must be non-empty".to_string())?;
-            let task = strict_utf8_head(task, MAX_STEER_BYTES);
+            let task = strict_utf8_head(
+                task,
+                iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES),
+            );
             let class = object
                 .get("taskClass")
                 .cloned()
@@ -182,7 +199,10 @@ impl Agent {
         let background = input
             .get("background")
             .and_then(|value| value.as_bool())
-            .unwrap_or(DEFAULT_WORKFLOW_BACKGROUND);
+            .unwrap_or(iteron_tunables::param_bool(
+                "cli.runtime.workflow_prepare.default_workflow_background",
+                DEFAULT_WORKFLOW_BACKGROUND,
+            ));
 
         // Children re-record the parent's exact durable route byte-for-byte; a run before any route
         // selection cannot bind one.
@@ -407,7 +427,10 @@ impl Agent {
                 .with_args(args.clone())
                 .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
                 .with_workflows_dir(workflows_dir.clone())
-                .with_limits(engine_limits),
+                .with_limits(engine_limits)
+                // Prompt artifacts only. With no profile this is `None` and the engine keeps every
+                // compiled string.
+                .with_tunables_profile(self.tunables_profile()),
             self.execution_policy,
         );
         if resume_run_id.is_some() {
@@ -443,7 +466,10 @@ impl Agent {
                     created_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|elapsed| elapsed.as_secs())
-                        .unwrap_or(CLOCK_BEFORE_EPOCH_SECS),
+                        .unwrap_or(iteron_tunables::param_integer(
+                            "cli.runtime.workflow_prepare.clock_before_epoch_secs",
+                            CLOCK_BEFORE_EPOCH_SECS,
+                        )),
                 },
                 &script,
             )
@@ -565,7 +591,15 @@ impl Agent {
         let report = {
             let mut joined = Box::pin(handle.join());
             loop {
-                match tokio::time::timeout(WORKFLOW_CONTROL_POLL, &mut joined).await {
+                match tokio::time::timeout(
+                    iteron_tunables::param_duration(
+                        "cli.runtime.workflow_prepare.workflow_control_poll",
+                        WORKFLOW_CONTROL_POLL,
+                    ),
+                    &mut joined,
+                )
+                .await
+                {
                     Ok(report) => break report,
                     Err(_) => {
                         // Drain both stop surfaces through the canonical predicate rather than

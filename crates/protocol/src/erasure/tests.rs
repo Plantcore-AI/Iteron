@@ -77,7 +77,7 @@ fn receipt_state_machine_is_typed_and_terminal_is_immutable() {
         Err(ErasureValidationError::TerminalReceipt)
     );
     let encoded = serde_json::to_vec(&receipt).unwrap();
-    assert!(encoded.len() < MAX_ERASURE_RECEIPT_BYTES);
+    assert!(encoded.len() < iteron_tunables::param_integer("protocol.erasure.max_erasure_receipt_bytes", MAX_ERASURE_RECEIPT_BYTES));
     assert_eq!(
         serde_json::from_slice::<ErasureReceipt>(&encoded).unwrap(),
         receipt

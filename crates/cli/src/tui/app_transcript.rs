@@ -29,9 +29,18 @@ impl App {
             return None;
         }
         let waited = self.awaiting_first_token_since?.elapsed();
-        let state = if waited >= FIRST_TOKEN_STALL_AFTER {
+        let state = if waited
+            >= iteron_tunables::param_duration(
+                "cli.tui.first_token_stall_after",
+                FIRST_TOKEN_STALL_AFTER,
+            ) {
             FirstTokenState::Stalled
-        } else if waited >= FIRST_TOKEN_SLOW_AFTER {
+        } else if waited
+            >= iteron_tunables::param_duration(
+                "cli.tui.first_token_slow_after",
+                FIRST_TOKEN_SLOW_AFTER,
+            )
+        {
             FirstTokenState::Slow
         } else {
             return None;
@@ -140,7 +149,12 @@ impl App {
             return;
         }
         self.pending_tools.retain(|pending| pending.id != id);
-        while self.pending_tools.len() >= MAX_PENDING_TOOL_PROJECTIONS {
+        while self.pending_tools.len()
+            >= iteron_tunables::param_integer(
+                "cli.tui.driver_support.max_pending_tool_projections",
+                MAX_PENDING_TOOL_PROJECTIONS,
+            )
+        {
             let oldest = self
                 .pending_tools
                 .pop_front()
@@ -152,7 +166,11 @@ impl App {
             name,
             args,
             started: now,
-            reveal_deadline: now + TOOL_REVEAL_DELAY,
+            reveal_deadline: now
+                + iteron_tunables::param_duration(
+                    "cli.tui.driver_support.tool_reveal_delay",
+                    TOOL_REVEAL_DELAY,
+                ),
         });
         self.autoscroll();
     }

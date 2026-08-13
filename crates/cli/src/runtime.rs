@@ -149,8 +149,7 @@ pub(crate) fn ui_workflow_label(content: &str) -> String {
     frontend::ui_workflow_label(content)
 }
 
-pub(crate) const fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy
-{
+pub(crate) fn effecting_tool_admission_policy() -> deferred_tools::EffectingToolAdmissionPolicy {
     deferred_tools::effecting_tool_admission_policy()
 }
 
@@ -832,7 +831,12 @@ impl InternalStreamProgress {
         let counts = (self.output_chars, self.thinking_chars);
         let due = self.last_emitted.is_none_or(|(output, thinking, at)| {
             counts != (output, thinking)
-                && (force || now.saturating_duration_since(at) >= INTERNAL_STREAM_PROGRESS_INTERVAL)
+                && (force
+                    || now.saturating_duration_since(at)
+                        >= iteron_tunables::param_duration(
+                            "cli.runtime.internal_stream_progress_interval",
+                            INTERNAL_STREAM_PROGRESS_INTERVAL,
+                        ))
         });
         if !due && !force {
             return;
@@ -882,7 +886,13 @@ fn effect_failed_terminal(
     EventKind::EffectFailed {
         id: effect_class::effect_id(turn, class, ordinal),
         tool: effect_class_label(class).to_string(),
-        reason: strict_utf8_head(reason, EFFECT_REASON_MAX_BYTES),
+        reason: strict_utf8_head(
+            reason,
+            iteron_tunables::param_integer(
+                "cli.runtime.effect_reason_max_bytes",
+                EFFECT_REASON_MAX_BYTES,
+            ),
+        ),
         // See `effect_done_terminal`: the boundary owns the measurement.
         duration_ms: None,
         provider_route_attempt: None,
@@ -1144,7 +1154,10 @@ fn ultracode_investigator_prompt(
 fn fan_concurrency_permits(active_workers: usize) -> usize {
     let usable_cores = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(2))
-        .unwrap_or(USABLE_CORES_WHEN_UNREPORTED);
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.runtime.usable_cores_when_unreported",
+            USABLE_CORES_WHEN_UNREPORTED,
+        ));
     iteron_agents::FAN_CAP
         .min(usable_cores)
         .min(active_workers)
@@ -1225,8 +1238,8 @@ fn approx_workspace_file_count(root: &std::path::Path) -> usize {
                 }
             } else {
                 count = count.saturating_add(1);
-                if count >= CAP {
-                    return CAP;
+                if count >= iteron_tunables::param_integer("cli.runtime.cap", CAP) {
+                    return iteron_tunables::param_integer("cli.runtime.cap", CAP);
                 }
             }
         }
@@ -1495,9 +1508,13 @@ const MAX_UI_APPROVAL_ARGS_BYTES: usize = 16 * 1024;
 /// remains the durable source of truth.
 fn ui_approval_arguments(value: &serde_json::Value) -> serde_json::Value {
     let scrubbed = scrub_value(value);
-    if serde_json::to_vec(&scrubbed)
-        .is_ok_and(|encoded| encoded.len() <= MAX_UI_APPROVAL_ARGS_BYTES)
-    {
+    if serde_json::to_vec(&scrubbed).is_ok_and(|encoded| {
+        encoded.len()
+            <= iteron_tunables::param_integer(
+                "cli.runtime.max_ui_approval_args_bytes",
+                MAX_UI_APPROVAL_ARGS_BYTES,
+            )
+    }) {
         return scrubbed;
     }
 
@@ -1874,6 +1891,11 @@ pub struct Agent {
     /// parents and every child can reproduce the same immutable environment identity.
     composition_environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
+    /// Operator replacement for the `prompt/compaction@v1` artifact — the instruction the
+    /// summarizer runs under. `None` (the only state a run without a tunables profile can reach)
+    /// leaves the compiled [`CompactionPolicy::summary_prompt`] in force, so the no-profile
+    /// transcript is byte-identical to the one before this seam existed.
+    pub compaction_summary_prompt: Option<String>,
     /// One compaction per top-level submission. Set by whichever path took it — the emergency
     /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
     /// submission is admitted, so the two can never both fire on one run.
@@ -2184,6 +2206,10 @@ pub struct Agent {
     /// One absolute wall deadline shared by decomposition, fan-out, compaction, retries, and the
     /// writer loop. `drive()` must never reset it after orchestration has already spent time.
     run_deadline: Option<Instant>,
+    /// The operator tunables profile this session resolved under, when one was supplied. Held only
+    /// so a workflow this agent starts can apply the prompt artifacts it carries; it grants no
+    /// authority and is never consulted for a permission, budget, or routing decision.
+    tunables_profile: Option<std::sync::Arc<iteron_tunables::ProfileDocument>>,
 }
 
 impl Agent {
@@ -2717,7 +2743,10 @@ impl Agent {
                         let covered = if self.compaction.coverage_check {
                             self.verify_compaction_summary(&plan.to_summarize, &summary)
                                 .await
-                                .unwrap_or(COMPACTION_COVERED_ON_VERIFIER_ERROR)
+                                .unwrap_or(iteron_tunables::param_bool(
+                                    "cli.runtime.compaction_covered_on_verifier_error",
+                                    COMPACTION_COVERED_ON_VERIFIER_ERROR,
+                                ))
                         } else {
                             true
                         };
@@ -3739,7 +3768,13 @@ impl Agent {
                     effort: effort_application,
                 });
             } else {
-                self.ui(UiEvent::Notice(INCOMPLETE_USAGE_NOTICE.into()));
+                self.ui(UiEvent::Notice(
+                    iteron_tunables::param_str(
+                        "cli.runtime.incomplete_usage_notice",
+                        INCOMPLETE_USAGE_NOTICE,
+                    )
+                    .into(),
+                ));
             }
 
             // Record the assistant message verbatim (append-only; ADR-002 R2), to the rollout
@@ -4449,7 +4484,10 @@ impl Agent {
                     && ui_approval_arguments(&tu.input)
                         .get("_truncated_for_ui")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(UI_PROJECTION_TRUNCATED_WHEN_UNMARKED);
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "cli.runtime.ui_projection_truncated_when_unmarked",
+                            UI_PROJECTION_TRUNCATED_WHEN_UNMARKED,
+                        ));
                 let approved = match verdict {
                     Verdict::Auto => true,
                     Verdict::Deny => false,
@@ -5831,7 +5869,15 @@ impl Agent {
             {
                 break;
             }
-            match tokio::time::timeout(INBOUND_DRAIN_POLL_INTERVAL, rx.recv()).await {
+            match tokio::time::timeout(
+                iteron_tunables::param_duration(
+                    "cli.runtime.inbound_drain_poll_interval",
+                    INBOUND_DRAIN_POLL_INTERVAL,
+                ),
+                rx.recv(),
+            )
+            .await
+            {
                 Ok(Some(envelope)) => {
                     let op = match envelope.into_current() {
                         Ok(op) => op,
@@ -5888,7 +5934,10 @@ impl Agent {
                                 turn,
                                 1,
                                 SubmissionRejectionReason::UnsupportedOperation,
-                                UNSUPPORTED_SUBMISSION_NOTICE,
+                                iteron_tunables::param_str(
+                                    "cli.runtime.unsupported_submission_notice",
+                                    UNSUPPORTED_SUBMISSION_NOTICE,
+                                ),
                             ),
                     }
                 }

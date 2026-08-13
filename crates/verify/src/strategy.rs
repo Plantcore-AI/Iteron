@@ -133,7 +133,13 @@ impl VerifierPlan {
                 "verifier scope is narrower than the caller's floor",
             ));
         }
-        if self.attempts == 0 || self.attempts > MAX_VERIFIER_ATTEMPTS {
+        if self.attempts == 0
+            || self.attempts
+                > iteron_tunables::param_integer(
+                    "verify.strategy.max_verifier_attempts",
+                    MAX_VERIFIER_ATTEMPTS,
+                )
+        {
             return Err(VerifierSlotError::InvalidDecision(
                 "verifier attempts must be between one and the bounded maximum",
             ));

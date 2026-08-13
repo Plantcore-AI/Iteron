@@ -160,7 +160,7 @@ impl Store {
             PrivateContentNamespace::PromptHistory,
             PrivateContentClass::Transcript,
             PrivateContentRetention::ExplicitRevocation,
-            MAX_ENTRY_BYTES,
+            iteron_tunables::param_integer("cli.prompt_history.max_entry_bytes", MAX_ENTRY_BYTES),
         )?;
         // One configured history namespace is active for a run. The high 56 bits bind its
         // synthetic-source sequence range to the manifest path; the low byte is the entry slot.
@@ -191,14 +191,24 @@ impl Store {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             anyhow::bail!("prompt history must be a regular non-symlink file");
         }
-        if metadata.len() > MAX_STATE_BYTES as u64 {
+        if metadata.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+                as u64
+        {
             anyhow::bail!("prompt history exceeds its {MAX_STATE_BYTES}-byte bound");
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         fs::File::open(&self.path)?
-            .take((MAX_STATE_BYTES + 1) as u64)
+            .take(
+                (iteron_tunables::param_integer(
+                    "cli.prompt_history.max_state_bytes",
+                    MAX_STATE_BYTES,
+                ) + 1) as u64,
+            )
             .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_STATE_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+        {
             anyhow::bail!("prompt history exceeds its {MAX_STATE_BYTES}-byte bound");
         }
         let version: VersionProbe = serde_json::from_slice(&bytes)?;
@@ -234,7 +244,9 @@ impl Store {
 
     fn publish(&self, persisted: &PersistedState) -> anyhow::Result<()> {
         let bytes = serde_json::to_vec(&persisted)?;
-        if bytes.len() > MAX_STATE_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+        {
             anyhow::bail!("prompt history encoding exceeds its fixed bound");
         }
         let directory = self
@@ -349,13 +361,26 @@ fn prepare(state: State) -> PreparedState {
     for entry in state.history.into_iter().rev() {
         let source = iteron_record::redact::scrub(&entry);
         let scrubbed = sanitize(&source);
-        if scrubbed.trim().is_empty() || scrubbed.len() > MAX_ENTRY_BYTES {
+        if scrubbed.trim().is_empty()
+            || scrubbed.len()
+                > iteron_tunables::param_integer(
+                    "cli.prompt_history.max_entry_bytes",
+                    MAX_ENTRY_BYTES,
+                )
+        {
             continue;
         }
         let Some(next) = total.checked_add(scrubbed.len()) else {
             break;
         };
-        if retained.len() == MAX_ENTRIES || next > MAX_STATE_BYTES / 2 {
+        if retained.len()
+            == iteron_tunables::param_integer("cli.prompt_history.max_entries", MAX_ENTRIES)
+            || next
+                > iteron_tunables::param_integer(
+                    "cli.prompt_history.max_state_bytes",
+                    MAX_STATE_BYTES,
+                ) / 2
+        {
             break;
         }
         total = next;
@@ -369,7 +394,14 @@ fn prepare(state: State) -> PreparedState {
             let source = iteron_record::redact::scrub(&draft);
             (sanitize(&source), source)
         })
-        .filter(|(draft, _)| !draft.is_empty() && draft.len() <= MAX_ENTRY_BYTES);
+        .filter(|(draft, _)| {
+            !draft.is_empty()
+                && draft.len()
+                    <= iteron_tunables::param_integer(
+                        "cli.prompt_history.max_entry_bytes",
+                        MAX_ENTRY_BYTES,
+                    )
+        });
     let (draft, draft_source) = draft
         .map(|(draft, source)| (Some(draft), Some(source)))
         .unwrap_or((None, None));

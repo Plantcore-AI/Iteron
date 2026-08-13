@@ -16,6 +16,24 @@ pub const CONTEXT_SLOT_VERSION: u16 = 1;
 pub const MAX_CONTEXT_OUTLINE_DEPTH: u8 = 8;
 const MAX_CONTEXT_TASK_BYTES: usize = 64 * 1024;
 
+/// The traversal-depth ceiling actually enforced this run: the compiled constant unless a profile
+/// installed an override. Depth is a `u8`, so an out-of-range override falls back to the constant
+/// rather than silently wrapping.
+#[must_use]
+pub fn max_context_outline_depth() -> u8 {
+    u8::try_from(iteron_tunables::param_i128(
+        "ctx.context_strategy.max_context_outline_depth",
+        i128::from(iteron_tunables::param_integer(
+            "ctx.context_strategy.max_context_outline_depth",
+            MAX_CONTEXT_OUTLINE_DEPTH,
+        )),
+    ))
+    .unwrap_or(iteron_tunables::param_integer(
+        "ctx.context_strategy.max_context_outline_depth",
+        MAX_CONTEXT_OUTLINE_DEPTH,
+    ))
+}
+
 /// Versioned, already-gathered input to the built-in context policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextSlotObservation {
@@ -137,7 +155,13 @@ impl ContextStrategy {
                 {
                     return Err("context decision widened the caller's byte or trust ceiling");
                 }
-                if plan.task != input.task || plan.task.len() > MAX_CONTEXT_TASK_BYTES {
+                if plan.task != input.task
+                    || plan.task.len()
+                        > iteron_tunables::param_integer(
+                            "ctx.context_strategy.max_context_task_bytes",
+                            MAX_CONTEXT_TASK_BYTES,
+                        )
+                {
                     return Err("context decision changed or exceeded the bounded task query");
                 }
                 if !plan_fits_observation(&plan, input) {
@@ -153,10 +177,15 @@ impl ContextStrategy {
         if input.version != CONTEXT_SLOT_VERSION {
             return Err("unsupported context slot version");
         }
-        if input.task.len() > MAX_CONTEXT_TASK_BYTES {
+        if input.task.len()
+            > iteron_tunables::param_integer(
+                "ctx.context_strategy.max_context_task_bytes",
+                MAX_CONTEXT_TASK_BYTES,
+            )
+        {
             return Err("context task exceeds its local observation bound");
         }
-        if input.depth > MAX_CONTEXT_OUTLINE_DEPTH {
+        if input.depth > max_context_outline_depth() {
             return Err("context outline depth exceeds the local traversal bound");
         }
         let mut request = ContextRequest::new(input.request_id, self.slot.clone(), input.max_bytes);

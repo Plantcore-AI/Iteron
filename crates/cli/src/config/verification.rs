@@ -219,10 +219,18 @@ fn validate_commands(
     commands: &[VerificationCommandConfig],
     full_command: Option<&str>,
 ) -> Result<(), String> {
-    if commands.len() > MAX_CONFIGURED_VERIFICATION_COMMANDS {
+    if commands.len()
+        > iteron_tunables::param_integer(
+            "cli.config.verification.max_configured_verification_commands",
+            MAX_CONFIGURED_VERIFICATION_COMMANDS,
+        )
+    {
         return Err(format!(
             "trusted verification commands exceed their {}-command ceiling",
-            MAX_CONFIGURED_VERIFICATION_COMMANDS
+            iteron_tunables::param_integer(
+                "cli.config.verification.max_configured_verification_commands",
+                MAX_CONFIGURED_VERIFICATION_COMMANDS
+            )
         ));
     }
     if !commands.is_empty() && full_command.is_none() {
@@ -234,7 +242,11 @@ fn validate_commands(
     let mut seen = BTreeSet::new();
     for entry in commands {
         if entry.command.is_empty()
-            || entry.command.len() > MAX_VERIFICATION_COMMAND_BYTES
+            || entry.command.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.verification.max_verification_command_bytes",
+                    MAX_VERIFICATION_COMMAND_BYTES,
+                )
             || entry.command.contains('\0')
         {
             return Err("trusted verification command is outside its byte bound".into());
@@ -267,7 +279,12 @@ fn resolve_restore(
         return Err("verification rollback paths require mode `selected_paths`".into());
     }
     if mode == VerificationRollbackMode::SelectedPaths
-        && (configured.paths.is_empty() || configured.paths.len() > MAX_CONFIGURED_RESTORE_PATHS)
+        && (configured.paths.is_empty()
+            || configured.paths.len()
+                > iteron_tunables::param_integer(
+                    "cli.config.verification.max_configured_restore_paths",
+                    MAX_CONFIGURED_RESTORE_PATHS,
+                ))
     {
         return Err(format!(
             "selected verification rollback requires 1..={MAX_CONFIGURED_RESTORE_PATHS} paths"
@@ -281,7 +298,12 @@ fn resolve_restore(
         aggregate_bytes = aggregate_bytes
             .checked_add(path.len())
             .ok_or_else(|| "verification rollback path bytes overflowed".to_owned())?;
-        if aggregate_bytes > MAX_AGGREGATE_RESTORE_PATH_BYTES {
+        if aggregate_bytes
+            > iteron_tunables::param_integer(
+                "cli.config.verification.max_aggregate_restore_path_bytes",
+                MAX_AGGREGATE_RESTORE_PATH_BYTES,
+            )
+        {
             return Err("verification rollback paths exceed their aggregate byte ceiling".into());
         }
         if !seen.insert(path.clone()) {
@@ -301,7 +323,11 @@ fn resolve_restore(
 
 fn normalize_restore_path(workspace: &Path, value: &str) -> Result<String, String> {
     if value.is_empty()
-        || value.len() > MAX_RESTORE_PATH_BYTES
+        || value.len()
+            > iteron_tunables::param_integer(
+                "cli.config.verification.max_restore_path_bytes",
+                MAX_RESTORE_PATH_BYTES,
+            )
         || value.contains('\0')
         || value.chars().any(char::is_control)
     {

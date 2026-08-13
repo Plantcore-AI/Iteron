@@ -65,11 +65,21 @@ fn collect_strings(
     nodes: &mut usize,
     depth: usize,
 ) -> Result<(), String> {
-    if depth > MAX_REPORT_DEPTH {
+    if depth
+        > crate::param_integer(
+            "tunables.resolution_value.report.max_report_depth",
+            MAX_REPORT_DEPTH,
+        )
+    {
         return Err("report value exceeds its depth bound".into());
     }
     *nodes = nodes.checked_add(1).ok_or("report value node overflow")?;
-    if *nodes > crate::RESOLUTION_INPUT_MAX_BYTES / 4 {
+    if *nodes
+        > crate::param_integer(
+            "tunables.resolution_types.resolution_input_max_bytes",
+            crate::RESOLUTION_INPUT_MAX_BYTES,
+        ) / 4
+    {
         return Err("report value exceeds its node bound".into());
     }
     match value {
@@ -104,7 +114,12 @@ fn collect_strings(
         | ResolutionValue::Integer { .. }
         | ResolutionValue::Decimal { .. } => {}
     }
-    if *bytes > crate::RESOLUTION_INPUT_MAX_BYTES {
+    if *bytes
+        > crate::param_integer(
+            "tunables.resolution_types.resolution_input_max_bytes",
+            crate::RESOLUTION_INPUT_MAX_BYTES,
+        )
+    {
         return Err("report value exceeds its byte bound".into());
     }
     Ok(())

@@ -60,6 +60,13 @@ const RECOGNISED_POLICIES: &[(&str, ToolPreference)] = &[(
 /// The tools the structural-search preference floats to the front, in that order.
 const STRUCTURAL_SEARCH_ORDER: &[&str] = &["glob", "grep", "repo_map"];
 
+fn structural_search_order() -> &'static [&'static str] {
+    iteron_tunables::param_str_list(
+        "agents.policy.structural_search_order",
+        STRUCTURAL_SEARCH_ORDER,
+    )
+}
+
 impl ToolPreference {
     /// Read the preference a resolved bundle governs this build into.
     ///
@@ -111,7 +118,7 @@ impl ToolPreference {
     pub fn promoted_leading(self) -> &'static [&'static str] {
         match self {
             Self::Baseline => &[],
-            Self::PreferStructuralSearch => STRUCTURAL_SEARCH_ORDER,
+            Self::PreferStructuralSearch => structural_search_order(),
         }
     }
 }
@@ -127,7 +134,7 @@ pub fn narrow_under(filter: &ToolFilter, preference: ToolPreference) -> Vec<Stri
     match preference {
         ToolPreference::Baseline => narrowed,
         ToolPreference::PreferStructuralSearch => {
-            let mut preferred: Vec<String> = STRUCTURAL_SEARCH_ORDER
+            let mut preferred: Vec<String> = structural_search_order()
                 .iter()
                 .filter(|name| narrowed.iter().any(|tool| tool == *name))
                 .map(|name| (*name).to_owned())
@@ -135,7 +142,7 @@ pub fn narrow_under(filter: &ToolFilter, preference: ToolPreference) -> Vec<Stri
             preferred.extend(
                 narrowed
                     .into_iter()
-                    .filter(|tool| !STRUCTURAL_SEARCH_ORDER.contains(&tool.as_str())),
+                    .filter(|tool| !structural_search_order().contains(&tool.as_str())),
             );
             preferred
         }
@@ -200,7 +207,7 @@ impl BootBundle {
 /// applied while changing nothing.
 #[cfg(test)]
 pub(crate) fn structural_search_order_is_grounded() -> bool {
-    STRUCTURAL_SEARCH_ORDER
+    structural_search_order()
         .iter()
         .all(|name| crate::def::READ_ONLY_TOOLS.contains(name))
 }

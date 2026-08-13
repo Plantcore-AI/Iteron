@@ -85,7 +85,9 @@ impl Token {
         if now_secs >= self.expires_at_secs {
             return State::Expired;
         }
-        if self.expires_at_secs - now_secs <= EXPIRY_SKEW_SECS {
+        if self.expires_at_secs - now_secs
+            <= iteron_tunables::param_integer("mcp.token.expiry_skew_secs", EXPIRY_SKEW_SECS)
+        {
             return State::Stale;
         }
         State::Fresh
@@ -110,7 +112,10 @@ impl Token {
             State::Revoked => Err(TokenError::Revoked),
             State::Absent => Err(TokenError::Absent),
             State::Stale | State::Expired => Err(TokenError::Expired {
-                skew: EXPIRY_SKEW_SECS,
+                skew: iteron_tunables::param_integer(
+                    "mcp.token.expiry_skew_secs",
+                    EXPIRY_SKEW_SECS,
+                ),
             }),
         }
     }

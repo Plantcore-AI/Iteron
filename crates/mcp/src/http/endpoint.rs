@@ -89,11 +89,29 @@ impl McpHttpEndpoint {
     ///   two visually identical hosts must not be two different authorities,
     /// - anything over the byte ceilings.
     pub fn parse(url: &str) -> Result<Self, McpError> {
-        if url.is_empty() || url.len() > MAX_MCP_HTTP_URL_BYTES {
-            return Err(invalid("url", MAX_MCP_HTTP_URL_BYTES));
+        if url.is_empty()
+            || url.len()
+                > iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_url_bytes",
+                    MAX_MCP_HTTP_URL_BYTES,
+                )
+        {
+            return Err(invalid(
+                "url",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_url_bytes",
+                    MAX_MCP_HTTP_URL_BYTES,
+                ),
+            ));
         }
         if !url.bytes().all(|byte| byte.is_ascii_graphic()) {
-            return Err(invalid("url_charset", MAX_MCP_HTTP_URL_BYTES));
+            return Err(invalid(
+                "url_charset",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_url_bytes",
+                    MAX_MCP_HTTP_URL_BYTES,
+                ),
+            ));
         }
         let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
             (McpHttpScheme::Https, rest)
@@ -123,8 +141,19 @@ impl McpHttpEndpoint {
         } else {
             raw_path.to_owned()
         };
-        if path.len() > MAX_MCP_HTTP_PATH_BYTES {
-            return Err(invalid("path", MAX_MCP_HTTP_PATH_BYTES));
+        if path.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_path_bytes",
+                MAX_MCP_HTTP_PATH_BYTES,
+            )
+        {
+            return Err(invalid(
+                "path",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_path_bytes",
+                    MAX_MCP_HTTP_PATH_BYTES,
+                ),
+            ));
         }
 
         if scheme == McpHttpScheme::Http && !is_loopback_host(&host) {
@@ -173,19 +202,43 @@ impl McpHttpEndpoint {
 }
 
 fn parse_authority(authority: &str, scheme: McpHttpScheme) -> Result<(String, u16), McpError> {
-    if authority.is_empty() || authority.len() > MAX_MCP_HTTP_HOST_BYTES {
-        return Err(invalid("host", MAX_MCP_HTTP_HOST_BYTES));
+    if authority.is_empty()
+        || authority.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_host_bytes",
+                MAX_MCP_HTTP_HOST_BYTES,
+            )
+    {
+        return Err(invalid(
+            "host",
+            iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_host_bytes",
+                MAX_MCP_HTTP_HOST_BYTES,
+            ),
+        ));
     }
     if let Some(after_bracket) = authority.strip_prefix('[') {
-        let (inside, remainder) = after_bracket
-            .split_once(']')
-            .ok_or_else(|| invalid("ipv6_host", MAX_MCP_HTTP_HOST_BYTES))?;
+        let (inside, remainder) = after_bracket.split_once(']').ok_or_else(|| {
+            invalid(
+                "ipv6_host",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_host_bytes",
+                    MAX_MCP_HTTP_HOST_BYTES,
+                ),
+            )
+        })?;
         if inside.is_empty()
             || !inside
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.')
         {
-            return Err(invalid("ipv6_host", MAX_MCP_HTTP_HOST_BYTES));
+            return Err(invalid(
+                "ipv6_host",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_host_bytes",
+                    MAX_MCP_HTTP_HOST_BYTES,
+                ),
+            ));
         }
         let host = format!("[{}]", inside.to_ascii_lowercase());
         return Ok((host, parse_port_suffix(remainder, scheme)?));
@@ -229,12 +282,22 @@ fn parse_port(port: &str) -> Result<u16, McpError> {
 
 fn validate_registered_host(host: &str) -> Result<(), McpError> {
     if host.is_empty()
-        || host.len() > MAX_MCP_HTTP_HOST_BYTES
+        || host.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_host_bytes",
+                MAX_MCP_HTTP_HOST_BYTES,
+            )
         || host.starts_with('.')
         || host.ends_with('.')
         || host.contains("..")
     {
-        return Err(invalid("host", MAX_MCP_HTTP_HOST_BYTES));
+        return Err(invalid(
+            "host",
+            iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_host_bytes",
+                MAX_MCP_HTTP_HOST_BYTES,
+            ),
+        ));
     }
     for label in host.split('.') {
         if label.is_empty()
@@ -244,7 +307,13 @@ fn validate_registered_host(host: &str) -> Result<(), McpError> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         {
-            return Err(invalid("host", MAX_MCP_HTTP_HOST_BYTES));
+            return Err(invalid(
+                "host",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_host_bytes",
+                    MAX_MCP_HTTP_HOST_BYTES,
+                ),
+            ));
         }
     }
     Ok(())
@@ -279,14 +348,31 @@ pub struct McpHttpHeaderPolicy {
 
 impl McpHttpHeaderPolicy {
     pub fn new(names: Vec<String>) -> Result<Self, McpError> {
-        if names.len() > MAX_MCP_HTTP_HEADERS {
-            return Err(invalid("headers", MAX_MCP_HTTP_HEADERS));
+        if names.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_headers",
+                MAX_MCP_HTTP_HEADERS,
+            )
+        {
+            return Err(invalid(
+                "headers",
+                iteron_tunables::param_integer(
+                    "mcp.http.endpoint.max_mcp_http_headers",
+                    MAX_MCP_HTTP_HEADERS,
+                ),
+            ));
         }
         let mut seen = BTreeSet::new();
         for name in &names {
             validate_header_name(name)?;
             if !seen.insert(name.as_str()) {
-                return Err(invalid("header_name", MAX_MCP_HTTP_HEADER_NAME_BYTES));
+                return Err(invalid(
+                    "header_name",
+                    iteron_tunables::param_integer(
+                        "mcp.http.endpoint.max_mcp_http_header_name_bytes",
+                        MAX_MCP_HTTP_HEADER_NAME_BYTES,
+                    ),
+                ));
             }
         }
         Ok(Self { names })
@@ -308,13 +394,23 @@ impl McpHttpHeaderPolicy {
 /// normalisation order; requiring the canonical spelling makes the check total.
 pub fn validate_header_name(name: &str) -> Result<(), McpError> {
     if name.is_empty()
-        || name.len() > MAX_MCP_HTTP_HEADER_NAME_BYTES
+        || name.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_header_name_bytes",
+                MAX_MCP_HTTP_HEADER_NAME_BYTES,
+            )
         || !name.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
         })
         || RESERVED_HEADER_NAMES.contains(&name)
     {
-        return Err(invalid("header_name", MAX_MCP_HTTP_HEADER_NAME_BYTES));
+        return Err(invalid(
+            "header_name",
+            iteron_tunables::param_integer(
+                "mcp.http.endpoint.max_mcp_http_header_name_bytes",
+                MAX_MCP_HTTP_HEADER_NAME_BYTES,
+            ),
+        ));
     }
     Ok(())
 }

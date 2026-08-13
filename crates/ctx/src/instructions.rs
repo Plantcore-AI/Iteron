@@ -38,12 +38,36 @@ pub struct InstructionDiscoveryPolicy {
 }
 
 impl InstructionDiscoveryPolicy {
-    pub const fn owner() -> Self {
+    pub fn owner() -> Self {
         Self {
-            max_depth: MAX_IMPORT_DEPTH,
-            max_files: MAX_INSTRUCTION_SOURCES,
-            per_file_bytes: MAX_INSTRUCTION_CONTENT_BYTES,
-            total_bytes: MAX_MERGED_INSTRUCTION_BYTES,
+            max_depth: iteron_tunables::param_usize(
+                "ctx.instructions.max_import_depth",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_import_depth",
+                    MAX_IMPORT_DEPTH,
+                ),
+            ),
+            max_files: iteron_tunables::param_usize(
+                "ctx.instructions.max_instruction_sources",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_instruction_sources",
+                    MAX_INSTRUCTION_SOURCES,
+                ),
+            ),
+            per_file_bytes: iteron_tunables::param_usize(
+                "ctx.instructions.max_instruction_content_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_instruction_content_bytes",
+                    MAX_INSTRUCTION_CONTENT_BYTES,
+                ),
+            ),
+            total_bytes: iteron_tunables::param_usize(
+                "ctx.instructions.max_merged_instruction_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_merged_instruction_bytes",
+                    MAX_MERGED_INSTRUCTION_BYTES,
+                ),
+            ),
         }
     }
 
@@ -68,7 +92,14 @@ impl InstructionDiscoveryPolicy {
         if per_file_bytes == 0
             || total_bytes == 0
             || per_file_bytes > total_bytes
-            || total_bytes > MAX_MERGED_INSTRUCTION_BYTES
+            || total_bytes
+                > iteron_tunables::param_usize(
+                    "ctx.instructions.max_merged_instruction_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.instructions.max_merged_instruction_bytes",
+                        MAX_MERGED_INSTRUCTION_BYTES,
+                    ),
+                )
         {
             return Err("instruction discovery byte limits exceed the executable owner ceiling");
         }
@@ -146,7 +177,13 @@ impl InstructionBundle {
         if limit == 0 {
             return String::new();
         }
-        let content_limit = limit.saturating_sub(DISCLOSURE_RESERVE_BYTES);
+        let content_limit = limit.saturating_sub(iteron_tunables::param_usize(
+            "ctx.instructions.disclosure_reserve_bytes",
+            iteron_tunables::param_integer(
+                "ctx.instructions.disclosure_reserve_bytes",
+                DISCLOSURE_RESERVE_BYTES,
+            ),
+        ));
         let mut output = String::new();
         let mut omitted = self.omitted_sources;
         for source in &self.sources {
@@ -236,7 +273,13 @@ impl HierarchyDiscovery {
         let raw = match read_bounded_utf8(
             root,
             &target,
-            MAX_INSTRUCTION_SOURCE_BYTES,
+            iteron_tunables::param_usize(
+                "ctx.instructions.max_instruction_source_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_instruction_source_bytes",
+                    MAX_INSTRUCTION_SOURCE_BYTES,
+                ),
+            ),
             // Instruction imports are code-controlled even under ~/.iteron. Refuse symlinks for
             // this merge path; the legacy single-file API retains its existing semantics.
             SourceScope::Repository,
@@ -511,7 +554,13 @@ pub fn discover(root: &Path) -> Instructions {
         let content = match read_bounded_utf8(
             root,
             &path,
-            MAX_INSTRUCTION_SOURCE_BYTES,
+            iteron_tunables::param_usize(
+                "ctx.instructions.max_instruction_source_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.instructions.max_instruction_source_bytes",
+                    MAX_INSTRUCTION_SOURCE_BYTES,
+                ),
+            ),
             SourceScope::Repository,
         ) {
             Ok(Some(content)) => content,

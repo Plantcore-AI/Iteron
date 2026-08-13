@@ -108,7 +108,10 @@ async fn run_git_diff_inner(
         &mut command,
         timeout,
         policy.output_max_bytes,
-        policy.output_max_bytes.min(STDERR_LIMIT),
+        policy.output_max_bytes.min(iteron_tunables::param_integer(
+            "tools.git_harness.stderr_limit",
+            STDERR_LIMIT,
+        )),
     )
     .await
     .map_err(|error| format!("could not run bounded Git diff: {error}"))?;
@@ -212,7 +215,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .input
                     .get("stat")
                     .and_then(|value| value.as_bool())
-                    .unwrap_or(DEFAULT_GIT_DIFF_STAT);
+                    .unwrap_or(iteron_tunables::param_bool("tools.git.default_git_diff_stat", DEFAULT_GIT_DIFF_STAT));
                 let path = call
                     .input
                     .get("path")

@@ -76,7 +76,13 @@ pub enum LifecycleRecordError {
 
 impl LifecycleBus {
     pub fn new(capacity: usize) -> Self {
-        let capacity = capacity.clamp(1, MAX_FLIGHT_RECORDER_EVENTS);
+        let capacity = capacity.clamp(
+            1,
+            iteron_tunables::param_integer(
+                "obs.lifecycle.max_flight_recorder_events",
+                MAX_FLIGHT_RECORDER_EVENTS,
+            ),
+        );
         Self {
             inner: Arc::new(Inner {
                 capacity,
@@ -147,14 +153,25 @@ impl LifecycleBus {
         &self,
         capacity: usize,
     ) -> Result<mpsc::Receiver<LifecycleEventEnvelope>, &'static str> {
-        let capacity = capacity.clamp(1, MAX_SUBSCRIBER_QUEUE_EVENTS);
+        let capacity = capacity.clamp(
+            1,
+            iteron_tunables::param_integer(
+                "obs.lifecycle.max_subscriber_queue_events",
+                MAX_SUBSCRIBER_QUEUE_EVENTS,
+            ),
+        );
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let mut subscribers = self
             .inner
             .subscribers
             .try_lock()
             .map_err(|_| "lifecycle subscriber registry is busy")?;
-        if subscribers.len() == MAX_LIFECYCLE_SUBSCRIBERS {
+        if subscribers.len()
+            == iteron_tunables::param_integer(
+                "obs.lifecycle.max_lifecycle_subscribers",
+                MAX_LIFECYCLE_SUBSCRIBERS,
+            )
+        {
             return Err("lifecycle subscriber limit reached");
         }
         subscribers.push(sender);
@@ -236,7 +253,10 @@ impl LifecycleEmitter {
 
 impl Default for LifecycleBus {
     fn default() -> Self {
-        Self::new(DEFAULT_FLIGHT_RECORDER_EVENTS)
+        Self::new(iteron_tunables::param_integer(
+            "obs.lifecycle.default_flight_recorder_events",
+            DEFAULT_FLIGHT_RECORDER_EVENTS,
+        ))
     }
 }
 

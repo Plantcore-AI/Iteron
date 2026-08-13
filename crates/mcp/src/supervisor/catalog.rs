@@ -104,7 +104,11 @@ impl ManagedCatalog {
                     reason: "tool namespace does not match the immutable server binding",
                 });
             };
-            if spec.description.len() > MAX_MCP_TOOL_DESCRIPTION_BYTES
+            if spec.description.len()
+                > iteron_tunables::param_integer(
+                    "mcp.lib.max_mcp_tool_description_bytes",
+                    MAX_MCP_TOOL_DESCRIPTION_BYTES,
+                )
                 || unsafe_text(&spec.description)
             {
                 return Err(McpError::CatalogContract {
@@ -113,9 +117,18 @@ impl ManagedCatalog {
             }
             description_bytes = description_bytes
                 .checked_add(spec.description.len())
-                .filter(|bytes| *bytes <= MAX_MCP_TOOL_DESCRIPTIONS_BYTES)
+                .filter(|bytes| {
+                    *bytes
+                        <= iteron_tunables::param_integer(
+                            "mcp.lib.max_mcp_tool_descriptions_bytes",
+                            MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
+                        )
+                })
                 .ok_or(McpError::ToolDescriptionBudgetExceeded {
-                    limit: MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.lib.max_mcp_tool_descriptions_bytes",
+                        MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
+                    ),
                 })?;
             validate_schema(&spec.input_schema)?;
             if spec.purity != Purity::Effecting
@@ -129,8 +142,13 @@ impl ManagedCatalog {
 
         // Structural validation runs before this serializer so even a deterministic adversarial
         // fake cannot hand the supervisor a deeply nested in-memory value and consume its stack.
-        let mut combined =
-            CombinedToolCatalog::with_limits(MAX_COMBINED_MCP_TOOLS, MAX_MCP_TOOL_CATALOG_BYTES)?;
+        let mut combined = CombinedToolCatalog::with_limits(
+            MAX_COMBINED_MCP_TOOLS,
+            iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_catalog_bytes",
+                MAX_MCP_TOOL_CATALOG_BYTES,
+            ),
+        )?;
         combined.admit(&specs)?;
 
         let mut entries = BTreeMap::new();
@@ -210,14 +228,26 @@ impl ManagedCatalog {
                 .checked_add(description.len())
                 .and_then(|bytes| bytes.checked_add(entry.identity.server_name.len()))
                 .and_then(|bytes| bytes.checked_add(entry.identity.bare_name.len()))
-                .and_then(|bytes| bytes.checked_add(SEARCH_RESULT_FRAMING_BYTES))
+                .and_then(|bytes| {
+                    bytes.checked_add(iteron_tunables::param_integer(
+                        "mcp.supervisor.catalog.search_result_framing_bytes",
+                        SEARCH_RESULT_FRAMING_BYTES,
+                    ))
+                })
                 .ok_or(McpError::InvalidToolSearch {
                     field: "output",
-                    limit: MAX_MCP_SEARCH_OUTPUT_BYTES,
+                    limit: iteron_tunables::param_integer(
+                        "mcp.supervisor.catalog.max_mcp_search_output_bytes",
+                        MAX_MCP_SEARCH_OUTPUT_BYTES,
+                    ),
                 })?;
-            let next = output_bytes
-                .checked_add(bytes)
-                .filter(|total| *total <= MAX_MCP_SEARCH_OUTPUT_BYTES);
+            let next = output_bytes.checked_add(bytes).filter(|total| {
+                *total
+                    <= iteron_tunables::param_integer(
+                        "mcp.supervisor.catalog.max_mcp_search_output_bytes",
+                        MAX_MCP_SEARCH_OUTPUT_BYTES,
+                    )
+            });
             let Some(next) = next else {
                 break;
             };
@@ -239,16 +269,33 @@ impl ManagedCatalog {
 }
 
 pub(super) fn validate_search_request(query: &str, limit: usize) -> Result<(), McpError> {
-    if query.len() > MAX_MCP_SEARCH_QUERY_BYTES || unsafe_text(query) {
+    if query.len()
+        > iteron_tunables::param_integer(
+            "mcp.supervisor.catalog.max_mcp_search_query_bytes",
+            MAX_MCP_SEARCH_QUERY_BYTES,
+        )
+        || unsafe_text(query)
+    {
         return Err(McpError::InvalidToolSearch {
             field: "query",
-            limit: MAX_MCP_SEARCH_QUERY_BYTES,
+            limit: iteron_tunables::param_integer(
+                "mcp.supervisor.catalog.max_mcp_search_query_bytes",
+                MAX_MCP_SEARCH_QUERY_BYTES,
+            ),
         });
     }
-    if !(1..=MAX_MCP_SEARCH_RESULTS).contains(&limit) {
+    if !(1..=iteron_tunables::param_integer(
+        "mcp.supervisor.catalog.max_mcp_search_results",
+        MAX_MCP_SEARCH_RESULTS,
+    ))
+        .contains(&limit)
+    {
         return Err(McpError::InvalidToolSearch {
             field: "limit",
-            limit: MAX_MCP_SEARCH_RESULTS,
+            limit: iteron_tunables::param_integer(
+                "mcp.supervisor.catalog.max_mcp_search_results",
+                MAX_MCP_SEARCH_RESULTS,
+            ),
         });
     }
     Ok(())
@@ -283,10 +330,19 @@ fn unsafe_text(text: &str) -> bool {
 }
 
 fn summary(description: &str) -> String {
-    if description.len() <= MAX_MCP_SEARCH_DESCRIPTION_BYTES {
+    if description.len()
+        <= iteron_tunables::param_integer(
+            "mcp.supervisor.catalog.max_mcp_search_description_bytes",
+            MAX_MCP_SEARCH_DESCRIPTION_BYTES,
+        )
+    {
         return description.to_owned();
     }
-    let budget = MAX_MCP_SEARCH_DESCRIPTION_BYTES.saturating_sub(SUMMARY_MARKER.len());
+    let budget = iteron_tunables::param_integer(
+        "mcp.supervisor.catalog.max_mcp_search_description_bytes",
+        MAX_MCP_SEARCH_DESCRIPTION_BYTES,
+    )
+    .saturating_sub(SUMMARY_MARKER.len());
     let mut boundary = budget.min(description.len());
     while !description.is_char_boundary(boundary) {
         boundary = boundary.saturating_sub(1);
@@ -302,7 +358,17 @@ fn validate_schema(value: &Value) -> Result<(), McpError> {
     let mut nodes = 0usize;
     while let Some((value, depth)) = stack.pop() {
         nodes += 1;
-        if depth > MAX_SCHEMA_DEPTH || nodes > MAX_SCHEMA_NODES {
+        if depth
+            > iteron_tunables::param_integer(
+                "mcp.supervisor.catalog.max_schema_depth",
+                MAX_SCHEMA_DEPTH,
+            )
+            || nodes
+                > iteron_tunables::param_integer(
+                    "mcp.supervisor.catalog.max_schema_nodes",
+                    MAX_SCHEMA_NODES,
+                )
+        {
             return Err(McpError::CatalogContract {
                 reason: "tool schema exceeds structural bounds",
             });
@@ -331,11 +397,17 @@ fn validate_schema(value: &Value) -> Result<(), McpError> {
             _ => {}
         }
     }
-    let mut writer = BoundedCounter::new(MAX_MCP_TOOL_SCHEMA_BYTES);
+    let mut writer = BoundedCounter::new(iteron_tunables::param_integer(
+        "mcp.lib.max_mcp_tool_schema_bytes",
+        MAX_MCP_TOOL_SCHEMA_BYTES,
+    ));
     serde_json::to_writer(&mut writer, value).map_err(|error| {
         if writer.exceeded {
             McpError::ToolSchemaTooLarge {
-                limit: MAX_MCP_TOOL_SCHEMA_BYTES,
+                limit: iteron_tunables::param_integer(
+                    "mcp.lib.max_mcp_tool_schema_bytes",
+                    MAX_MCP_TOOL_SCHEMA_BYTES,
+                ),
             }
         } else {
             McpError::Json(error)
@@ -348,7 +420,13 @@ fn guard_pending_nodes(nodes: usize, pending: usize, adding: usize) -> Result<()
     if nodes
         .checked_add(pending)
         .and_then(|count| count.checked_add(adding))
-        .is_none_or(|count| count > MAX_SCHEMA_NODES)
+        .is_none_or(|count| {
+            count
+                > iteron_tunables::param_integer(
+                    "mcp.supervisor.catalog.max_schema_nodes",
+                    MAX_SCHEMA_NODES,
+                )
+        })
     {
         return Err(McpError::CatalogContract {
             reason: "tool schema exceeds structural bounds",

@@ -256,7 +256,7 @@ async fn render_live(
             draw,
             next_terminal_key,
             || handle.cancel(),
-            LIVE_TICK,
+            iteron_tunables::param_duration("cli.workflow.live.live_tick", LIVE_TICK),
         )
         .await?
     };

@@ -207,7 +207,10 @@ impl ConfinedProcess {
                 Ok(Some(status)) => return Some(status),
                 Ok(None) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(
-                        crate::BLOCKING_REAP_POLL_MS,
+                        iteron_tunables::param_integer(
+                            "sandbox.lib.blocking_reap_poll_ms",
+                            crate::BLOCKING_REAP_POLL_MS,
+                        ),
                     ));
                 }
                 Ok(None) | Err(_) => return None,

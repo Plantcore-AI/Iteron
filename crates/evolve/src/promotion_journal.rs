@@ -201,16 +201,25 @@ impl PromotionJournal {
         let mut reader = BufReader::new(&mut self.file);
         let mut records = Vec::new();
         let mut expected_sequence = 0u64;
-        let mut previous_hash = ZERO_HASH.to_owned();
+        let mut previous_hash =
+            iteron_tunables::param_str("evolve.promotion_journal.zero_hash", ZERO_HASH).to_owned();
         let mut verified_bytes = 0u64;
 
         while let Some((bytes, terminated, consumed)) = read_bounded_line(&mut reader)? {
             if !terminated {
                 break;
             }
-            if records.len() >= MAX_PROMOTION_AUDIT_EVENTS {
+            if records.len()
+                >= iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_audit_events",
+                    MAX_PROMOTION_AUDIT_EVENTS,
+                )
+            {
                 return Err(PromotionAuthorityError::AuditLimit {
-                    max: MAX_PROMOTION_AUDIT_EVENTS,
+                    max: iteron_tunables::param_integer(
+                        "evolve.promotion.max_promotion_audit_events",
+                        MAX_PROMOTION_AUDIT_EVENTS,
+                    ),
                 });
             }
             let record: JournalRecord = serde_json::from_slice(&bytes)?;
@@ -219,12 +228,18 @@ impl PromotionJournal {
                 expected_sequence
                     .checked_add(1)
                     .ok_or(PromotionAuthorityError::AuditLimit {
-                        max: MAX_PROMOTION_AUDIT_EVENTS,
+                        max: iteron_tunables::param_integer(
+                            "evolve.promotion.max_promotion_audit_events",
+                            MAX_PROMOTION_AUDIT_EVENTS,
+                        ),
                     })?;
             previous_hash.clone_from(&record.record_hash);
             verified_bytes = verified_bytes.checked_add(consumed as u64).ok_or(
                 PromotionAuthorityError::JournalTooLarge {
-                    max: MAX_PROMOTION_JOURNAL_BYTES,
+                    max: iteron_tunables::param_integer(
+                        "evolve.promotion_journal.max_promotion_journal_bytes",
+                        MAX_PROMOTION_JOURNAL_BYTES,
+                    ),
                     actual: u64::MAX,
                 },
             )?;
@@ -247,16 +262,34 @@ impl PromotionJournal {
             return Err(PromotionAuthorityError::WriterPoisoned);
         }
         let records = self.records()?;
-        if records.len() >= MAX_PROMOTION_AUDIT_EVENTS {
+        if records.len()
+            >= iteron_tunables::param_integer(
+                "evolve.promotion.max_promotion_audit_events",
+                MAX_PROMOTION_AUDIT_EVENTS,
+            )
+        {
             return Err(PromotionAuthorityError::AuditLimit {
-                max: MAX_PROMOTION_AUDIT_EVENTS,
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_audit_events",
+                    MAX_PROMOTION_AUDIT_EVENTS,
+                ),
             });
         }
         let sequence = records.len() as u64;
-        let previous_hash = records
-            .last()
-            .map_or_else(|| ZERO_HASH.to_owned(), |record| record.record_hash.clone());
-        let content_bytes = bounded_json(&content, MAX_PROMOTION_JOURNAL_RECORD_BYTES)?;
+        let previous_hash = records.last().map_or_else(
+            || {
+                iteron_tunables::param_str("evolve.promotion_journal.zero_hash", ZERO_HASH)
+                    .to_owned()
+            },
+            |record| record.record_hash.clone(),
+        );
+        let content_bytes = bounded_json(
+            &content,
+            iteron_tunables::param_integer(
+                "evolve.promotion_journal.max_promotion_journal_record_bytes",
+                MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+            ),
+        )?;
         let content_digest = sha256_hex(&content_bytes);
         let record_hash = chained_hash(&previous_hash, sequence, &content_digest);
         let record = JournalRecord {
@@ -267,7 +300,13 @@ impl PromotionJournal {
             content_digest,
             content,
         };
-        let mut bytes = bounded_json(&record, MAX_PROMOTION_JOURNAL_RECORD_BYTES - 1)?;
+        let mut bytes = bounded_json(
+            &record,
+            iteron_tunables::param_integer(
+                "evolve.promotion_journal.max_promotion_journal_record_bytes",
+                MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+            ) - 1,
+        )?;
         bytes.push(b'\n');
         let next_size = self
             .file
@@ -275,7 +314,10 @@ impl PromotionJournal {
             .len()
             .checked_add(bytes.len() as u64)
             .ok_or(PromotionAuthorityError::JournalTooLarge {
-                max: MAX_PROMOTION_JOURNAL_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion_journal.max_promotion_journal_bytes",
+                    MAX_PROMOTION_JOURNAL_BYTES,
+                ),
                 actual: u64::MAX,
             })?;
         ensure_size(next_size)?;
@@ -322,7 +364,13 @@ fn verify_record(
             found: record.journal_schema_version,
         });
     }
-    let content_bytes = bounded_json(&record.content, MAX_PROMOTION_JOURNAL_RECORD_BYTES)?;
+    let content_bytes = bounded_json(
+        &record.content,
+        iteron_tunables::param_integer(
+            "evolve.promotion_journal.max_promotion_journal_record_bytes",
+            MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+        ),
+    )?;
     let valid = record.sequence == expected_sequence
         && record.previous_hash == expected_previous
         && sha256_hex(&content_bytes) == record.content_digest
@@ -391,14 +439,27 @@ fn read_bounded_line<R: BufRead>(
 ) -> Result<Option<(Vec<u8>, bool, usize)>, PromotionAuthorityError> {
     let mut bytes = Vec::new();
     let consumed = reader
-        .take((MAX_PROMOTION_JOURNAL_RECORD_BYTES + 1) as u64)
+        .take(
+            (iteron_tunables::param_integer(
+                "evolve.promotion_journal.max_promotion_journal_record_bytes",
+                MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+            ) + 1) as u64,
+        )
         .read_until(b'\n', &mut bytes)?;
     if consumed == 0 {
         return Ok(None);
     }
-    if consumed > MAX_PROMOTION_JOURNAL_RECORD_BYTES {
+    if consumed
+        > iteron_tunables::param_integer(
+            "evolve.promotion_journal.max_promotion_journal_record_bytes",
+            MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+        )
+    {
         return Err(PromotionAuthorityError::RecordTooLarge {
-            max: MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+            max: iteron_tunables::param_integer(
+                "evolve.promotion_journal.max_promotion_journal_record_bytes",
+                MAX_PROMOTION_JOURNAL_RECORD_BYTES,
+            ),
             actual: consumed,
         });
     }
@@ -448,9 +509,17 @@ fn bounded_json<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, Promot
 }
 
 fn ensure_size(actual: u64) -> Result<(), PromotionAuthorityError> {
-    if actual > MAX_PROMOTION_JOURNAL_BYTES {
+    if actual
+        > iteron_tunables::param_integer(
+            "evolve.promotion_journal.max_promotion_journal_bytes",
+            MAX_PROMOTION_JOURNAL_BYTES,
+        )
+    {
         Err(PromotionAuthorityError::JournalTooLarge {
-            max: MAX_PROMOTION_JOURNAL_BYTES,
+            max: iteron_tunables::param_integer(
+                "evolve.promotion_journal.max_promotion_journal_bytes",
+                MAX_PROMOTION_JOURNAL_BYTES,
+            ),
             actual,
         })
     } else {

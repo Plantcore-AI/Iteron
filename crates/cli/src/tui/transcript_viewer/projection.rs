@@ -39,24 +39,41 @@ pub(super) fn index_block(
     remaining: usize,
     cancelled: &AtomicBool,
 ) -> Result<Entry, ()> {
-    let Some((source, source_truncated)) =
-        semantic_text::block_text(block, MAX_INDEX_BLOCK_BYTES, cancelled)
-    else {
+    let Some((source, source_truncated)) = semantic_text::block_text(
+        block,
+        iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_index_block_bytes",
+            MAX_INDEX_BLOCK_BYTES,
+        ),
+        cancelled,
+    ) else {
         return Err(());
     };
     if source_truncated {
         return Ok(oversized_block(block));
     }
-    let Some((safe, safe_truncated)) =
-        bounded_safe_cancelled(&source, MAX_INDEX_BLOCK_BYTES, cancelled)
-    else {
+    let Some((safe, safe_truncated)) = bounded_safe_cancelled(
+        &source,
+        iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_index_block_bytes",
+            MAX_INDEX_BLOCK_BYTES,
+        ),
+        cancelled,
+    ) else {
         return Err(());
     };
     if safe_truncated {
         return Ok(oversized_block(block));
     }
-    let (folded, fold_truncated) =
-        fold_bounded(&safe, MAX_INDEX_BLOCK_BYTES, cancelled).ok_or(())?;
+    let (folded, fold_truncated) = fold_bounded(
+        &safe,
+        iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_index_block_bytes",
+            MAX_INDEX_BLOCK_BYTES,
+        ),
+        cancelled,
+    )
+    .ok_or(())?;
     let within_block_limit = !fold_truncated;
     let complete = within_block_limit && folded.len() <= remaining;
     let required_bytes = (within_block_limit && !complete).then_some(folded.len());
@@ -90,9 +107,24 @@ pub(super) fn detail_block(
 ) -> Result<DetailProjection, ()> {
     const MARKER: &str = "\n[detail truncated at 64 KiB]\n";
     let (mut source, source_truncated) = if raw {
-        raw_text_bounded(block, MAX_DETAIL_BYTES, cancelled)?
+        raw_text_bounded(
+            block,
+            iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_detail_bytes",
+                MAX_DETAIL_BYTES,
+            ),
+            cancelled,
+        )?
     } else {
-        semantic_text::block_text(block, MAX_DETAIL_BYTES, cancelled).ok_or(())?
+        semantic_text::block_text(
+            block,
+            iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_detail_bytes",
+                MAX_DETAIL_BYTES,
+            ),
+            cancelled,
+        )
+        .ok_or(())?
     };
     if source_truncated {
         // Never scrub or display a semantic prefix whose final credential token may have been cut
@@ -101,7 +133,11 @@ pub(super) fn detail_block(
     }
     let (mut text, safe_truncated) = bounded_safe_cancelled(
         &source,
-        MAX_DETAIL_BYTES.saturating_sub(MARKER.len()),
+        iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_detail_bytes",
+            MAX_DETAIL_BYTES,
+        )
+        .saturating_sub(MARKER.len()),
         cancelled,
     )
     .ok_or(())?;
@@ -144,7 +180,10 @@ fn bounded_fields<const N: usize>(
     cancelled: &AtomicBool,
     fields: [&str; N],
 ) -> Result<(String, bool), ()> {
-    let mut text = String::with_capacity(max_bytes.min(PROJECTION_RESERVE_BYTES));
+    let mut text = String::with_capacity(max_bytes.min(iteron_tunables::param_integer(
+        "cli.tui.transcript_viewer.projection.projection_reserve_bytes",
+        PROJECTION_RESERVE_BYTES,
+    )));
     for field in fields {
         if cancelled.load(Ordering::Relaxed) {
             return Err(());
@@ -188,7 +227,10 @@ fn raw_tool_bounded(
         output: &card.output,
     };
     let mut writer = BoundedJsonWriter {
-        bytes: Vec::with_capacity(max_bytes.min(PROJECTION_RESERVE_BYTES)),
+        bytes: Vec::with_capacity(max_bytes.min(iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.projection.projection_reserve_bytes",
+            PROJECTION_RESERVE_BYTES,
+        ))),
         max_bytes,
         cancelled,
         truncated: false,
@@ -261,7 +303,12 @@ pub(super) fn append_query(query: &mut String, addition: &str) {
         if character.is_control() {
             continue;
         }
-        if query.len().saturating_add(character.len_utf8()) > MAX_QUERY_BYTES {
+        if query.len().saturating_add(character.len_utf8())
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_query_bytes",
+                MAX_QUERY_BYTES,
+            )
+        {
             break;
         }
         query.push(character);
@@ -270,7 +317,12 @@ pub(super) fn append_query(query: &mut String, addition: &str) {
     if scrubbed != *query {
         query.clear();
         for character in scrubbed.chars() {
-            if query.len().saturating_add(character.len_utf8()) > MAX_QUERY_BYTES {
+            if query.len().saturating_add(character.len_utf8())
+                > iteron_tunables::param_integer(
+                    "cli.tui.transcript_viewer.max_query_bytes",
+                    MAX_QUERY_BYTES,
+                )
+            {
                 break;
             }
             query.push(character);

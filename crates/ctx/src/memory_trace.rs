@@ -220,7 +220,10 @@ impl MemoryDecisionTrace {
         push_bounded(
             &mut self.stores,
             evidence,
-            MAX_MEMORY_TRACE_STORES,
+            iteron_tunables::param_integer(
+                "ctx.memory_trace.max_memory_trace_stores",
+                MAX_MEMORY_TRACE_STORES,
+            ),
             &mut self.dropped_stores,
         );
     }
@@ -229,7 +232,10 @@ impl MemoryDecisionTrace {
         push_bounded(
             &mut self.candidates,
             evidence,
-            MAX_MEMORY_TRACE_CANDIDATES,
+            iteron_tunables::param_integer(
+                "ctx.memory_trace.max_memory_trace_candidates",
+                MAX_MEMORY_TRACE_CANDIDATES,
+            ),
             &mut self.dropped_candidates,
         );
     }
@@ -238,7 +244,10 @@ impl MemoryDecisionTrace {
         push_bounded(
             &mut self.selected,
             evidence,
-            MAX_MEMORY_TRACE_SELECTIONS,
+            iteron_tunables::param_integer(
+                "ctx.memory_trace.max_memory_trace_selections",
+                MAX_MEMORY_TRACE_SELECTIONS,
+            ),
             &mut self.dropped_selections,
         );
     }
@@ -247,7 +256,10 @@ impl MemoryDecisionTrace {
         push_bounded(
             &mut self.visibility,
             evidence,
-            MAX_MEMORY_TRACE_VISIBILITY,
+            iteron_tunables::param_integer(
+                "ctx.memory_trace.max_memory_trace_visibility",
+                MAX_MEMORY_TRACE_VISIBILITY,
+            ),
             &mut self.dropped_visibility,
         );
     }

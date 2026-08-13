@@ -24,10 +24,25 @@ pub struct PromotionAuthorityKey(Vec<u8>);
 impl PromotionAuthorityKey {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, PromotionAuthorityError> {
         let bytes = bytes.into();
-        if !(MIN_PROMOTION_KEY_BYTES..=MAX_PROMOTION_KEY_BYTES).contains(&bytes.len()) {
+        if !(iteron_tunables::param_integer(
+            "evolve.promotion.min_promotion_key_bytes",
+            MIN_PROMOTION_KEY_BYTES,
+        )
+            ..=iteron_tunables::param_integer(
+                "evolve.promotion.max_promotion_key_bytes",
+                MAX_PROMOTION_KEY_BYTES,
+            ))
+            .contains(&bytes.len())
+        {
             return Err(PromotionAuthorityError::InvalidKeyLength {
-                min: MIN_PROMOTION_KEY_BYTES,
-                max: MAX_PROMOTION_KEY_BYTES,
+                min: iteron_tunables::param_integer(
+                    "evolve.promotion.min_promotion_key_bytes",
+                    MIN_PROMOTION_KEY_BYTES,
+                ),
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion.max_promotion_key_bytes",
+                    MAX_PROMOTION_KEY_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }
@@ -245,7 +260,13 @@ impl PromotionControlPolicy {
     }
 
     pub fn digest(&self) -> Result<String, PromotionAuthorityError> {
-        Ok(digest_serialized(self, MAX_PROMOTION_AUTH_BYTES)?)
+        Ok(digest_serialized(
+            self,
+            iteron_tunables::param_integer(
+                "evolve.promotion.max_promotion_auth_bytes",
+                MAX_PROMOTION_AUTH_BYTES,
+            ),
+        )?)
     }
 
     pub(crate) fn gate(&self) -> &PromotionGate {
@@ -278,9 +299,18 @@ pub struct DeploymentBundle {
 impl DeploymentBundle {
     pub fn new(bundle: PolicyBundle, bytes: Vec<u8>) -> Result<Self, PromotionAuthorityError> {
         bundle.validate()?;
-        if bytes.is_empty() || bytes.len() > MAX_DEPLOYMENT_BUNDLE_BYTES {
+        if bytes.is_empty()
+            || bytes.len()
+                > iteron_tunables::param_integer(
+                    "evolve.promotion.max_deployment_bundle_bytes",
+                    MAX_DEPLOYMENT_BUNDLE_BYTES,
+                )
+        {
             return Err(PromotionAuthorityError::InvalidBundleBytes {
-                max: MAX_DEPLOYMENT_BUNDLE_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.promotion.max_deployment_bundle_bytes",
+                    MAX_DEPLOYMENT_BUNDLE_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }

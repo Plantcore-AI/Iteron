@@ -124,7 +124,11 @@ impl StreamParser {
 
     pub fn with_route_scope(route_scope: String) -> Result<Self, String> {
         if route_scope.is_empty()
-            || route_scope.len() > MAX_ROUTE_SCOPE_BYTES
+            || route_scope.len()
+                > iteron_tunables::param_integer(
+                    "provider.sse.max_route_scope_bytes",
+                    MAX_ROUTE_SCOPE_BYTES,
+                )
             || route_scope.chars().any(char::is_control)
         {
             return Err("Anthropic parser route scope was empty or invalid".into());
@@ -154,18 +158,36 @@ impl StreamParser {
             .output_bytes
             .checked_add(additional)
             .ok_or_else(|| "Anthropic assembled output byte counter overflow".to_string())?;
-        if self.output_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+        if self.output_bytes
+            > iteron_tunables::param_usize(
+                "provider.sse.max_assembled_output_bytes",
+                iteron_tunables::param_integer(
+                    "provider.sse.max_assembled_output_bytes",
+                    MAX_ASSEMBLED_OUTPUT_BYTES,
+                ),
+            )
+        {
             return Err(format!(
-                "Anthropic assembled output exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                "Anthropic assembled output exceeded {} bytes",
+                iteron_tunables::param_usize(
+                    "provider.sse.max_assembled_output_bytes",
+                    iteron_tunables::param_integer(
+                        "provider.sse.max_assembled_output_bytes",
+                        MAX_ASSEMBLED_OUTPUT_BYTES
+                    )
+                )
             ));
         }
         Ok(())
     }
 
     fn reserve_block(&self) -> Result<(), String> {
-        if self.content_blocks_seen >= MAX_CONTENT_BLOCKS {
+        if self.content_blocks_seen
+            >= iteron_tunables::param_usize("provider.sse.max_content_blocks", MAX_CONTENT_BLOCKS)
+        {
             Err(format!(
-                "Anthropic output exceeded {MAX_CONTENT_BLOCKS} content blocks"
+                "Anthropic output exceeded {} content blocks",
+                iteron_tunables::param_usize("provider.sse.max_content_blocks", MAX_CONTENT_BLOCKS)
             ))
         } else {
             Ok(())
@@ -177,7 +199,12 @@ impl StreamParser {
         if self.terminal {
             return Err("Anthropic parser received a frame after message_stop".into());
         }
-        if f.event.len().saturating_add(f.data.len()) > MAX_SSE_FRAME_BYTES {
+        if f.event.len().saturating_add(f.data.len())
+            > iteron_tunables::param_integer(
+                "provider.sse.max_sse_frame_bytes",
+                MAX_SSE_FRAME_BYTES,
+            )
+        {
             return Err(format!(
                 "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
             ));
@@ -197,10 +224,17 @@ impl StreamParser {
                     .ok_or("message_start lacked a usage object")?;
                 self.usage.input = required_usage_u64(usage, "input_tokens")?;
                 self.usage.cache_creation =
-                    optional_usage_u64(usage, "cache_creation_input_tokens")?
-                        .unwrap_or(ABSENT_CACHE_TOKENS);
+                    optional_usage_u64(usage, "cache_creation_input_tokens")?.unwrap_or(
+                        iteron_tunables::param_integer(
+                            "provider.sse.absent_cache_tokens",
+                            ABSENT_CACHE_TOKENS,
+                        ),
+                    );
                 self.usage.cache_read = optional_usage_u64(usage, "cache_read_input_tokens")?
-                    .unwrap_or(ABSENT_CACHE_TOKENS);
+                    .unwrap_or(iteron_tunables::param_integer(
+                        "provider.sse.absent_cache_tokens",
+                        ABSENT_CACHE_TOKENS,
+                    ));
                 self.message_start_seen = true;
             }
             "content_block_start" => {
@@ -248,8 +282,16 @@ impl StreamParser {
                         let name = required_event_string(cb, "name")?.to_string();
                         if id.is_empty()
                             || name.is_empty()
-                            || id.len() > MAX_TOOL_ID_OR_NAME_BYTES
-                            || name.len() > MAX_TOOL_ID_OR_NAME_BYTES
+                            || id.len()
+                                > iteron_tunables::param_integer(
+                                    "provider.sse.max_tool_id_or_name_bytes",
+                                    MAX_TOOL_ID_OR_NAME_BYTES,
+                                )
+                            || name.len()
+                                > iteron_tunables::param_integer(
+                                    "provider.sse.max_tool_id_or_name_bytes",
+                                    MAX_TOOL_ID_OR_NAME_BYTES,
+                                )
                         {
                             return Err(
                                 "tool call id or name was empty or exceeded its bound".into()
@@ -331,7 +373,12 @@ impl StreamParser {
                             .ok_or("signature_delta lacked signature")?;
                         *signature_started = true;
                         signature.push_str(delta);
-                        if signature.len() > MAX_SIGNATURE_BYTES {
+                        if signature.len()
+                            > iteron_tunables::param_integer(
+                                "provider.sse.max_signature_bytes",
+                                MAX_SIGNATURE_BYTES,
+                            )
+                        {
                             return Err(format!(
                                 "Anthropic thinking signature exceeded {MAX_SIGNATURE_BYTES} bytes"
                             ));
@@ -539,9 +586,24 @@ impl StreamParser {
                     let native_bytes = serde_json::to_vec(&self.native_blocks)
                         .map_err(|_| "Anthropic native content could not be encoded")?
                         .len();
-                    if native_bytes > MAX_ASSEMBLED_OUTPUT_BYTES {
+                    if native_bytes
+                        > iteron_tunables::param_usize(
+                            "provider.sse.max_assembled_output_bytes",
+                            iteron_tunables::param_integer(
+                                "provider.sse.max_assembled_output_bytes",
+                                MAX_ASSEMBLED_OUTPUT_BYTES,
+                            ),
+                        )
+                    {
                         return Err(format!(
-                            "Anthropic native content exceeded {MAX_ASSEMBLED_OUTPUT_BYTES} bytes"
+                            "Anthropic native content exceeded {} bytes",
+                            iteron_tunables::param_usize(
+                                "provider.sse.max_assembled_output_bytes",
+                                iteron_tunables::param_integer(
+                                    "provider.sse.max_assembled_output_bytes",
+                                    MAX_ASSEMBLED_OUTPUT_BYTES
+                                )
+                            )
                         ));
                     }
                     self.blocks.insert(
@@ -571,7 +633,11 @@ impl StreamParser {
                 // Do not expose provider-controlled fields here: recorded frames can contain
                 // echoed credentials, prompts, or tool output. Structured live errors retain
                 // typed diagnostics through the private ProviderError path instead.
-                return Err(REDACTED_PROVIDER_STREAM_ERROR.into());
+                return Err(iteron_tunables::param_str(
+                    "provider.sse.redacted_provider_stream_error",
+                    REDACTED_PROVIDER_STREAM_ERROR,
+                )
+                .into());
             }
             _ => {} // ping and forward-compatible event types
         }

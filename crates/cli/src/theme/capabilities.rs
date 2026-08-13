@@ -5,6 +5,7 @@
 
 use super::Theme;
 use ratatui::style::Color;
+use std::sync::OnceLock;
 
 const MAX_ENV_VALUE_BYTES: usize = 128;
 
@@ -67,7 +68,12 @@ impl Environment {
 
 fn bounded_env(name: &str) -> Option<String> {
     let value = std::env::var(name).ok()?;
-    (value.len() <= MAX_ENV_VALUE_BYTES).then_some(value)
+    (value.len()
+        <= iteron_tunables::param_integer(
+            "cli.theme.capabilities.max_env_value_bytes",
+            MAX_ENV_VALUE_BYTES,
+        ))
+    .then_some(value)
 }
 
 fn parse_preset(value: &str) -> Option<Preset> {
@@ -138,17 +144,19 @@ impl ColorDepth {
         match (self, color) {
             (Self::TrueColor, _) => color,
             (Self::Ansi256, Color::Rgb(r, g, b)) => Color::Indexed(nearest_ansi256(r, g, b)),
-            (Self::Ansi16, Color::Rgb(r, g, b)) => ANSI16[nearest_ansi16(r, g, b) as usize].0,
+            (Self::Ansi16, Color::Rgb(r, g, b)) => ansi16()[nearest_ansi16(r, g, b) as usize].0,
             (Self::Ansi16, Color::Indexed(index)) => {
                 let (r, g, b) = ansi256_rgb(index);
-                ANSI16[nearest_ansi16(r, g, b) as usize].0
+                ansi16()[nearest_ansi16(r, g, b) as usize].0
             }
             _ => color,
         }
     }
 }
 
-const ANSI16: [(Color, (u8, u8, u8)); 16] = [
+type AnsiColor = (Color, (u8, u8, u8));
+
+const ANSI16: [AnsiColor; 16] = [
     (Color::Black, (0, 0, 0)),
     (Color::Red, (128, 0, 0)),
     (Color::Green, (0, 128, 0)),
@@ -167,8 +175,59 @@ const ANSI16: [(Color, (u8, u8, u8)); 16] = [
     (Color::White, (255, 255, 255)),
 ];
 
+static ANSI16_OVERRIDE: OnceLock<Vec<AnsiColor>> = OnceLock::new();
+
+fn ansi16() -> &'static [AnsiColor] {
+    let Some(iteron_tunables::ResolutionValue::List { items }) =
+        iteron_tunables::param_value("cli.theme.capabilities.ansi16")
+    else {
+        return &ANSI16;
+    };
+    ANSI16_OVERRIDE.get_or_init(|| {
+        items
+            .iter()
+            .map(|item| {
+                let iteron_tunables::ResolutionValue::Object { fields } = item else {
+                    panic!("ANSI16 palette passed admission with a non-object item");
+                };
+                let color = match fields.get("color") {
+                    Some(iteron_tunables::ResolutionValue::Text { value }) => {
+                        match value.as_str() {
+                            "black" => Color::Black,
+                            "red" => Color::Red,
+                            "green" => Color::Green,
+                            "yellow" => Color::Yellow,
+                            "blue" => Color::Blue,
+                            "magenta" => Color::Magenta,
+                            "cyan" => Color::Cyan,
+                            "gray" => Color::Gray,
+                            "dark_gray" => Color::DarkGray,
+                            "light_red" => Color::LightRed,
+                            "light_green" => Color::LightGreen,
+                            "light_yellow" => Color::LightYellow,
+                            "light_blue" => Color::LightBlue,
+                            "light_magenta" => Color::LightMagenta,
+                            "light_cyan" => Color::LightCyan,
+                            "white" => Color::White,
+                            _ => panic!("ANSI16 palette passed admission with an unknown color"),
+                        }
+                    }
+                    _ => panic!("ANSI16 palette passed admission without a color"),
+                };
+                let byte = |field| match fields.get(field) {
+                    Some(iteron_tunables::ResolutionValue::Integer { value }) => {
+                        u8::try_from(*value).expect("ANSI16 byte passed admission out of range")
+                    }
+                    _ => panic!("ANSI16 palette passed admission without byte field `{field}`"),
+                };
+                (color, (byte("r"), byte("g"), byte("b")))
+            })
+            .collect()
+    })
+}
+
 fn nearest_ansi16(r: u8, g: u8, b: u8) -> u8 {
-    ANSI16
+    ansi16()
         .iter()
         .enumerate()
         .map(|(index, (_, candidate))| (rgb_distance((r, g, b), *candidate), index as u8))
@@ -185,14 +244,15 @@ fn nearest_ansi256(r: u8, g: u8, b: u8) -> u8 {
 
 fn ansi256_rgb(index: u8) -> (u8, u8, u8) {
     match index {
-        0..=15 => ANSI16[index as usize].1,
+        0..=15 => ansi16()[index as usize].1,
         16..=231 => {
             const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let levels = iteron_tunables::param_bytes("cli.theme.capabilities.levels", &LEVELS);
             let offset = index - 16;
             (
-                LEVELS[(offset / 36) as usize],
-                LEVELS[((offset % 36) / 6) as usize],
-                LEVELS[(offset % 6) as usize],
+                levels[(offset / 36) as usize],
+                levels[((offset % 36) / 6) as usize],
+                levels[(offset % 6) as usize],
             )
         }
         232..=255 => {

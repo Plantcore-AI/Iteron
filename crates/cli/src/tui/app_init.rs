@@ -255,9 +255,9 @@ impl App {
     // is no longer rendered (TUI v3 §2 deleted the panel icons — the title carries identity).
     pub(super) fn panel(&mut self, _icon: &str, title: &str, mut rows: Vec<block::PanelRow>) {
         const CAP: usize = 120;
-        if rows.len() > CAP {
-            let extra = rows.len() - CAP;
-            rows.truncate(CAP);
+        if rows.len() > iteron_tunables::param_integer("cli.tui.app_init.cap", CAP) {
+            let extra = rows.len() - iteron_tunables::param_integer("cli.tui.app_init.cap", CAP);
+            rows.truncate(iteron_tunables::param_integer("cli.tui.app_init.cap", CAP));
             rows.push(block::PanelRow::Note(format!("… {extra} more")));
         }
         for row in &mut rows {

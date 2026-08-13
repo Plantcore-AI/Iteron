@@ -104,7 +104,10 @@ impl LifecycleHookDispatcher {
                 },
             );
         }
-        let (sender, receiver) = mpsc::channel(HOOK_DISPATCH_QUEUE);
+        let (sender, receiver) = mpsc::channel(iteron_tunables::param_integer(
+            "cli.runtime.lifecycle_hooks.hook_dispatch_queue",
+            HOOK_DISPATCH_QUEUE,
+        ));
         let counters = health.counters;
         let circuits = Arc::new(Mutex::new(HashMap::with_capacity(subscribed.len())));
         let task = tokio::spawn(worker(
@@ -183,7 +186,12 @@ async fn worker(
             );
             continue;
         }
-        while jobs.len() >= HOOK_DISPATCH_CONCURRENCY {
+        while jobs.len()
+            >= iteron_tunables::param_integer(
+                "cli.runtime.lifecycle_hooks.hook_dispatch_concurrency",
+                HOOK_DISPATCH_CONCURRENCY,
+            )
+        {
             let _ = jobs.join_next().await;
         }
         let hooks = hooks.clone();
@@ -323,17 +331,38 @@ fn update_circuit(
         return;
     }
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-    if state.consecutive_failures < CIRCUIT_FAILURE_THRESHOLD || state.open_until.is_some() {
+    if state.consecutive_failures
+        < iteron_tunables::param_integer(
+            "cli.runtime.lifecycle_hooks.circuit_failure_threshold",
+            CIRCUIT_FAILURE_THRESHOLD,
+        )
+        || state.open_until.is_some()
+    {
         return;
     }
-    state.open_until = Some(Instant::now() + CIRCUIT_OPEN_FOR);
+    state.open_until = Some(
+        Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.runtime.lifecycle_hooks.circuit_open_for",
+                CIRCUIT_OPEN_FOR,
+            ),
+    );
     counters.open_circuits.fetch_add(1, Ordering::Relaxed);
     let _ = emitter.emit(
         "hook.circuit_opened",
         correlation.clone(),
         LifecyclePayload {
             count: Some(u64::from(state.consecutive_failures)),
-            duration_us: Some(u64::try_from(CIRCUIT_OPEN_FOR.as_micros()).unwrap_or(u64::MAX)),
+            duration_us: Some(
+                u64::try_from(
+                    iteron_tunables::param_duration(
+                        "cli.runtime.lifecycle_hooks.circuit_open_for",
+                        CIRCUIT_OPEN_FOR,
+                    )
+                    .as_micros(),
+                )
+                .unwrap_or(u64::MAX),
+            ),
             reason_code: Some("consecutive_failures".into()),
             ..LifecyclePayload::default()
         },

@@ -46,7 +46,11 @@ impl TunerJournal {
         let metadata = std::fs::symlink_metadata(path).map_err(|error| io(path, error))?;
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
-            || metadata.len() > MAX_JOURNAL_BYTES
+            || metadata.len()
+                > iteron_tunables::param_integer(
+                    "eval.tuner.journal.max_journal_bytes",
+                    MAX_JOURNAL_BYTES,
+                )
         {
             return Err(TunerError::Journal(
                 "journal must be a bounded regular file".into(),
@@ -62,7 +66,12 @@ impl TunerJournal {
             if line.is_empty() {
                 continue;
             }
-            if line.len() > MAX_RECORD_BYTES {
+            if line.len()
+                > iteron_tunables::param_integer(
+                    "eval.tuner.journal.max_record_bytes",
+                    MAX_RECORD_BYTES,
+                )
+            {
                 return Err(TunerError::Journal(
                     "journal record exceeds its limit".into(),
                 ));
@@ -116,7 +125,17 @@ impl TunerJournal {
             .map_err(|error| io(&self.path, error))?
             .len()
             .saturating_add(bytes.len() as u64 + 1);
-        if bytes.len() > MAX_RECORD_BYTES || projected > MAX_JOURNAL_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "eval.tuner.journal.max_record_bytes",
+                MAX_RECORD_BYTES,
+            )
+            || projected
+                > iteron_tunables::param_integer(
+                    "eval.tuner.journal.max_journal_bytes",
+                    MAX_JOURNAL_BYTES,
+                )
+        {
             return Err(TunerError::Journal("journal size limit reached".into()));
         }
         self.file

@@ -32,8 +32,14 @@ pub struct ReadTimeouts {
 impl Default for ReadTimeouts {
     fn default() -> Self {
         Self {
-            header_ms: DEFAULT_HEADER_READ_TIMEOUT_MS,
-            body_ms: DEFAULT_BODY_READ_TIMEOUT_MS,
+            header_ms: iteron_tunables::param_integer(
+                "lsp.lib.default_header_read_timeout_ms",
+                DEFAULT_HEADER_READ_TIMEOUT_MS,
+            ),
+            body_ms: iteron_tunables::param_integer(
+                "lsp.lib.default_body_read_timeout_ms",
+                DEFAULT_BODY_READ_TIMEOUT_MS,
+            ),
         }
     }
 }
@@ -55,12 +61,21 @@ impl ReadTimeouts {
 }
 
 fn validate_timeout(kind: &'static str, value_ms: u64) -> Result<(), LspError> {
-    if !(MIN_READ_TIMEOUT_MS..=MAX_READ_TIMEOUT_MS).contains(&value_ms) {
+    if !(iteron_tunables::param_integer("lsp.lib.min_read_timeout_ms", MIN_READ_TIMEOUT_MS)
+        ..=iteron_tunables::param_integer("lsp.lib.max_read_timeout_ms", MAX_READ_TIMEOUT_MS))
+        .contains(&value_ms)
+    {
         return Err(LspError::InvalidTimeout {
             kind,
             value_ms,
-            min_ms: MIN_READ_TIMEOUT_MS,
-            max_ms: MAX_READ_TIMEOUT_MS,
+            min_ms: iteron_tunables::param_integer(
+                "lsp.lib.min_read_timeout_ms",
+                MIN_READ_TIMEOUT_MS,
+            ),
+            max_ms: iteron_tunables::param_integer(
+                "lsp.lib.max_read_timeout_ms",
+                MAX_READ_TIMEOUT_MS,
+            ),
         });
     }
     Ok(())
@@ -69,10 +84,10 @@ fn validate_timeout(kind: &'static str, value_ms: u64) -> Result<(), LspError> {
 /// Encode one message. The body is written verbatim; callers pass already-serialised JSON so the
 /// byte count in the header and the bytes on the wire cannot disagree.
 pub fn encode(body: &str) -> Result<Vec<u8>, LspError> {
-    if body.len() > MAX_CONTENT_BYTES {
+    if body.len() > iteron_tunables::param_integer("lsp.lib.max_content_bytes", MAX_CONTENT_BYTES) {
         return Err(LspError::ContentTooLarge {
             value: body.len(),
-            limit: MAX_CONTENT_BYTES,
+            limit: iteron_tunables::param_integer("lsp.lib.max_content_bytes", MAX_CONTENT_BYTES),
         });
     }
     let mut out = Vec::with_capacity(body.len() + 32);
@@ -147,10 +162,10 @@ where
         return Ok(None);
     };
     let length = parse_headers(&header_block)?;
-    if length > MAX_CONTENT_BYTES {
+    if length > iteron_tunables::param_integer("lsp.lib.max_content_bytes", MAX_CONTENT_BYTES) {
         return Err(LspError::ContentTooLarge {
             value: length,
-            limit: MAX_CONTENT_BYTES,
+            limit: iteron_tunables::param_integer("lsp.lib.max_content_bytes", MAX_CONTENT_BYTES),
         });
     }
 
@@ -224,22 +239,54 @@ impl JsonEnvelope {
     where
         E: de::Error,
     {
-        if depth > MAX_MESSAGE_JSON_DEPTH {
-            return self.reject::<E>("depth", depth, MAX_MESSAGE_JSON_DEPTH);
+        if depth
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_message_json_depth",
+                MAX_MESSAGE_JSON_DEPTH,
+            )
+        {
+            return self.reject::<E>(
+                "depth",
+                depth,
+                iteron_tunables::param_integer(
+                    "lsp.lib.max_message_json_depth",
+                    MAX_MESSAGE_JSON_DEPTH,
+                ),
+            );
         }
         if matches!(slot, Slot::ArrayItem) {
             self.array_items = self.array_items.saturating_add(1);
-            if self.array_items > MAX_MESSAGE_JSON_ARRAY_ITEMS {
+            if self.array_items
+                > iteron_tunables::param_integer(
+                    "lsp.lib.max_message_json_array_items",
+                    MAX_MESSAGE_JSON_ARRAY_ITEMS,
+                )
+            {
                 return self.reject::<E>(
                     "array items",
                     self.array_items,
-                    MAX_MESSAGE_JSON_ARRAY_ITEMS,
+                    iteron_tunables::param_integer(
+                        "lsp.lib.max_message_json_array_items",
+                        MAX_MESSAGE_JSON_ARRAY_ITEMS,
+                    ),
                 );
             }
         }
         self.nodes = self.nodes.saturating_add(1);
-        if self.nodes > MAX_MESSAGE_JSON_NODES {
-            return self.reject::<E>("nodes", self.nodes, MAX_MESSAGE_JSON_NODES);
+        if self.nodes
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_message_json_nodes",
+                MAX_MESSAGE_JSON_NODES,
+            )
+        {
+            return self.reject::<E>(
+                "nodes",
+                self.nodes,
+                iteron_tunables::param_integer(
+                    "lsp.lib.max_message_json_nodes",
+                    MAX_MESSAGE_JSON_NODES,
+                ),
+            );
         }
         Ok(())
     }
@@ -249,11 +296,19 @@ impl JsonEnvelope {
         E: de::Error,
     {
         self.object_members = self.object_members.saturating_add(1);
-        if self.object_members > MAX_MESSAGE_JSON_OBJECT_MEMBERS {
+        if self.object_members
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_message_json_object_members",
+                MAX_MESSAGE_JSON_OBJECT_MEMBERS,
+            )
+        {
             return self.reject::<E>(
                 "object members",
                 self.object_members,
-                MAX_MESSAGE_JSON_OBJECT_MEMBERS,
+                iteron_tunables::param_integer(
+                    "lsp.lib.max_message_json_object_members",
+                    MAX_MESSAGE_JSON_OBJECT_MEMBERS,
+                ),
             );
         }
         Ok(())
@@ -264,11 +319,19 @@ impl JsonEnvelope {
         E: de::Error,
     {
         self.string_bytes = self.string_bytes.saturating_add(bytes);
-        if self.string_bytes > MAX_MESSAGE_JSON_STRING_BYTES {
+        if self.string_bytes
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_message_json_string_bytes",
+                MAX_MESSAGE_JSON_STRING_BYTES,
+            )
+        {
             return self.reject::<E>(
                 "decoded string bytes",
                 self.string_bytes,
-                MAX_MESSAGE_JSON_STRING_BYTES,
+                iteron_tunables::param_integer(
+                    "lsp.lib.max_message_json_string_bytes",
+                    MAX_MESSAGE_JSON_STRING_BYTES,
+                ),
             );
         }
         Ok(())
@@ -465,7 +528,9 @@ where
 
             if block.ends_with(HEADER_TERMINATOR) {
                 let header_len = block.len() - HEADER_TERMINATOR.len();
-                if header_len > MAX_HEADER_BYTES {
+                if header_len
+                    > iteron_tunables::param_integer("lsp.lib.max_header_bytes", MAX_HEADER_BYTES)
+                {
                     too_large = true;
                 } else {
                     block.truncate(header_len);
@@ -476,7 +541,11 @@ where
 
             // At most three retained bytes can still become the prefix of `\r\n\r\n`. Once the
             // prefix is longer than `limit + 3`, no future byte can put the delimiter in bounds.
-            if block.len() > MAX_HEADER_BYTES + HEADER_TERMINATOR.len() - 1 {
+            if block.len()
+                > iteron_tunables::param_integer("lsp.lib.max_header_bytes", MAX_HEADER_BYTES)
+                    + HEADER_TERMINATOR.len()
+                    - 1
+            {
                 too_large = true;
                 break;
             }
@@ -485,7 +554,7 @@ where
 
         if too_large {
             return Err(LspError::HeaderTooLarge {
-                limit: MAX_HEADER_BYTES,
+                limit: iteron_tunables::param_integer("lsp.lib.max_header_bytes", MAX_HEADER_BYTES),
             });
         }
         if complete.is_some() {

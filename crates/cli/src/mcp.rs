@@ -589,7 +589,7 @@ fn mcp_tool_execution(
                 trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: evidence
                     .map(|evidence| evidence.dispatch_to_terminal_ms.get())
-                    .unwrap_or(UNMEASURED_DISPATCH_LATENCY_MS),
+                    .unwrap_or(iteron_tunables::param_integer("cli.mcp.unmeasured_dispatch_latency_ms", UNMEASURED_DISPATCH_LATENCY_MS)),
             })
         }
         iteron_mcp::McpToolOutcome::Unknown { evidence, .. } => {

@@ -120,7 +120,11 @@ impl McpHttpDisposition {
 pub fn parse_media_type(header: &str) -> Option<String> {
     let media_type = header.split(';').next()?.trim();
     if media_type.is_empty()
-        || media_type.len() > MAX_MEDIA_TYPE_BYTES
+        || media_type.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.status.max_media_type_bytes",
+                MAX_MEDIA_TYPE_BYTES,
+            )
         || !media_type.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'+' | b'.' | b'_')
         })
@@ -138,15 +142,22 @@ pub fn parse_media_type(header: &str) -> Option<String> {
 pub fn parse_retry_after(header: &str) -> Option<u64> {
     let value = header.trim();
     if value.is_empty()
-        || value.len() > MAX_RETRY_AFTER_DIGITS
+        || value.len()
+            > iteron_tunables::param_integer(
+                "mcp.http.status.max_retry_after_digits",
+                MAX_RETRY_AFTER_DIGITS,
+            )
         || !value.bytes().all(|byte| byte.is_ascii_digit())
     {
         return None;
     }
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|secs| *secs <= MAX_RETRY_AFTER_SECS)
+    value.parse::<u64>().ok().filter(|secs| {
+        *secs
+            <= iteron_tunables::param_integer(
+                "mcp.http.status.max_retry_after_secs",
+                MAX_RETRY_AFTER_SECS,
+            )
+    })
 }
 
 #[cfg(test)]

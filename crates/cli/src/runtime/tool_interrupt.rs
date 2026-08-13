@@ -39,7 +39,7 @@ where
         tokio::select! {
             biased;
             result = &mut future => return Ok(result),
-            () = tokio::time::sleep(TOOL_INTERRUPT_POLL_INTERVAL) => {
+            () = tokio::time::sleep(iteron_tunables::param_duration("cli.runtime.tool_interrupt.tool_interrupt_poll_interval", TOOL_INTERRUPT_POLL_INTERVAL)) => {
                 if stopped() {
                     return Err(());
                 }

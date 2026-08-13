@@ -208,7 +208,12 @@ impl Manifest {
     }
 
     pub fn parse_json(bytes: &[u8]) -> Result<Self, Defect> {
-        if bytes.len() > MAX_PLUGIN_MANIFEST_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "marketplace.composition_model.max_plugin_manifest_bytes",
+                MAX_PLUGIN_MANIFEST_BYTES,
+            )
+        {
             return Err(Defect::ManifestTooLarge { count: bytes.len() });
         }
         let manifest: Self = serde_json::from_slice(bytes).map_err(|_| Defect::MalformedJson)?;
@@ -331,7 +336,11 @@ impl fmt::Display for Refusal {
 /// same rule the skill loader already enforces (`iteron-ctx` `skills.rs`: "not a plain slug").
 fn valid_slot_key(key: &str) -> bool {
     !key.is_empty()
-        && key.len() <= MAX_SLOT_KEY_BYTES
+        && key.len()
+            <= iteron_tunables::param_integer(
+                "marketplace.composition_model.max_slot_key_bytes",
+                MAX_SLOT_KEY_BYTES,
+            )
         && key
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
@@ -342,7 +351,12 @@ fn detail_problem(detail: &str) -> Option<&'static str> {
     if detail.trim().is_empty() {
         return Some("empty");
     }
-    if detail.len() > MAX_DETAIL_BYTES {
+    if detail.len()
+        > iteron_tunables::param_integer(
+            "marketplace.composition_model.max_detail_bytes",
+            MAX_DETAIL_BYTES,
+        )
+    {
         return Some("longer than the declared limit");
     }
     if detail.chars().any(char::is_control) {
@@ -364,12 +378,22 @@ pub(crate) fn inspect(manifest: &Manifest) -> Result<(), Defect> {
             plugin: manifest.plugin.clone(),
         });
     }
-    if manifest.contributions.len() > MAX_CONTRIBUTIONS_PER_PLUGIN {
+    if manifest.contributions.len()
+        > iteron_tunables::param_integer(
+            "marketplace.composition_model.max_contributions_per_plugin",
+            MAX_CONTRIBUTIONS_PER_PLUGIN,
+        )
+    {
         return Err(Defect::TooManyContributions {
             count: manifest.contributions.len(),
         });
     }
-    if manifest.requires.len() > MAX_PLUGIN_REQUIREMENTS {
+    if manifest.requires.len()
+        > iteron_tunables::param_integer(
+            "marketplace.composition_model.max_plugin_requirements",
+            MAX_PLUGIN_REQUIREMENTS,
+        )
+    {
         return Err(Defect::TooManyRequirements);
     }
     let mut requirements = BTreeSet::new();

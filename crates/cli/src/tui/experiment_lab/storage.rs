@@ -15,7 +15,10 @@ pub(super) fn list_requests(directory: &Path) -> Result<Vec<ExperimentRequest>, 
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
         .collect::<Vec<_>>();
     paths.sort();
-    paths.truncate(MAX_LISTED_REQUESTS);
+    paths.truncate(iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.max_listed_requests",
+        MAX_LISTED_REQUESTS,
+    ));
     Ok(paths
         .iter()
         .filter_map(|path| read_bounded(path).ok())
@@ -40,7 +43,10 @@ pub(super) fn list_bundles(directory: &Path) -> Result<Vec<String>, LabError> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     bundles.sort();
-    bundles.truncate(MAX_LISTED_BUNDLES);
+    bundles.truncate(iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.max_listed_bundles",
+        MAX_LISTED_BUNDLES,
+    ));
     Ok(bundles)
 }
 
@@ -120,7 +126,11 @@ pub(super) fn read_bounded(path: &Path) -> Result<Vec<u8>, LabError> {
         std::fs::symlink_metadata(path).map_err(|error| LabError::Io(error.to_string()))?;
     if metadata.file_type().is_symlink()
         || !metadata.is_file()
-        || metadata.len() > MAX_REQUEST_BYTES
+        || metadata.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.experiment_lab.max_request_bytes",
+                MAX_REQUEST_BYTES,
+            )
     {
         return Err(LabError::UnsafePath(
             "request is not a bounded regular file".into(),

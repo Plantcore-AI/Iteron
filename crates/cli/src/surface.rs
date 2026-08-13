@@ -154,7 +154,10 @@ impl Surface {
         show_status: bool,
     ) -> Self {
         let stage = content_rect(frame);
-        let column_width = stage.width.min(LANDING_MAX_WIDTH);
+        let column_width = stage.width.min(iteron_tunables::param_integer(
+            "cli.surface.landing_max_width",
+            LANDING_MAX_WIDTH,
+        ));
         let column = Rect::new(
             stage
                 .x

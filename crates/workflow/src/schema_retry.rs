@@ -19,10 +19,27 @@ pub struct SchemaRetryPolicy {
 
 impl SchemaRetryPolicy {
     pub fn new(max_attempts: u32, base_ms: u64, cap_ms: u64) -> Result<Self, &'static str> {
-        if max_attempts > MAX_SCHEMA_RETRY_ATTEMPTS {
+        if u64::from(max_attempts)
+            > iteron_tunables::param_u64(
+                "workflow.schema_retry.max_schema_retry_attempts",
+                u64::from(iteron_tunables::param_integer(
+                    "workflow.schema_retry.max_schema_retry_attempts",
+                    MAX_SCHEMA_RETRY_ATTEMPTS,
+                )),
+            )
+        {
             return Err("schema retry attempt ceiling exceeds 64");
         }
-        if base_ms > cap_ms || cap_ms > MAX_SCHEMA_RETRY_DELAY_MS {
+        if base_ms > cap_ms
+            || cap_ms
+                > iteron_tunables::param_u64(
+                    "workflow.schema_retry.max_schema_retry_delay_ms",
+                    iteron_tunables::param_integer(
+                        "workflow.schema_retry.max_schema_retry_delay_ms",
+                        MAX_SCHEMA_RETRY_DELAY_MS,
+                    ),
+                )
+        {
             return Err("schema retry delay must satisfy base <= cap <= 60000ms");
         }
         Ok(Self {
@@ -56,7 +73,11 @@ impl SchemaRetryPolicy {
 impl Default for SchemaRetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: crate::schema::RETRY_MAX,
+            max_attempts: u32::try_from(iteron_tunables::param_u64(
+                "workflow.schema.retry_max",
+                u64::from(crate::schema::RETRY_MAX),
+            ))
+            .unwrap_or(crate::schema::RETRY_MAX),
             base_ms: 2,
             cap_ms: 20,
         }

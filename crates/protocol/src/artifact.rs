@@ -342,7 +342,12 @@ impl ArtifactRef {
         if !is_content_hash(&self.hash) {
             return Err("artifact hash must be a lowercase 64-hex SHA-256 of the content");
         }
-        if self.locator.len() > MAX_ARTIFACT_LOCATOR_BYTES {
+        if self.locator.len()
+            > iteron_tunables::param_integer(
+                "protocol.artifact.max_artifact_locator_bytes",
+                MAX_ARTIFACT_LOCATOR_BYTES,
+            )
+        {
             return Err("artifact locator exceeds its declared bound");
         }
         if self.permissions.is_empty() {
@@ -352,7 +357,12 @@ impl ArtifactRef {
             );
         }
         if let Producer::Tool { tool } = &self.producer
-            && (tool.is_empty() || tool.len() > MAX_PRODUCER_NAME_BYTES)
+            && (tool.is_empty()
+                || tool.len()
+                    > iteron_tunables::param_integer(
+                        "protocol.artifact.max_producer_name_bytes",
+                        MAX_PRODUCER_NAME_BYTES,
+                    ))
         {
             return Err("a tool producer must name its tool, within the name bound");
         }
@@ -379,7 +389,12 @@ impl Provenance {
         if self.run_id.0.is_empty() {
             return Err("provenance must name the run that produced the artifact");
         }
-        if self.parent_hashes.len() > MAX_ARTIFACT_PARENT_HASHES {
+        if self.parent_hashes.len()
+            > iteron_tunables::param_integer(
+                "protocol.artifact.max_artifact_parent_hashes",
+                MAX_ARTIFACT_PARENT_HASHES,
+            )
+        {
             return Err("artifact lineage exceeds its declared bound");
         }
         if !self.parent_hashes.iter().all(|h| is_content_hash(h)) {
@@ -397,7 +412,11 @@ impl Provenance {
 /// string is preserved precisely so it can be shown to a human in a log or an audit view.
 fn is_retainable_tag(tag: &str) -> bool {
     !tag.trim().is_empty()
-        && tag.len() <= MAX_ARTIFACT_TAG_BYTES
+        && tag.len()
+            <= iteron_tunables::param_integer(
+                "protocol.artifact.max_artifact_tag_bytes",
+                MAX_ARTIFACT_TAG_BYTES,
+            )
         && !tag.chars().any(char::is_control)
 }
 

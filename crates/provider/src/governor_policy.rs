@@ -131,7 +131,13 @@ impl Default for CircuitPolicy {
     fn default() -> Self {
         Self {
             failure_threshold: 3,
-            open_for: Duration::from_secs(CIRCUIT_OPEN_FOR_SECS),
+            open_for: Duration::from_secs(iteron_tunables::param_u64(
+                "provider.governor_policy.circuit_open_for_secs",
+                iteron_tunables::param_integer(
+                    "provider.governor_policy.circuit_open_for_secs",
+                    CIRCUIT_OPEN_FOR_SECS,
+                ),
+            )),
             half_open_probes: 1,
             success_threshold: 1,
         }
@@ -220,7 +226,18 @@ impl GovernorPolicy {
         {
             return Err(GovernorPolicyError::Circuit);
         }
-        if self.hedge.max_duplicates > MAX_HEDGE_DUPLICATES
+        let max_hedge_duplicates = u8::try_from(iteron_tunables::param_i128(
+            "provider.governor_policy.max_hedge_duplicates",
+            i128::from(iteron_tunables::param_integer(
+                "provider.governor_policy.max_hedge_duplicates",
+                MAX_HEDGE_DUPLICATES,
+            )),
+        ))
+        .unwrap_or(iteron_tunables::param_integer(
+            "provider.governor_policy.max_hedge_duplicates",
+            MAX_HEDGE_DUPLICATES,
+        ));
+        if self.hedge.max_duplicates > max_hedge_duplicates
             || (self.hedge.enabled
                 && (!self.hedge.idempotent_only || self.hedge.max_duplicates == 0))
         {

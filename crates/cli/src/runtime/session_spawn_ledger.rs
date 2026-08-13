@@ -22,7 +22,12 @@ pub(crate) struct SessionSpawnLedger {
 
 impl SessionSpawnLedger {
     pub(crate) fn new(limit: usize) -> Result<Self, &'static str> {
-        if limit > MAX_SESSION_SPAWN_CAP {
+        if limit
+            > iteron_tunables::param_integer(
+                "cli.runtime.session_spawn_ledger.max_session_spawn_cap",
+                MAX_SESSION_SPAWN_CAP,
+            )
+        {
             return Err("session spawn cap exceeds the canonical maximum");
         }
         Ok(Self {
@@ -62,7 +67,11 @@ impl SessionSpawnLedger {
 
 impl Default for SessionSpawnLedger {
     fn default() -> Self {
-        Self::new(DEFAULT_SESSION_SPAWN_CAP).expect("built-in session spawn cap is valid")
+        Self::new(iteron_tunables::param_integer(
+            "cli.runtime.session_spawn_ledger.default_session_spawn_cap",
+            DEFAULT_SESSION_SPAWN_CAP,
+        ))
+        .expect("built-in session spawn cap is valid")
     }
 }
 

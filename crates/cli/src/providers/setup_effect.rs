@@ -104,11 +104,23 @@ impl SetupEffectJournal {
     }
 
     fn open_path(path: &Path) -> Result<Self, String> {
-        Self::open_path_with_limit(path, MAX_LOG_BYTES)
+        Self::open_path_with_limit(
+            path,
+            iteron_tunables::param_integer(
+                "cli.providers.setup_effect.max_log_bytes",
+                MAX_LOG_BYTES,
+            ),
+        )
     }
 
     fn open_path_with_limit(path: &Path, max_log_bytes: u64) -> Result<Self, String> {
-        if max_log_bytes == 0 || max_log_bytes > MAX_LOG_BYTES {
+        if max_log_bytes == 0
+            || max_log_bytes
+                > iteron_tunables::param_integer(
+                    "cli.providers.setup_effect.max_log_bytes",
+                    MAX_LOG_BYTES,
+                )
+        {
             return Err(
                 "provider setup journal byte ceiling is outside its supported bound".into(),
             );
@@ -206,8 +218,14 @@ impl SetupEffectJournal {
             policy_id: POLICY_ID.into(),
             policy_digest_sha256: policy_digest_sha256(),
             retry_schedule: SetupRetrySchedule::SingleAttempt,
-            max_attempts: MAX_ATTEMPTS,
-            total_deadline_milliseconds: TOTAL_DEADLINE_MILLISECONDS,
+            max_attempts: iteron_tunables::param_integer(
+                "cli.providers.setup_effect.max_attempts",
+                MAX_ATTEMPTS,
+            ),
+            total_deadline_milliseconds: iteron_tunables::param_integer(
+                "cli.providers.setup_effect.total_deadline_milliseconds",
+                TOTAL_DEADLINE_MILLISECONDS,
+            ),
         };
         let intent_bytes = encode_record(&intent)?;
         let terminal_reservation = maximum_terminal_bytes(&attempt)?;
@@ -267,7 +285,12 @@ impl SetupEffectJournal {
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
         {
-            if line.len() > MAX_RECORD_BYTES {
+            if line.len()
+                > iteron_tunables::param_integer(
+                    "cli.providers.setup_effect.max_record_bytes",
+                    MAX_RECORD_BYTES,
+                )
+            {
                 return Err("provider setup journal record exceeds its byte ceiling".into());
             }
             let record: Record = serde_json::from_slice(line)
@@ -293,8 +316,16 @@ impl SetupEffectJournal {
                         || policy_id != POLICY_ID
                         || recorded_policy_digest != policy_digest_sha256()
                         || retry_schedule != SetupRetrySchedule::SingleAttempt
-                        || max_attempts != MAX_ATTEMPTS
-                        || total_deadline_milliseconds != TOTAL_DEADLINE_MILLISECONDS
+                        || max_attempts
+                            != iteron_tunables::param_integer(
+                                "cli.providers.setup_effect.max_attempts",
+                                MAX_ATTEMPTS,
+                            )
+                        || total_deadline_milliseconds
+                            != iteron_tunables::param_integer(
+                                "cli.providers.setup_effect.total_deadline_milliseconds",
+                                TOTAL_DEADLINE_MILLISECONDS,
+                            )
                         || crate::config::validate_provider_id_slug(&provider_id).is_err()
                         || !valid_sha256(&model_id_sha256)
                         || intents.insert(attempt_id, operation_id).is_some()
@@ -373,8 +404,11 @@ impl SetupEffectJournal {
     }
 }
 
-pub(super) const fn physical_deadline() -> Duration {
-    Duration::from_millis(TOTAL_DEADLINE_MILLISECONDS)
+pub(super) fn physical_deadline() -> Duration {
+    Duration::from_millis(iteron_tunables::param_integer(
+        "cli.providers.setup_effect.total_deadline_milliseconds",
+        TOTAL_DEADLINE_MILLISECONDS,
+    ))
 }
 
 impl Drop for SetupEffectJournal {
@@ -388,7 +422,11 @@ impl Drop for SetupEffectJournal {
 
 fn validate_model_id(value: &str) -> Result<(), String> {
     if value.is_empty()
-        || value.len() > MAX_MODEL_ID_BYTES
+        || value.len()
+            > iteron_tunables::param_integer(
+                "cli.providers.setup_effect.max_model_id_bytes",
+                MAX_MODEL_ID_BYTES,
+            )
         || value.chars().any(|character| character.is_control())
     {
         return Err("provider setup model identity is outside its byte/character bound".into());
@@ -414,7 +452,12 @@ fn encode_record(record: &Record) -> Result<Vec<u8>, String> {
     let mut bytes = serde_json::to_vec(record)
         .map_err(|_| "provider setup journal record could not be encoded".to_owned())?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_RECORD_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.providers.setup_effect.max_record_bytes",
+            MAX_RECORD_BYTES,
+        )
+    {
         return Err("provider setup journal record exceeds its byte ceiling".into());
     }
     Ok(bytes)
@@ -497,10 +540,15 @@ const fn valid_terminal_pair(outcome: SetupAttemptOutcome, reason: SetupAttemptR
 }
 
 fn acquire_lock(file: &File) -> Result<(), String> {
-    for _ in 0..LOCK_ATTEMPTS {
+    for _ in
+        0..iteron_tunables::param_integer("cli.providers.setup_effect.lock_attempts", LOCK_ATTEMPTS)
+    {
         match file.try_lock() {
             Ok(()) => return Ok(()),
-            Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_WAIT),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(iteron_tunables::param_duration(
+                "cli.providers.setup_effect.lock_wait",
+                LOCK_WAIT,
+            )),
             Err(TryLockError::Error(error)) => {
                 return Err(format!("provider setup journal lock unavailable: {error}"));
             }

@@ -42,7 +42,12 @@ impl Default for PolicyOpportunityJoinDigest {
 
 impl PolicyOpportunityJoinDigest {
     pub fn append(&mut self, opportunity: &PolicyOpportunityId) -> Result<(), PolicyEvidenceError> {
-        if self.count as usize >= MAX_POLICY_ACTIONS * 16 {
+        if self.count as usize
+            >= iteron_tunables::param_integer(
+                "protocol.policy_evidence.max_policy_actions",
+                MAX_POLICY_ACTIONS,
+            ) * 16
+        {
             return Err(PolicyEvidenceError::TooManyOpportunities);
         }
         let mut hasher = Sha256::new();
@@ -252,7 +257,13 @@ impl PolicyDecisionEvidence {
         ] {
             validate_digest(digest)?;
         }
-        if self.eligible_actions.is_empty() || self.eligible_actions.len() > MAX_POLICY_ACTIONS {
+        if self.eligible_actions.is_empty()
+            || self.eligible_actions.len()
+                > iteron_tunables::param_integer(
+                    "protocol.policy_evidence.max_policy_actions",
+                    MAX_POLICY_ACTIONS,
+                )
+        {
             return Err(PolicyEvidenceError::InvalidActionSet);
         }
         let mut actions = BTreeSet::new();
@@ -500,7 +511,13 @@ impl PolicyHarnessOutcomeId {
             && parts
                 .next()
                 .and_then(|count| count.parse::<u32>().ok())
-                .is_some_and(|count| (2..=MAX_POLICY_HARNESS_ERRORS).contains(&count))
+                .is_some_and(|count| {
+                    (2..=iteron_tunables::param_integer(
+                        "protocol.policy_evidence.max_policy_harness_errors",
+                        MAX_POLICY_HARNESS_ERRORS,
+                    ))
+                        .contains(&count)
+                })
             && parts
                 .next()
                 .is_some_and(|digest| validate_digest(digest).is_ok())
@@ -531,7 +548,12 @@ impl Default for PolicyHarnessErrorJoinDigest {
 
 impl PolicyHarnessErrorJoinDigest {
     pub fn append(&mut self, code: PolicyHarnessErrorCode) -> Result<(), PolicyEvidenceError> {
-        if self.count >= MAX_POLICY_HARNESS_ERRORS {
+        if self.count
+            >= iteron_tunables::param_integer(
+                "protocol.policy_evidence.max_policy_harness_errors",
+                MAX_POLICY_HARNESS_ERRORS,
+            )
+        {
             return Err(PolicyEvidenceError::TooManyHarnessErrors);
         }
         let mut hasher = Sha256::new();
@@ -590,7 +612,12 @@ impl PolicyOutcomeEvidence {
             (PolicyOutcomeScope::Turn, Some(_)) | (PolicyOutcomeScope::Run, None) => {}
         }
         validate_digest(&self.opportunities_digest_sha256)?;
-        if self.opportunity_count as usize > MAX_POLICY_ACTIONS * 16 {
+        if self.opportunity_count as usize
+            > iteron_tunables::param_integer(
+                "protocol.policy_evidence.max_policy_actions",
+                MAX_POLICY_ACTIONS,
+            ) * 16
+        {
             return Err(PolicyEvidenceError::TooManyOpportunities);
         }
         if let Some(code) = &self.harness_error_code {
@@ -656,7 +683,11 @@ fn validate_digest(value: &str) -> Result<(), PolicyEvidenceError> {
 
 fn validate_machine_id(field: &'static str, value: &str) -> Result<(), PolicyEvidenceError> {
     let valid = !value.is_empty()
-        && value.len() <= MAX_POLICY_MACHINE_ID_BYTES
+        && value.len()
+            <= iteron_tunables::param_integer(
+                "protocol.policy_evidence.max_policy_machine_id_bytes",
+                MAX_POLICY_MACHINE_ID_BYTES,
+            )
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'+')
         });

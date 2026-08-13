@@ -36,9 +36,16 @@ impl Matcher {
         if pattern.is_empty() {
             return Err("grep: `pattern` must not be empty".into());
         }
-        if pattern.len() > MAX_GREP_PATTERN_BYTES {
+        let max_pattern_bytes = iteron_tunables::param_usize(
+            "tools.grep_tool.max_grep_pattern_bytes",
+            iteron_tunables::param_integer(
+                "tools.grep_tool.max_grep_pattern_bytes",
+                MAX_GREP_PATTERN_BYTES,
+            ),
+        );
+        if pattern.len() > max_pattern_bytes {
             return Err(format!(
-                "grep: pattern exceeds the {MAX_GREP_PATTERN_BYTES}-byte limit"
+                "grep: pattern exceeds the {max_pattern_bytes}-byte limit"
             ));
         }
         if suspicious_unicode(pattern).is_some() {
@@ -47,9 +54,16 @@ impl Matcher {
         if !regex {
             return Ok(Self::Literal(pattern.to_owned()));
         }
+        let max_regex_compiled_bytes = iteron_tunables::param_usize(
+            "tools.grep_tool.max_regex_compiled_bytes",
+            iteron_tunables::param_integer(
+                "tools.grep_tool.max_regex_compiled_bytes",
+                MAX_REGEX_COMPILED_BYTES,
+            ),
+        );
         RegexBuilder::new(pattern)
-            .size_limit(MAX_REGEX_COMPILED_BYTES)
-            .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
+            .size_limit(max_regex_compiled_bytes)
+            .dfa_size_limit(max_regex_compiled_bytes)
             .build()
             .map(Self::Regex)
             .map_err(|error| format!("grep: invalid or oversized regex: {error}"))
@@ -81,7 +95,10 @@ impl SearchResult {
             || self.hit_bytes.saturating_add(added)
                 > policy
                     .output_max_bytes
-                    .saturating_sub(GREP_NOTICE_RESERVE_BYTES)
+                    .saturating_sub(iteron_tunables::param_integer(
+                        "tools.grep_tool.grep_notice_reserve_bytes",
+                        GREP_NOTICE_RESERVE_BYTES,
+                    ))
         {
             self.results_capped = true;
             return false;
@@ -105,14 +122,25 @@ impl SearchResult {
         }
         if self.skipped_files > 0 {
             output.push_str(&format!(
-                "\n[{} files skipped as binary, unsafe, unreadable, symlinked, or over the {MAX_GREP_FILE_BYTES}-byte per-file limit]",
-                self.skipped_files
+                "\n[{} files skipped as binary, unsafe, unreadable, symlinked, or over the {}-byte per-file limit]",
+                self.skipped_files,
+                iteron_tunables::param_usize(
+                    "tools.grep_tool.max_grep_file_bytes",
+                    MAX_GREP_FILE_BYTES
+                )
             ));
         }
         if self.skipped_for_budget > 0 {
             output.push_str(&format!(
-                "\n[{} files skipped after the {MAX_GREP_TOTAL_SOURCE_BYTES}-byte total source budget]",
-                self.skipped_for_budget
+                "\n[{} files skipped after the {}-byte total source budget]",
+                self.skipped_for_budget,
+                iteron_tunables::param_usize(
+                    "tools.grep_tool.max_grep_total_source_bytes",
+                    iteron_tunables::param_integer(
+                        "tools.grep_tool.max_grep_total_source_bytes",
+                        MAX_GREP_TOTAL_SOURCE_BYTES
+                    )
+                )
             ));
         }
         if self.walk_errors > 0 {
@@ -123,7 +151,8 @@ impl SearchResult {
         }
         if self.traversal_limited {
             output.push_str(&format!(
-                "\n[repository traversal stopped at the {MAX_GREP_ENTRIES}-entry limit]"
+                "\n[repository traversal stopped at the {}-entry limit]",
+                iteron_tunables::param_usize("tools.grep_tool.max_grep_entries", MAX_GREP_ENTRIES)
             ));
         }
         if output.len() > policy.output_max_bytes {
@@ -218,7 +247,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     call.input
                         .get("regex")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(DEFAULT_GREP_REGEX_MODE),
+                        .unwrap_or(iteron_tunables::param_bool("tools.grep_tool.default_grep_regex_mode", DEFAULT_GREP_REGEX_MODE)),
                 ) {
                     Ok(matcher) => matcher,
                     Err(error) => return err_result(id, error),
@@ -278,7 +307,12 @@ fn search(
                         && !ignore_rules.is_ignored(entry.path(), entry.file_type().is_dir()))
             });
         for (entry_index, entry) in walker.enumerate() {
-            if entry_index == MAX_GREP_ENTRIES {
+            if entry_index
+                == iteron_tunables::param_usize(
+                    "tools.grep_tool.max_grep_entries",
+                    MAX_GREP_ENTRIES,
+                )
+            {
                 result.traversal_limited = true;
                 break;
             }
@@ -308,6 +342,15 @@ fn search(
     paths.sort();
 
     let mut source_bytes = 0usize;
+    let max_file_bytes =
+        iteron_tunables::param_usize("tools.grep_tool.max_grep_file_bytes", MAX_GREP_FILE_BYTES);
+    let max_total_source_bytes = iteron_tunables::param_usize(
+        "tools.grep_tool.max_grep_total_source_bytes",
+        iteron_tunables::param_integer(
+            "tools.grep_tool.max_grep_total_source_bytes",
+            MAX_GREP_TOTAL_SOURCE_BYTES,
+        ),
+    );
     'files: for path in paths {
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
@@ -317,11 +360,11 @@ fn search(
             }
         };
         let file_bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-        if file_bytes > MAX_GREP_FILE_BYTES {
+        if file_bytes > max_file_bytes {
             result.skipped_files = result.skipped_files.saturating_add(1);
             continue;
         }
-        let remaining = MAX_GREP_TOTAL_SOURCE_BYTES.saturating_sub(source_bytes);
+        let remaining = max_total_source_bytes.saturating_sub(source_bytes);
         if file_bytes > remaining || remaining == 0 {
             result.skipped_for_budget = result.skipped_for_budget.saturating_add(1);
             continue;
@@ -340,7 +383,7 @@ fn search(
         let content = match iteron_ctx::source::read_bounded_utf8(
             &root,
             &path,
-            remaining.min(MAX_GREP_FILE_BYTES),
+            remaining.min(max_file_bytes),
             scope,
         ) {
             Ok(Some(content)) => content,
@@ -378,21 +421,36 @@ fn load_ignore(
     path: &Path,
     budget: &mut IgnoreBudget,
 ) -> Result<Option<(PathBuf, Gitignore)>, String> {
-    if budget.files >= MAX_GITIGNORE_FILES {
+    let max_gitignore_files =
+        iteron_tunables::param_usize("tools.grep_tool.max_gitignore_files", MAX_GITIGNORE_FILES);
+    if budget.files >= max_gitignore_files {
         return Err(format!(
-            "grep: repository exceeds the {MAX_GITIGNORE_FILES}-file .gitignore limit"
+            "grep: repository exceeds the {max_gitignore_files}-file .gitignore limit"
         ));
     }
-    let remaining = MAX_GITIGNORE_TOTAL_BYTES.saturating_sub(budget.bytes);
+    let max_gitignore_total_bytes = iteron_tunables::param_usize(
+        "tools.grep_tool.max_gitignore_total_bytes",
+        iteron_tunables::param_integer(
+            "tools.grep_tool.max_gitignore_total_bytes",
+            MAX_GITIGNORE_TOTAL_BYTES,
+        ),
+    );
+    let remaining = max_gitignore_total_bytes.saturating_sub(budget.bytes);
     if remaining == 0 {
         return Err(format!(
-            "grep: .gitignore sources exceed the {MAX_GITIGNORE_TOTAL_BYTES}-byte total limit"
+            "grep: .gitignore sources exceed the {max_gitignore_total_bytes}-byte total limit"
         ));
     }
     let content = match iteron_ctx::source::read_bounded_utf8(
         workspace_root,
         path,
-        remaining.min(MAX_GITIGNORE_FILE_BYTES),
+        remaining.min(iteron_tunables::param_usize(
+            "tools.grep_tool.max_gitignore_file_bytes",
+            iteron_tunables::param_integer(
+                "tools.grep_tool.max_gitignore_file_bytes",
+                MAX_GITIGNORE_FILE_BYTES,
+            ),
+        )),
         iteron_ctx::source::SourceScope::Repository,
     ) {
         Ok(Some(content)) => content,
@@ -414,11 +472,18 @@ fn load_ignore(
         .ok_or_else(|| "grep: .gitignore has no parent directory".to_string())?
         .to_path_buf();
     let mut builder = GitignoreBuilder::new(&rule_root);
+    let max_gitignore_patterns = iteron_tunables::param_usize(
+        "tools.grep_tool.max_gitignore_patterns",
+        iteron_tunables::param_integer(
+            "tools.grep_tool.max_gitignore_patterns",
+            MAX_GITIGNORE_PATTERNS,
+        ),
+    );
     for (line_index, line) in content.lines().enumerate() {
         budget.patterns = budget.patterns.saturating_add(1);
-        if budget.patterns > MAX_GITIGNORE_PATTERNS {
+        if budget.patterns > max_gitignore_patterns {
             return Err(format!(
-                "grep: .gitignore sources exceed the {MAX_GITIGNORE_PATTERNS}-line limit"
+                "grep: .gitignore sources exceed the {max_gitignore_patterns}-line limit"
             ));
         }
         let line = if line_index == 0 {

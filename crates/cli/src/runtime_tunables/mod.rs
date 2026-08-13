@@ -1,5 +1,6 @@
 //! Trusted production facts and composition for the immutable runtime tunables checkpoint.
 
+pub(crate) mod adhoc;
 pub(crate) mod authorities;
 pub(crate) mod catalogs;
 pub(crate) mod composition;

@@ -1,7 +1,4 @@
-use super::{
-    MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM, POLL_OUTPUT_BYTES_PER_STREAM,
-    RETAINED_OUTPUT_BYTES_PER_STREAM,
-};
+use super::RETAINED_OUTPUT_BYTES_PER_STREAM;
 use serde::Serialize;
 use std::collections::VecDeque;
 
@@ -34,8 +31,11 @@ impl Default for OutputRing {
             bytes: VecDeque::new(),
             oldest_cursor: 0,
             observed_cursor: 0,
-            retained_limit: RETAINED_OUTPUT_BYTES_PER_STREAM,
-            observed_limit: MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM,
+            retained_limit: iteron_tunables::param_usize(
+                "tools.process.mod.retained_output_bytes_per_stream",
+                RETAINED_OUTPUT_BYTES_PER_STREAM,
+            ),
+            observed_limit: super::max_observed_output_bytes_per_stream(),
             limit_notified: false,
             closed: false,
         }
@@ -93,7 +93,7 @@ impl OutputRing {
             .bytes
             .len()
             .saturating_sub(offset)
-            .min(POLL_OUTPUT_BYTES_PER_STREAM);
+            .min(super::poll_output_bytes_per_stream());
         let page: Vec<u8> = self.bytes.iter().skip(offset).take(take).copied().collect();
         let next_cursor = start.saturating_add(u64::try_from(take).unwrap_or(u64::MAX));
         Ok(OutputFrame {

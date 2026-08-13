@@ -43,10 +43,15 @@ fn is_forbidden(ch: char) -> bool {
 /// second byte of `中`, and rejects all non-ASCII text as hostile. Because `&str` is guaranteed
 /// valid UTF-8, iterating scalar values makes the two unambiguous.
 pub fn check(value: &str) -> Result<(), Unsafe> {
-    if value.len() > MAX_FIELD_BYTES {
+    if value.len()
+        > iteron_tunables::param_integer("statusline.safe_text.max_field_bytes", MAX_FIELD_BYTES)
+    {
         return Err(Unsafe::TooLong {
             len: value.len(),
-            limit: MAX_FIELD_BYTES,
+            limit: iteron_tunables::param_integer(
+                "statusline.safe_text.max_field_bytes",
+                MAX_FIELD_BYTES,
+            ),
         });
     }
     for (index, ch) in value.char_indices() {
@@ -72,7 +77,9 @@ pub fn lossy(value: &str) -> String {
     for ch in value.chars() {
         out.push(if is_forbidden(ch) { '\u{FFFD}' } else { ch });
     }
-    if out.len() > MAX_FIELD_BYTES {
+    if out.len()
+        > iteron_tunables::param_integer("statusline.safe_text.max_field_bytes", MAX_FIELD_BYTES)
+    {
         // Truncate on a char boundary, then mark it: a silently shortened path reads as a
         // different path, which is worse than an obviously elided one.
         //
@@ -81,14 +88,26 @@ pub fn lossy(value: &str) -> String {
         // -- found by cross-agent review, and exactly the kind of off-by-a-multibyte-character
         // that a `len()`-based reservation invites.
         const ELLIPSIS: char = '…';
-        let reserve = ELLIPSIS.len_utf8();
-        let mut end = MAX_FIELD_BYTES.saturating_sub(reserve);
+        let reserve =
+            iteron_tunables::param_char("statusline.safe_text.ellipsis", ELLIPSIS).len_utf8();
+        let mut end =
+            iteron_tunables::param_integer("statusline.safe_text.max_field_bytes", MAX_FIELD_BYTES)
+                .saturating_sub(reserve);
         while end > 0 && !out.is_char_boundary(end) {
             end -= 1;
         }
         out.truncate(end);
-        out.push(ELLIPSIS);
-        debug_assert!(out.len() <= MAX_FIELD_BYTES);
+        out.push(iteron_tunables::param_char(
+            "statusline.safe_text.ellipsis",
+            ELLIPSIS,
+        ));
+        debug_assert!(
+            out.len()
+                <= iteron_tunables::param_integer(
+                    "statusline.safe_text.max_field_bytes",
+                    MAX_FIELD_BYTES
+                )
+        );
     }
     out
 }

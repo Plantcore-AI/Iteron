@@ -532,8 +532,12 @@ async fn linux_live_descriptor_mount_survives_path_replacement_and_closes_the_bi
 
     let mut confinement = Confinement::egress_off(&fixture.workspace);
     confinement.timeout_secs = LIVE_TEST_TIMEOUT_SECS;
+    // The host may legitimately give the test process unrelated high-numbered descriptors (for
+    // example, a persistent runner control channel). Prove that the workspace capability itself
+    // was consumed and closed by checking descriptor identity, not by assuming the entire range
+    // above stderr is empty.
     let mut process = match crate::spawn_confined_process_from_workspace(
-        "cat marker; for fd in /proc/self/fd/[1-9][0-9]*; do [ ! -e \"$fd\" ] || exit 91; done",
+        "cat marker; for fd in /proc/self/fd/[1-9][0-9]*; do [ \"$(cat \"$fd/marker\" 2>/dev/null)\" != retained-capability ] || exit 91; done",
         &confinement,
         &workspace_fd,
     )

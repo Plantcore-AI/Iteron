@@ -80,7 +80,12 @@ pub(crate) fn body(
             continue;
         }
         let text = block.to_text();
-        if body.len().saturating_add(text.len()).saturating_add(1) > MAX_TRANSCRIPT_EXPORT_BYTES {
+        if body.len().saturating_add(text.len()).saturating_add(1)
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_export.max_transcript_export_bytes",
+                MAX_TRANSCRIPT_EXPORT_BYTES,
+            )
+        {
             return Err("transcript export exceeds the 8 MiB limit".into());
         }
         body.push_str(&text);
@@ -114,7 +119,11 @@ pub(super) fn export_bytes(
 #[cfg(target_os = "linux")]
 fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
     if requested.is_empty()
-        || requested.len() > MAX_EXPORT_PATH_BYTES
+        || requested.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_export.max_export_path_bytes",
+                MAX_EXPORT_PATH_BYTES,
+            )
         || requested.chars().any(char::is_control)
     {
         return Err("export path must be non-empty, control-free, and at most 4 KiB".into());
@@ -133,7 +142,12 @@ fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
             return Err("export path contains an empty component".into());
         }
         components.push(component.to_string());
-        if components.len() > MAX_EXPORT_COMPONENTS {
+        if components.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_export.max_export_components",
+                MAX_EXPORT_COMPONENTS,
+            )
+        {
             return Err("export path contains too many components".into());
         }
     }
@@ -300,7 +314,10 @@ where
     let rebound = root_binding.still_bound()
         && capability_fs::traverse(root, &parents)
             .and_then(|current| capability_fs::same_file(&parent, &current))
-            .unwrap_or(REBIND_UNPROVEN);
+            .unwrap_or(iteron_tunables::param_bool(
+                "cli.tui.transcript_export.rebind_unproven",
+                REBIND_UNPROVEN,
+            ));
     if !rebound {
         return Err(ExportError::known(
             "workspace root or export parent changed after its directory capability was acquired",
@@ -309,7 +326,10 @@ where
 
     let attempts = match collision {
         CollisionPolicy::Refuse => 1,
-        CollisionPolicy::Versioned => MAX_VERSION_ATTEMPTS,
+        CollisionPolicy::Versioned => iteron_tunables::param_integer(
+            "cli.tui.transcript_export.max_version_attempts",
+            MAX_VERSION_ATTEMPTS,
+        ),
     };
     for attempt in 1..=attempts {
         let candidate = versioned_leaf(&leaf, attempt);
@@ -318,7 +338,10 @@ where
                 let still_bound = root_binding.still_bound()
                     && capability_fs::traverse(root, &parents)
                         .and_then(|current| capability_fs::same_file(&parent, &current))
-                        .unwrap_or(REBIND_UNPROVEN);
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "cli.tui.transcript_export.rebind_unproven",
+                            REBIND_UNPROVEN,
+                        ));
                 if !still_bound {
                     return Err(ExportError::unknown(
                         "workspace root or export parent changed during dispatch; publication outcome is unknown",

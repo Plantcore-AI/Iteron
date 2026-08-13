@@ -66,7 +66,15 @@ impl ContextLedgerStore {
                     *existing = ledger;
                     return;
                 }
-                if ledgers.len() == MAX_DECISION_TURNS {
+                if ledgers.len()
+                    == iteron_tunables::param_usize(
+                        "ctx.decision_store.max_decision_turns",
+                        iteron_tunables::param_integer(
+                            "ctx.decision_store.max_decision_turns",
+                            MAX_DECISION_TURNS,
+                        ),
+                    )
+                {
                     ledgers.pop_front();
                     self.inner.dropped_oldest.fetch_add(1, Ordering::Relaxed);
                 }
@@ -136,7 +144,15 @@ impl MemoryTraceStore {
                     *existing = trace;
                     return;
                 }
-                if traces.len() == MAX_DECISION_TURNS {
+                if traces.len()
+                    == iteron_tunables::param_usize(
+                        "ctx.decision_store.max_decision_turns",
+                        iteron_tunables::param_integer(
+                            "ctx.decision_store.max_decision_turns",
+                            MAX_DECISION_TURNS,
+                        ),
+                    )
+                {
                     traces.pop_front();
                     self.inner.dropped_oldest.fetch_add(1, Ordering::Relaxed);
                 }

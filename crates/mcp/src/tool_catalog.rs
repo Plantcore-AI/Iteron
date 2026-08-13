@@ -32,11 +32,26 @@ pub(crate) struct ToolCatalogLimits {
 impl Default for ToolCatalogLimits {
     fn default() -> Self {
         Self {
-            name_bytes: MAX_MCP_TOOL_NAME_BYTES,
-            description_bytes: MAX_MCP_TOOL_DESCRIPTION_BYTES,
-            schema_bytes: MAX_MCP_TOOL_SCHEMA_BYTES,
-            descriptions_bytes: MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
-            catalog_bytes: MAX_MCP_TOOL_CATALOG_BYTES,
+            name_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_name_bytes",
+                MAX_MCP_TOOL_NAME_BYTES,
+            ),
+            description_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_description_bytes",
+                MAX_MCP_TOOL_DESCRIPTION_BYTES,
+            ),
+            schema_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_schema_bytes",
+                MAX_MCP_TOOL_SCHEMA_BYTES,
+            ),
+            descriptions_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_descriptions_bytes",
+                MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
+            ),
+            catalog_bytes: iteron_tunables::param_integer(
+                "mcp.lib.max_mcp_tool_catalog_bytes",
+                MAX_MCP_TOOL_CATALOG_BYTES,
+            ),
         }
     }
 }
@@ -90,7 +105,10 @@ impl ToolCatalogBuilder {
             specs: Vec::new(),
             names: BTreeSet::new(),
             description_bytes: 0,
-            catalog_bytes: EMPTY_CATALOG_BYTES,
+            catalog_bytes: iteron_tunables::param_integer(
+                "mcp.tool_catalog.empty_catalog_bytes",
+                EMPTY_CATALOG_BYTES,
+            ),
         }
     }
 

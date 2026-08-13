@@ -184,7 +184,12 @@ impl Agent {
             let proposal = bounded_provider_notice(PROVIDER_RUN_NOTICE_LABEL, &notice);
             let key = self.provider_run_notice_key(&proposal);
             if !self.committed_provider_run_notices.contains(&key) {
-                if self.committed_provider_run_notices.len() >= MAX_COMMITTED_PROVIDER_RUN_NOTICES {
+                if self.committed_provider_run_notices.len()
+                    >= iteron_tunables::param_integer(
+                        "cli.runtime.max_committed_provider_run_notices",
+                        MAX_COMMITTED_PROVIDER_RUN_NOTICES,
+                    )
+                {
                     return Err(KernelError::ProviderRunNoticeLimit);
                 }
                 // The provider only proposes this evidence. Commit the kernel-owned suppression
@@ -560,7 +565,11 @@ impl Agent {
             if remaining.is_zero() {
                 return Ok(());
             }
-            tokio::time::sleep(remaining.min(PROVIDER_INTERRUPT_POLL_INTERVAL)).await;
+            tokio::time::sleep(remaining.min(iteron_tunables::param_duration(
+                "cli.runtime.provider_interrupt_poll_interval",
+                PROVIDER_INTERRUPT_POLL_INTERVAL,
+            )))
+            .await;
         }
     }
 }
@@ -601,7 +610,10 @@ pub(super) async fn execute_admitted_provider_turn(
         request,
         on_item,
         &cancels,
-        PROVIDER_INTERRUPT_POLL_INTERVAL,
+        iteron_tunables::param_duration(
+            "cli.runtime.provider_interrupt_poll_interval",
+            PROVIDER_INTERRUPT_POLL_INTERVAL,
+        ),
     );
     tokio::time::timeout(remaining, turn)
         .await

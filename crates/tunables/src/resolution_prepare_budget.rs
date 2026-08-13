@@ -7,26 +7,43 @@ use crate::resolution_types::{
 pub(super) fn preflight(input: &ResolutionInput) -> Result<(), String> {
     bounded_len(
         input.declared_values.len(),
-        MAX_DECLARED_VALUES,
+        crate::param_integer(
+            "tunables.resolution_types.max_declared_values",
+            MAX_DECLARED_VALUES,
+        ),
         "declared values",
     )?;
     bounded_len(
         input.default_evidence.len(),
-        MAX_DEFAULT_EVIDENCE,
+        crate::param_integer(
+            "tunables.resolution_types.max_default_evidence",
+            MAX_DEFAULT_EVIDENCE,
+        ),
         "default evidence",
     )?;
     bounded_len(
         input.activation_evidence.len(),
-        MAX_ACTIVATION_EVIDENCE,
+        crate::param_integer(
+            "tunables.resolution_types.max_activation_evidence",
+            MAX_ACTIVATION_EVIDENCE,
+        ),
         "activation evidence",
     )?;
     bounded_len(
         input.constraint_evidence.len(),
-        MAX_CONSTRAINTS,
+        crate::param_integer("tunables.resolution_types.max_constraints", MAX_CONSTRAINTS),
         "constraints",
     )?;
-    bounded_len(input.runtime.admitted_routes.len(), MAX_ROUTES, "routes")?;
-    bounded_len(input.runtime.catalogs.len(), MAX_CATALOGS, "catalogs")?;
+    bounded_len(
+        input.runtime.admitted_routes.len(),
+        crate::param_integer("tunables.resolution_types.max_routes", MAX_ROUTES),
+        "routes",
+    )?;
+    bounded_len(
+        input.runtime.catalogs.len(),
+        crate::param_integer("tunables.resolution_types.max_catalogs", MAX_CATALOGS),
+        "catalogs",
+    )?;
     if let Some(profile) = &input.profile {
         bounded_len(profile.values.len(), MAX_PROFILE_VALUES, "profile values")?;
     }
@@ -82,13 +99,25 @@ pub(super) fn preflight(input: &ResolutionInput) -> Result<(), String> {
     for catalog in &input.runtime.catalogs {
         budget.add_machine_id(&catalog.catalog_id)?;
         budget.add_digest(&catalog.digest_sha256)?;
-        bounded_len(catalog.values.len(), MAX_CATALOG_VALUES, "catalog values")?;
+        bounded_len(
+            catalog.values.len(),
+            crate::param_integer(
+                "tunables.resolution_types.max_catalog_values",
+                MAX_CATALOG_VALUES,
+            ),
+            "catalog values",
+        )?;
         for value in &catalog.values {
             budget.add_text(value)?;
         }
     }
     let bytes = serde_json::to_vec(input).map_err(|_| "input encoding failed".to_owned())?;
-    if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
+    if bytes.len()
+        > crate::param_integer(
+            "tunables.resolution_types.resolution_input_max_bytes",
+            RESOLUTION_INPUT_MAX_BYTES,
+        )
+    {
         return Err("input exceeds the byte ceiling".into());
     }
     Ok(())
@@ -96,7 +125,8 @@ pub(super) fn preflight(input: &ResolutionInput) -> Result<(), String> {
 
 pub(super) fn safe_machine_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_ID_BYTES
+        && value.len()
+            <= crate::param_integer("tunables.resolution_types.max_id_bytes", MAX_ID_BYTES)
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'+')
         })
@@ -126,7 +156,17 @@ impl InputBudget {
             .nodes
             .checked_add(nodes)
             .ok_or_else(|| "input node count overflow".to_owned())?;
-        if self.bytes > RESOLUTION_INPUT_MAX_BYTES || self.nodes > RESOLUTION_INPUT_MAX_BYTES / 4 {
+        if self.bytes
+            > crate::param_integer(
+                "tunables.resolution_types.resolution_input_max_bytes",
+                RESOLUTION_INPUT_MAX_BYTES,
+            )
+            || self.nodes
+                > crate::param_integer(
+                    "tunables.resolution_types.resolution_input_max_bytes",
+                    RESOLUTION_INPUT_MAX_BYTES,
+                ) / 4
+        {
             return Err("input structural budget exceeded".into());
         }
         Ok(())
@@ -195,7 +235,14 @@ impl InputBudget {
                 self.add_text(value)
             }
             ResolutionValue::List { items } => {
-                bounded_len(items.len(), RESOLUTION_INPUT_MAX_BYTES / 4, "value items")?;
+                bounded_len(
+                    items.len(),
+                    crate::param_integer(
+                        "tunables.resolution_types.resolution_input_max_bytes",
+                        RESOLUTION_INPUT_MAX_BYTES,
+                    ) / 4,
+                    "value items",
+                )?;
                 let child_depth = depth
                     .checked_add(1)
                     .ok_or_else(|| "input value depth overflow".to_owned())?;
@@ -206,7 +253,10 @@ impl InputBudget {
             ResolutionValue::Map { entries } => {
                 bounded_len(
                     entries.len(),
-                    RESOLUTION_INPUT_MAX_BYTES / 4,
+                    crate::param_integer(
+                        "tunables.resolution_types.resolution_input_max_bytes",
+                        RESOLUTION_INPUT_MAX_BYTES,
+                    ) / 4,
                     "value fields",
                 )?;
                 let child_depth = depth
@@ -219,7 +269,14 @@ impl InputBudget {
                 Ok(())
             }
             ResolutionValue::Object { fields } => {
-                bounded_len(fields.len(), RESOLUTION_INPUT_MAX_BYTES / 4, "value fields")?;
+                bounded_len(
+                    fields.len(),
+                    crate::param_integer(
+                        "tunables.resolution_types.resolution_input_max_bytes",
+                        RESOLUTION_INPUT_MAX_BYTES,
+                    ) / 4,
+                    "value fields",
+                )?;
                 let child_depth = depth
                     .checked_add(1)
                     .ok_or_else(|| "input value depth overflow".to_owned())?;
@@ -263,7 +320,14 @@ impl InputBudget {
                     self.add_value(value)?;
                 }
                 for set in [allowed_values, required_values].into_iter().flatten() {
-                    bounded_len(set.len(), MAX_CATALOG_VALUES, "constraint domain values")?;
+                    bounded_len(
+                        set.len(),
+                        crate::param_integer(
+                            "tunables.resolution_types.max_catalog_values",
+                            MAX_CATALOG_VALUES,
+                        ),
+                        "constraint domain values",
+                    )?;
                     for value in set {
                         self.add_value(value)?;
                     }

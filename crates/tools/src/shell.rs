@@ -50,13 +50,28 @@ impl ShellOutputBudget {
         let requested = usize::try_from(requested).map_err(|_| {
             format!(
                 "max_output_bytes exceeds the fixed per-stream maximum of {}",
-                Self::MAX_PER_STREAM_BYTES
+                iteron_tunables::param_integer(
+                    "tools.shell.max_per_stream_bytes",
+                    Self::MAX_PER_STREAM_BYTES,
+                )
             )
         })?;
-        if !(MIN_OUTPUT_BYTES_PER_STREAM..=Self::MAX_PER_STREAM_BYTES).contains(&requested) {
+        if !(iteron_tunables::param_integer(
+            "tools.shell.min_output_bytes_per_stream",
+            MIN_OUTPUT_BYTES_PER_STREAM,
+        )
+            ..=iteron_tunables::param_integer(
+                "tools.shell.max_per_stream_bytes",
+                Self::MAX_PER_STREAM_BYTES,
+            ))
+            .contains(&requested)
+        {
             return Err(format!(
                 "max_output_bytes must be between {MIN_OUTPUT_BYTES_PER_STREAM} and {} per stream",
-                Self::MAX_PER_STREAM_BYTES
+                iteron_tunables::param_integer(
+                    "tools.shell.max_per_stream_bytes",
+                    Self::MAX_PER_STREAM_BYTES,
+                )
             ));
         }
         // A call may narrow the immutable checkpoint, never widen it.
@@ -103,10 +118,13 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     "command":{"type":"string"},
                     "max_output_bytes":{
                         "type":"integer",
-                        "minimum":MIN_OUTPUT_BYTES_PER_STREAM,
+                        "minimum":iteron_tunables::param_integer("tools.shell.min_output_bytes_per_stream", MIN_OUTPUT_BYTES_PER_STREAM),
                         "description":format!(
                             "Optional retained bytes per stdout/stderr stream; capped at {}.",
-                            ShellOutputBudget::MAX_PER_STREAM_BYTES
+                            iteron_tunables::param_integer(
+                                "tools.shell.max_per_stream_bytes",
+                                ShellOutputBudget::MAX_PER_STREAM_BYTES,
+                            )
                         )
                     }
                 },
@@ -281,7 +299,10 @@ fn frame_stream(content: &str, upstream_incomplete: bool, budget_bytes: usize) -
     // A conforming sandbox retains at most the source-byte budget plus its fixed marker. Keep a
     // defensive head/tail bound here for injected/alternate backends so one violated contract can
     // never make ToolResult unbounded. Per-stream elision retains each stream's final diagnostics.
-    let maximum_with_upstream_marker = budget_bytes.saturating_add(UPSTREAM_MARKER_ALLOWANCE_BYTES);
+    let maximum_with_upstream_marker = budget_bytes.saturating_add(iteron_tunables::param_integer(
+        "tools.shell.upstream_marker_allowance_bytes",
+        UPSTREAM_MARKER_ALLOWANCE_BYTES,
+    ));
     let exceeds_budget = if upstream_incomplete {
         observed_bytes > maximum_with_upstream_marker
     } else {

@@ -182,10 +182,16 @@ impl DocumentStore {
     /// Begin a new open lifetime and allocate the version that must be sent in `didOpen`.
     pub fn open(&mut self, uri: &str, source_revision: i32) -> Result<DocumentSnapshot, LspError> {
         validate_document_uri(uri)?;
-        if !self.docs.contains_key(uri) && self.docs.len() >= MAX_OPEN_DOCUMENTS {
+        if !self.docs.contains_key(uri)
+            && self.docs.len()
+                >= iteron_tunables::param_integer("lsp.lib.max_open_documents", MAX_OPEN_DOCUMENTS)
+        {
             self.limit_rejections = self.limit_rejections.saturating_add(1);
             return Err(LspError::DocumentLimit {
-                limit: MAX_OPEN_DOCUMENTS,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_open_documents",
+                    MAX_OPEN_DOCUMENTS,
+                ),
             });
         }
         let replacing = self.docs.contains_key(uri);
@@ -330,21 +336,36 @@ impl DocumentStore {
     }
 
     pub fn wire_version(&self, uri: &str) -> Option<i32> {
-        if uri.len() > MAX_DOCUMENT_URI_BYTES {
+        if uri.len()
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_document_uri_bytes",
+                MAX_DOCUMENT_URI_BYTES,
+            )
+        {
             return None;
         }
         self.docs.get(uri).map(|doc| doc.wire_version)
     }
 
     pub fn state(&self, uri: &str) -> Option<DocumentState> {
-        if uri.len() > MAX_DOCUMENT_URI_BYTES {
+        if uri.len()
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_document_uri_bytes",
+                MAX_DOCUMENT_URI_BYTES,
+            )
+        {
             return None;
         }
         self.docs.get(uri).map(|doc| doc.state)
     }
 
     pub fn diagnostic_set(&self, uri: &str) -> Option<&DiagnosticSet> {
-        if uri.len() > MAX_DOCUMENT_URI_BYTES {
+        if uri.len()
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_document_uri_bytes",
+                MAX_DOCUMENT_URI_BYTES,
+            )
+        {
             return None;
         }
         self.docs
@@ -477,22 +498,38 @@ impl DocumentStore {
             .diagnostic_bytes
             .saturating_sub(old_bytes)
             .saturating_add(encoded_bytes);
-        if projected > MAX_DIAGNOSTIC_BYTES_TOTAL {
+        if projected
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_bytes_total",
+                MAX_DIAGNOSTIC_BYTES_TOTAL,
+            )
+        {
             self.limit_rejections = self.limit_rejections.saturating_add(1);
             return Err(LspError::DiagnosticStoreFull {
                 value: projected,
-                limit: MAX_DIAGNOSTIC_BYTES_TOTAL,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_bytes_total",
+                    MAX_DIAGNOSTIC_BYTES_TOTAL,
+                ),
             });
         }
         let projected_nodes = self
             .diagnostic_nodes
             .saturating_sub(old_nodes)
             .saturating_add(nodes);
-        if projected_nodes > MAX_DIAGNOSTIC_JSON_NODES_TOTAL {
+        if projected_nodes
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_json_nodes_total",
+                MAX_DIAGNOSTIC_JSON_NODES_TOTAL,
+            )
+        {
             self.limit_rejections = self.limit_rejections.saturating_add(1);
             return Err(LspError::DiagnosticNodeStoreFull {
                 value: projected_nodes,
-                limit: MAX_DIAGNOSTIC_JSON_NODES_TOTAL,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_json_nodes_total",
+                    MAX_DIAGNOSTIC_JSON_NODES_TOTAL,
+                ),
             });
         }
 
@@ -590,10 +627,15 @@ fn allocate_wire_version(sequence: &mut Option<i32>) -> Result<i32, LspError> {
 }
 
 pub(crate) fn validate_document_uri(uri: &str) -> Result<(), LspError> {
-    if uri.len() > MAX_DOCUMENT_URI_BYTES {
+    if uri.len()
+        > iteron_tunables::param_integer("lsp.lib.max_document_uri_bytes", MAX_DOCUMENT_URI_BYTES)
+    {
         return Err(LspError::DocumentUriTooLong {
             value: uri.len(),
-            limit: MAX_DOCUMENT_URI_BYTES,
+            limit: iteron_tunables::param_integer(
+                "lsp.lib.max_document_uri_bytes",
+                MAX_DOCUMENT_URI_BYTES,
+            ),
         });
     }
     if !uri.is_ascii() {
@@ -678,10 +720,18 @@ pub(crate) fn range_components(value: &Value) -> Option<((u32, u32), (u32, u32))
 }
 
 fn canonicalize_diagnostics(diagnostics: &[Value]) -> Result<(Vec<Value>, usize, usize), LspError> {
-    if diagnostics.len() > MAX_DIAGNOSTICS_PER_DOCUMENT {
+    if diagnostics.len()
+        > iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostics_per_document",
+            MAX_DIAGNOSTICS_PER_DOCUMENT,
+        )
+    {
         return Err(LspError::DiagnosticsTooMany {
             value: diagnostics.len(),
-            limit: MAX_DIAGNOSTICS_PER_DOCUMENT,
+            limit: iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostics_per_document",
+                MAX_DIAGNOSTICS_PER_DOCUMENT,
+            ),
         });
     }
     for (index, diagnostic) in diagnostics.iter().enumerate() {
@@ -691,10 +741,18 @@ fn canonicalize_diagnostics(diagnostics: &[Value]) -> Result<(Vec<Value>, usize,
     let mut counter = CountingWriter::default();
     serde_json::to_writer(&mut counter, diagnostics)
         .map_err(|error| LspError::Json(error.to_string()))?;
-    if counter.bytes > MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT {
+    if counter.bytes
+        > iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_bytes_per_document",
+            MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+        )
+    {
         return Err(LspError::DiagnosticsTooLarge {
             value: counter.bytes,
-            limit: MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+            limit: iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_bytes_per_document",
+                MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+            ),
         });
     }
     let bytes =
@@ -717,7 +775,12 @@ fn validate_diagnostic(index: usize, value: &Value) -> Result<(), LspError> {
         .get("message")
         .and_then(Value::as_str)
         .ok_or_else(|| malformed("message is missing or not a string"))?;
-    if message.len() > MAX_DIAGNOSTIC_MESSAGE_BYTES {
+    if message.len()
+        > iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_message_bytes",
+            MAX_DIAGNOSTIC_MESSAGE_BYTES,
+        )
+    {
         return Err(malformed("message exceeds its byte limit"));
     }
     if let Some(severity) = object.get("severity")
@@ -727,7 +790,13 @@ fn validate_diagnostic(index: usize, value: &Value) -> Result<(), LspError> {
     }
     if let Some(code) = object.get("code") {
         let valid = match code {
-            Value::String(code) => code.len() <= MAX_DIAGNOSTIC_CODE_BYTES,
+            Value::String(code) => {
+                code.len()
+                    <= iteron_tunables::param_integer(
+                        "lsp.lib.max_diagnostic_code_bytes",
+                        MAX_DIAGNOSTIC_CODE_BYTES,
+                    )
+            }
             Value::Number(_) => code
                 .as_i64()
                 .is_some_and(|code| i64::from(i32::MIN) <= code && code <= i64::from(i32::MAX)),
@@ -747,9 +816,13 @@ fn validate_diagnostic(index: usize, value: &Value) -> Result<(), LspError> {
             .map_err(|_| malformed("codeDescription.href is not a bounded URI"))?;
     }
     if let Some(source) = object.get("source")
-        && source
-            .as_str()
-            .is_none_or(|source| source.len() > MAX_DIAGNOSTIC_SOURCE_BYTES)
+        && source.as_str().is_none_or(|source| {
+            source.len()
+                > iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_source_bytes",
+                    MAX_DIAGNOSTIC_SOURCE_BYTES,
+                )
+        })
     {
         return Err(malformed("source is not a bounded string"));
     }
@@ -765,7 +838,13 @@ fn validate_diagnostic(index: usize, value: &Value) -> Result<(), LspError> {
     if let Some(related) = object.get("relatedInformation") {
         let related = related
             .as_array()
-            .filter(|related| related.len() <= MAX_DIAGNOSTIC_RELATED_INFORMATION)
+            .filter(|related| {
+                related.len()
+                    <= iteron_tunables::param_integer(
+                        "lsp.lib.max_diagnostic_related_information",
+                        MAX_DIAGNOSTIC_RELATED_INFORMATION,
+                    )
+            })
             .ok_or_else(|| malformed("relatedInformation is not a bounded array"))?;
         for information in related {
             validate_related_information(information).map_err(malformed)?;
@@ -794,7 +873,12 @@ fn validate_related_information(value: &Value) -> Result<(), &'static str> {
         .get("message")
         .and_then(Value::as_str)
         .ok_or("related message is missing or invalid")?;
-    if message.len() > MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES {
+    if message.len()
+        > iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_related_message_bytes",
+            MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES,
+        )
+    {
         return Err("related message exceeds its byte limit");
     }
     Ok(())
@@ -805,23 +889,48 @@ fn inspect_structure(diagnostics: &[Value]) -> Result<usize, LspError> {
     let mut nodes = 1usize;
     let mut text_bytes = 0usize;
     let mut stack: Vec<(&Value, usize)> = Vec::with_capacity(diagnostics.len().min(256));
-    if diagnostics.len() > MAX_DIAGNOSTIC_JSON_NODES.saturating_sub(nodes) {
+    if diagnostics.len()
+        > iteron_tunables::param_integer(
+            "lsp.lib.max_diagnostic_json_nodes",
+            MAX_DIAGNOSTIC_JSON_NODES,
+        )
+        .saturating_sub(nodes)
+    {
         return Err(LspError::DiagnosticsTooComplex {
-            limit: MAX_DIAGNOSTIC_JSON_NODES,
+            limit: iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_json_nodes",
+                MAX_DIAGNOSTIC_JSON_NODES,
+            ),
         });
     }
     stack.extend(diagnostics.iter().rev().map(|value| (value, 1)));
     while let Some((value, depth)) = stack.pop() {
         nodes = nodes.saturating_add(1);
-        if nodes > MAX_DIAGNOSTIC_JSON_NODES {
+        if nodes
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_json_nodes",
+                MAX_DIAGNOSTIC_JSON_NODES,
+            )
+        {
             return Err(LspError::DiagnosticsTooComplex {
-                limit: MAX_DIAGNOSTIC_JSON_NODES,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_json_nodes",
+                    MAX_DIAGNOSTIC_JSON_NODES,
+                ),
             });
         }
-        if depth > MAX_DIAGNOSTIC_JSON_DEPTH {
+        if depth
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_json_depth",
+                MAX_DIAGNOSTIC_JSON_DEPTH,
+            )
+        {
             return Err(LspError::DiagnosticsTooDeep {
                 value: depth,
-                limit: MAX_DIAGNOSTIC_JSON_DEPTH,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_json_depth",
+                    MAX_DIAGNOSTIC_JSON_DEPTH,
+                ),
             });
         }
         let children = match value {
@@ -838,15 +947,32 @@ fn inspect_structure(diagnostics: &[Value]) -> Result<usize, LspError> {
             }
             Value::Null | Value::Bool(_) | Value::Number(_) => 0,
         };
-        if text_bytes > MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT {
+        if text_bytes
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_bytes_per_document",
+                MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+            )
+        {
             return Err(LspError::DiagnosticsTooLarge {
                 value: text_bytes,
-                limit: MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_bytes_per_document",
+                    MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT,
+                ),
             });
         }
-        if children > MAX_DIAGNOSTIC_JSON_NODES.saturating_sub(nodes + stack.len()) {
+        if children
+            > iteron_tunables::param_integer(
+                "lsp.lib.max_diagnostic_json_nodes",
+                MAX_DIAGNOSTIC_JSON_NODES,
+            )
+            .saturating_sub(nodes + stack.len())
+        {
             return Err(LspError::DiagnosticsTooComplex {
-                limit: MAX_DIAGNOSTIC_JSON_NODES,
+                limit: iteron_tunables::param_integer(
+                    "lsp.lib.max_diagnostic_json_nodes",
+                    MAX_DIAGNOSTIC_JSON_NODES,
+                ),
             });
         }
         match value {

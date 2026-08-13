@@ -34,7 +34,9 @@ pub enum EgressPolicyError {
 impl EgressAllowPolicy {
     pub fn new(destinations: impl IntoIterator<Item = String>) -> Result<Self, EgressPolicyError> {
         let values = destinations.into_iter().collect::<Vec<_>>();
-        if values.len() > MAX_EGRESS_HOSTS {
+        if values.len()
+            > iteron_tunables::param_usize("tools.egress.max_egress_hosts", MAX_EGRESS_HOSTS)
+        {
             return Err(EgressPolicyError::TooManyDestinations);
         }
         let mut admitted = BTreeSet::new();
@@ -66,7 +68,14 @@ fn parse_destination(value: &str) -> Result<EgressDestination, EgressPolicyError
         value: value.to_owned(),
         reason,
     };
-    if value.is_empty() || value.len() > MAX_EGRESS_HOST_BYTES || value.trim() != value {
+    if value.is_empty()
+        || value.len()
+            > iteron_tunables::param_integer(
+                "tools.egress.max_egress_host_bytes",
+                MAX_EGRESS_HOST_BYTES,
+            )
+        || value.trim() != value
+    {
         return Err(invalid(
             "expected 1..=253 bytes with no surrounding whitespace",
         ));
@@ -109,7 +118,11 @@ fn canonical_configured_host(host: &str) -> Option<String> {
         return Some(host.to_owned());
     }
     let canonical = host.to_ascii_lowercase();
-    if canonical.len() > MAX_EGRESS_HOST_BYTES
+    if canonical.len()
+        > iteron_tunables::param_integer(
+            "tools.egress.max_egress_host_bytes",
+            MAX_EGRESS_HOST_BYTES,
+        )
         || canonical.split('.').any(|label| {
             label.is_empty()
                 || label.len() > 63

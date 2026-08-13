@@ -26,7 +26,15 @@ impl EarlyStopQuorumPolicy {
         required_roles: usize,
         strong_veto: bool,
     ) -> Result<Self, &'static str> {
-        if !(1..=MAX_EARLY_STOP_QUORUM).contains(&minimum_evidence) {
+        if !(1..=iteron_tunables::param_usize(
+            "workflow.quorum.max_early_stop_quorum",
+            iteron_tunables::param_integer(
+                "workflow.quorum.max_early_stop_quorum",
+                MAX_EARLY_STOP_QUORUM,
+            ),
+        ))
+            .contains(&minimum_evidence)
+        {
             return Err("minimum evidence must be in 1..=4096");
         }
         if required_roles > 256 {

@@ -147,8 +147,26 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
 
     // Once the child group is dead both pipes should close. Keep cleanup bounded in case a hostile
     // process escaped the group and retained an inherited descriptor.
-    let stdout = collect_capture(stdout_task, CAPTURE_COLLECT_TIMEOUT, &label, "stdout").await?;
-    let stderr = collect_capture(stderr_task, CAPTURE_COLLECT_TIMEOUT, &label, "stderr").await?;
+    let stdout = collect_capture(
+        stdout_task,
+        iteron_tunables::param_duration(
+            "eval.process.capture_collect_timeout",
+            CAPTURE_COLLECT_TIMEOUT,
+        ),
+        &label,
+        "stdout",
+    )
+    .await?;
+    let stderr = collect_capture(
+        stderr_task,
+        iteron_tunables::param_duration(
+            "eval.process.capture_collect_timeout",
+            CAPTURE_COLLECT_TIMEOUT,
+        ),
+        &label,
+        "stderr",
+    )
+    .await?;
     Ok(ProcessOutput {
         exit_code,
         stdout: stdout.bytes,

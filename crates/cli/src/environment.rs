@@ -33,10 +33,20 @@ pub(crate) async fn capture_at(workspace: &Path, created_at_unix_secs: u64) -> S
 
 fn render_snapshot(cwd: Option<&str>, created_at_unix_secs: u64, git: Option<&str>) -> String {
     let cwd = cwd
-        .and_then(|value| escape_field(value, CWD_FIELD_BYTES))
+        .and_then(|value| {
+            escape_field(
+                value,
+                iteron_tunables::param_integer("cli.environment.cwd_field_bytes", CWD_FIELD_BYTES),
+            )
+        })
         .unwrap_or_else(|| UNAVAILABLE.to_owned());
     let git = git
-        .and_then(|value| escape_field(value, GIT_FIELD_BYTES))
+        .and_then(|value| {
+            escape_field(
+                value,
+                iteron_tunables::param_integer("cli.environment.git_field_bytes", GIT_FIELD_BYTES),
+            )
+        })
         .unwrap_or_else(|| UNAVAILABLE.to_owned());
     let date = format_utc(created_at_unix_secs).unwrap_or_else(|| UNAVAILABLE.to_owned());
     let os = escape_field(std::env::consts::OS, 64).unwrap_or_else(|| UNAVAILABLE.to_owned());
@@ -122,8 +132,13 @@ fn suspicious_unicode(ch: char) -> bool {
 fn format_utc(unix_secs: u64) -> Option<String> {
     const SECONDS_PER_DAY: u64 = 86_400;
 
-    let days = i64::try_from(unix_secs / SECONDS_PER_DAY).ok()?;
-    let seconds = unix_secs % SECONDS_PER_DAY;
+    let days = i64::try_from(
+        unix_secs
+            / iteron_tunables::param_integer("cli.environment.seconds_per_day", SECONDS_PER_DAY),
+    )
+    .ok()?;
+    let seconds = unix_secs
+        % iteron_tunables::param_integer("cli.environment.seconds_per_day", SECONDS_PER_DAY);
     let hour = seconds / 3_600;
     let minute = seconds % 3_600 / 60;
     let second = seconds % 60;

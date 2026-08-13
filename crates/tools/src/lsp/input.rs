@@ -130,9 +130,11 @@ impl SourceDocument {
             {
                 return Err(LspToolError::SourceChanged);
             }
-            if bytes.len() > MAX_SOURCE_BYTES {
+            let max_source_bytes =
+                iteron_tunables::param_usize("tools.lsp.input.max_source_bytes", MAX_SOURCE_BYTES);
+            if bytes.len() > max_source_bytes {
                 return Err(LspToolError::SourceTooLarge {
-                    limit: MAX_SOURCE_BYTES,
+                    limit: max_source_bytes,
                 });
             }
             let text = String::from_utf8(bytes).map_err(|_| LspToolError::SourceNotUtf8)?;
@@ -249,15 +251,20 @@ impl SourceDocument {
 async fn read_bounded(file: File) -> Result<(Vec<u8>, FileStamp), LspToolError> {
     let before = FileStamp::capture(&file).map_err(|_| LspToolError::SourceUnavailable)?;
     let mut file = tokio::fs::File::from_std(file);
-    let mut bytes = Vec::with_capacity((MAX_SOURCE_BYTES + 1).min(64 * 1024));
+    let max_source_bytes =
+        iteron_tunables::param_usize("tools.lsp.input.max_source_bytes", MAX_SOURCE_BYTES);
+    let mut bytes = Vec::with_capacity((max_source_bytes + 1).min(64 * 1024));
     let read = async {
-        let mut limited = tokio::io::AsyncReadExt::take(&mut file, (MAX_SOURCE_BYTES + 1) as u64);
+        let mut limited = tokio::io::AsyncReadExt::take(&mut file, (max_source_bytes + 1) as u64);
         limited.read_to_end(&mut bytes).await
     };
-    tokio::time::timeout(SOURCE_READ_TIMEOUT, read)
-        .await
-        .map_err(|_| LspToolError::SourceUnavailable)?
-        .map_err(|_| LspToolError::SourceUnavailable)?;
+    tokio::time::timeout(
+        iteron_tunables::param_duration("tools.lsp.input.source_read_timeout", SOURCE_READ_TIMEOUT),
+        read,
+    )
+    .await
+    .map_err(|_| LspToolError::SourceUnavailable)?
+    .map_err(|_| LspToolError::SourceUnavailable)?;
     let file = file.into_std().await;
     let after = FileStamp::capture(&file).map_err(|_| LspToolError::SourceUnavailable)?;
     if before != after {
@@ -268,7 +275,11 @@ async fn read_bounded(file: File) -> Result<(Vec<u8>, FileStamp), LspToolError> 
 
 fn validate_requested_path(requested: &str) -> Result<(), LspToolError> {
     if requested.is_empty()
-        || requested.len() > MAX_REQUEST_PATH_BYTES
+        || requested.len()
+            > iteron_tunables::param_integer(
+                "tools.lsp.input.max_request_path_bytes",
+                MAX_REQUEST_PATH_BYTES,
+            )
         || requested.chars().any(char::is_control)
     {
         return Err(LspToolError::InvalidPath);

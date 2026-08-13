@@ -110,7 +110,7 @@ fn detail_and_matching_copy_projection_never_run_in_the_key_handler() {
             text,
             subject: "matching block projection",
             snapshot_revision: 11,
-        }) if text.contains("detail truncated at 64 KiB") && text.len() <= MAX_DETAIL_BYTES
+        }) if text.contains("detail truncated at 64 KiB") && text.len() <= iteron_tunables::param_integer("cli.tui.transcript_viewer.max_detail_bytes", MAX_DETAIL_BYTES)
     ));
 }
 
@@ -125,7 +125,13 @@ fn projection_worker_close_owns_cancellation_and_joins_its_thread() {
                 revision: 0,
                 raw: false,
             },
-            user(1, &"x".repeat(MAX_INDEX_BLOCK_BYTES)),
+            user(
+                1,
+                &"x".repeat(iteron_tunables::param_integer(
+                    "cli.tui.transcript_viewer.max_index_block_bytes",
+                    MAX_INDEX_BLOCK_BYTES,
+                )),
+            ),
         )
         .expect("start bounded detail projection");
     assert!(worker.is_busy());
@@ -206,7 +212,13 @@ fn query_and_detail_escape_controls_and_limit_state() {
     assert!(!detail.text.contains(&secret));
     assert!(!detail.text.contains('\u{1b}'));
     assert!(viewer.entries[0].complete);
-    assert!(viewer.entries[0].folded.len() <= MAX_INDEX_BLOCK_BYTES);
+    assert!(
+        viewer.entries[0].folded.len()
+            <= iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_index_block_bytes",
+                MAX_INDEX_BLOCK_BYTES
+            )
+    );
 }
 
 #[test]
@@ -258,7 +270,15 @@ fn search_matches_beyond_the_old_prefix_and_surfaces_any_unindexed_block() {
         }) if text.len() > 1536 && text.contains("late-needle")
     ));
 
-    let oversized = vec![user(2, &"z".repeat(MAX_INDEX_BLOCK_BYTES + 1))];
+    let oversized = vec![user(
+        2,
+        &"z".repeat(
+            iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_index_block_bytes",
+                MAX_INDEX_BLOCK_BYTES,
+            ) + 1,
+        ),
+    )];
     viewer.open("z", &oversized, 2);
     settle(&mut viewer, &oversized, 2);
     assert!(viewer.results.is_empty());
@@ -358,15 +378,35 @@ fn row_cache_handles_combining_wide_tiny_and_zero_surfaces() {
 
 #[test]
 fn result_count_and_query_bytes_are_hard_bounded() {
-    let blocks = (0..(MAX_RESULTS + 20))
-        .map(|id| user(id as u64, "same"))
-        .collect::<Vec<_>>();
+    let blocks =
+        (0..(iteron_tunables::param_integer("cli.tui.transcript_viewer.max_results", MAX_RESULTS)
+            + 20))
+            .map(|id| user(id as u64, "same"))
+            .collect::<Vec<_>>();
     let mut viewer = Viewer::default();
-    viewer.open(&"x".repeat(MAX_QUERY_BYTES * 2), &blocks, 1);
+    viewer.open(
+        &"x".repeat(
+            iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_query_bytes",
+                MAX_QUERY_BYTES,
+            ) * 2,
+        ),
+        &blocks,
+        1,
+    );
     settle(&mut viewer, &blocks, 1);
-    assert!(viewer.query.len() <= MAX_QUERY_BYTES);
+    assert!(
+        viewer.query.len()
+            <= iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_query_bytes",
+                MAX_QUERY_BYTES
+            )
+    );
     replace_query(&mut viewer, &blocks, 1, "same");
-    assert_eq!(viewer.results.len(), MAX_RESULTS);
+    assert_eq!(
+        viewer.results.len(),
+        iteron_tunables::param_integer("cli.tui.transcript_viewer.max_results", MAX_RESULTS)
+    );
     assert!(viewer.results_truncated);
     assert!(viewer.export_ids(ExportScope::Filtered, 1).is_err());
 }
@@ -476,7 +516,15 @@ fn global_index_budget_stops_projecting_older_block_bytes() {
 #[test]
 fn unrelated_live_revision_does_not_rescrub_an_unchanged_oversized_entry() {
     let mut blocks = vec![
-        user(1, &"x".repeat(MAX_INDEX_BLOCK_BYTES + 1)),
+        user(
+            1,
+            &"x".repeat(
+                iteron_tunables::param_integer(
+                    "cli.tui.transcript_viewer.max_index_block_bytes",
+                    MAX_INDEX_BLOCK_BYTES,
+                ) + 1,
+            ),
+        ),
         user(2, "live-before"),
     ];
     let mut viewer = Viewer::default();
@@ -581,7 +629,10 @@ fn indexing_has_a_deterministic_one_projection_tick_budget_and_keeps_input_live(
 fn repeated_authority_cancellation_prunes_reuse_to_exact_retained_ids_and_revisions() {
     let mut viewer = Viewer {
         authority_revision: Some(1),
-        entries: (0..MAX_INDEX_ENTRIES as u64)
+        entries: (0..iteron_tunables::param_integer(
+            "cli.tui.transcript_viewer.max_index_entries",
+            MAX_INDEX_ENTRIES,
+        ) as u64)
             .map(|id| Entry {
                 id,
                 revision: 0,
@@ -614,7 +665,10 @@ fn repeated_authority_cancellation_prunes_reuse_to_exact_retained_ids_and_revisi
             .values()
             .map(|entry| entry.folded.len())
             .sum::<usize>()
-            <= MAX_INDEX_TOTAL_BYTES
+            <= iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.max_index_total_bytes",
+                MAX_INDEX_TOTAL_BYTES
+            )
     );
 
     let mut authority_d = authority_c;

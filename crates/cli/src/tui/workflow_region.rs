@@ -207,7 +207,10 @@ impl WorkflowMonitor {
             return 0;
         };
         let mut added = 0;
-        for restored in workflow_rehydrate::restore(dir, RESTORE_LIMIT) {
+        for restored in workflow_rehydrate::restore(
+            dir,
+            iteron_tunables::param_integer("cli.tui.workflow_region.restore_limit", RESTORE_LIMIT),
+        ) {
             if self.position(&restored.run_id).is_some() {
                 continue;
             }

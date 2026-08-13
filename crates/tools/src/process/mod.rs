@@ -36,6 +36,55 @@ pub(super) const RETAINED_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
 pub(super) const MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM: u64 = 64 * 1024 * 1024;
 pub(super) const POLL_OUTPUT_BYTES_PER_STREAM: usize = 32 * 1024;
 pub(super) const MAX_JOB_RUNTIME_SECS: u64 = 10 * 60;
+
+/// The advertised description, the spawn-time confinement deadline, and the actor's own timer all
+/// have to agree on one number, so all three read the parameter here. With no profile installed
+/// this returns the compiled constant.
+pub(super) fn max_job_runtime_secs() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.max_job_runtime_secs",
+        iteron_tunables::param_integer(
+            "tools.process.mod.max_job_runtime_secs",
+            MAX_JOB_RUNTIME_SECS,
+        ),
+    )
+}
+
+/// The advertised job-table size and the supervisor's own admission check have to agree, so both
+/// read the parameter here rather than the constant.
+pub(super) fn max_job_records() -> usize {
+    iteron_tunables::param_usize("tools.process.mod.max_job_records", MAX_JOB_RECORDS)
+}
+
+/// Advertised in the `process_write` description and enforced on both write paths.
+pub(super) fn max_stdin_bytes() -> usize {
+    iteron_tunables::param_usize("tools.process.mod.max_stdin_bytes", MAX_STDIN_BYTES)
+}
+
+pub(super) fn max_command_bytes() -> usize {
+    iteron_tunables::param_usize("tools.process.mod.max_command_bytes", MAX_COMMAND_BYTES)
+}
+
+/// Advertised in the `process_poll` description and applied to every page it returns.
+pub(super) fn poll_output_bytes_per_stream() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.mod.poll_output_bytes_per_stream",
+        iteron_tunables::param_integer(
+            "tools.process.mod.poll_output_bytes_per_stream",
+            POLL_OUTPUT_BYTES_PER_STREAM,
+        ),
+    )
+}
+
+pub(super) fn max_observed_output_bytes_per_stream() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.max_observed_output_bytes_per_stream",
+        iteron_tunables::param_integer(
+            "tools.process.mod.max_observed_output_bytes_per_stream",
+            MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM,
+        ),
+    )
+}
 // One queued write plus the actor's one in-flight write keeps the worst-case response below the
 // fixed controller deadline (2 * STDIN_WRITE_SECS < CONTROL_RESPONSE_SECS).
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 1;
@@ -164,9 +213,10 @@ impl ProcessControl {
                 unknown: false,
             });
         }
-        if input.len() > MAX_STDIN_BYTES {
+        let max_stdin_bytes = max_stdin_bytes();
+        if input.len() > max_stdin_bytes {
             return Err(ProcessControlError {
-                message: format!("input exceeds the fixed {MAX_STDIN_BYTES}-byte limit"),
+                message: format!("input exceeds the fixed {max_stdin_bytes}-byte limit"),
                 unknown: false,
             });
         }
@@ -214,7 +264,8 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                  job ID. Linux uses bubblewrap; macOS uses Seatbelt; unavailable confinement refuses \
                  before spawn. Session policy selects disabled, one-shot, or persistent lifetime and \
                  admits at most {MAX_BACKGROUND_JOBS} jobs; every job is stopped \
-                 after {MAX_JOB_RUNTIME_SECS}s and retained output is bounded."
+                 after {}s and retained output is bounded.",
+                max_job_runtime_secs()
             ),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -241,17 +292,28 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                 if command.is_empty() {
                     return definite_error(call.id, "command must be a non-empty string");
                 }
-                if command.len() > MAX_COMMAND_BYTES {
+                let max_command_bytes = max_command_bytes();
+                if command.len() > max_command_bytes {
                     return definite_error(
                         call.id,
-                        format!("command exceeds the fixed {MAX_COMMAND_BYTES}-byte limit"),
+                        format!("command exceeds the fixed {max_command_bytes}-byte limit"),
                     );
                 }
-                let rows = match optional_u16(&call.input, "rows", DEFAULT_PTY_ROWS) {
+                let default_rows = u16::try_from(iteron_tunables::param_i128(
+                    "tools.process.mod.default_pty_rows",
+                    i128::from(iteron_tunables::param_integer("tools.process.mod.default_pty_rows", DEFAULT_PTY_ROWS)),
+                ))
+                .unwrap_or(iteron_tunables::param_integer("tools.process.mod.default_pty_rows", DEFAULT_PTY_ROWS));
+                let default_cols = u16::try_from(iteron_tunables::param_i128(
+                    "tools.process.mod.default_pty_cols",
+                    i128::from(iteron_tunables::param_integer("tools.process.mod.default_pty_cols", DEFAULT_PTY_COLS)),
+                ))
+                .unwrap_or(iteron_tunables::param_integer("tools.process.mod.default_pty_cols", DEFAULT_PTY_COLS));
+                let rows = match optional_u16(&call.input, "rows", default_rows) {
                     Ok(value) => value,
                     Err(error) => return definite_error(call.id, error),
                 };
-                let cols = match optional_u16(&call.input, "cols", DEFAULT_PTY_COLS) {
+                let cols = match optional_u16(&call.input, "cols", default_cols) {
                     Ok(value) => value,
                     Err(error) => return definite_error(call.id, error),
                 };
@@ -277,9 +339,10 @@ fn register_list(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
         ToolSpec {
             name: "process_list".into(),
             description: format!(
-                "List at most {MAX_JOB_RECORDS} retained background jobs with lifecycle state, \
+                "List at most {} retained background jobs with lifecycle state, \
                  backend, bounded command, and output cursors. The response carries no output \
-                 body; use process_poll to attach at a cursor."
+                 body; use process_poll to attach at a cursor.",
+                max_job_records()
             ),
             input_schema: serde_json::json!({"type":"object","properties":{}}),
             purity: Purity::Effecting,
@@ -299,9 +362,10 @@ fn register_poll(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
             description: format!(
                 "Read one bounded output page and the authoritative lifecycle state for a job. \
                  Pass the returned byte cursors to continue; each stream returns at most \
-                 {POLL_OUTPUT_BYTES_PER_STREAM} bytes and explicitly reports retention gaps. \
+                 {} bytes and explicitly reports retention gaps. \
                  Poll uses the session's interactive-stdin interval by default and never beyond \
-                 {MAX_STDIN_POLL_MILLISECONDS}ms."
+                 {MAX_STDIN_POLL_MILLISECONDS}ms.",
+                poll_output_bytes_per_stream()
             ),
             input_schema: job_cursor_schema(),
             purity: Purity::Effecting,
@@ -330,11 +394,12 @@ fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
         ToolSpec {
             name: "process_write".into(),
             description: format!(
-                "Write at most {MAX_STDIN_BYTES} UTF-8 bytes to a running job's stdin and \
+                "Write at most {} UTF-8 bytes to a running job's stdin and \
                  optionally deliver canonical terminal EOF and retire this job's input capability. \
                  Raw-mode PTY programs may interpret EOF as input because a PTY has no independent \
                  write-half to close. Delivery failures after dispatch are reported as an unknown \
-                 effect and terminate the job rather than risking an orphan."
+                 effect and terminate the job rather than risking an orphan.",
+                max_stdin_bytes()
             ),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -366,14 +431,18 @@ fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                     .input
                     .get("eof")
                     .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(DEFAULT_STDIN_EOF);
+                    .unwrap_or(iteron_tunables::param_bool(
+                        "tools.process.mod.default_stdin_eof",
+                        DEFAULT_STDIN_EOF,
+                    ));
                 if input.is_empty() && !eof {
                     return definite_error(call.id, "input must be non-empty unless eof is true");
                 }
-                if input.len() > MAX_STDIN_BYTES {
+                let max_stdin_bytes = max_stdin_bytes();
+                if input.len() > max_stdin_bytes {
                     return definite_error(
                         call.id,
-                        format!("input exceeds the fixed {MAX_STDIN_BYTES}-byte limit"),
+                        format!("input exceeds the fixed {max_stdin_bytes}-byte limit"),
                     );
                 }
                 action_result(

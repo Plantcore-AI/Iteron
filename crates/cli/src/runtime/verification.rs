@@ -750,7 +750,10 @@ impl Agent {
             let remaining = run_remaining
                 .map(|duration| duration.min(verifier_remaining))
                 .unwrap_or(verifier_remaining);
-            let poll_for = remaining.min(VERIFY_CANCEL_POLL);
+            let poll_for = remaining.min(iteron_tunables::param_duration(
+                "cli.runtime.verification.verify_cancel_poll",
+                VERIFY_CANCEL_POLL,
+            ));
 
             dispatched = true;
             match tokio::time::timeout(poll_for, &mut evaluation).await {

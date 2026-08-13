@@ -18,6 +18,10 @@ use crate::theme;
 use crate::workflow::{SupervisedRunInfo, SupervisedRunStatus};
 
 pub(crate) const MAX_RUNS: usize = 32;
+
+pub(crate) fn max_runs() -> usize {
+    iteron_tunables::param_integer("cli.tui.workflows_panel.max_runs", MAX_RUNS)
+}
 /// Row cycling starts here when the remembered selection is no longer in the projected run list.
 /// Anchoring on the first row keeps `+1`/`-1` reachable from a stale selection without a special case.
 const CYCLE_ANCHOR_INDEX: usize = 0;
@@ -46,8 +50,9 @@ impl RunState {
 
     fn glyph(self, spin: usize) -> &'static str {
         const SPIN: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+        let spin_frames = iteron_tunables::param_str_list("cli.tui.workflows_panel.spin", &SPIN);
         match self {
-            Self::Running => SPIN[spin % SPIN.len()],
+            Self::Running => spin_frames[spin % spin_frames.len()],
             Self::Cancelling => "◌",
             Self::Done => "●",
             Self::Failed => "×",
@@ -201,7 +206,10 @@ impl View {
             .selected_run
             .as_deref()
             .and_then(|id| runs.iter().position(|run| run.run_id == id))
-            .unwrap_or(CYCLE_ANCHOR_INDEX);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.tui.workflows_panel.cycle_anchor_index",
+                CYCLE_ANCHOR_INDEX,
+            ));
         let next = (current as isize + delta).rem_euclid(runs.len() as isize) as usize;
         self.selected_run = Some(runs[next].run_id.clone());
         self.selected_phase = 0;

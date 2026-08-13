@@ -153,7 +153,11 @@ impl Decomposer {
     /// cap drops, duplicates, and invalid inputs are recorded separately — never silently. Empty
     /// normalized leaves return `None` (nothing to fan → single agent).
     pub fn plan(class: TaskClass, leaves: Vec<String>) -> Option<WorkflowPlan> {
-        Self::plan_within(class, leaves, FAN_CAP)
+        Self::plan_within(
+            class,
+            leaves,
+            iteron_tunables::param_usize("agents.decompose.fan_cap", FAN_CAP),
+        )
     }
 
     /// Instantiate the topology under a breadth ceiling the router chose for this task.
@@ -188,7 +192,10 @@ impl Decomposer {
         if !class.fans_out() {
             return Ok(None);
         }
-        let cap = cap.min(FAN_CAP);
+        let cap = cap.min(iteron_tunables::param_usize(
+            "agents.decompose.fan_cap",
+            FAN_CAP,
+        ));
         let normalized = Self::normalize_leaves(leaves);
         let total = normalized.leaves.len();
         let proposal = crate::PlannerStrategy::plan_with(
@@ -235,7 +242,10 @@ fn normalize_leaf(raw: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let char_count = leaf.chars().count();
-    if char_count == 0 || char_count > LEAF_MAX_CHARS {
+    if char_count == 0
+        || char_count
+            > iteron_tunables::param_usize("agents.decompose.leaf_max_chars", LEAF_MAX_CHARS)
+    {
         return None;
     }
     if crate::suspicious_unicode(&leaf).is_some()
@@ -408,6 +418,14 @@ const BROAD_VERBS: &[&str] = &[
     "simplify",
 ];
 
+fn test_intent() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.test_intent", TEST_INTENT)
+}
+
+fn broad_verbs() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.broad_verbs", BROAD_VERBS)
+}
+
 /// A broad ask on a tree this large or larger leans multi-file rather than under-specified.
 const LARGE_REPO: usize = 200;
 
@@ -428,10 +446,12 @@ fn evidence_class(task: &str, repo: &RepoSignals) -> TaskClass {
         return TaskClass::MultiFile;
     }
     // Repo-shaped tie-breaks (RepoSignals is load-bearing here, not decoration).
-    if repo.has_test_command && TEST_INTENT.iter().any(|m| lower.contains(m)) {
+    if repo.has_test_command && test_intent().iter().any(|m| lower.contains(m)) {
         return TaskClass::RunToUnderstand;
     }
-    if repo.file_count >= LARGE_REPO && BROAD_VERBS.iter().any(|m| lower.contains(m)) {
+    if repo.file_count >= iteron_tunables::param_usize("agents.decompose.large_repo", LARGE_REPO)
+        && broad_verbs().iter().any(|m| lower.contains(m))
+    {
         return TaskClass::MultiFile;
     }
     TaskClass::UnderSpecified
@@ -443,7 +463,7 @@ fn explicit_evidence_intent(task: &str, repo: &RepoSignals) -> Option<TaskClass>
         .iter()
         .chain(INTERNATIONAL_RUN_MARKERS)
         .any(|m| lower.contains(m))
-        || (repo.has_test_command && TEST_INTENT.iter().any(|m| lower.contains(m)))
+        || (repo.has_test_command && test_intent().iter().any(|m| lower.contains(m)))
     {
         return Some(TaskClass::RunToUnderstand);
     }
@@ -451,7 +471,9 @@ fn explicit_evidence_intent(task: &str, repo: &RepoSignals) -> Option<TaskClass>
         .iter()
         .chain(INTERNATIONAL_MULTI_MARKERS)
         .any(|m| lower.contains(m))
-        || (repo.file_count >= LARGE_REPO && BROAD_VERBS.iter().any(|m| lower.contains(m)))
+        || (repo.file_count
+            >= iteron_tunables::param_usize("agents.decompose.large_repo", LARGE_REPO)
+            && broad_verbs().iter().any(|m| lower.contains(m)))
     {
         return Some(TaskClass::MultiFile);
     }
@@ -597,7 +619,8 @@ impl RouterSlotObservation {
             task: task.into(),
             repo,
             fan_out_permitted: true,
-            max_leaves: FAN_CAP as u16,
+            max_leaves: iteron_tunables::param_usize("agents.decompose.fan_cap", FAN_CAP)
+                .min(u16::MAX as usize) as u16,
         }
     }
 
@@ -612,12 +635,22 @@ impl RouterSlotObservation {
         if self.version != ROUTER_SLOT_VERSION {
             return Err(RouterSlotError::UnsupportedVersion);
         }
-        if self.task.len() > MAX_ROUTER_TASK_BYTES {
+        if self.task.len()
+            > iteron_tunables::param_usize(
+                "agents.decompose.max_router_task_bytes",
+                iteron_tunables::param_integer(
+                    "agents.decompose.max_router_task_bytes",
+                    MAX_ROUTER_TASK_BYTES,
+                ),
+            )
+        {
             return Err(RouterSlotError::InvalidObservation(
                 "router task exceeds its bounded observation",
             ));
         }
-        if self.max_leaves as usize > FAN_CAP {
+        if self.max_leaves as usize
+            > iteron_tunables::param_usize("agents.decompose.fan_cap", FAN_CAP)
+        {
             return Err(RouterSlotError::InvalidObservation(
                 "router breadth ceiling exceeds the crate fan cap",
             ));

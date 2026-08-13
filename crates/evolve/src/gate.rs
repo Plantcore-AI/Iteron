@@ -498,8 +498,21 @@ pub fn run(repo: &Path, scratch: &Path) -> Result<EvolutionGateReport, GateError
         separation_of_duties_detail: separation.detail,
     };
     let signed = (GATE_DOMAIN, &body);
-    let body_digest = crate::verifier_crypto::digest_serialized(&signed, MAX_GATE_SUMMARY_BYTES)?;
-    let signature = hmac_serialized(DEMO_GATE_KEY, &signed, MAX_GATE_SUMMARY_BYTES)?;
+    let body_digest = crate::verifier_crypto::digest_serialized(
+        &signed,
+        iteron_tunables::param_integer(
+            "evolve.gate.max_gate_summary_bytes",
+            MAX_GATE_SUMMARY_BYTES,
+        ),
+    )?;
+    let signature = hmac_serialized(
+        DEMO_GATE_KEY,
+        &signed,
+        iteron_tunables::param_integer(
+            "evolve.gate.max_gate_summary_bytes",
+            MAX_GATE_SUMMARY_BYTES,
+        ),
+    )?;
     Ok(EvolutionGateReport {
         body,
         body_digest,
@@ -850,7 +863,12 @@ fn journal_root_of(journal_path: &Path) -> PathBuf {
 
 fn file_digest(path: &Path) -> Result<String, GateError> {
     let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.len() > MAX_TRANSCRIPT_READ_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "evolve.gate.max_transcript_read_bytes",
+            MAX_TRANSCRIPT_READ_BYTES,
+        )
+    {
         return Err(GateError::Io(std::io::Error::other(format!(
             "{} exceeds the {MAX_TRANSCRIPT_READ_BYTES}-byte gate read bound",
             path.display()
@@ -861,7 +879,12 @@ fn file_digest(path: &Path) -> Result<String, GateError> {
 
 fn read_records(path: &Path) -> Result<Vec<TranscriptRecord>, GateError> {
     let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.len() > MAX_TRANSCRIPT_READ_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "evolve.gate.max_transcript_read_bytes",
+            MAX_TRANSCRIPT_READ_BYTES,
+        )
+    {
         return Err(GateError::Io(std::io::Error::other(format!(
             "{} exceeds the {MAX_TRANSCRIPT_READ_BYTES}-byte gate read bound",
             path.display()

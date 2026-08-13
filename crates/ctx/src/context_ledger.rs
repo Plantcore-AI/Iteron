@@ -210,7 +210,12 @@ impl ContextLedger {
     }
 
     pub fn record_segment(&mut self, evidence: ContextSegmentEvidence) {
-        if self.segments.len() == MAX_CONTEXT_LEDGER_SEGMENTS {
+        if self.segments.len()
+            == iteron_tunables::param_integer(
+                "ctx.context_ledger.max_context_ledger_segments",
+                MAX_CONTEXT_LEDGER_SEGMENTS,
+            )
+        {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
@@ -231,7 +236,12 @@ impl ContextLedger {
     }
 
     pub fn record_transform(&mut self, evidence: ContextTransformEvidence) {
-        if self.transforms.len() == MAX_CONTEXT_LEDGER_TRANSFORMS {
+        if self.transforms.len()
+            == iteron_tunables::param_integer(
+                "ctx.context_ledger.max_context_ledger_transforms",
+                MAX_CONTEXT_LEDGER_TRANSFORMS,
+            )
+        {
             self.dropped = self.dropped.saturating_add(1);
         } else {
             self.transforms.push(evidence);

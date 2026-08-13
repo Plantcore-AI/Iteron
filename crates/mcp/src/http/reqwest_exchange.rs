@@ -34,7 +34,10 @@ impl ReqwestMcpExchange {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(deadlines.startup())
             .timeout(deadlines.tool_call())
-            .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
+            .pool_max_idle_per_host(iteron_tunables::param_integer(
+                "mcp.http.reqwest_exchange.pool_max_idle_per_host",
+                POOL_MAX_IDLE_PER_HOST,
+            ))
             .user_agent(concat!("plantcore-core/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| transport_error("client"))?;

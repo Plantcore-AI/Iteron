@@ -384,7 +384,12 @@ impl ProgressSink for PartialWorkSink {
                 let result = truncate_preview(result_preview.as_deref().unwrap_or(""), PREVIEW_MAX);
                 let label = truncate_preview(&label, UI_LABEL_MAX);
                 let cost = result.len() + label.len();
-                if retained.retained_bytes + cost > MAX_PARTIAL_RESULT_BYTES {
+                if retained.retained_bytes + cost
+                    > iteron_tunables::param_integer(
+                        "cli.workflow.max_partial_result_bytes",
+                        MAX_PARTIAL_RESULT_BYTES,
+                    )
+                {
                     retained.dropped += 1;
                     return;
                 }
@@ -890,8 +895,18 @@ fn workflow_task_notification(
     result_path: Option<&Path>,
     report: &RunReport,
 ) -> String {
-    let truncated = summary.len() > MAX_TASK_NOTIFICATION_RESULT_BYTES;
-    let result = utf8_head(summary, MAX_TASK_NOTIFICATION_RESULT_BYTES);
+    let truncated = summary.len()
+        > iteron_tunables::param_integer(
+            "cli.workflow.max_task_notification_result_bytes",
+            MAX_TASK_NOTIFICATION_RESULT_BYTES,
+        );
+    let result = utf8_head(
+        summary,
+        iteron_tunables::param_integer(
+            "cli.workflow.max_task_notification_result_bytes",
+            MAX_TASK_NOTIFICATION_RESULT_BYTES,
+        ),
+    );
     let payload = serde_json::json!({
         "task_id": run_id,
         "task_type": "local_workflow",
@@ -1078,7 +1093,10 @@ impl WorkflowSupervisor {
             .map(|(run_id, run)| (run.ordinal, run_id.as_str(), run))
             .collect();
         runs.sort_by_key(|(ordinal, _, _)| *ordinal);
-        let skip = runs.len().saturating_sub(MAX_OPERATOR_INVENTORY_RUNS);
+        let skip = runs.len().saturating_sub(iteron_tunables::param_integer(
+            "cli.workflow.max_operator_inventory_runs",
+            MAX_OPERATOR_INVENTORY_RUNS,
+        ));
         runs.into_iter()
             .skip(skip)
             .map(|(_, run_id, run)| supervised_run_info(run_id, run))
@@ -1423,7 +1441,12 @@ impl WorkflowSupervisor {
 /// The entry itself is kept: an evicted run answers `collect` by naming its durable `result.json`,
 /// which is a different and honest answer from "unknown run".
 fn evict_summaries(inner: &mut SupervisorInner) {
-    while inner.retained_bytes > MAX_RETAINED_SUMMARY_BYTES {
+    while inner.retained_bytes
+        > iteron_tunables::param_integer(
+            "cli.workflow.max_retained_summary_bytes",
+            MAX_RETAINED_SUMMARY_BYTES,
+        )
+    {
         let victim = inner
             .runs
             .iter()
@@ -1590,7 +1613,10 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(UNIX_SECS_ON_UNUSABLE_CLOCK)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.workflow.unix_secs_on_unusable_clock",
+            UNIX_SECS_ON_UNUSABLE_CLOCK,
+        ))
 }
 
 /// `<workflows_dir>/<run_id>/`.
@@ -1713,17 +1739,33 @@ fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, u
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some((false, 0)),
         Err(_) => return None,
     };
-    if len > MAX_RECENT_JOURNAL_BYTES {
+    if len
+        > iteron_tunables::param_integer(
+            "cli.workflow.max_recent_journal_bytes",
+            MAX_RECENT_JOURNAL_BYTES,
+        )
+    {
         return None;
     }
     use std::io::Read as _;
     let mut bytes = Vec::with_capacity(len as usize);
     std::fs::File::open(path)
         .ok()?
-        .take(MAX_RECENT_JOURNAL_BYTES.saturating_add(1))
+        .take(
+            iteron_tunables::param_integer(
+                "cli.workflow.max_recent_journal_bytes",
+                MAX_RECENT_JOURNAL_BYTES,
+            )
+            .saturating_add(1),
+        )
         .read_to_end(&mut bytes)
         .ok()?;
-    if bytes.len() as u64 > MAX_RECENT_JOURNAL_BYTES {
+    if bytes.len() as u64
+        > iteron_tunables::param_integer(
+            "cli.workflow.max_recent_journal_bytes",
+            MAX_RECENT_JOURNAL_BYTES,
+        )
+    {
         return None;
     }
     let text = String::from_utf8(bytes).ok()?;
@@ -1782,10 +1824,14 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
             .join("journal.jsonl")
             .exists();
         let status = derive_status(result.as_ref(), has_journal);
-        let created_at = manifest
-            .as_ref()
-            .map(|m| m.created_at)
-            .unwrap_or(MISSING_MANIFEST_CREATED_AT);
+        let created_at =
+            manifest
+                .as_ref()
+                .map(|m| m.created_at)
+                .unwrap_or(iteron_tunables::param_integer(
+                    "cli.workflow.missing_manifest_created_at",
+                    MISSING_MANIFEST_CREATED_AT,
+                ));
         out.push(RunListing {
             run_id: run_id.clone(),
             name: manifest

@@ -52,7 +52,14 @@ pub(super) fn load(runs: &Path, run: &str) -> Result<SessionPresentation, String
             ..SessionPresentation::default()
         });
     };
-    let bytes = read_bounded(path, MAX_STATE_BYTES).map_err(|error| error.to_string())?;
+    let bytes = read_bounded(
+        path,
+        iteron_tunables::param_integer(
+            "cli.tui.session_management.max_state_bytes",
+            MAX_STATE_BYTES,
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     let state: SessionPresentation =
         serde_json::from_slice(&bytes).map_err(|_| "session presentation state is malformed")?;
     if state.schema != SCHEMA {
@@ -67,7 +74,11 @@ pub(super) fn update(runs: &Path, run: &str, mutation: Mutation) -> Result<(), S
         Mutation::Rename(title) => {
             let title = title.trim();
             if title.is_empty()
-                || title.len() > MAX_TITLE_BYTES
+                || title.len()
+                    > iteron_tunables::param_integer(
+                        "cli.tui.session_management.max_title_bytes",
+                        MAX_TITLE_BYTES,
+                    )
                 || title.chars().any(|character| character.is_control())
             {
                 return Err(format!(
@@ -85,7 +96,12 @@ pub(super) fn update(runs: &Path, run: &str, mutation: Mutation) -> Result<(), S
         .checked_add(1)
         .ok_or_else(|| "session presentation generation is exhausted".to_owned())?;
     let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_STATE_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.session_management.max_state_bytes",
+            MAX_STATE_BYTES,
+        )
+    {
         return Err("session presentation state exceeds its byte limit".into());
     }
     let root = state_root(runs)?;
@@ -155,7 +171,12 @@ fn ensure_private_directory(path: &Path) -> Result<(), String> {
 
 fn generation_files(entries: fs::ReadDir) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
-    for entry in entries.take(MAX_GENERATIONS + 1) {
+    for entry in entries.take(
+        iteron_tunables::param_integer(
+            "cli.tui.session_management.max_generations",
+            MAX_GENERATIONS,
+        ) + 1,
+    ) {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -171,7 +192,12 @@ fn generation_files(entries: fs::ReadDir) -> Result<Vec<PathBuf>, String> {
             files.push(entry.path());
         }
     }
-    if files.len() > MAX_GENERATIONS {
+    if files.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.session_management.max_generations",
+            MAX_GENERATIONS,
+        )
+    {
         return Err("too many session presentation generations".into());
     }
     Ok(files)
@@ -180,7 +206,10 @@ fn generation_files(entries: fs::ReadDir) -> Result<Vec<PathBuf>, String> {
 fn prune(directory: &Path) -> Result<(), String> {
     let mut files = generation_files(fs::read_dir(directory).map_err(|error| error.to_string())?)?;
     files.sort();
-    let obsolete = files.len().saturating_sub(RETAINED_GENERATIONS);
+    let obsolete = files.len().saturating_sub(iteron_tunables::param_integer(
+        "cli.tui.session_management.retained_generations",
+        RETAINED_GENERATIONS,
+    ));
     for path in files.into_iter().take(obsolete) {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }

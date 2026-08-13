@@ -228,7 +228,10 @@ fn validate_external_constraint_policies(registry: &[crate::Family]) -> Result<(
                 count
                     .checked_add(1)
                     .ok_or(RegistryError::WrongExternalConstraintPolicyCount {
-                        expected: EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+                        expected: crate::param_integer(
+                            "tunables.validate.expected_external_constraint_policies",
+                            EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+                        ),
                         actual: usize::MAX,
                     })?;
             if !policies.insert((family.id, field, ceiling)) {
@@ -240,9 +243,17 @@ fn validate_external_constraint_policies(registry: &[crate::Family]) -> Result<(
             }
         }
     }
-    if count != EXPECTED_EXTERNAL_CONSTRAINT_POLICIES {
+    if count
+        != crate::param_integer(
+            "tunables.validate.expected_external_constraint_policies",
+            EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+        )
+    {
         return Err(RegistryError::WrongExternalConstraintPolicyCount {
-            expected: EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+            expected: crate::param_integer(
+                "tunables.validate.expected_external_constraint_policies",
+                EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+            ),
             actual: count,
         });
     }

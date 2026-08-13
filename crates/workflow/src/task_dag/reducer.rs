@@ -470,7 +470,10 @@ impl TaskDag {
             .filter_map(|dependency| self.tasks.get(dependency))
             .map(|dependency| dependency.dependency_depth + 1)
             .max()
-            .unwrap_or(ROOT_DEPENDENCY_DEPTH);
+            .unwrap_or(iteron_tunables::param_integer(
+                "workflow.task_dag.reducer.root_dependency_depth",
+                ROOT_DEPENDENCY_DEPTH,
+            ));
         let state = initial_state(&self.tasks, &spec.dependencies);
         let reservation = spec.budget.reservable();
         match spec.parent {

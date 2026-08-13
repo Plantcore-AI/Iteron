@@ -88,7 +88,12 @@ impl Agent {
     }
 
     pub fn open_side_conversation(&mut self) -> Result<SideConversation, String> {
-        if self.delegation_depth >= MAX_DELEGATION_DEPTH {
+        if self.delegation_depth
+            >= iteron_tunables::param_integer(
+                "cli.runtime.max_delegation_depth",
+                MAX_DELEGATION_DEPTH,
+            )
+        {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
         let registry = Registry::read_only(&self.workspace)
@@ -107,7 +112,7 @@ impl Agent {
             registry,
             rollout,
             self.model.clone(),
-            SYSTEM.into(),
+            iteron_tunables::param_str("cli.runtime.side_conversation.system", SYSTEM).into(),
             // A side conversation owns a separate ledger, so it does not consume the main
             // session's allowance. Its *ceilings* must nevertheless be the exact values named by
             // the inherited immutable tunables checkpoint. Installing a second local default here
@@ -155,7 +160,10 @@ impl Agent {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.side_conversation.clock_before_epoch_secs",
+                CLOCK_BEFORE_EPOCH_SECS,
+            ));
         let parent_run = self.rollout.run_id().clone();
         side.record_child_genesis_with_tunables(
             &parent_run,

@@ -313,8 +313,11 @@ impl VerificationPolicyEvent {
                     *repeat_count,
                     *verifier_count,
                     *physical_runs,
-                    MAX_COMMANDS,
-                    MAX_PHYSICAL_RUNS,
+                    iteron_tunables::param_integer("protocol.event.max_commands", MAX_COMMANDS),
+                    iteron_tunables::param_integer(
+                        "protocol.event.max_physical_runs",
+                        MAX_PHYSICAL_RUNS,
+                    ),
                 )?;
                 if u16::from(*pass_lanes)
                     .saturating_add(u16::from(*test_failure_lanes))
@@ -339,8 +342,11 @@ impl VerificationPolicyEvent {
                     *repeat_count,
                     *verifier_count,
                     *physical_runs,
-                    MAX_COMMANDS,
-                    MAX_PHYSICAL_RUNS,
+                    iteron_tunables::param_integer("protocol.event.max_commands", MAX_COMMANDS),
+                    iteron_tunables::param_integer(
+                        "protocol.event.max_physical_runs",
+                        MAX_PHYSICAL_RUNS,
+                    ),
                 )?;
                 if *disagreements == 0 || *expires_at_unix_secs == 0 {
                     return Err("verification quarantine lacks disagreement or expiry evidence");
@@ -362,7 +368,11 @@ impl VerificationPolicyEvent {
             | Self::RollbackApplied {
                 mode, path_count, ..
             } => {
-                if *path_count > MAX_ROLLBACK_PATHS
+                if *path_count
+                    > iteron_tunables::param_integer(
+                        "protocol.event.max_rollback_paths",
+                        MAX_ROLLBACK_PATHS,
+                    )
                     || matches!(mode, VerificationRollbackEvidence::SelectedPaths)
                         != (*path_count > 0)
                 {

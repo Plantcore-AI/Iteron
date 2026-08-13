@@ -30,22 +30,46 @@ impl Default for ReconnectPolicy {
 
 impl ReconnectPolicy {
     pub fn new(max_attempts: u32, base_ms: u64, cap_ms: u64) -> Result<Self, McpError> {
-        if max_attempts > MAX_RECONNECT_ATTEMPTS {
+        if max_attempts
+            > iteron_tunables::param_integer(
+                "mcp.reconnect.max_reconnect_attempts",
+                MAX_RECONNECT_ATTEMPTS,
+            )
+        {
             return Err(McpError::InvalidReconnectPolicy {
                 field: "max_attempts",
-                limit: u64::from(MAX_RECONNECT_ATTEMPTS),
+                limit: u64::from(iteron_tunables::param_integer(
+                    "mcp.reconnect.max_reconnect_attempts",
+                    MAX_RECONNECT_ATTEMPTS,
+                )),
             });
         }
-        if base_ms > MAX_RECONNECT_BASE_MS {
+        if base_ms
+            > iteron_tunables::param_integer(
+                "mcp.reconnect.max_reconnect_base_ms",
+                MAX_RECONNECT_BASE_MS,
+            )
+        {
             return Err(McpError::InvalidReconnectPolicy {
                 field: "base_milliseconds",
-                limit: MAX_RECONNECT_BASE_MS,
+                limit: iteron_tunables::param_integer(
+                    "mcp.reconnect.max_reconnect_base_ms",
+                    MAX_RECONNECT_BASE_MS,
+                ),
             });
         }
-        if cap_ms > MAX_RECONNECT_CAP_MS {
+        if cap_ms
+            > iteron_tunables::param_integer(
+                "mcp.reconnect.max_reconnect_cap_ms",
+                MAX_RECONNECT_CAP_MS,
+            )
+        {
             return Err(McpError::InvalidReconnectPolicy {
                 field: "cap_milliseconds",
-                limit: MAX_RECONNECT_CAP_MS,
+                limit: iteron_tunables::param_integer(
+                    "mcp.reconnect.max_reconnect_cap_ms",
+                    MAX_RECONNECT_CAP_MS,
+                ),
             });
         }
         if base_ms > cap_ms {

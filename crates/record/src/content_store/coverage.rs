@@ -289,10 +289,23 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
     let mut runs = 0usize;
     match std::fs::read_dir(&layout.run_refs) {
         Ok(run_dirs) => {
-            for run_dir in run_dirs.take(MAX_CONTENT_RUNS + 1) {
-                if runs == MAX_CONTENT_RUNS {
+            for run_dir in run_dirs.take(
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_runs",
+                    MAX_CONTENT_RUNS,
+                ) + 1,
+            ) {
+                if runs
+                    == iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_runs",
+                        MAX_CONTENT_RUNS,
+                    )
+                {
                     return Err(ContentStoreError::ReferenceBound {
-                        max: MAX_CONTENT_RUNS,
+                        max: iteron_tunables::param_integer(
+                            "record.content_store.model.max_content_runs",
+                            MAX_CONTENT_RUNS,
+                        ),
                     });
                 }
                 runs = runs.saturating_add(1);
@@ -303,10 +316,23 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                 let run_path = run_dir.path();
                 let mut owner = None;
                 let mut directory_edges = 0usize;
-                for edge in std::fs::read_dir(&run_path)?.take(MAX_CONTENT_REFERENCES + 1) {
-                    if edges.len() == MAX_CONTENT_REFERENCES {
+                for edge in std::fs::read_dir(&run_path)?.take(
+                    iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_references",
+                        MAX_CONTENT_REFERENCES,
+                    ) + 1,
+                ) {
+                    if edges.len()
+                        == iteron_tunables::param_integer(
+                            "record.content_store.model.max_content_references",
+                            MAX_CONTENT_REFERENCES,
+                        )
+                    {
                         return Err(ContentStoreError::ReferenceBound {
-                            max: MAX_CONTENT_REFERENCES,
+                            max: iteron_tunables::param_integer(
+                                "record.content_store.model.max_content_references",
+                                MAX_CONTENT_REFERENCES,
+                            ),
                         });
                     }
                     let entry = edge?;
@@ -314,7 +340,13 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                         return Err(ContentStoreError::Corrupt);
                     }
                     let path = entry.path();
-                    let bytes = read_limited(&path, MAX_REFERENCE_EDGE_BYTES)?;
+                    let bytes = read_limited(
+                        &path,
+                        iteron_tunables::param_integer(
+                            "record.content_store.model.max_reference_edge_bytes",
+                            MAX_REFERENCE_EDGE_BYTES,
+                        ),
+                    )?;
                     let edge: ReferenceEdge = serde_json::from_slice(&bytes)?;
                     let expected_name = format!("{}.json", hex::encode(Sha256::digest(&bytes)));
                     let identity = (edge.digest.as_str().to_owned(), expected_name.clone());
@@ -331,7 +363,13 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                         || path.file_name().and_then(std::ffi::OsStr::to_str)
                             != Some(expected_name.as_str())
                         || !forward_metadata.file_type().is_file()
-                        || read_limited(&expected_forward, MAX_REFERENCE_EDGE_BYTES)? != bytes
+                        || read_limited(
+                            &expected_forward,
+                            iteron_tunables::param_integer(
+                                "record.content_store.model.max_reference_edge_bytes",
+                                MAX_REFERENCE_EDGE_BYTES,
+                            ),
+                        )? != bytes
                         || !reverse_identities.insert(identity)
                     {
                         return Err(ContentStoreError::Corrupt);
@@ -355,17 +393,34 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
     let mut forward_count = 0usize;
     match std::fs::read_dir(&layout.refs) {
         Ok(digest_dirs) => {
-            for digest_dir in digest_dirs.take(MAX_CONTENT_REFERENCES + 1) {
+            for digest_dir in digest_dirs.take(
+                iteron_tunables::param_integer(
+                    "record.content_store.model.max_content_references",
+                    MAX_CONTENT_REFERENCES,
+                ) + 1,
+            ) {
                 let digest_dir = digest_dir?;
                 if !digest_dir.file_type()?.is_dir() {
                     return Err(ContentStoreError::Corrupt);
                 }
                 let mut directory_edges = 0usize;
-                for entry in std::fs::read_dir(digest_dir.path())?.take(MAX_CONTENT_REFERENCES + 1)
-                {
-                    if forward_count == MAX_CONTENT_REFERENCES {
+                for entry in std::fs::read_dir(digest_dir.path())?.take(
+                    iteron_tunables::param_integer(
+                        "record.content_store.model.max_content_references",
+                        MAX_CONTENT_REFERENCES,
+                    ) + 1,
+                ) {
+                    if forward_count
+                        == iteron_tunables::param_integer(
+                            "record.content_store.model.max_content_references",
+                            MAX_CONTENT_REFERENCES,
+                        )
+                    {
                         return Err(ContentStoreError::ReferenceBound {
-                            max: MAX_CONTENT_REFERENCES,
+                            max: iteron_tunables::param_integer(
+                                "record.content_store.model.max_content_references",
+                                MAX_CONTENT_REFERENCES,
+                            ),
                         });
                     }
                     forward_count = forward_count.saturating_add(1);
@@ -374,7 +429,13 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                     if !entry.file_type()?.is_file() {
                         return Err(ContentStoreError::Corrupt);
                     }
-                    let bytes = read_limited(&entry.path(), MAX_REFERENCE_EDGE_BYTES)?;
+                    let bytes = read_limited(
+                        &entry.path(),
+                        iteron_tunables::param_integer(
+                            "record.content_store.model.max_reference_edge_bytes",
+                            MAX_REFERENCE_EDGE_BYTES,
+                        ),
+                    )?;
                     let edge: ReferenceEdge = serde_json::from_slice(&bytes)?;
                     let expected_name = format!("{}.json", hex::encode(Sha256::digest(&bytes)));
                     let digest_name = edge.digest.as_str().trim_start_matches("sha256:");
@@ -385,7 +446,13 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                         || digest_dir.file_name().to_str() != Some(digest_name)
                         || entry.file_name().to_str() != Some(expected_name.as_str())
                         || !expected_reverse.is_file()
-                        || read_limited(&expected_reverse, MAX_REFERENCE_EDGE_BYTES)? != bytes
+                        || read_limited(
+                            &expected_reverse,
+                            iteron_tunables::param_integer(
+                                "record.content_store.model.max_reference_edge_bytes",
+                                MAX_REFERENCE_EDGE_BYTES,
+                            ),
+                        )? != bytes
                         || !forward_identities
                             .insert((edge.digest.as_str().to_owned(), expected_name))
                     {

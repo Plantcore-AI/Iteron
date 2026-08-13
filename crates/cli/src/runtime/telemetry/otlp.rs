@@ -32,7 +32,12 @@ pub(super) fn encode(endpoint: &str, export: &Export) -> Result<Vec<Batch>, ()> 
     .into_iter()
     .map(|(signal, value)| {
         let body = serde_json::to_vec(&value).map_err(|_| ())?;
-        if body.len() > MAX_OTLP_BATCH_BYTES {
+        if body.len()
+            > iteron_tunables::param_integer(
+                "cli.runtime.telemetry.otlp.max_otlp_batch_bytes",
+                MAX_OTLP_BATCH_BYTES,
+            )
+        {
             return Err(());
         }
         Ok(Batch {
@@ -145,8 +150,8 @@ fn metrics(export: &Export, resource: &Value) -> Value {
                         "timeUnixNano": "0",
                         "count": metric.observations.to_string(),
                         "sum": metric.value,
-                        "min": metric.min.unwrap_or(UNOBSERVED_HISTOGRAM_BOUND),
-                        "max": metric.max.unwrap_or(UNOBSERVED_HISTOGRAM_BOUND),
+                        "min": metric.min.unwrap_or(iteron_tunables::param_integer("cli.runtime.telemetry.otlp.unobserved_histogram_bound", UNOBSERVED_HISTOGRAM_BOUND)),
+                        "max": metric.max.unwrap_or(iteron_tunables::param_integer("cli.runtime.telemetry.otlp.unobserved_histogram_bound", UNOBSERVED_HISTOGRAM_BOUND)),
                         "explicitBounds": [],
                         "bucketCounts": [metric.observations.to_string()],
                     }]

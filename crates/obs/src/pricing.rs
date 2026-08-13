@@ -175,7 +175,12 @@ impl fmt::Debug for HmacPricingAuthority {
 
 impl HmacPricingAuthority {
     pub fn new(entries: Vec<(SignedRateCard, HmacPricingKey)>) -> Result<Self, PricingError> {
-        if entries.len() > MAX_TRUSTED_RATE_CARDS {
+        if entries.len()
+            > iteron_tunables::param_integer(
+                "obs.pricing.max_trusted_rate_cards",
+                MAX_TRUSTED_RATE_CARDS,
+            )
+        {
             return Err(PricingError::RateCardManifestTooLarge);
         }
         let mut cards = HashMap::new();
@@ -529,9 +534,17 @@ pub fn projected_amount_microusd(rates: TokenRateCard, usage: Usage) -> Result<u
             .checked_mul(u128::from(rate))
             .ok_or(PricingError::AmountOverflow)?;
         let class_cost = numerator
-            .checked_add(MICROTOKENS_PER_TOKEN_CLASS - 1)
+            .checked_add(
+                iteron_tunables::param_integer(
+                    "obs.pricing.microtokens_per_token_class",
+                    MICROTOKENS_PER_TOKEN_CLASS,
+                ) - 1,
+            )
             .ok_or(PricingError::AmountOverflow)?
-            / MICROTOKENS_PER_TOKEN_CLASS;
+            / iteron_tunables::param_integer(
+                "obs.pricing.microtokens_per_token_class",
+                MICROTOKENS_PER_TOKEN_CLASS,
+            );
         total = total
             .checked_add(class_cost)
             .ok_or(PricingError::AmountOverflow)?;

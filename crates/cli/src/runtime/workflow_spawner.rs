@@ -78,8 +78,21 @@ mod worktree;
 /// this defense also covers OS/library diagnostics returned by later setup stages.
 pub(crate) fn safe_agent_refusal(reason: &str) -> String {
     let scrubbed = iteron_record::redact::scrub(reason);
-    let content_limit = MAX_AGENT_REFUSAL_BYTES.saturating_sub(AGENT_REFUSAL_TRUNCATED.len());
-    let mut safe = String::with_capacity(scrubbed.len().min(MAX_AGENT_REFUSAL_BYTES));
+    let content_limit = iteron_tunables::param_integer(
+        "cli.runtime.workflow_spawner.max_agent_refusal_bytes",
+        MAX_AGENT_REFUSAL_BYTES,
+    )
+    .saturating_sub(
+        iteron_tunables::param_str(
+            "cli.runtime.workflow_spawner.agent_refusal_truncated",
+            AGENT_REFUSAL_TRUNCATED,
+        )
+        .len(),
+    );
+    let mut safe = String::with_capacity(scrubbed.len().min(iteron_tunables::param_integer(
+        "cli.runtime.workflow_spawner.max_agent_refusal_bytes",
+        MAX_AGENT_REFUSAL_BYTES,
+    )));
     let mut truncated = false;
     for character in scrubbed.chars() {
         let codepoint = character as u32;
@@ -104,7 +117,10 @@ pub(crate) fn safe_agent_refusal(reason: &str) -> String {
         safe.push_str(&rendered);
     }
     if truncated {
-        safe.push_str(AGENT_REFUSAL_TRUNCATED);
+        safe.push_str(iteron_tunables::param_str(
+            "cli.runtime.workflow_spawner.agent_refusal_truncated",
+            AGENT_REFUSAL_TRUNCATED,
+        ));
     }
     if safe.trim().is_empty() {
         "agent request was refused".into()
@@ -227,6 +243,9 @@ pub struct KernelSpawnerContext {
     pub context_budget_policy: iteron_ctx::ContextBudgetPolicy,
     pub context_materialization_policy: iteron_ctx::ContextMaterializationPolicy,
     pub compaction_policy: iteron_ctx::CompactionPolicy,
+    /// Operator replacement for `prompt/compaction@v1`, inherited so a child summarizes under the
+    /// same instruction its parent does. `None` keeps the compiled default.
+    pub compaction_summary_prompt: Option<String>,
     pub context_home_dir: Option<PathBuf>,
     pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
@@ -406,6 +425,7 @@ impl KernelSpawnerContext {
             context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             compaction_policy: iteron_ctx::CompactionPolicy::default(),
+            compaction_summary_prompt: None,
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
@@ -716,6 +736,7 @@ impl KernelSpawner {
         sub.context_budget_policy = cx.context_budget_policy;
         sub.context_materialization_policy = cx.context_materialization_policy;
         sub.compaction = cx.compaction_policy;
+        sub.compaction_summary_prompt = cx.compaction_summary_prompt.clone();
         sub.context_home_dir = cx.context_home_dir.clone();
         sub.dependency_skill_dirs = cx.dependency_skill_dirs.clone();
         // A workflow child is exactly one level below the operator. The read-only registry has no
@@ -777,7 +798,10 @@ impl KernelSpawner {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .unwrap_or(CLOCK_BEFORE_EPOCH_SECS);
+            .unwrap_or(iteron_tunables::param_integer(
+                "cli.runtime.workflow_spawner.clock_before_epoch_secs",
+                CLOCK_BEFORE_EPOCH_SECS,
+            ));
         let parent_run = iteron_protocol::RunId(cx.parent_run_id.clone());
         sub.record_child_genesis_with_tunables(
             &parent_run,

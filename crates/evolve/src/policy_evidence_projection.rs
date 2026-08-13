@@ -98,9 +98,17 @@ struct ValidatedJoin<'a> {
 
 impl PolicyEvidenceRunFixture {
     pub fn from_json(bytes: &[u8]) -> Result<Self, PolicyEvidenceRunProjectorError> {
-        if bytes.len() > MAX_POLICY_EVIDENCE_RUN_JSON_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "evolve.policy_evidence_projection.max_policy_evidence_run_json_bytes",
+                MAX_POLICY_EVIDENCE_RUN_JSON_BYTES,
+            )
+        {
             return Err(PolicyEvidenceRunProjectorError::FixtureTooLarge {
-                max: MAX_POLICY_EVIDENCE_RUN_JSON_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.policy_evidence_projection.max_policy_evidence_run_json_bytes",
+                    MAX_POLICY_EVIDENCE_RUN_JSON_BYTES,
+                ),
                 actual: bytes.len(),
             });
         }
@@ -388,9 +396,17 @@ impl PolicyEvidenceRunProjector {
         training_policy: TrainingAdmissionPolicy,
     ) -> Result<Self, PolicyEvidenceRunProjectorError> {
         training_policy.validate()?;
-        if fixtures.len() > MAX_POLICY_EVIDENCE_RUNS {
+        if fixtures.len()
+            > iteron_tunables::param_integer(
+                "evolve.policy_evidence_projection.max_policy_evidence_runs",
+                MAX_POLICY_EVIDENCE_RUNS,
+            )
+        {
             return Err(PolicyEvidenceRunProjectorError::FixtureLimit {
-                max: MAX_POLICY_EVIDENCE_RUNS,
+                max: iteron_tunables::param_integer(
+                    "evolve.policy_evidence_projection.max_policy_evidence_runs",
+                    MAX_POLICY_EVIDENCE_RUNS,
+                ),
                 actual: fixtures.len(),
             });
         }

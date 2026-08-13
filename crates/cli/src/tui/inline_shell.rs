@@ -43,19 +43,33 @@ struct Capture {
 impl Capture {
     fn push(&mut self, bytes: &[u8]) {
         self.total = self.total.saturating_add(bytes.len() as u64);
-        let head_len = bytes.len().min(HEAD_BYTES.saturating_sub(self.head.len()));
+        let head_len = bytes.len().min(
+            iteron_tunables::param_integer("cli.tui.inline_shell.head_bytes", HEAD_BYTES)
+                .saturating_sub(self.head.len()),
+        );
         self.head.extend_from_slice(&bytes[..head_len]);
         let remainder = &bytes[head_len..];
-        if remainder.len() >= TAIL_BYTES {
+        if remainder.len()
+            >= iteron_tunables::param_integer("cli.tui.inline_shell.tail_bytes", TAIL_BYTES)
+        {
             self.tail.clear();
-            self.tail.extend(&remainder[remainder.len() - TAIL_BYTES..]);
+            self.tail.extend(
+                &remainder[remainder.len()
+                    - iteron_tunables::param_integer(
+                        "cli.tui.inline_shell.tail_bytes",
+                        TAIL_BYTES,
+                    )..],
+            );
             return;
         }
         let overflow = self
             .tail
             .len()
             .saturating_add(remainder.len())
-            .saturating_sub(TAIL_BYTES);
+            .saturating_sub(iteron_tunables::param_integer(
+                "cli.tui.inline_shell.tail_bytes",
+                TAIL_BYTES,
+            ));
         if overflow > 0 {
             self.tail.drain(..overflow);
         }
@@ -169,16 +183,19 @@ pub(super) async fn run_bash_inline(
     let mut out = Capture::default();
     let mut err = Capture::default();
     let completed = {
-        let running = tokio::time::timeout(TIMEOUT, async {
-            let (out_result, err_result, status) = tokio::join!(
-                drain(&mut stdout, &mut out),
-                drain(&mut stderr, &mut err),
-                child.wait(),
-            );
-            out_result?;
-            err_result?;
-            status
-        });
+        let running = tokio::time::timeout(
+            iteron_tunables::param_duration("cli.tui.inline_shell.timeout", TIMEOUT),
+            async {
+                let (out_result, err_result, status) = tokio::join!(
+                    drain(&mut stdout, &mut out),
+                    drain(&mut stderr, &mut err),
+                    child.wait(),
+                );
+                out_result?;
+                err_result?;
+                status
+            },
+        );
         tokio::pin!(running);
         tokio::select! {
             result = &mut running => Some(result),
@@ -190,9 +207,15 @@ pub(super) async fn run_bash_inline(
     };
     if completed.is_none() {
         iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
-        let _ = tokio::time::timeout(POST_KILL_DRAIN, async {
-            let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
-        })
+        let _ = tokio::time::timeout(
+            iteron_tunables::param_duration(
+                "cli.tui.inline_shell.post_kill_drain",
+                POST_KILL_DRAIN,
+            ),
+            async {
+                let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
+            },
+        )
         .await;
         return failed(cmd, "[cancelled by operator]".into());
     }
@@ -204,9 +227,16 @@ pub(super) async fn run_bash_inline(
         Some(Err(_)) => {
             iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
             let status = child.try_wait().ok().flatten();
-            let _ = tokio::time::timeout(POST_KILL_DRAIN, async {
-                let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err),);
-            })
+            let _ = tokio::time::timeout(
+                iteron_tunables::param_duration(
+                    "cli.tui.inline_shell.post_kill_drain",
+                    POST_KILL_DRAIN,
+                ),
+                async {
+                    let _ =
+                        tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err),);
+                },
+            )
             .await;
             (status, true)
         }

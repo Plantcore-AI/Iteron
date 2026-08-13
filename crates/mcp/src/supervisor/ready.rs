@@ -200,7 +200,7 @@ impl McpSupervisor {
                     self.record_failure(generation, LifecycleFailure::Deadline)?;
                     return Err(operation_deadline());
                 }
-                _ = tokio::time::sleep(Duration::from_millis(POST_DISCOVERY_LIVENESS_SETTLE_MS)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(iteron_tunables::param_integer("mcp.supervisor.ready.post_discovery_liveness_settle_ms", POST_DISCOVERY_LIVENESS_SETTLE_MS))) => {}
             }
             if self.reconcile_ready_liveness()? {
                 return Ok(generation);

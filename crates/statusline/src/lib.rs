@@ -173,7 +173,9 @@ impl Value {
     /// branch name degrades the display instead of driving the terminal.
     pub fn render(&self) -> String {
         match self {
-            Value::Unknown => UNKNOWN.to_owned(),
+            Value::Unknown => {
+                iteron_tunables::param_str("statusline.lib.unknown", UNKNOWN).to_owned()
+            }
             Value::Text(t) => lossy(t),
             Value::Count(n) => n.to_string(),
             Value::Percent(p) => format!("{p}%"),
@@ -195,10 +197,10 @@ impl StatusLine {
             .into_iter()
             .map(Field::parse)
             .collect::<Result<Vec<_>, _>>()?;
-        if fields.len() > MAX_FIELDS {
+        if fields.len() > iteron_tunables::param_integer("statusline.lib.max_fields", MAX_FIELDS) {
             return Err(ConfigError::TooManyFields {
                 count: fields.len(),
-                limit: MAX_FIELDS,
+                limit: iteron_tunables::param_integer("statusline.lib.max_fields", MAX_FIELDS),
             });
         }
         // One fact shown twice is a configuration mistake, not a layout choice: the two copies can
@@ -230,7 +232,10 @@ impl StatusLine {
             .collect::<Vec<_>>()
             .join(" | ");
         // Elided to fit the row rather than allowed to wrap.
-        width::truncate_to_cells(&row, MAX_ROW_CELLS)
+        width::truncate_to_cells(
+            &row,
+            iteron_tunables::param_integer("statusline.lib.max_row_cells", MAX_ROW_CELLS),
+        )
     }
 }
 

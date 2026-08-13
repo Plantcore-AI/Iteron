@@ -20,7 +20,10 @@ const EDITOR_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn validate_command(command: &[String]) -> Result<(), String> {
-    if command.is_empty() || command.len() > MAX_EDITOR_ARGS {
+    if command.is_empty()
+        || command.len()
+            > iteron_tunables::param_integer("cli.external_editor.max_editor_args", MAX_EDITOR_ARGS)
+    {
         return Err(format!(
             "external_editor must contain 1..={MAX_EDITOR_ARGS} argv entries"
         ));
@@ -28,7 +31,8 @@ pub(crate) fn validate_command(command: &[String]) -> Result<(), String> {
     let mut total = 0_usize;
     for (index, argument) in command.iter().enumerate() {
         if argument.is_empty()
-            || argument.len() > MAX_ARG_BYTES
+            || argument.len()
+                > iteron_tunables::param_integer("cli.external_editor.max_arg_bytes", MAX_ARG_BYTES)
             || argument.contains('\0')
             || argument
                 .chars()
@@ -42,7 +46,12 @@ pub(crate) fn validate_command(command: &[String]) -> Result<(), String> {
             .checked_add(argument.len())
             .ok_or_else(|| "external_editor argv size overflow".to_owned())?;
     }
-    if total > MAX_TOTAL_ARG_BYTES {
+    if total
+        > iteron_tunables::param_integer(
+            "cli.external_editor.max_total_arg_bytes",
+            MAX_TOTAL_ARG_BYTES,
+        )
+    {
         return Err(format!(
             "external_editor argv exceeds {MAX_TOTAL_ARG_BYTES} total bytes"
         ));
@@ -83,7 +92,9 @@ pub(crate) async fn edit(
     draft: &str,
     sensitive_env_names: &[String],
 ) -> Result<String, String> {
-    if draft.len() > MAX_DRAFT_BYTES {
+    if draft.len()
+        > iteron_tunables::param_integer("cli.external_editor.max_draft_bytes", MAX_DRAFT_BYTES)
+    {
         return Err(format!(
             "draft exceeds the external-editor limit of {MAX_DRAFT_BYTES} bytes"
         ));
@@ -109,7 +120,12 @@ pub(crate) async fn edit(
     let mut child = process
         .spawn()
         .map_err(|error| format!("external editor could not start: {error}"))?;
-    let status = match tokio::time::timeout(EDITOR_TIMEOUT, child.wait()).await {
+    let status = match tokio::time::timeout(
+        iteron_tunables::param_duration("cli.external_editor.editor_timeout", EDITOR_TIMEOUT),
+        child.wait(),
+    )
+    .await
+    {
         Ok(result) => result.map_err(|error| format!("external editor wait failed: {error}"))?,
         Err(_) => {
             let _ = child.kill().await;
@@ -153,7 +169,10 @@ impl TempDraft {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         }
-        for _ in 0..MAX_TEMP_CREATE_ATTEMPTS {
+        for _ in 0..iteron_tunables::param_integer(
+            "cli.external_editor.max_temp_create_attempts",
+            MAX_TEMP_CREATE_ATTEMPTS,
+        ) {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!("prompt-edit-{}-{sequence}.md", std::process::id()));
             let mut options = OpenOptions::new();
@@ -204,7 +223,10 @@ impl TempDraft {
                 "editor replaced the draft with a non-regular file",
             ));
         }
-        if metadata.len() > MAX_DRAFT_BYTES as u64 {
+        if metadata.len()
+            > iteron_tunables::param_integer("cli.external_editor.max_draft_bytes", MAX_DRAFT_BYTES)
+                as u64
+        {
             return Err(std::io::Error::other(format!(
                 "edited draft exceeds {MAX_DRAFT_BYTES} bytes"
             )));
@@ -215,9 +237,14 @@ impl TempDraft {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take((MAX_DRAFT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_DRAFT_BYTES {
+        file.take(
+            (iteron_tunables::param_integer("cli.external_editor.max_draft_bytes", MAX_DRAFT_BYTES)
+                + 1) as u64,
+        )
+        .read_to_end(&mut bytes)?;
+        if bytes.len()
+            > iteron_tunables::param_integer("cli.external_editor.max_draft_bytes", MAX_DRAFT_BYTES)
+        {
             return Err(std::io::Error::other(format!(
                 "edited draft exceeds {MAX_DRAFT_BYTES} bytes"
             )));

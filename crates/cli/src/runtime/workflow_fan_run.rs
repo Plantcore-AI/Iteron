@@ -84,7 +84,10 @@ impl Agent {
             .with_args(args.clone())
             .with_run_id(iteron_workflow::RunId::new(workflow_run_id))
             .with_workflows_dir(workflows_dir.clone())
-            .with_limits(limits);
+            .with_limits(limits)
+            // The built-in fan runs on engine-default policy, which already reassigns on a definite
+            // negative; carry the profile so its recovery artifact reaches that path too.
+            .with_tunables_profile(self.tunables_profile());
         crate::workflow::persist_inputs(
             &workflows_dir,
             &crate::workflow::RunManifest {
@@ -237,7 +240,15 @@ impl Agent {
                         workflow_state,
                     )?;
                 }
-                match tokio::time::timeout(WORKFLOW_FAN_POLL, &mut joined).await {
+                match tokio::time::timeout(
+                    iteron_tunables::param_duration(
+                        "cli.runtime.workflow_fan_run.workflow_fan_poll",
+                        WORKFLOW_FAN_POLL,
+                    ),
+                    &mut joined,
+                )
+                .await
+                {
                     Ok(report) => break report,
                     Err(_) => {
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));

@@ -117,7 +117,11 @@ pub(super) fn is_sha256(value: &str) -> bool {
 
 pub(super) fn safe_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_RUN_GENESIS_TUNABLE_ID_BYTES
+        && value.len()
+            <= iteron_tunables::param_integer(
+                "protocol.tunables_snapshot.max_run_genesis_tunable_id_bytes",
+                MAX_RUN_GENESIS_TUNABLE_ID_BYTES,
+            )
         && !value.chars().any(char::is_control)
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')

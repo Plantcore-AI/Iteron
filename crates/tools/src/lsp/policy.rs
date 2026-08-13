@@ -49,15 +49,29 @@ pub struct LspRecoveryPolicy {
 
 impl LspRecoveryPolicy {
     pub fn validate(self) -> Result<Self, LspPolicyError> {
-        if !(1..=MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS).contains(&self.request_timeout_milliseconds)
+        if !(1..=iteron_tunables::param_integer(
+            "tools.lsp.policy.max_lsp_request_timeout_milliseconds",
+            MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS,
+        ))
+            .contains(&self.request_timeout_milliseconds)
         {
             return Err(LspPolicyError::RequestTimeout);
         }
-        if self.max_restarts > MAX_LSP_RESTARTS {
+        if self.max_restarts
+            > iteron_tunables::param_integer("tools.lsp.policy.max_lsp_restarts", MAX_LSP_RESTARTS)
+        {
             return Err(LspPolicyError::RestartCount);
         }
-        if self.backoff_base_milliseconds > MAX_LSP_BACKOFF_MILLISECONDS
-            || self.backoff_cap_milliseconds > MAX_LSP_BACKOFF_MILLISECONDS
+        if self.backoff_base_milliseconds
+            > iteron_tunables::param_integer(
+                "tools.lsp.policy.max_lsp_backoff_milliseconds",
+                MAX_LSP_BACKOFF_MILLISECONDS,
+            )
+            || self.backoff_cap_milliseconds
+                > iteron_tunables::param_integer(
+                    "tools.lsp.policy.max_lsp_backoff_milliseconds",
+                    MAX_LSP_BACKOFF_MILLISECONDS,
+                )
         {
             return Err(LspPolicyError::RestartBackoff);
         }
@@ -78,10 +92,38 @@ impl LspRecoveryPolicy {
 impl Default for LspRecoveryPolicy {
     fn default() -> Self {
         Self {
-            request_timeout_milliseconds: DEFAULT_LSP_REQUEST_TIMEOUT_MILLISECONDS,
-            max_restarts: DEFAULT_LSP_MAX_RESTARTS,
-            backoff_base_milliseconds: DEFAULT_LSP_BACKOFF_BASE_MILLISECONDS,
-            backoff_cap_milliseconds: DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS,
+            request_timeout_milliseconds: iteron_tunables::param_u64(
+                "tools.lsp.policy.default_lsp_request_timeout_milliseconds",
+                iteron_tunables::param_integer(
+                    "tools.lsp.policy.default_lsp_request_timeout_milliseconds",
+                    DEFAULT_LSP_REQUEST_TIMEOUT_MILLISECONDS,
+                ),
+            ),
+            max_restarts: u32::try_from(iteron_tunables::param_i128(
+                "tools.lsp.policy.default_lsp_max_restarts",
+                i128::from(iteron_tunables::param_integer(
+                    "tools.lsp.policy.default_lsp_max_restarts",
+                    DEFAULT_LSP_MAX_RESTARTS,
+                )),
+            ))
+            .unwrap_or(iteron_tunables::param_integer(
+                "tools.lsp.policy.default_lsp_max_restarts",
+                DEFAULT_LSP_MAX_RESTARTS,
+            )),
+            backoff_base_milliseconds: iteron_tunables::param_u64(
+                "tools.lsp.policy.default_lsp_backoff_base_milliseconds",
+                iteron_tunables::param_integer(
+                    "tools.lsp.policy.default_lsp_backoff_base_milliseconds",
+                    DEFAULT_LSP_BACKOFF_BASE_MILLISECONDS,
+                ),
+            ),
+            backoff_cap_milliseconds: iteron_tunables::param_u64(
+                "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
+                iteron_tunables::param_integer(
+                    "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
+                    DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS,
+                ),
+            ),
         }
     }
 }
@@ -97,7 +139,10 @@ impl LspRuntimePolicy {
         routes: Vec<LspLanguageRoute>,
         recovery: LspRecoveryPolicy,
     ) -> Result<Self, LspPolicyError> {
-        if routes.is_empty() || routes.len() > MAX_LSP_ROUTES {
+        if routes.is_empty()
+            || routes.len()
+                > iteron_tunables::param_integer("tools.lsp.policy.max_lsp_routes", MAX_LSP_ROUTES)
+        {
             return Err(LspPolicyError::RouteCount);
         }
         let mut languages = BTreeSet::new();
@@ -126,7 +171,13 @@ impl LspRuntimePolicy {
     ) -> Result<Self, LspPolicyError> {
         let mut routes = Self::default().by_language();
         for configured in configured {
-            if configured.command.is_empty() || configured.command.len() > MAX_LSP_ARGUMENTS {
+            if configured.command.is_empty()
+                || configured.command.len()
+                    > iteron_tunables::param_integer(
+                        "tools.lsp.policy.max_lsp_arguments",
+                        MAX_LSP_ARGUMENTS,
+                    )
+            {
                 return Err(LspPolicyError::Arguments);
             }
             let mut command = configured.command.into_iter();
@@ -211,14 +262,20 @@ fn validate_route(route: &LspLanguageRoute) -> Result<(), LspPolicyError> {
         "javascriptreact",
         "python",
     ];
-    if !LANGUAGES.contains(&route.language_id.as_str()) {
+    if !iteron_tunables::param_str_list("tools.lsp.policy.languages", &LANGUAGES)
+        .contains(&route.language_id.as_str())
+    {
         return Err(LspPolicyError::UnsupportedLanguage);
     }
     if !valid_identifier(&route.server_id, true) {
         return Err(LspPolicyError::ServerId);
     }
     if !valid_part(&route.executable)
-        || route.arguments.len() > MAX_LSP_ARGUMENTS
+        || route.arguments.len()
+            > iteron_tunables::param_integer(
+                "tools.lsp.policy.max_lsp_arguments",
+                MAX_LSP_ARGUMENTS,
+            )
         || route.arguments.iter().any(|part| !valid_part(part))
     {
         return Err(LspPolicyError::Arguments);

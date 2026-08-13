@@ -59,7 +59,11 @@ impl Policy {
     pub fn admit_target(&self, raw: &str) -> Option<String> {
         if !self.supports_osc8()
             || raw.is_empty()
-            || raw.len() > MAX_TARGET_BYTES
+            || raw.len()
+                > iteron_tunables::param_integer(
+                    "cli.tui.hyperlink.max_target_bytes",
+                    MAX_TARGET_BYTES,
+                )
             || raw.chars().any(char::is_control)
         {
             return None;
@@ -117,13 +121,21 @@ impl Policy {
 
 fn bounded_url(url: Url) -> Option<String> {
     let target = String::from(url);
-    (target.len() <= MAX_TARGET_BYTES && !target.chars().any(char::is_control)).then_some(target)
+    (target.len()
+        <= iteron_tunables::param_integer("cli.tui.hyperlink.max_target_bytes", MAX_TARGET_BYTES)
+        && !target.chars().any(char::is_control))
+    .then_some(target)
 }
 
 fn detect_capability() -> Capability {
     detect_with(|name| {
         let value = std::env::var(name).ok()?;
-        (value.len() <= MAX_ENV_VALUE_BYTES).then_some(value)
+        (value.len()
+            <= iteron_tunables::param_integer(
+                "cli.tui.hyperlink.max_env_value_bytes",
+                MAX_ENV_VALUE_BYTES,
+            ))
+        .then_some(value)
     })
 }
 
@@ -199,7 +211,10 @@ fn apply_to_buffer_with_chunk_width(
     'regions: for region in regions[first_visible..]
         .iter()
         .take_while(|region| region.row < bottom)
-        .take(MAX_LINKS_PER_FRAME)
+        .take(iteron_tunables::param_integer(
+            "cli.tui.hyperlink.max_links_per_frame",
+            MAX_LINKS_PER_FRAME,
+        ))
     {
         let Ok(view_row) = u16::try_from(region.row.saturating_sub(top)) else {
             continue;
@@ -209,7 +224,13 @@ fn apply_to_buffer_with_chunk_width(
         };
         let mut column = region.col.min(area.width);
         let end = region.col.saturating_add(region.width).min(area.width);
-        while column < end && linked_cells < MAX_LINK_CELLS_PER_FRAME {
+        while column < end
+            && linked_cells
+                < iteron_tunables::param_integer(
+                    "cli.tui.hyperlink.max_link_cells_per_frame",
+                    MAX_LINK_CELLS_PER_FRAME,
+                )
+        {
             let x = area.x.saturating_add(column);
             let y = area.y.saturating_add(view_row);
             let mut chunk = String::new();
@@ -238,11 +259,18 @@ fn apply_to_buffer_with_chunk_width(
                 continue;
             }
             // Two OSC 8 delimiters wrap the target and the visible chunk.
-            let encoded_len = target
-                .len()
-                .saturating_add(chunk.len())
-                .saturating_add(OSC8_DELIMITER_BYTES);
-            if osc_bytes.saturating_add(encoded_len) > MAX_OSC_BYTES_PER_FRAME {
+            let encoded_len = target.len().saturating_add(chunk.len()).saturating_add(
+                iteron_tunables::param_integer(
+                    "cli.tui.hyperlink.osc8_delimiter_bytes",
+                    OSC8_DELIMITER_BYTES,
+                ),
+            );
+            if osc_bytes.saturating_add(encoded_len)
+                > iteron_tunables::param_integer(
+                    "cli.tui.hyperlink.max_osc_bytes_per_frame",
+                    MAX_OSC_BYTES_PER_FRAME,
+                )
+            {
                 break 'regions;
             }
             let osc = format!("\u{1b}]8;;{target}\u{7}{chunk}\u{1b}]8;;\u{7}");
@@ -251,7 +279,12 @@ fn apply_to_buffer_with_chunk_width(
             linked_cells = linked_cells.saturating_add(usize::from(chunk_width));
             osc_bytes = osc_bytes.saturating_add(encoded_len);
         }
-        if linked_cells >= MAX_LINK_CELLS_PER_FRAME {
+        if linked_cells
+            >= iteron_tunables::param_integer(
+                "cli.tui.hyperlink.max_link_cells_per_frame",
+                MAX_LINK_CELLS_PER_FRAME,
+            )
+        {
             break;
         }
     }

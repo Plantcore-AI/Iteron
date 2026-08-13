@@ -7,9 +7,7 @@ use super::types::{
     ActionError, JobId, JobShared, JobState, ProcessHealth, ProcessSnapshot, ProcessSummary,
     WriteReceipt, lock,
 };
-use super::{
-    CONTROL_RESPONSE_SECS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS, ProcessLifecycleObserver,
-};
+use super::{CONTROL_RESPONSE_SECS, ProcessLifecycleObserver};
 use futures_util::future::join_all;
 use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyProcess, ConfinedPtyResize, Confinement, PersistentBackend,
@@ -105,7 +103,7 @@ impl Supervisor {
         }
         let id = self.reserve_id(policy.max_background_jobs)?;
         let mut confinement = Confinement::egress_off(&launch.policy.cwd.initial_cwd);
-        confinement.timeout_secs = MAX_JOB_RUNTIME_SECS;
+        confinement.timeout_secs = crate::process::max_job_runtime_secs();
         confinement.child_environment = Some(launch.child_environment);
         let window = WindowSize::new(rows, cols)
             .map_err(|error| ActionError::Definite(error.to_string()))?;
@@ -238,14 +236,15 @@ impl Supervisor {
 
     fn reserve_id(&self, max_active_jobs: usize) -> Result<JobId, ActionError> {
         let mut state = lock(&self.state);
-        while state.jobs.len() >= MAX_JOB_RECORDS {
+        let max_job_records = super::max_job_records();
+        while state.jobs.len() >= max_job_records {
             let Some(id) = state
                 .jobs
                 .iter()
                 .find_map(|(id, job)| job.is_reconciled_terminal().then_some(*id))
             else {
                 return Err(ActionError::Definite(format!(
-                    "job table is full ({MAX_JOB_RECORDS} retained records)"
+                    "job table is full ({max_job_records} retained records)"
                 )));
             };
             state.jobs.remove(&id);
@@ -463,7 +462,10 @@ impl Job {
             .try_send(WriteControl { bytes, eof, reply })
             .map_err(|error| send_error(self.id, error))?;
         let delivered = match tokio::time::timeout(
-            Duration::from_secs(CONTROL_RESPONSE_SECS),
+            Duration::from_secs(iteron_tunables::param_integer(
+                "tools.process.mod.control_response_secs",
+                CONTROL_RESPONSE_SECS,
+            )),
             response,
         )
         .await
@@ -532,7 +534,10 @@ impl Job {
             return self.wait_for_terminal("closed stop controller").await;
         }
         let authoritative = match tokio::time::timeout(
-            Duration::from_secs(CONTROL_RESPONSE_SECS),
+            Duration::from_secs(iteron_tunables::param_integer(
+                "tools.process.mod.control_response_secs",
+                CONTROL_RESPONSE_SECS,
+            )),
             response,
         )
         .await
@@ -574,15 +579,21 @@ impl Job {
                 })?;
             }
         };
-        tokio::time::timeout(Duration::from_secs(CONTROL_RESPONSE_SECS), terminal)
-            .await
-            .map_err(|_| {
-                self.abort_after_unknown();
-                ActionError::Unknown(format!(
-                    "job `{}` did not terminalize after {reason}; cleanup was forced",
-                    self.id
-                ))
-            })?
+        tokio::time::timeout(
+            Duration::from_secs(iteron_tunables::param_integer(
+                "tools.process.mod.control_response_secs",
+                CONTROL_RESPONSE_SECS,
+            )),
+            terminal,
+        )
+        .await
+        .map_err(|_| {
+            self.abort_after_unknown();
+            ActionError::Unknown(format!(
+                "job `{}` did not terminalize after {reason}; cleanup was forced",
+                self.id
+            ))
+        })?
     }
 
     fn abort_after_unknown(&self) {

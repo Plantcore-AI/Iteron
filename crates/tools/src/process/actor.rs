@@ -2,8 +2,8 @@ use super::policy::{PersistentBackendSelection, ProcessRuntimePolicy};
 use super::types::JobId;
 use super::types::{ActionError, JobShared, JobState, lock};
 use super::{
-    CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, ProcessLifecycleKind,
-    ProcessLifecycleNotice, ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
+    CONTROL_QUEUE_CAPACITY, OUTPUT_DRAIN_SECS, ProcessLifecycleKind, ProcessLifecycleNotice,
+    ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
 };
 use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess,
@@ -40,8 +40,14 @@ pub(super) fn spawn_actor(
     runtime_policy: ProcessRuntimePolicy,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
 ) -> ActorChannels {
-    let (writes, write_receiver) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
-    let (stop, stop_receiver) = mpsc::channel(STOP_QUEUE_CAPACITY);
+    let (writes, write_receiver) = mpsc::channel(iteron_tunables::param_integer(
+        "tools.process.mod.control_queue_capacity",
+        CONTROL_QUEUE_CAPACITY,
+    ));
+    let (stop, stop_receiver) = mpsc::channel(iteron_tunables::param_integer(
+        "tools.process.mod.stop_queue_capacity",
+        STOP_QUEUE_CAPACITY,
+    ));
     let (event_sender, events) = mpsc::channel(4);
     let stdout_task = tokio::spawn(drain_output(
         stdout,
@@ -157,7 +163,7 @@ async fn run_job(
             None
         }
     };
-    let deadline = tokio::time::sleep(Duration::from_secs(MAX_JOB_RUNTIME_SECS));
+    let deadline = tokio::time::sleep(Duration::from_secs(crate::process::max_job_runtime_secs()));
     tokio::pin!(deadline);
     let interactive = runtime_policy.backend == PersistentBackendSelection::Persistent;
     let idle_milliseconds = if interactive {
@@ -274,7 +280,12 @@ async fn run_job(
     writes.close();
     stops.close();
     reject_pending_writes(&mut writes);
-    let mut stop_replies = Vec::with_capacity(STOP_QUEUE_CAPACITY + 1);
+    let mut stop_replies = Vec::with_capacity(
+        iteron_tunables::param_integer(
+            "tools.process.mod.stop_queue_capacity",
+            STOP_QUEUE_CAPACITY,
+        ) + 1,
+    );
     if let Some(reply) = stop_reply {
         stop_replies.push(reply);
     }
@@ -354,7 +365,15 @@ async fn write_stdin(
         }
         Ok::<(), std::io::Error>(())
     };
-    match tokio::time::timeout(Duration::from_secs(STDIN_WRITE_SECS), operation).await {
+    match tokio::time::timeout(
+        Duration::from_secs(iteron_tunables::param_integer(
+            "tools.process.mod.stdin_write_secs",
+            STDIN_WRITE_SECS,
+        )),
+        operation,
+    )
+    .await
+    {
         Ok(Ok(())) => {
             if eof {
                 *stdin = None;
@@ -410,9 +429,15 @@ async fn finish_drains(
 }
 
 async fn finish_drain(mut task: tokio::task::JoinHandle<()>) {
-    if tokio::time::timeout(Duration::from_secs(OUTPUT_DRAIN_SECS), &mut task)
-        .await
-        .is_err()
+    if tokio::time::timeout(
+        Duration::from_secs(iteron_tunables::param_integer(
+            "tools.process.mod.output_drain_secs",
+            OUTPUT_DRAIN_SECS,
+        )),
+        &mut task,
+    )
+    .await
+    .is_err()
     {
         task.abort();
     }

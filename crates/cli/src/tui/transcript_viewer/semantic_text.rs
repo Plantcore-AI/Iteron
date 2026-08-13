@@ -361,7 +361,10 @@ struct BoundedText<'a> {
 impl<'a> BoundedText<'a> {
     fn new(max_bytes: usize, cancelled: &'a AtomicBool) -> Self {
         Self {
-            text: String::with_capacity(max_bytes.min(TEXT_RESERVE_BYTES)),
+            text: String::with_capacity(max_bytes.min(iteron_tunables::param_integer(
+                "cli.tui.transcript_viewer.semantic_text.text_reserve_bytes",
+                TEXT_RESERVE_BYTES,
+            ))),
             max_bytes,
             truncated: false,
             cancelled,

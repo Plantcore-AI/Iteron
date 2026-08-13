@@ -159,7 +159,10 @@ impl FileDiff {
         const CAP: usize = 200;
         let mut lines = Vec::new();
         let mut dels = 0u32;
-        for l in old.lines().take(CAP) {
+        for l in old
+            .lines()
+            .take(iteron_tunables::param_integer("protocol.diff.cap", CAP))
+        {
             lines.push(DiffLine {
                 tag: DiffTag::Del,
                 text: l.to_string(),
@@ -167,7 +170,10 @@ impl FileDiff {
             dels += 1;
         }
         let mut adds = 0u32;
-        for l in new.lines().take(CAP) {
+        for l in new
+            .lines()
+            .take(iteron_tunables::param_integer("protocol.diff.cap", CAP))
+        {
             lines.push(DiffLine {
                 tag: DiffTag::Add,
                 text: l.to_string(),
@@ -199,7 +205,7 @@ impl FileDiff {
         };
         let mut lines_seen = 0usize;
         for raw in text.lines() {
-            if lines_seen >= MAX_LINES {
+            if lines_seen >= iteron_tunables::param_integer("protocol.diff.max_lines", MAX_LINES) {
                 break;
             }
             if let Some(rest) = raw.strip_prefix("diff --git ") {

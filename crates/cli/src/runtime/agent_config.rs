@@ -140,6 +140,7 @@ impl Agent {
             environment_context: None,
             composition_environment_context: None,
             compaction: CompactionPolicy::default(),
+            compaction_summary_prompt: None,
             compacted_in_run: false,
             last_compaction_turn: None,
             context_estimator,
@@ -189,7 +190,10 @@ impl Agent {
             effect_admissions: effect_admission::EffectAdmissions::default(),
             interrupt: None,
             interrupt_requested: false,
-            max_tool_concurrency: DEFAULT_MAX_TOOL_CONCURRENCY,
+            max_tool_concurrency: iteron_tunables::param_integer(
+                "cli.runtime.default_max_tool_concurrency",
+                DEFAULT_MAX_TOOL_CONCURRENCY,
+            ),
             session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
             workflow_progress_tx: None,
@@ -242,6 +246,7 @@ impl Agent {
             hook_effect_journal: None,
             telemetry: None,
             run_deadline: None,
+            tunables_profile: None,
         }
     }
 
@@ -300,6 +305,26 @@ impl Agent {
         agent.multimodal_decode_envelope = applied.multimodal_decode;
         agent.tunables_pin = Some(pin);
         Ok(agent)
+    }
+
+    /// Install the operator tunables profile this session resolved under.
+    ///
+    /// Prompt artifacts it carries are model-visible text and only that: the base system prompt is
+    /// already replaced this way at the composition root, and a workflow started by this agent
+    /// reads `prompt/recovery@v1` from the same document. Capability sets, tool schemas, and every
+    /// budget are resolved elsewhere and are not reachable from here.
+    pub(crate) fn install_tunables_profile(
+        &mut self,
+        profile: Option<std::sync::Arc<iteron_tunables::ProfileDocument>>,
+    ) {
+        self.tunables_profile = profile;
+    }
+
+    /// The operator profile a run this agent starts should be resolved under.
+    pub(crate) fn tunables_profile(
+        &self,
+    ) -> Option<std::sync::Arc<iteron_tunables::ProfileDocument>> {
+        self.tunables_profile.clone()
     }
 
     /// Install the session owner resolved before this fresh Agent was created. This is accepted

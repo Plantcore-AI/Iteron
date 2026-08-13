@@ -16,12 +16,20 @@ impl Agent {
         }
         // Build a transient message list: the middle history + a summarize instruction.
         let mut msgs = middle.to_vec();
-        let prompt = match focus {
-            Some(f) if !f.trim().is_empty() => format!(
-                "{}\n\nFocus especially on: {f}",
-                CompactionPolicy::summary_prompt()
-            ),
-            _ => CompactionPolicy::summary_prompt().to_string(),
+        // The instruction is the addressable `prompt/compaction@v1` artifact: an operator profile
+        // may replace the text, and nothing else about the compaction — plan, bounds, coverage
+        // check — is reachable from here. Without a replacement this is the compiled constant.
+        let prompt = {
+            let instruction: &str = self
+                .compaction_summary_prompt
+                .as_deref()
+                .unwrap_or(CompactionPolicy::summary_prompt());
+            match focus {
+                Some(f) if !f.trim().is_empty() => {
+                    format!("{instruction}\n\nFocus especially on: {f}")
+                }
+                _ => instruction.to_string(),
+            }
         };
         let prompt = if self.compaction.summary_profile.preserve_tool_evidence {
             format!(
@@ -388,7 +396,10 @@ impl Agent {
                 let covered = if self.compaction.coverage_check {
                     self.verify_compaction_summary(&plan.to_summarize, &summary)
                         .await
-                        .unwrap_or(COVERAGE_UNPROVEN)
+                        .unwrap_or(iteron_tunables::param_bool(
+                            "cli.runtime.compaction.coverage_unproven",
+                            COVERAGE_UNPROVEN,
+                        ))
                 } else {
                     true
                 };

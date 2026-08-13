@@ -150,7 +150,10 @@ pub(super) const FRAME_COALESCE: Duration = Duration::from_millis(16);
 pub(super) const MAX_EQ_EVENTS_PER_TICK: usize = 64;
 
 pub(super) fn eq_tick_slots() -> std::ops::Range<usize> {
-    0..MAX_EQ_EVENTS_PER_TICK
+    0..iteron_tunables::param_integer(
+        "cli.tui.driver_support.max_eq_events_per_tick",
+        MAX_EQ_EVENTS_PER_TICK,
+    )
 }
 /// Spinner/elapsed animation cadence. The loop is event-driven, so the animation carries its own
 /// clock rather than riding on an input poll's timeout.
@@ -182,7 +185,13 @@ pub(super) fn next_wake(
         at_earliest(next_frame_at);
     }
     if running {
-        at_earliest(last_spin + SPINNER_TICK);
+        at_earliest(
+            last_spin
+                + iteron_tunables::param_duration(
+                    "cli.tui.driver_support.spinner_tick",
+                    SPINNER_TICK,
+                ),
+        );
     }
     if let Some(reveal) = next_tool_reveal {
         at_earliest(reveal);
@@ -340,7 +349,15 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
         .send(InputThreadControl::Pause(acknowledge))
         .map_err(|_| "terminal input reader is no longer available".to_owned())?;
     if acknowledged
-        .recv_timeout(TERMINAL_READ_SLICE + INPUT_PAUSE_ACK_SLACK)
+        .recv_timeout(
+            iteron_tunables::param_duration(
+                "cli.tui.driver_support.terminal_read_slice",
+                TERMINAL_READ_SLICE,
+            ) + iteron_tunables::param_duration(
+                "cli.tui.driver_support.input_pause_ack_slack",
+                INPUT_PAUSE_ACK_SLACK,
+            ),
+        )
         .is_err()
     {
         // The reader may observe Pause after this timeout. Queue Resume before returning so it

@@ -336,7 +336,9 @@ pub(super) fn note_image_refusal(app: &mut App, path: &Path, error: &image_input
     if !app.refused_image_paths.insert(path.to_path_buf()) {
         return;
     }
-    if app.refused_image_paths.len() > MAX_REFUSED_IMAGE_PATHS {
+    if app.refused_image_paths.len()
+        > iteron_tunables::param_integer("cli.tui.max_refused_image_paths", MAX_REFUSED_IMAGE_PATHS)
+    {
         app.refused_image_paths.clear();
     }
     app.note(

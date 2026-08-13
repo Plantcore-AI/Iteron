@@ -31,7 +31,13 @@ pub(super) fn encode_worker_request(
     use std::os::unix::ffi::OsStrExt as _;
 
     let workspace = workspace.as_os_str().as_bytes();
-    if workspace.is_empty() || workspace.len() > MAX_WORKSPACE_BYTES {
+    if workspace.is_empty()
+        || workspace.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_effect.worker.protocol.max_workspace_bytes",
+                MAX_WORKSPACE_BYTES,
+            )
+    {
         return Err("export workspace path exceeds its 16 KiB bound".into());
     }
     if requested.len() > 4 * 1024 || body.len() > transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES {
@@ -40,8 +46,14 @@ pub(super) fn encode_worker_request(
     let workspace_len = u32::try_from(workspace.len()).map_err(|_| "workspace path is too long")?;
     let requested_len = u32::try_from(requested.len()).map_err(|_| "export path is too long")?;
     let body_len = u32::try_from(body.len()).map_err(|_| "transcript body is too large")?;
-    let mut frame =
-        Vec::with_capacity(WORKER_HEADER_BYTES + workspace.len() + requested.len() + body.len());
+    let mut frame = Vec::with_capacity(
+        iteron_tunables::param_integer(
+            "cli.tui.transcript_effect.worker.protocol.worker_header_bytes",
+            WORKER_HEADER_BYTES,
+        ) + workspace.len()
+            + requested.len()
+            + body.len(),
+    );
     frame.extend_from_slice(WORKER_MAGIC);
     frame.push(match collision {
         transcript_export::CollisionPolicy::Refuse => 0,
@@ -63,11 +75,21 @@ fn encode_worker_response(result: Result<&str, transcript_export::ExportError>) 
         Err(transcript_export::ExportError::OutcomeUnknown(error)) => (2u8, error.into_bytes()),
     };
     const OVERSIZED: &[u8] = b"export helper response exceeded its bound";
-    if message.len() > MAX_WORKER_RESPONSE_BYTES.saturating_sub(5) {
+    if message.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.transcript_effect.worker.protocol.max_worker_response_bytes",
+            MAX_WORKER_RESPONSE_BYTES,
+        )
+        .saturating_sub(5)
+    {
         // An oversized response destroys the evidence needed to distinguish helper success from
         // failure. The parent therefore treats this fallback as outcome-unknown too.
         status = 2;
-        message = OVERSIZED.to_vec();
+        message = iteron_tunables::param_bytes(
+            "cli.tui.transcript_effect.worker.protocol.oversized",
+            OVERSIZED,
+        )
+        .to_vec();
     }
     let mut response = Vec::with_capacity(5 + message.len());
     response.push(status);
@@ -173,10 +195,25 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
         let mut frame = Vec::new();
         std::io::stdin()
             .lock()
-            .take((MAX_WORKER_FRAME_BYTES + 1) as u64)
+            .take(
+                (iteron_tunables::param_integer(
+                    "cli.tui.transcript_effect.worker.protocol.max_worker_frame_bytes",
+                    MAX_WORKER_FRAME_BYTES,
+                ) + 1) as u64,
+            )
             .read_to_end(&mut frame)
             .map_err(|_| "export helper could not read its request".to_string())?;
-        if frame.len() > MAX_WORKER_FRAME_BYTES || frame.len() < WORKER_HEADER_BYTES {
+        if frame.len()
+            > iteron_tunables::param_integer(
+                "cli.tui.transcript_effect.worker.protocol.max_worker_frame_bytes",
+                MAX_WORKER_FRAME_BYTES,
+            )
+            || frame.len()
+                < iteron_tunables::param_integer(
+                    "cli.tui.transcript_effect.worker.protocol.worker_header_bytes",
+                    WORKER_HEADER_BYTES,
+                )
+        {
             return Err("export helper request exceeds its bound or is truncated".into());
         }
         if &frame[..WORKER_MAGIC.len()] != WORKER_MAGIC {
@@ -200,7 +237,11 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
         let requested_len = next_length();
         let body_len = next_length();
         if workspace_len == 0
-            || workspace_len > MAX_WORKSPACE_BYTES
+            || workspace_len
+                > iteron_tunables::param_integer(
+                    "cli.tui.transcript_effect.worker.protocol.max_workspace_bytes",
+                    MAX_WORKSPACE_BYTES,
+                )
             || requested_len > 4 * 1024
             || body_len > transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES
             || cursor

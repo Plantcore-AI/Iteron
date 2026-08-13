@@ -37,10 +37,16 @@ pub(crate) async fn run_git_status_porcelain(root: &Path) -> Result<Vec<u8>, Str
     .map(OsString::from);
     let args = hardened_args(&filter_drivers, operation);
     let mut command = hardened_git_command(&git, &repository, &args);
-    let captured =
-        run_command_bounded(&mut command, GIT_TIMEOUT, STATUS_OUTPUT_LIMIT, STDERR_LIMIT)
-            .await
-            .map_err(|error| format!("could not run bounded Git status: {error}"))?;
+    let status_output_limit =
+        iteron_tunables::param_usize("tools.git_changes.status_output_limit", STATUS_OUTPUT_LIMIT);
+    let captured = run_command_bounded(
+        &mut command,
+        iteron_tunables::param_duration("tools.git_harness.git_timeout", GIT_TIMEOUT),
+        status_output_limit,
+        iteron_tunables::param_integer("tools.git_harness.stderr_limit", STDERR_LIMIT),
+    )
+    .await
+    .map_err(|error| format!("could not run bounded Git status: {error}"))?;
     if !captured.status.success() {
         return Err(format!(
             "Git status failed (exit {}): {}",
@@ -50,7 +56,7 @@ pub(crate) async fn run_git_status_porcelain(root: &Path) -> Result<Vec<u8>, Str
     }
     if captured.stdout.truncated() {
         return Err(format!(
-            "Git status exceeded the {STATUS_OUTPUT_LIMIT}-byte observation ceiling"
+            "Git status exceeded the {status_output_limit}-byte observation ceiling"
         ));
     }
     Ok(captured.stdout.retained_bytes())

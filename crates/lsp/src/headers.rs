@@ -8,9 +8,9 @@ use crate::{LspError, MAX_HEADER_BYTES};
 /// charset must be UTF-8. Unknown extension headers with valid HTTP field-name grammar are ignored
 /// because the protocol permits them.
 pub fn parse_headers(block: &str) -> Result<usize, LspError> {
-    if block.len() > MAX_HEADER_BYTES {
+    if block.len() > iteron_tunables::param_integer("lsp.lib.max_header_bytes", MAX_HEADER_BYTES) {
         return Err(LspError::HeaderTooLarge {
-            limit: MAX_HEADER_BYTES,
+            limit: iteron_tunables::param_integer("lsp.lib.max_header_bytes", MAX_HEADER_BYTES),
         });
     }
     if !block.is_ascii() {

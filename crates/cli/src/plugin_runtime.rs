@@ -265,7 +265,12 @@ impl RuntimePlugins {
     }
 
     fn note(&mut self, diagnostic: String) {
-        if self.diagnostics.len() < MAX_RUNTIME_DIAGNOSTICS {
+        if self.diagnostics.len()
+            < iteron_tunables::param_integer(
+                "cli.plugin_runtime.max_runtime_diagnostics",
+                MAX_RUNTIME_DIAGNOSTICS,
+            )
+        {
             self.diagnostics.push(diagnostic);
         }
     }

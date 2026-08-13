@@ -65,7 +65,15 @@ impl OperatorStatusSources {
         let language_servers = match &self.language_servers {
             None => LanguageServerStatus::Unavailable,
             Some(control) => {
-                match tokio::time::timeout(LSP_STATUS_DEADLINE, control.health()).await {
+                match tokio::time::timeout(
+                    iteron_tunables::param_duration(
+                        "cli.app_server.operator_status.lsp_status_deadline",
+                        LSP_STATUS_DEADLINE,
+                    ),
+                    control.health(),
+                )
+                .await
+                {
                     Ok(health) => LanguageServerStatus::Available(health),
                     Err(_) => LanguageServerStatus::Busy,
                 }

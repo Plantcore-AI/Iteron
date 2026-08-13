@@ -278,7 +278,10 @@ pub(crate) fn profile_with_terminal(
             .is_some_and(|name| name.starts_with("ttys"))
         && std::fs::symlink_metadata(terminal)
             .map(|metadata| metadata.file_type().is_char_device())
-            .unwrap_or(UNSTATABLE_TERMINAL_IS_PTY_SLAVE);
+            .unwrap_or(iteron_tunables::param_bool(
+                "sandbox.seatbelt.unstatable_terminal_is_pty_slave",
+                UNSTATABLE_TERMINAL_IS_PTY_SLAVE,
+            ));
     if !is_pty_slave {
         return Err(SandboxError::Profile(
             "terminal ioctl capability must name one live /dev/ttys* character device".into(),

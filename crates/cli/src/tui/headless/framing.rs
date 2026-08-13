@@ -31,6 +31,59 @@ pub(super) const MAX_PINNED_REPLAY_BYTES: usize = (MAX_LOGICAL_SERVER_FRAME_BYTE
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const FRAGMENTED_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn max_server_frame_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_server_frame_bytes",
+        MAX_SERVER_FRAME_BYTES,
+    )
+}
+
+fn max_encoded_server_frame_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_encoded_server_frame_bytes",
+        MAX_ENCODED_SERVER_FRAME_BYTES,
+    )
+}
+
+fn max_assembled_provider_output_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_assembled_provider_output_bytes",
+        MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES,
+    )
+}
+
+fn max_logical_server_frame_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_logical_server_frame_bytes",
+        max_assembled_provider_output_bytes()
+            .saturating_mul(6)
+            .saturating_add(max_server_frame_bytes()),
+    )
+}
+
+fn replay_byte_capacity() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.replay_byte_capacity",
+        REPLAY_BYTE_CAPACITY,
+    )
+    .min(max_encoded_server_frame_bytes().saturating_mul(16))
+}
+
+pub(super) fn max_in_flight_server_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_in_flight_server_bytes",
+        MAX_IN_FLIGHT_SERVER_BYTES,
+    )
+    .min(max_encoded_server_frame_bytes().saturating_mul(8))
+}
+
+pub(super) fn max_pinned_replay_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.headless.framing.max_pinned_replay_bytes",
+        MAX_PINNED_REPLAY_BYTES,
+    )
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ServerFrame {
@@ -216,7 +269,16 @@ pub(super) struct ReplayRing {
 
 impl ReplayRing {
     pub(super) fn production() -> Self {
-        Self::with_limits(REPLAY_CAPACITY, REPLAY_BYTE_CAPACITY)
+        Self::with_limits(
+            iteron_tunables::param_integer(
+                "cli.tui.headless.framing.replay_capacity",
+                REPLAY_CAPACITY,
+            ),
+            iteron_tunables::param_integer(
+                "cli.tui.headless.framing.replay_byte_capacity",
+                replay_byte_capacity(),
+            ),
+        )
     }
 
     fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
@@ -307,18 +369,29 @@ impl ReplayRing {
 
 fn prepare(frame: ServerFrame) -> Result<(PreparedPayload, usize)> {
     let logical_bytes = serialized_len(&frame)?;
-    if logical_bytes <= MAX_SERVER_FRAME_BYTES {
+    if logical_bytes
+        <= iteron_tunables::param_integer(
+            "cli.tui.headless.framing.max_server_frame_bytes",
+            max_server_frame_bytes(),
+        )
+    {
         let bytes = encode_physical(&frame)?;
         let serialized_bytes = bytes.len();
         return Ok((PreparedPayload::Single(bytes), serialized_bytes));
     }
     let identity = frame.logical_identity()?;
-    let chunks = logical_bytes.div_ceil(FRAME_CHUNK_SOURCE_BYTES);
+    let chunks = logical_bytes.div_ceil(iteron_tunables::param_integer(
+        "cli.tui.headless.framing.frame_chunk_source_bytes",
+        FRAME_CHUNK_SOURCE_BYTES,
+    ));
     let chunk_count =
         u32::try_from(chunks).context("fragmented server frame has too many chunks")?;
     let base64_bytes = logical_bytes.div_ceil(3).saturating_mul(4);
     let serialized_bytes =
-        base64_bytes.saturating_add(chunks.saturating_mul(FRAME_CHUNK_OVERHEAD_CHARGE));
+        base64_bytes.saturating_add(chunks.saturating_mul(iteron_tunables::param_integer(
+            "cli.tui.headless.framing.frame_chunk_overhead_charge",
+            FRAME_CHUNK_OVERHEAD_CHARGE,
+        )));
     Ok((
         PreparedPayload::Fragmented {
             frame: Arc::new(frame),
@@ -354,7 +427,12 @@ impl io::Write for LimitedCounter {
             self.exceeded = true;
             return Err(io::Error::other("logical frame byte counter overflow"));
         };
-        if next > MAX_LOGICAL_SERVER_FRAME_BYTES {
+        if next
+            > iteron_tunables::param_integer(
+                "cli.tui.headless.framing.max_logical_server_frame_bytes",
+                max_logical_server_frame_bytes(),
+            )
+        {
             self.exceeded = true;
             return Err(io::Error::other("logical frame byte ceiling exceeded"));
         }
@@ -369,7 +447,12 @@ impl io::Write for LimitedCounter {
 
 fn encode_physical(frame: &ServerFrame) -> Result<Box<[u8]>> {
     let mut bytes = serde_json::to_vec(frame).context("encode headless server frame")?;
-    if bytes.len() > MAX_SERVER_FRAME_BYTES {
+    if bytes.len()
+        > iteron_tunables::param_integer(
+            "cli.tui.headless.framing.max_server_frame_bytes",
+            max_server_frame_bytes(),
+        )
+    {
         bail!("headless physical server frame exceeds {MAX_SERVER_FRAME_BYTES} bytes");
     }
     bytes.push(b'\n');
@@ -433,7 +516,10 @@ async fn send_payload<W: AsyncWrite + Unpin>(
             logical_bytes,
             chunk_count,
         } => tokio::time::timeout(
-            FRAGMENTED_FRAME_TIMEOUT,
+            iteron_tunables::param_duration(
+                "cli.tui.headless.framing.fragmented_frame_timeout",
+                FRAGMENTED_FRAME_TIMEOUT,
+            ),
             send_fragmented(
                 writer,
                 outbound_budget,
@@ -467,7 +553,10 @@ async fn send_fragmented<W: AsyncWrite + Unpin>(
         .acquire_owned()
         .await
         .context("headless fragment encoder gate closed")?;
-    let (sender, mut receiver) = mpsc::channel(FRAME_CHUNK_CHANNEL_CAPACITY);
+    let (sender, mut receiver) = mpsc::channel(iteron_tunables::param_integer(
+        "cli.tui.headless.framing.frame_chunk_channel_capacity",
+        FRAME_CHUNK_CHANNEL_CAPACITY,
+    ));
     // The owned permit lives inside the blocking worker. If the async consumer is cancelled by
     // the logical-frame deadline, dropping the receiver wakes `blocking_send`; no successor can
     // start until that worker has actually unwound and released the permit.
@@ -531,7 +620,10 @@ impl ChunkWriter {
     fn new(sender: mpsc::Sender<Result<Box<[u8]>>>) -> Self {
         Self {
             sender,
-            pending: Vec::with_capacity(FRAME_CHUNK_SOURCE_BYTES),
+            pending: Vec::with_capacity(iteron_tunables::param_integer(
+                "cli.tui.headless.framing.frame_chunk_source_bytes",
+                FRAME_CHUNK_SOURCE_BYTES,
+            )),
         }
     }
 
@@ -541,7 +633,10 @@ impl ChunkWriter {
         }
         let chunk = std::mem::replace(
             &mut self.pending,
-            Vec::with_capacity(FRAME_CHUNK_SOURCE_BYTES),
+            Vec::with_capacity(iteron_tunables::param_integer(
+                "cli.tui.headless.framing.frame_chunk_source_bytes",
+                FRAME_CHUNK_SOURCE_BYTES,
+            )),
         );
         self.sender
             .blocking_send(Ok(chunk.into_boxed_slice()))
@@ -562,11 +657,19 @@ impl io::Write for ChunkWriter {
     fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
         let original = bytes.len();
         while !bytes.is_empty() {
-            let available = FRAME_CHUNK_SOURCE_BYTES - self.pending.len();
+            let available = iteron_tunables::param_integer(
+                "cli.tui.headless.framing.frame_chunk_source_bytes",
+                FRAME_CHUNK_SOURCE_BYTES,
+            ) - self.pending.len();
             let take = available.min(bytes.len());
             self.pending.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
-            if self.pending.len() == FRAME_CHUNK_SOURCE_BYTES {
+            if self.pending.len()
+                == iteron_tunables::param_integer(
+                    "cli.tui.headless.framing.frame_chunk_source_bytes",
+                    FRAME_CHUNK_SOURCE_BYTES,
+                )
+            {
                 self.send_pending()?;
             }
         }
@@ -589,10 +692,13 @@ async fn send_physical_bytes<W: AsyncWrite + Unpin>(
         .acquire_many_owned(permits)
         .await
         .context("headless outbound byte budget closed")?;
-    tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(bytes))
-        .await
-        .context("headless server-frame write timed out")?
-        .context("write headless server frame")
+    tokio::time::timeout(
+        iteron_tunables::param_duration("cli.tui.headless.framing.write_timeout", WRITE_TIMEOUT),
+        writer.write_all(bytes),
+    )
+    .await
+    .context("headless server-frame write timed out")?
+    .context("write headless server frame")
 }
 
 #[cfg(test)]

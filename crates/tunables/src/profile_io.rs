@@ -8,7 +8,7 @@
 //! `UnknownFamily { .. }` can fix its candidate.
 
 use crate::modules::ModuleId;
-use crate::params::{ParamClass, ParamDomainViolation};
+use crate::params::{ParamClass, ParamValueViolation};
 use crate::{ProfileValue, ResolutionProfile, ResolutionValue, SourceKind};
 use serde::{Deserialize, Serialize};
 
@@ -111,6 +111,10 @@ pub enum ProfileLoadError {
         param: String,
         reason: String,
     },
+    ParamType {
+        param: String,
+        reason: String,
+    },
     DuplicateFamily(String),
     DuplicateParam(String),
     OutsideModuleScope {
@@ -177,6 +181,9 @@ impl std::fmt::Display for ProfileLoadError {
             Self::ParamDomain { param, reason } => {
                 write!(formatter, "parameter `{param}`: {reason}")
             }
+            Self::ParamType { param, reason } => {
+                write!(formatter, "parameter `{param}`: {reason}")
+            }
             Self::DuplicateFamily(id) => write!(formatter, "family `{id}` is assigned twice"),
             Self::DuplicateParam(id) => write!(formatter, "parameter `{id}` is assigned twice"),
             Self::UnknownArtifact(id) => write!(
@@ -220,10 +227,12 @@ pub fn load_profile(
     bytes: &[u8],
     pinned_digest: &str,
 ) -> Result<ProfileDocument, ProfileLoadError> {
-    if bytes.len() > MAX_PROFILE_BYTES {
+    if bytes.len()
+        > crate::param_integer("tunables.profile_io.max_profile_bytes", MAX_PROFILE_BYTES)
+    {
         return Err(ProfileLoadError::TooLarge {
             bytes: bytes.len(),
-            max: MAX_PROFILE_BYTES,
+            max: crate::param_integer("tunables.profile_io.max_profile_bytes", MAX_PROFILE_BYTES),
         });
     }
     let actual = {
@@ -318,17 +327,22 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
         if matches!(param.class, ParamClass::Structural) {
             return Err(ProfileLoadError::StructuralParam(param.id.clone()));
         }
-        if let ResolutionValue::Integer { value } = &assignment.value
-            && let Err(violation) = param.admits_integer(i128::from(*value))
-        {
-            return Err(ProfileLoadError::ParamDomain {
-                param: param.id.clone(),
-                reason: match violation {
-                    ParamDomainViolation::BelowMinimum { .. }
-                    | ParamDomainViolation::AboveClamp { .. } => violation.to_string(),
+        param
+            .admits_value(&assignment.value)
+            .map_err(|violation| match violation {
+                ParamValueViolation::WrongType { .. } => ProfileLoadError::ParamType {
+                    param: param.id.clone(),
+                    reason: violation.to_string(),
                 },
-            });
-        }
+                ParamValueViolation::Shape(_) => ProfileLoadError::ParamType {
+                    param: param.id.clone(),
+                    reason: violation.to_string(),
+                },
+                ParamValueViolation::Domain(_) => ProfileLoadError::ParamDomain {
+                    param: param.id.clone(),
+                    reason: violation.to_string(),
+                },
+            })?;
         if !seen_params.insert(param.id.clone()) {
             return Err(ProfileLoadError::DuplicateParam(param.id.clone()));
         }
@@ -351,11 +365,19 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
         if override_entry.text.trim().is_empty() {
             return Err(ProfileLoadError::EmptyArtifact(artifact.id.to_owned()));
         }
-        if override_entry.text.len() > MAX_ARTIFACT_TEXT_BYTES {
+        if override_entry.text.len()
+            > crate::param_integer(
+                "tunables.profile_io.max_artifact_text_bytes",
+                MAX_ARTIFACT_TEXT_BYTES,
+            )
+        {
             return Err(ProfileLoadError::ArtifactTooLarge {
                 artifact: artifact.id.to_owned(),
                 bytes: override_entry.text.len(),
-                max: MAX_ARTIFACT_TEXT_BYTES,
+                max: crate::param_integer(
+                    "tunables.profile_io.max_artifact_text_bytes",
+                    MAX_ARTIFACT_TEXT_BYTES,
+                ),
             });
         }
         if !seen_artifacts.insert(artifact.id) {

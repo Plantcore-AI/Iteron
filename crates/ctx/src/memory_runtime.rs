@@ -39,12 +39,21 @@ impl Default for MemoryRetrievalPolicy {
             bm25_k1_milli: default_bm25_k1_milli(),
             bm25_b_ppm: default_bm25_b_ppm(),
             recall_limit: default_recall_limit(),
-            lexical_weight_ppm: SCORE_SCALE,
+            lexical_weight_ppm: iteron_tunables::param_integer(
+                "ctx.memory_runtime.score_scale",
+                SCORE_SCALE,
+            ),
             structural_weight_ppm: 0,
             vector_weight_ppm: 0,
             reranker_weight_ppm: 0,
-            recency_decay_ppm: SCORE_SCALE,
-            novelty_dedup_threshold_ppm: SCORE_SCALE,
+            recency_decay_ppm: iteron_tunables::param_integer(
+                "ctx.memory_runtime.score_scale",
+                SCORE_SCALE,
+            ),
+            novelty_dedup_threshold_ppm: iteron_tunables::param_integer(
+                "ctx.memory_runtime.score_scale",
+                SCORE_SCALE,
+            ),
         }
     }
 }
@@ -57,16 +66,20 @@ impl MemoryRetrievalPolicy {
             self.vector_weight_ppm,
             self.reranker_weight_ppm,
         ];
-        if weights.iter().any(|weight| *weight > SCORE_SCALE)
-            || weights.iter().all(|weight| *weight == 0)
+        if weights.iter().any(|weight| {
+            *weight > iteron_tunables::param_integer("ctx.memory_runtime.score_scale", SCORE_SCALE)
+        }) || weights.iter().all(|weight| *weight == 0)
             || self.bm25_k1_milli == 0
             || self.bm25_k1_milli > 1_000_000
-            || self.bm25_b_ppm > SCORE_SCALE
+            || self.bm25_b_ppm
+                > iteron_tunables::param_integer("ctx.memory_runtime.score_scale", SCORE_SCALE)
             || self.recall_limit == 0
             || usize::try_from(self.recall_limit)
                 .map_or(true, |limit| limit > crate::MAX_MEMORY_CANDIDATES)
-            || self.recency_decay_ppm > SCORE_SCALE
-            || self.novelty_dedup_threshold_ppm > SCORE_SCALE
+            || self.recency_decay_ppm
+                > iteron_tunables::param_integer("ctx.memory_runtime.score_scale", SCORE_SCALE)
+            || self.novelty_dedup_threshold_ppm
+                > iteron_tunables::param_integer("ctx.memory_runtime.score_scale", SCORE_SCALE)
         {
             return Err("memory retrieval ratios must be in [0,1] with one non-zero signal");
         }
@@ -81,26 +94,70 @@ impl MemoryRetrievalPolicy {
     pub fn recency_multiplier(self, age_seconds: u64) -> u32 {
         const BUCKET_SECS: u64 = 30 * 24 * 60 * 60;
         const MAX_BUCKETS: u64 = 120;
-        let buckets = (age_seconds / BUCKET_SECS).min(MAX_BUCKETS);
-        let mut value = u64::from(SCORE_SCALE);
+        let bucket_secs =
+            iteron_tunables::param_u64("ctx.memory_runtime.bucket_secs", BUCKET_SECS).max(1);
+        let buckets = (age_seconds / bucket_secs).min(iteron_tunables::param_integer(
+            "ctx.memory_runtime.max_buckets",
+            MAX_BUCKETS,
+        ));
+        let mut value = u64::from(iteron_tunables::param_integer(
+            "ctx.memory_runtime.score_scale",
+            SCORE_SCALE,
+        ));
         for _ in 0..buckets {
-            value =
-                value.saturating_mul(u64::from(self.recency_decay_ppm)) / u64::from(SCORE_SCALE);
+            value = value.saturating_mul(u64::from(self.recency_decay_ppm))
+                / u64::from(iteron_tunables::param_integer(
+                    "ctx.memory_runtime.score_scale",
+                    SCORE_SCALE,
+                ));
         }
-        u32::try_from(value).unwrap_or(SCORE_SCALE)
+        u32::try_from(value).unwrap_or(iteron_tunables::param_integer(
+            "ctx.memory_runtime.score_scale",
+            SCORE_SCALE,
+        ))
     }
 }
 
-const fn default_bm25_k1_milli() -> u32 {
-    DEFAULT_BM25_K1_MILLI
+fn default_bm25_k1_milli() -> u32 {
+    u32::try_from(iteron_tunables::param_i128(
+        "ctx.memory_runtime.default_bm25_k1_milli",
+        i128::from(iteron_tunables::param_integer(
+            "ctx.memory_runtime.default_bm25_k1_milli",
+            DEFAULT_BM25_K1_MILLI,
+        )),
+    ))
+    .unwrap_or(iteron_tunables::param_integer(
+        "ctx.memory_runtime.default_bm25_k1_milli",
+        DEFAULT_BM25_K1_MILLI,
+    ))
 }
 
-const fn default_bm25_b_ppm() -> u32 {
-    DEFAULT_BM25_B_PPM
+fn default_bm25_b_ppm() -> u32 {
+    u32::try_from(iteron_tunables::param_i128(
+        "ctx.memory_runtime.default_bm25_b_ppm",
+        i128::from(iteron_tunables::param_integer(
+            "ctx.memory_runtime.default_bm25_b_ppm",
+            DEFAULT_BM25_B_PPM,
+        )),
+    ))
+    .unwrap_or(iteron_tunables::param_integer(
+        "ctx.memory_runtime.default_bm25_b_ppm",
+        DEFAULT_BM25_B_PPM,
+    ))
 }
 
-const fn default_recall_limit() -> u32 {
-    DEFAULT_RECALL_LIMIT
+fn default_recall_limit() -> u32 {
+    u32::try_from(iteron_tunables::param_i128(
+        "ctx.memory_runtime.default_recall_limit",
+        i128::from(iteron_tunables::param_integer(
+            "ctx.memory_runtime.default_recall_limit",
+            DEFAULT_RECALL_LIMIT,
+        )),
+    ))
+    .unwrap_or(iteron_tunables::param_integer(
+        "ctx.memory_runtime.default_recall_limit",
+        DEFAULT_RECALL_LIMIT,
+    ))
 }
 
 #[cfg(test)]

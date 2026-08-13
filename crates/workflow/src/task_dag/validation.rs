@@ -6,8 +6,8 @@ use super::reducer::TaskDag;
 use super::types::{
     Actor, AttemptAssignment, AttemptCompletion, AttemptDisposition, AttemptId, AttemptRetryCause,
     AttemptSpec, AttemptState, BudgetReservation, BudgetUsage, Command, Completion, DeliveryState,
-    HARD_MAX_ATTEMPTS, JoinSpec, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_REASON_BYTES, Task,
-    TaskId, TaskMessage, TaskSpec, TaskState, valid_digest, validate_identifier,
+    JoinSpec, MAX_LABEL_BYTES, Task, TaskId, TaskMessage, TaskSpec, TaskState, hard_max_attempts,
+    max_message_bytes, max_reason_bytes, valid_digest, validate_identifier,
 };
 use super::validation_support::{budget_fits, transition, validate_visible};
 
@@ -154,7 +154,15 @@ impl TaskDag {
         if self.tasks.len() >= self.config.limits.max_tasks {
             return Err(DagError::Capacity { kind: "task" });
         }
-        validate_identifier(&spec.label, MAX_LABEL_BYTES, "label").map_err(DagError::Invalid)?;
+        validate_identifier(
+            &spec.label,
+            iteron_tunables::param_integer(
+                "workflow.task_dag.types.max_label_bytes",
+                MAX_LABEL_BYTES,
+            ),
+            "label",
+        )
+        .map_err(DagError::Invalid)?;
         spec.budget.validate().map_err(DagError::Budget)?;
         if spec.dependencies.len() > self.config.limits.max_edges {
             return Err(DagError::Capacity { kind: "edge" });
@@ -275,7 +283,7 @@ impl TaskDag {
         if self.attempts.contains_key(&attempt.id) {
             return Err(DagError::Invalid("attempt already exists"));
         }
-        if self.attempts.len() >= HARD_MAX_ATTEMPTS {
+        if self.attempts.len() >= hard_max_attempts() {
             return Err(DagError::Capacity { kind: "attempt" });
         }
         let task = self.require_task(attempt.task)?;
@@ -406,7 +414,7 @@ impl TaskDag {
                 let code = code.ok_or(DagError::Invalid("attempt failure requires a code"))?;
                 validate_identifier(code, 128, "code").map_err(DagError::Invalid)?;
                 if let Some(detail) = detail {
-                    validate_visible(detail, MAX_REASON_BYTES, "attempt failure detail")?;
+                    validate_visible(detail, max_reason_bytes(), "attempt failure detail")?;
                 }
                 if result_digest.is_some()
                     || !matches!(
@@ -422,7 +430,7 @@ impl TaskDag {
             AttemptCompletion::Cancelled => {
                 validate_visible(
                     detail.ok_or(DagError::Invalid("attempt cancellation requires a reason"))?,
-                    MAX_REASON_BYTES,
+                    max_reason_bytes(),
                     "attempt cancellation reason",
                 )?;
                 if result_digest.is_some()
@@ -437,7 +445,7 @@ impl TaskDag {
             AttemptCompletion::UnknownEffect => {
                 validate_visible(
                     detail.ok_or(DagError::Invalid("unknown effect requires a reason"))?,
-                    MAX_REASON_BYTES,
+                    max_reason_bytes(),
                     "unknown-effect reason",
                 )?;
                 if result_digest.is_some()
@@ -466,7 +474,7 @@ impl TaskDag {
         if message.delivery != DeliveryState::Pending {
             return Err(DagError::Invalid("new messages must begin pending"));
         }
-        if message.payload.is_empty() || message.payload.len() > MAX_MESSAGE_BYTES {
+        if message.payload.is_empty() || message.payload.len() > max_message_bytes() {
             return Err(DagError::Invalid("message is empty or over its byte limit"));
         }
         let recipient = self.require_task(message.to)?;
@@ -549,7 +557,7 @@ impl TaskDag {
         if target.state.is_terminal() || matches!(target.state, TaskState::Cancelling { .. }) {
             return Err(transition(task, "task is already terminal or cancelling"));
         }
-        validate_visible(reason, MAX_REASON_BYTES, "cancel reason")?;
+        validate_visible(reason, max_reason_bytes(), "cancel reason")?;
         match actor {
             Actor::Controller => Ok(()),
             Actor::Task(actor_id) => {
@@ -629,7 +637,7 @@ impl TaskDag {
                 let code = code.ok_or(DagError::Invalid("failure requires a code"))?;
                 validate_identifier(code, 128, "code").map_err(DagError::Invalid)?;
                 if let Some(detail) = detail {
-                    validate_visible(detail, MAX_REASON_BYTES, "failure detail")?;
+                    validate_visible(detail, max_reason_bytes(), "failure detail")?;
                 }
                 if result_digest.is_some() {
                     return Err(DagError::Invalid("failure cannot carry a result digest"));
@@ -638,7 +646,7 @@ impl TaskDag {
             Completion::Cancelled => {
                 validate_visible(
                     detail.ok_or(DagError::Invalid("cancellation requires a reason"))?,
-                    MAX_REASON_BYTES,
+                    max_reason_bytes(),
                     "cancellation reason",
                 )?;
                 if result_digest.is_some() || code.is_some() {

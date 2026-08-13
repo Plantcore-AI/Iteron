@@ -35,9 +35,18 @@ impl EvaluationSuite {
             .map_err(VerifierError::InvalidContract)?;
         validate_nonempty_string("evaluation.version", &version, MAX_SHORT_STRING_BYTES)
             .map_err(VerifierError::InvalidContract)?;
-        if tasks.is_empty() || tasks.len() > MAX_EVALUATION_TASKS {
+        if tasks.is_empty()
+            || tasks.len()
+                > iteron_tunables::param_integer(
+                    "evolve.verifier_eval.max_evaluation_tasks",
+                    MAX_EVALUATION_TASKS,
+                )
+        {
             return Err(VerifierError::InvalidEvaluationTaskCount {
-                max: MAX_EVALUATION_TASKS,
+                max: iteron_tunables::param_integer(
+                    "evolve.verifier_eval.max_evaluation_tasks",
+                    MAX_EVALUATION_TASKS,
+                ),
                 actual: tasks.len(),
             });
         }

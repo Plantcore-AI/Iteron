@@ -107,7 +107,14 @@ async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> 
     if !path_before.is_file() || path_before.file_type().is_symlink() {
         return Err(SnapshotError::NotRegular);
     }
-    if path_before.len() > MAX_FILE_TRANSACTION_BYTES as u64 {
+    let max_transaction_bytes = iteron_tunables::param_usize(
+        "tools.write_file.max_file_transaction_bytes",
+        iteron_tunables::param_integer(
+            "tools.write_file.max_file_transaction_bytes",
+            MAX_FILE_TRANSACTION_BYTES,
+        ),
+    );
+    if path_before.len() > max_transaction_bytes as u64 {
         return Err(SnapshotError::TooLarge);
     }
 
@@ -122,16 +129,16 @@ async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> 
     }
 
     let capacity = usize::try_from(opened_before.len())
-        .unwrap_or(MAX_FILE_TRANSACTION_BYTES)
-        .min(MAX_FILE_TRANSACTION_BYTES)
+        .unwrap_or(max_transaction_bytes)
+        .min(max_transaction_bytes)
         .saturating_add(1);
     let mut bytes = Vec::with_capacity(capacity);
-    let mut limited = file.take(MAX_FILE_TRANSACTION_BYTES.saturating_add(1) as u64);
+    let mut limited = file.take(max_transaction_bytes.saturating_add(1) as u64);
     limited
         .read_to_end(&mut bytes)
         .await
         .map_err(SnapshotError::Io)?;
-    if bytes.len() > MAX_FILE_TRANSACTION_BYTES {
+    if bytes.len() > max_transaction_bytes {
         return Err(SnapshotError::TooLarge);
     }
     let opened_after = limited
@@ -206,12 +213,17 @@ pub(crate) enum GuardedCommitFailure {
 
 impl StagedWrite {
     pub(crate) async fn prepare(target: &Path, content: &[u8]) -> io::Result<Self> {
-        if content.len() > MAX_FILE_TRANSACTION_BYTES {
+        let max_transaction_bytes = iteron_tunables::param_usize(
+            "tools.write_file.max_file_transaction_bytes",
+            iteron_tunables::param_integer(
+                "tools.write_file.max_file_transaction_bytes",
+                MAX_FILE_TRANSACTION_BYTES,
+            ),
+        );
+        if content.len() > max_transaction_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "replacement exceeds the {MAX_FILE_TRANSACTION_BYTES}-byte transaction limit"
-                ),
+                format!("replacement exceeds the {max_transaction_bytes}-byte transaction limit"),
             ));
         }
         let parent = target
@@ -419,14 +431,17 @@ fn validate_input(path: &str, content: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("write_file: `path` must not be empty".into());
     }
-    if path.len() > MAX_PATH_BYTES {
+    if path.len()
+        > iteron_tunables::param_integer("tools.write_file.max_path_bytes", MAX_PATH_BYTES)
+    {
         return Err(format!(
             "write_file: path exceeds the {MAX_PATH_BYTES}-byte limit"
         ));
     }
-    if content.len() > MAX_WRITE_BYTES {
+    let max_write_bytes = MAX_WRITE_BYTES;
+    if content.len() > max_write_bytes {
         return Err(format!(
-            "write_file: content exceeds the {MAX_WRITE_BYTES}-byte limit"
+            "write_file: content exceeds the {max_write_bytes}-byte limit"
         ));
     }
     if let Some(codepoint) = suspicious_unicode(path) {
@@ -477,7 +492,9 @@ pub(crate) async fn atomic_replace(target: &Path, content: &[u8]) -> io::Result<
 }
 
 async fn allocate_temporary(parent: &Path) -> io::Result<(PathBuf, tokio::fs::File)> {
-    for _ in 0..MAX_TEMP_ATTEMPTS {
+    let max_temp_attempts =
+        iteron_tunables::param_usize("tools.write_file.max_temp_attempts", MAX_TEMP_ATTEMPTS);
+    for _ in 0..max_temp_attempts {
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = parent.join(format!(".core-write-{}-{id}.tmp", std::process::id()));
         match tokio::fs::OpenOptions::new()
@@ -493,7 +510,7 @@ async fn allocate_temporary(parent: &Path) -> io::Result<(PathBuf, tokio::fs::Fi
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!("could not allocate a transaction file after {MAX_TEMP_ATTEMPTS} attempts"),
+        format!("could not allocate a transaction file after {max_temp_attempts} attempts"),
     ))
 }
 

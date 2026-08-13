@@ -38,9 +38,35 @@ pub struct ContextBudgetPolicy {
 impl Default for ContextBudgetPolicy {
     fn default() -> Self {
         Self::for_usable_window(
-            DEFAULT_MODEL_WINDOW_TOKENS,
-            DEFAULT_OUTPUT_RESERVE_TOKENS,
-            DEFAULT_VERIFICATION_RESERVE_TOKENS,
+            iteron_tunables::param_usize(
+                "ctx.runtime_policy.default_model_window_tokens",
+                iteron_tunables::param_integer(
+                    "ctx.runtime_policy.default_model_window_tokens",
+                    DEFAULT_MODEL_WINDOW_TOKENS,
+                ),
+            ),
+            u32::try_from(iteron_tunables::param_i128(
+                "ctx.runtime_policy.default_output_reserve_tokens",
+                i128::from(iteron_tunables::param_integer(
+                    "ctx.runtime_policy.default_output_reserve_tokens",
+                    DEFAULT_OUTPUT_RESERVE_TOKENS,
+                )),
+            ))
+            .unwrap_or(iteron_tunables::param_integer(
+                "ctx.runtime_policy.default_output_reserve_tokens",
+                DEFAULT_OUTPUT_RESERVE_TOKENS,
+            )),
+            u32::try_from(iteron_tunables::param_i128(
+                "ctx.runtime_policy.default_verification_reserve_tokens",
+                i128::from(iteron_tunables::param_integer(
+                    "ctx.runtime_policy.default_verification_reserve_tokens",
+                    DEFAULT_VERIFICATION_RESERVE_TOKENS,
+                )),
+            ))
+            .unwrap_or(iteron_tunables::param_integer(
+                "ctx.runtime_policy.default_verification_reserve_tokens",
+                DEFAULT_VERIFICATION_RESERVE_TOKENS,
+            )),
         )
     }
 }

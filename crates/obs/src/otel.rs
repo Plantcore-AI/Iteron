@@ -137,7 +137,7 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
             _ => None,
         };
         let Some(span) = span else { continue };
-        if export.spans.len() >= MAX_SPANS {
+        if export.spans.len() >= iteron_tunables::param_integer("obs.otel.max_spans", MAX_SPANS) {
             export.dropped = export.dropped.saturating_add(1);
             continue;
         }

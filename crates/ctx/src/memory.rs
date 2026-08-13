@@ -91,7 +91,7 @@ impl MemoryStore {
         let Ok(Some(listing)) = list_directory_bounded(
             &self.workspace,
             &self.dir,
-            MAX_MEMORY_FILES,
+            iteron_tunables::param_usize("ctx.memory.max_memory_files", MAX_MEMORY_FILES),
             SourceScope::Repository,
         ) else {
             return facts;
@@ -107,7 +107,13 @@ impl MemoryStore {
             if let Ok(Some(text)) = read_bounded_utf8(
                 &self.workspace,
                 &p,
-                MAX_MEMORY_SOURCE_BYTES,
+                iteron_tunables::param_usize(
+                    "ctx.memory.max_memory_source_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_source_bytes",
+                        MAX_MEMORY_SOURCE_BYTES,
+                    ),
+                ),
                 SourceScope::Repository,
             ) {
                 // Skip a tampered fact rather than inject an injection vector.
@@ -557,7 +563,16 @@ impl MemStore {
     /// `.md` file — the seed `MemoryStore::load` behaviour — so the R5 model stays strictly
     /// additive (§1.3). Returned sorted by slug for a stable, reproducible order.
     pub fn index_entries(&self) -> Vec<FactRef> {
-        let mut entries = match self.read_source(&self.index_path(), MAX_MEMORY_SOURCE_BYTES) {
+        let mut entries = match self.read_source(
+            &self.index_path(),
+            iteron_tunables::param_usize(
+                "ctx.memory.max_memory_source_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.memory.max_memory_source_bytes",
+                    MAX_MEMORY_SOURCE_BYTES,
+                ),
+            ),
+        ) {
             Ok(Some(text)) if !text.trim().is_empty() => text
                 .lines()
                 .filter(|line| !suspicious_unicode(line))
@@ -579,7 +594,7 @@ impl MemStore {
         let Ok(Some(listing)) = list_directory_bounded(
             &self.source_root,
             &self.root,
-            MAX_MEMORY_FILES,
+            iteron_tunables::param_usize("ctx.memory.max_memory_files", MAX_MEMORY_FILES),
             self.source_scope(),
         ) else {
             return Vec::new();
@@ -599,7 +614,16 @@ impl MemStore {
                 Some(s) if s != "MEMORY" => s.to_string(),
                 _ => continue,
             };
-            let Ok(Some(body)) = self.read_source(&path, MAX_MEMORY_SOURCE_BYTES) else {
+            let Ok(Some(body)) = self.read_source(
+                &path,
+                iteron_tunables::param_usize(
+                    "ctx.memory.max_memory_source_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_source_bytes",
+                        MAX_MEMORY_SOURCE_BYTES,
+                    ),
+                ),
+            ) else {
                 continue;
             };
             if suspicious_unicode(&body) {
@@ -627,12 +651,24 @@ impl MemStore {
             return None;
         }
         let raw = self
-            .read_source(&self.fact_path(slug), MAX_MEMORY_SOURCE_BYTES)
+            .read_source(
+                &self.fact_path(slug),
+                iteron_tunables::param_usize(
+                    "ctx.memory.max_memory_source_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_source_bytes",
+                        MAX_MEMORY_SOURCE_BYTES,
+                    ),
+                ),
+            )
             .ok()??;
         if suspicious_unicode(&raw) {
             return None;
         }
-        Some(iteron_protocol::text::head(raw.trim(), MAX_FACT_BYTES))
+        Some(iteron_protocol::text::head(
+            raw.trim(),
+            iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
+        ))
     }
 
     fn modified_unix_secs(&self, slug: &str) -> Option<u64> {
@@ -845,10 +881,34 @@ pub struct MemBudget {
 impl Default for MemBudget {
     fn default() -> Self {
         MemBudget {
-            index_bytes: DEFAULT_MEM_INDEX_BYTES,
-            recall_bytes: DEFAULT_MEM_RECALL_BYTES,
-            instr_bytes: DEFAULT_MEM_INSTR_BYTES,
-            total: DEFAULT_MEM_TOTAL_BYTES,
+            index_bytes: iteron_tunables::param_usize(
+                "ctx.memory.default_mem_index_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.memory.default_mem_index_bytes",
+                    DEFAULT_MEM_INDEX_BYTES,
+                ),
+            ),
+            recall_bytes: iteron_tunables::param_usize(
+                "ctx.memory.default_mem_recall_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.memory.default_mem_recall_bytes",
+                    DEFAULT_MEM_RECALL_BYTES,
+                ),
+            ),
+            instr_bytes: iteron_tunables::param_usize(
+                "ctx.memory.default_mem_instr_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.memory.default_mem_instr_bytes",
+                    DEFAULT_MEM_INSTR_BYTES,
+                ),
+            ),
+            total: iteron_tunables::param_usize(
+                "ctx.memory.default_mem_total_bytes",
+                iteron_tunables::param_integer(
+                    "ctx.memory.default_mem_total_bytes",
+                    DEFAULT_MEM_TOTAL_BYTES,
+                ),
+            ),
         }
     }
 }
@@ -1047,8 +1107,14 @@ impl MemorySlotObservation {
             candidates,
             recall_bytes: budget.recall_bytes,
             max_recalled: usize::try_from(retrieval_policy.recall_limit)
-                .unwrap_or(MAX_RECALL)
-                .min(MAX_MEMORY_CANDIDATES),
+                .unwrap_or(iteron_tunables::param_integer(
+                    "ctx.memory.max_recall",
+                    MAX_RECALL,
+                ))
+                .min(iteron_tunables::param_integer(
+                    "ctx.memory.max_memory_candidates",
+                    MAX_MEMORY_CANDIDATES,
+                )),
             trust_floor: Trust::Untrusted,
             reference_unix_secs,
             retrieval_policy,
@@ -1075,7 +1141,12 @@ impl MemorySlotObservation {
         if self.version != MEMORY_SLOT_VERSION {
             return Err(MemorySlotError::UnsupportedVersion);
         }
-        if self.task.len() > MAX_MEMORY_TASK_BYTES {
+        if self.task.len()
+            > iteron_tunables::param_integer(
+                "ctx.memory.max_memory_task_bytes",
+                MAX_MEMORY_TASK_BYTES,
+            )
+        {
             return Err(MemorySlotError::InvalidObservation(
                 "memory task exceeds the bounded observation query",
             ));
@@ -1104,23 +1175,44 @@ impl MemorySlotObservation {
                 ));
             }
         }
-        if self.candidates.len() > MAX_MEMORY_CANDIDATES {
+        if self.candidates.len()
+            > iteron_tunables::param_integer(
+                "ctx.memory.max_memory_candidates",
+                MAX_MEMORY_CANDIDATES,
+            )
+        {
             return Err(MemorySlotError::InvalidObservation(
                 "memory observation carries more candidates than the bound allows",
             ));
         }
-        if self.max_recalled > MAX_MEMORY_CANDIDATES {
+        if self.max_recalled
+            > iteron_tunables::param_integer(
+                "ctx.memory.max_memory_candidates",
+                MAX_MEMORY_CANDIDATES,
+            )
+        {
             return Err(MemorySlotError::InvalidObservation(
                 "memory recall count ceiling exceeds the candidate bound",
             ));
         }
         for candidate in &self.candidates {
-            if candidate.slug.is_empty() || candidate.slug.len() > MAX_MEMORY_SLUG_BYTES {
+            if candidate.slug.is_empty()
+                || candidate.slug.len()
+                    > iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_slug_bytes",
+                        MAX_MEMORY_SLUG_BYTES,
+                    )
+            {
                 return Err(MemorySlotError::InvalidObservation(
                     "memory candidate slug must be 1..=128 bytes",
                 ));
             }
-            if candidate.text.len() > MAX_MEMORY_CANDIDATE_TEXT_BYTES {
+            if candidate.text.len()
+                > iteron_tunables::param_integer(
+                    "ctx.memory.max_memory_candidate_text_bytes",
+                    MAX_MEMORY_CANDIDATE_TEXT_BYTES,
+                )
+            {
                 return Err(MemorySlotError::InvalidObservation(
                     "memory candidate scoring text exceeds its bound",
                 ));
@@ -1681,7 +1773,12 @@ impl MergeAudit {
         kind: MemoryRecallExclusionKind,
         related: Option<&str>,
     ) {
-        if self.excluded.len() == MAX_MEMORY_CANDIDATES {
+        if self.excluded.len()
+            == iteron_tunables::param_integer(
+                "ctx.memory.max_memory_candidates",
+                MAX_MEMORY_CANDIDATES,
+            )
+        {
             self.dropped_exclusions = self.dropped_exclusions.saturating_add(1);
             return;
         }
@@ -1870,7 +1967,12 @@ impl FileMemory {
         );
         let (selected, disposition) = if benchmark_isolated {
             for candidate in &observation.candidates {
-                if merge.excluded.len() == MAX_MEMORY_CANDIDATES {
+                if merge.excluded.len()
+                    == iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_candidates",
+                        MAX_MEMORY_CANDIDATES,
+                    )
+                {
                     merge.dropped_exclusions = merge.dropped_exclusions.saturating_add(1);
                 } else {
                     merge.excluded.push(MemoryRecallExclusion {
@@ -2232,14 +2334,26 @@ impl MemoryStrategy for FileMemory {
             if store.is_stripped() {
                 continue;
             }
-            let raw = match store.read_source(&store.fact_path(slug), MAX_MEMORY_SOURCE_BYTES) {
+            let raw = match store.read_source(
+                &store.fact_path(slug),
+                iteron_tunables::param_usize(
+                    "ctx.memory.max_memory_source_bytes",
+                    iteron_tunables::param_integer(
+                        "ctx.memory.max_memory_source_bytes",
+                        MAX_MEMORY_SOURCE_BYTES,
+                    ),
+                ),
+            ) {
                 Ok(Some(raw)) => raw,
                 Ok(None) | Err(_) => continue,
             };
             if suspicious_unicode(&raw) {
                 return Err(MemError::Suspicious(format!("fact `{slug}`")));
             }
-            let body = iteron_protocol::text::head(raw.trim(), MAX_FACT_BYTES);
+            let body = iteron_protocol::text::head(
+                raw.trim(),
+                iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
+            );
             let (title, _) = derive_title_summary(&body, slug);
             let bytes = body.len();
             return Ok(Fact {
@@ -2266,9 +2380,11 @@ impl MemoryStrategy for FileMemory {
         if trimmed.is_empty() {
             return Err(MemError::Refused("empty fact".into()));
         }
-        if trimmed.len() > MAX_FACT_BYTES {
+        let max_fact_bytes =
+            iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES);
+        if trimmed.len() > max_fact_bytes {
             return Err(MemError::Refused(format!(
-                "fact is {} bytes; limit is {MAX_FACT_BYTES}",
+                "fact is {} bytes; limit is {max_fact_bytes}",
                 trimmed.len()
             )));
         }
@@ -2302,8 +2418,15 @@ fn append_index_line(store: &MemStore, fact_ref: &FactRef) -> std::io::Result<()
     // persistent: unlinking a lock file creates inode races between existing and new openers.
     let _lock = MemoryIndexLock::acquire(&store.root)?;
     let path = store.index_path();
+    let max_memory_source_bytes = iteron_tunables::param_usize(
+        "ctx.memory.max_memory_source_bytes",
+        iteron_tunables::param_integer(
+            "ctx.memory.max_memory_source_bytes",
+            MAX_MEMORY_SOURCE_BYTES,
+        ),
+    );
     let existing = store
-        .read_source(&path, MAX_MEMORY_SOURCE_BYTES)
+        .read_source(&path, max_memory_source_bytes)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?
         .unwrap_or_default();
     let needle = format!("]({}.md)", fact_ref.slug);
@@ -2315,10 +2438,10 @@ fn append_index_line(store: &MemStore, fact_ref: &FactRef) -> std::io::Result<()
         next.push('\n');
     }
     next.push_str(&fact_ref.line());
-    if next.len() > MAX_MEMORY_SOURCE_BYTES {
+    if next.len() > max_memory_source_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("memory index exceeds {MAX_MEMORY_SOURCE_BYTES} bytes"),
+            format!("memory index exceeds {max_memory_source_bytes} bytes"),
         ));
     }
     let writable_root = store.ensure_writable_root()?;
@@ -2416,8 +2539,17 @@ impl MemoryIndexLock {
     fn acquire(store_root: &Path) -> std::io::Result<Self> {
         Self::acquire_with_budget(
             store_root,
-            MEMORY_INDEX_LOCK_ATTEMPTS,
-            MEMORY_INDEX_LOCK_RETRY,
+            iteron_tunables::param_usize(
+                "ctx.memory.memory_index_lock_attempts",
+                iteron_tunables::param_integer(
+                    "ctx.memory.memory_index_lock_attempts",
+                    MEMORY_INDEX_LOCK_ATTEMPTS,
+                ),
+            ),
+            iteron_tunables::param_duration(
+                "ctx.memory.memory_index_lock_retry",
+                MEMORY_INDEX_LOCK_RETRY,
+            ),
         )
     }
 

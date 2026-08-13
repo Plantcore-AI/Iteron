@@ -66,6 +66,7 @@ pub use policy::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
 pub use reduce::{
     CoverageError, CoverageExpectation, JoinMode, JoinReducePolicy, OrderedBundle, ReduceOrder,
     Summary, SummaryOutcome, join_reduce_policy, reduce, reduce_checked,
+    reduce_checked_with_profile, reduce_with_profile,
 };
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,

@@ -407,7 +407,12 @@ impl PluginStore {
             return Ok(RegistryState::default());
         };
         let mut candidates = Vec::new();
-        for entry in entries.take(MAX_REGISTRY_GENERATIONS + 1) {
+        for entry in entries.take(
+            iteron_tunables::param_integer(
+                "marketplace.package.max_registry_generations",
+                MAX_REGISTRY_GENERATIONS,
+            ) + 1,
+        ) {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -419,15 +424,26 @@ impl PluginStore {
                 candidates.push(entry.path());
             }
         }
-        if candidates.len() > MAX_REGISTRY_GENERATIONS {
+        if candidates.len()
+            > iteron_tunables::param_integer(
+                "marketplace.package.max_registry_generations",
+                MAX_REGISTRY_GENERATIONS,
+            )
+        {
             return Err(PackageError::RegistryGenerationLimit);
         }
         candidates.sort();
         let Some(path) = candidates.last() else {
             return Ok(RegistryState::default());
         };
-        let bytes =
-            read_bounded(path, MAX_REGISTRY_BYTES).map_err(|_| PackageError::MalformedRegistry)?;
+        let bytes = read_bounded(
+            path,
+            iteron_tunables::param_integer(
+                "marketplace.package.max_registry_bytes",
+                MAX_REGISTRY_BYTES,
+            ),
+        )
+        .map_err(|_| PackageError::MalformedRegistry)?;
         let state: RegistryState =
             serde_json::from_slice(&bytes).map_err(|_| PackageError::MalformedRegistry)?;
         if state.schema != 1 {
@@ -443,7 +459,12 @@ impl PluginStore {
             .ok_or(PackageError::RegistryGenerationLimit)?;
         let bytes =
             serde_json::to_vec_pretty(&state).map_err(|_| PackageError::MalformedRegistry)?;
-        if bytes.len() > MAX_REGISTRY_BYTES {
+        if bytes.len()
+            > iteron_tunables::param_integer(
+                "marketplace.package.max_registry_bytes",
+                MAX_REGISTRY_BYTES,
+            )
+        {
             return Err(PackageError::MalformedRegistry);
         }
         let dir = self.root.join("state");
@@ -459,7 +480,12 @@ impl PluginStore {
     /// otherwise healthy long-lived installation unable to update its own registry.
     fn prune_registry_generations(&self, dir: &Path) -> Result<(), PackageError> {
         let mut generations = Vec::new();
-        for entry in fs::read_dir(dir)?.take(MAX_REGISTRY_GENERATIONS + 1) {
+        for entry in fs::read_dir(dir)?.take(
+            iteron_tunables::param_integer(
+                "marketplace.package.max_registry_generations",
+                MAX_REGISTRY_GENERATIONS,
+            ) + 1,
+        ) {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -471,13 +497,21 @@ impl PluginStore {
                 generations.push(entry.path());
             }
         }
-        if generations.len() > MAX_REGISTRY_GENERATIONS {
+        if generations.len()
+            > iteron_tunables::param_integer(
+                "marketplace.package.max_registry_generations",
+                MAX_REGISTRY_GENERATIONS,
+            )
+        {
             return Err(PackageError::RegistryGenerationLimit);
         }
         generations.sort();
         let obsolete = generations
             .len()
-            .saturating_sub(RETAINED_REGISTRY_GENERATIONS);
+            .saturating_sub(iteron_tunables::param_integer(
+                "marketplace.package.retained_registry_generations",
+                RETAINED_REGISTRY_GENERATIONS,
+            ));
         for path in generations.into_iter().take(obsolete) {
             fs::remove_file(path)?;
         }

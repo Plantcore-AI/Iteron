@@ -218,26 +218,51 @@ pub fn verify_offline_transcript(path: &Path) -> Result<usize, TranscriptRunErro
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(TranscriptRunError::InvalidPath(path.to_path_buf()));
     }
-    if metadata.len() > MAX_TRANSCRIPT_BYTES {
+    if metadata.len()
+        > iteron_tunables::param_integer(
+            "evolve.transcript.max_transcript_bytes",
+            MAX_TRANSCRIPT_BYTES,
+        )
+    {
         return Err(TranscriptRunError::TranscriptTooLarge {
-            max: MAX_TRANSCRIPT_BYTES,
+            max: iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_bytes",
+                MAX_TRANSCRIPT_BYTES,
+            ),
             actual: metadata.len(),
         });
     }
-    let mut previous = ZERO_HASH.to_owned();
+    let mut previous =
+        iteron_tunables::param_str("evolve.transcript.zero_hash", ZERO_HASH).to_owned();
     let mut expected_sequence = 0_u64;
     let reader = BufReader::new(File::open(path)?);
     for line in reader.lines() {
         let line = line?;
-        if line.len() > MAX_TRANSCRIPT_LINE_BYTES {
+        if line.len()
+            > iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_line_bytes",
+                MAX_TRANSCRIPT_LINE_BYTES,
+            )
+        {
             return Err(TranscriptRunError::RecordTooLarge {
-                max: MAX_TRANSCRIPT_LINE_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.transcript.max_transcript_line_bytes",
+                    MAX_TRANSCRIPT_LINE_BYTES,
+                ),
                 actual: line.len(),
             });
         }
-        if expected_sequence as usize >= MAX_TRANSCRIPT_RECORDS {
+        if expected_sequence as usize
+            >= iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_records",
+                MAX_TRANSCRIPT_RECORDS,
+            )
+        {
             return Err(TranscriptRunError::TooManyRecords {
-                max: MAX_TRANSCRIPT_RECORDS,
+                max: iteron_tunables::param_integer(
+                    "evolve.transcript.max_transcript_records",
+                    MAX_TRANSCRIPT_RECORDS,
+                ),
             });
         }
         let record: TranscriptRecord = serde_json::from_str(&line)?;
@@ -271,16 +296,25 @@ pub(crate) fn write_transcript(
     if events.is_empty() {
         return Err(TranscriptRunError::EmptyTranscript);
     }
-    if events.len() > MAX_TRANSCRIPT_RECORDS {
+    if events.len()
+        > iteron_tunables::param_integer(
+            "evolve.transcript.max_transcript_records",
+            MAX_TRANSCRIPT_RECORDS,
+        )
+    {
         return Err(TranscriptRunError::TooManyRecords {
-            max: MAX_TRANSCRIPT_RECORDS,
+            max: iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_records",
+                MAX_TRANSCRIPT_RECORDS,
+            ),
         });
     }
     if std::fs::symlink_metadata(path).is_ok() {
         return Err(TranscriptRunError::OutputAlreadyExists(path.to_path_buf()));
     }
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
-    let mut previous = ZERO_HASH.to_owned();
+    let mut previous =
+        iteron_tunables::param_str("evolve.transcript.zero_hash", ZERO_HASH).to_owned();
     let mut total = 0_u64;
     for (index, event) in events.iter().enumerate() {
         let sequence = index as u64;
@@ -296,9 +330,17 @@ pub(crate) fn write_transcript(
         };
         let mut line = serde_json::to_vec(&record)?;
         line.push(b'\n');
-        if line.len() > MAX_TRANSCRIPT_LINE_BYTES {
+        if line.len()
+            > iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_line_bytes",
+                MAX_TRANSCRIPT_LINE_BYTES,
+            )
+        {
             return Err(TranscriptRunError::RecordTooLarge {
-                max: MAX_TRANSCRIPT_LINE_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.transcript.max_transcript_line_bytes",
+                    MAX_TRANSCRIPT_LINE_BYTES,
+                ),
                 actual: line.len(),
             });
         }
@@ -306,12 +348,23 @@ pub(crate) fn write_transcript(
             total
                 .checked_add(line.len() as u64)
                 .ok_or(TranscriptRunError::TranscriptTooLarge {
-                    max: MAX_TRANSCRIPT_BYTES,
+                    max: iteron_tunables::param_integer(
+                        "evolve.transcript.max_transcript_bytes",
+                        MAX_TRANSCRIPT_BYTES,
+                    ),
                     actual: u64::MAX,
                 })?;
-        if total > MAX_TRANSCRIPT_BYTES {
+        if total
+            > iteron_tunables::param_integer(
+                "evolve.transcript.max_transcript_bytes",
+                MAX_TRANSCRIPT_BYTES,
+            )
+        {
             return Err(TranscriptRunError::TranscriptTooLarge {
-                max: MAX_TRANSCRIPT_BYTES,
+                max: iteron_tunables::param_integer(
+                    "evolve.transcript.max_transcript_bytes",
+                    MAX_TRANSCRIPT_BYTES,
+                ),
                 actual: total,
             });
         }
@@ -362,7 +415,10 @@ fn event_signature(
             previous_hash,
             event_hash,
         },
-        MAX_TRANSCRIPT_LINE_BYTES,
+        iteron_tunables::param_integer(
+            "evolve.transcript.max_transcript_line_bytes",
+            MAX_TRANSCRIPT_LINE_BYTES,
+        ),
     )?)
 }
 

@@ -189,7 +189,10 @@ pub(super) fn initial_picker_selection(items: &[PickItem]) -> usize {
         })
         .or_else(|| items.iter().position(|item| item.is_current))
         .or_else(|| items.iter().position(|item| item.enabled))
-        .unwrap_or(PICKER_FALLBACK_FOCUS)
+        .unwrap_or(iteron_tunables::param_integer(
+            "cli.tui.command_surfaces.picker_fallback_focus",
+            PICKER_FALLBACK_FOCUS,
+        ))
 }
 
 /// Make an initially focused hierarchical leaf visible before the first keypress. Without this,
