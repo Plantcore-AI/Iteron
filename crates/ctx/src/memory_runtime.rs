@@ -43,7 +43,10 @@ impl Default for MemoryRetrievalPolicy {
                 "ctx.memory_runtime.score_scale",
                 SCORE_SCALE,
             ),
-            structural_weight_ppm: 0,
+            structural_weight_ppm: iteron_tunables::param_integer(
+                "ctx.memory_runtime.default_structural_weight_ppm",
+                0,
+            ),
             vector_weight_ppm: 0,
             reranker_weight_ppm: 0,
             recency_decay_ppm: iteron_tunables::param_integer(

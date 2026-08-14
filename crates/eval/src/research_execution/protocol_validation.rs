@@ -21,11 +21,12 @@ impl ResearchRequestEnvelope {
                 candidate_sha256,
                 candidate,
                 implementation_candidate_path,
+                native_materialization_path,
                 ..
             } => {
-                validated_candidate(candidate_sha256, candidate)?;
+                let validated = validated_candidate(candidate_sha256, candidate)?;
                 match (
-                    candidate.implementations.is_empty(),
+                    candidate.implementation_bindings().is_empty(),
                     implementation_candidate_path,
                 ) {
                     (true, None) => {}
@@ -36,12 +37,22 @@ impl ResearchRequestEnvelope {
                         ));
                     }
                 }
+                match (validated.has_native_patches, native_materialization_path) {
+                    (false, None) => {}
+                    (true, Some(path)) => validate_path(path)?,
+                    _ => {
+                        return Err(ResearchProtocolError::InvalidField(
+                            "native_materialization_path".into(),
+                        ));
+                    }
+                }
             }
             ResearchRequest::Run {
                 candidate_id,
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256,
+                candidate_graph_identity,
                 run_id,
                 run,
                 ..
@@ -52,11 +63,21 @@ impl ResearchRequestEnvelope {
                 validate_id(run_id, "run_id")?;
                 run.validate()?;
                 validate_optional_activation_digest(implementation_activation_sha256)?;
+                validate_optional_graph_identity(candidate_graph_identity.as_ref())?;
                 if implementation_activation_sha256.as_deref()
                     != run.implementation_candidate_digest()
                 {
                     return Err(ResearchProtocolError::InvalidField(
                         "implementation activation correlation".into(),
+                    ));
+                }
+                if let Some(identity) = run.graph_identity()
+                    && (candidate_graph_identity.as_ref() != Some(identity)
+                        || run.candidate_sha256() != Some(candidate_sha256.as_str())
+                        || run.run_id() != Some(run_id.as_str()))
+                {
+                    return Err(ResearchProtocolError::InvalidField(
+                        "native materialization correlation".into(),
                     ));
                 }
             }
@@ -69,6 +90,7 @@ impl ResearchRequestEnvelope {
             candidate_sha256,
             profile_sha256,
             implementation_activation_sha256,
+            candidate_graph_identity,
             ..
         }
         | ResearchRequest::Result {
@@ -76,6 +98,7 @@ impl ResearchRequestEnvelope {
             candidate_sha256,
             profile_sha256,
             implementation_activation_sha256,
+            candidate_graph_identity,
             ..
         }
         | ResearchRequest::Evidence {
@@ -83,6 +106,7 @@ impl ResearchRequestEnvelope {
             candidate_sha256,
             profile_sha256,
             implementation_activation_sha256,
+            candidate_graph_identity,
             ..
         } = &self.payload
         {
@@ -90,6 +114,7 @@ impl ResearchRequestEnvelope {
             validate_candidate_digest(candidate_sha256)?;
             validate_digest(profile_sha256, "profile_sha256")?;
             validate_optional_activation_digest(implementation_activation_sha256)?;
+            validate_optional_graph_identity(candidate_graph_identity.as_ref())?;
         }
         Ok(())
     }
@@ -106,6 +131,10 @@ pub(crate) struct ValidatedCandidate {
     pub profile_sha256: String,
     pub rendered_bytes: u64,
     pub implementation_count: u64,
+    pub candidate_schema_id: String,
+    pub candidate_graph_identity: Option<crate::tuner::CandidateGraphIdentity>,
+    pub has_native_patches: bool,
+    pub materialization: Option<crate::tuner::CandidateMaterialization>,
     pub rendered_profile: String,
     pub implementations: Vec<crate::tuner::CandidateImplementation>,
 }
@@ -135,14 +164,30 @@ pub(crate) fn validated_candidate(
             "profile exceeds its byte bound".into(),
         ));
     }
+    let materialization = (candidate.schema_version
+        == crate::tuner::CANDIDATE_GRAPH_SCHEMA_VERSION)
+        .then(|| candidate.materialize())
+        .transpose()
+        .map_err(|error| ResearchProtocolError::InvalidField(error.to_string()))?;
+    let candidate_graph_identity = materialization
+        .as_ref()
+        .map(|item| item.graph_identity())
+        .transpose()
+        .map_err(|error| ResearchProtocolError::InvalidField(error.to_string()))?;
     Ok(ValidatedCandidate {
         candidate_id: candidate.id.clone(),
         candidate_sha256: actual,
         profile_sha256,
         rendered_bytes: rendered.len() as u64,
-        implementation_count: candidate.implementations.len() as u64,
+        implementation_count: candidate.implementation_bindings().len() as u64,
+        candidate_schema_id: candidate.candidate_schema_id().into(),
+        candidate_graph_identity,
+        has_native_patches: materialization
+            .as_ref()
+            .is_some_and(crate::tuner::CandidateMaterialization::has_native_patches),
+        materialization,
         rendered_profile: rendered,
-        implementations: candidate.implementations.clone(),
+        implementations: candidate.implementation_bindings().to_vec(),
     })
 }
 
@@ -187,6 +232,7 @@ impl RunSpec {
                 }
                 Ok(())
             }
+            Self::ExternalNative { spec } => spec.validate(),
         }
     }
 
@@ -194,6 +240,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => &spec.profile_sha256,
             Self::TerminalBench21 { request, .. } => &request.profile.profile_sha256,
+            Self::ExternalNative { spec } => &spec.profile_sha256,
         }
     }
 
@@ -201,6 +248,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => spec.max_wall_secs,
             Self::TerminalBench21 { request, .. } => request.resources.max_wall_secs,
+            Self::ExternalNative { spec } => spec.max_wall_secs,
         }
     }
 
@@ -208,6 +256,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => spec.max_evidence_bytes,
             Self::TerminalBench21 { request, .. } => request.resources.max_evidence_bytes,
+            Self::ExternalNative { spec } => spec.max_evidence_bytes,
         }
     }
 
@@ -215,6 +264,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => spec.max_memory_bytes,
             Self::TerminalBench21 { request, .. } => request.resources.max_memory_bytes,
+            Self::ExternalNative { spec } => spec.max_memory_bytes,
         }
     }
 
@@ -222,6 +272,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => &spec.profile_path,
             Self::TerminalBench21 { request, .. } => &request.profile_path,
+            Self::ExternalNative { spec } => &spec.profile_path,
         }
     }
 
@@ -229,6 +280,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => &spec.effective_profile_path,
             Self::TerminalBench21 { request, .. } => &request.effective_profile_path,
+            Self::ExternalNative { spec } => &spec.effective_profile_path,
         }
     }
 
@@ -236,6 +288,7 @@ impl RunSpec {
         match self {
             Self::IteronCli { spec } => &spec.runs_dir,
             Self::TerminalBench21 { request, .. } => &request.runs_dir,
+            Self::ExternalNative { spec } => &spec.runs_dir,
         }
     }
 
@@ -248,6 +301,7 @@ impl RunSpec {
             } => implementation_candidate
                 .as_ref()
                 .map(|reference| reference.path.as_str()),
+            Self::ExternalNative { .. } => None,
         }
     }
 
@@ -260,7 +314,102 @@ impl RunSpec {
             } => implementation_candidate
                 .as_ref()
                 .map(|reference| reference.digest.as_str()),
+            Self::ExternalNative { .. } => None,
         }
+    }
+
+    pub(crate) fn native_materialization_path(&self) -> Option<&str> {
+        match self {
+            Self::ExternalNative { spec } => Some(&spec.native_materialization_path),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native_materialization_digest(&self) -> Option<&str> {
+        match self {
+            Self::ExternalNative { spec } => Some(&spec.native_materialization_sha256),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn graph_identity(&self) -> Option<&crate::tuner::CandidateGraphIdentity> {
+        match self {
+            Self::ExternalNative { spec } => Some(&spec.candidate_graph_identity),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn candidate_sha256(&self) -> Option<&str> {
+        match self {
+            Self::ExternalNative { spec } => Some(&spec.candidate_sha256),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn run_id(&self) -> Option<&str> {
+        match self {
+            Self::ExternalNative { spec } => Some(&spec.run_id),
+            _ => None,
+        }
+    }
+}
+
+impl ExternalNativeRunSpec {
+    pub fn validate(&self) -> Result<(), ResearchProtocolError> {
+        for path in [
+            &self.binary_path,
+            &self.workspace_path,
+            &self.profile_path,
+            &self.effective_profile_path,
+            &self.native_materialization_path,
+            &self.consumption_receipt_path,
+            &self.result_path,
+            &self.stdout_path,
+            &self.runs_dir,
+        ] {
+            validate_path(path)?;
+        }
+        validate_digest(&self.profile_sha256, "profile_sha256")?;
+        validate_digest(
+            &self.native_materialization_sha256,
+            "native_materialization_sha256",
+        )?;
+        validate_candidate_digest(&self.candidate_sha256)?;
+        validate_optional_graph_identity(Some(&self.candidate_graph_identity))?;
+        validate_id(&self.run_id, "run_id")?;
+        // Fixed protocol flags consume 26 argv entries; keep the whole command under 128.
+        if self.task_arguments.len() > 96
+            || self.task_arguments.iter().any(|argument| {
+                argument.len() > MAX_PROMPT_BYTES || argument.contains('\0') || argument == "--"
+            })
+            || !(1..=MAX_WALL_SECS).contains(&self.max_wall_secs)
+            || !(1..=MAX_OUTPUT_BYTES).contains(&self.max_stdout_bytes)
+            || !(1..=MAX_OUTPUT_BYTES).contains(&self.max_stderr_bytes)
+            || !(1..=MAX_EVIDENCE_BYTES).contains(&self.max_evidence_bytes)
+            || !(1..=MAX_MEMORY_BYTES).contains(&self.max_memory_bytes)
+        {
+            return Err(ResearchProtocolError::InvalidField(
+                "external native run bounds".into(),
+            ));
+        }
+        let outputs = [
+            self.effective_profile_path.as_str(),
+            self.consumption_receipt_path.as_str(),
+            self.result_path.as_str(),
+            self.stdout_path.as_str(),
+        ];
+        let mut sorted = outputs;
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|pair| pair[0] == pair[1])
+            || outputs
+                .iter()
+                .any(|path| *path == self.profile_path || *path == self.native_materialization_path)
+        {
+            return Err(ResearchProtocolError::InvalidField(
+                "external native output paths".into(),
+            ));
+        }
+        validate_credentials(&self.credential_env_names)
     }
 }
 
@@ -389,6 +538,22 @@ fn validate_optional_activation_digest(
         validate_digest(value, "implementation_activation_sha256")?;
     }
     Ok(())
+}
+
+fn validate_optional_graph_identity(
+    identity: Option<&crate::tuner::CandidateGraphIdentity>,
+) -> Result<(), ResearchProtocolError> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    if identity.schema_id != crate::tuner::CANDIDATE_GRAPH_SCHEMA_ID {
+        return Err(ResearchProtocolError::InvalidField(
+            "candidate_graph_identity.schema_id".into(),
+        ));
+    }
+    validate_candidate_digest(&identity.materialization_sha256)?;
+    validate_candidate_digest(&identity.experiment_sha256)?;
+    validate_candidate_digest(&identity.topology_sha256)
 }
 
 fn validate_activation_pair(

@@ -190,9 +190,18 @@ pub struct ObjectiveWeightsConfig {
 impl Default for ObjectiveWeightsConfig {
     fn default() -> Self {
         Self {
-            quality_millionths: 600_000,
-            cost_millionths: 200_000,
-            latency_millionths: 200_000,
+            quality_millionths: iteron_tunables::param_integer(
+                "cli.config.provider_governor.default_objective_quality_millionths",
+                600_000,
+            ),
+            cost_millionths: iteron_tunables::param_integer(
+                "cli.config.provider_governor.default_objective_cost_millionths",
+                200_000,
+            ),
+            latency_millionths: iteron_tunables::param_integer(
+                "cli.config.provider_governor.default_objective_latency_millionths",
+                200_000,
+            ),
         }
     }
 }
@@ -392,15 +401,30 @@ pub struct PromptCacheConfig {
 
 impl PromptCacheConfig {
     fn default_for(enabled: bool) -> Self {
+        let scope = match iteron_tunables::param_enum(
+            "cli.config.provider_governor.default_prompt_cache_scope",
+            "session",
+        ) {
+            "request" => CacheScopeConfig::Request,
+            "session" => CacheScopeConfig::Session,
+            "tenant" => CacheScopeConfig::Tenant,
+            value => panic!("unadmitted prompt-cache scope `{value}`"),
+        };
         Self {
-            ttl_seconds: 0,
+            ttl_seconds: iteron_tunables::param_integer(
+                "cli.config.provider_governor.default_prompt_cache_ttl_seconds",
+                0,
+            ),
             breakpoint: if enabled {
                 CacheBreakpointConfig::Rolling
             } else {
                 CacheBreakpointConfig::None
             },
-            invalidate_on_tool_change: true,
-            scope: CacheScopeConfig::Session,
+            invalidate_on_tool_change: iteron_tunables::param_bool(
+                "cli.config.provider_governor.default_prompt_cache_invalidate_on_tool_change",
+                true,
+            ),
+            scope,
         }
     }
 
@@ -424,7 +448,10 @@ impl PromptCacheConfig {
 
 impl Default for PromptCacheConfig {
     fn default() -> Self {
-        Self::default_for(false)
+        Self::default_for(iteron_tunables::param_bool(
+            "cli.config.provider_governor.default_prompt_cache_enabled",
+            false,
+        ))
     }
 }
 

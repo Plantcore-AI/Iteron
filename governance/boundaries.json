@@ -679,7 +679,9 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/eval" }
+        { "kind": "tree", "path": "crates/eval" },
+        { "kind": "file", "path": "scripts/cross_harness_qualification.py" },
+        { "kind": "file", "path": "scripts/test_cross_harness_qualification.py" }
       ],
       "contracts": ["fixed-model-comparison", "ground-truth-check", "honest-quality-claim"],
       "checks": ["cargo check -p iteron-eval --all-targets --locked"]

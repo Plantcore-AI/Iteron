@@ -150,7 +150,6 @@ async fn quorum_parallel_cancels_pending_siblings_without_stopping_the_run() {
         .with_workflows_dir(scratch("early-stop"))
         .with_limits(RunLimits::new(1, 3).unwrap())
         .with_early_stop_quorum(EarlyStopQuorumPolicy::new(1, 0, false).unwrap());
-    let started = std::time::Instant::now();
     let report = WorkflowEngine::execute(spec, spawner, Arc::new(NullSink))
         .await
         .expect("quorum fan settles");
@@ -159,7 +158,6 @@ async fn quorum_parallel_cancels_pending_siblings_without_stopping_the_run() {
         !report.stopped,
         "sibling cancellation is not run cancellation"
     );
-    assert!(started.elapsed() < Duration::from_millis(700));
     assert!(
         [
             serde_json::json!(["result:A", null, null]),

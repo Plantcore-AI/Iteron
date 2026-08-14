@@ -1,5 +1,5 @@
 use super::external_consumption::{ConsumptionLedger, Stage};
-use super::external_mapping::core_slot;
+use super::external_mapping::{ModulePort, module_port_for};
 use super::schema::{
     BundleCompilationReceipt, BundleCompileFailure, BundleCoverage, CoreSlot,
     RejectedPolicyReceipt, RejectionCode, SlotReceiptStatus,
@@ -37,7 +37,7 @@ pub(super) fn apply_external_activation(
         let Some(plan) = activation.plan(module) else {
             continue;
         };
-        let slot = core_slot(module);
+        let slot = module_port_for(module).core_slot;
         let Some(identity) = activation.identity(module) else {
             return Err(reject_external(
                 receipt,
@@ -90,7 +90,11 @@ pub(super) fn apply_external_activation(
 
     let mut chains: Vec<(CoreSlot, Vec<ExternalModule>)> = Vec::new();
     for (module, slot, plan) in resolved {
-        let entry = ExternalModule { module, plan };
+        let entry = ExternalModule {
+            module,
+            plan,
+            port: module_port_for(module),
+        };
         if let Some((_, modules)) = chains.iter_mut().find(|(candidate, _)| *candidate == slot) {
             modules.push(entry);
         } else {
@@ -99,6 +103,7 @@ pub(super) fn apply_external_activation(
     }
     for (slot, chain) in chains {
         let (implementation, manifest, artifact) = aggregate_receipt(activation, &chain);
+        let baseline = slots.get(slot);
         slots.replace(
             slot,
             Arc::new(ExternalStrategySlot::new(
@@ -106,6 +111,7 @@ pub(super) fn apply_external_activation(
                 chain,
                 activation.candidate_sha256().to_owned(),
                 ledger.clone(),
+                baseline,
             )),
         );
         let row = &mut receipt.slots[slot_index(slot)];
@@ -258,11 +264,13 @@ struct ExternalStrategySlot {
     candidate_sha256: String,
     runtime: Mutex<Option<ImplementationRuntime>>,
     ledger: Arc<ConsumptionLedger>,
+    baseline: Arc<dyn StrategySlot>,
 }
 
 struct ExternalModule {
     module: ModuleId,
     plan: ProcessLaunchPlan,
+    port: ModulePort,
 }
 
 impl ExternalStrategySlot {
@@ -271,6 +279,7 @@ impl ExternalStrategySlot {
         chain: Vec<ExternalModule>,
         candidate_sha256: String,
         ledger: Arc<ConsumptionLedger>,
+        baseline: Arc<dyn StrategySlot>,
     ) -> Self {
         Self {
             slot: SlotId(slot.as_str().to_owned()),
@@ -279,6 +288,7 @@ impl ExternalStrategySlot {
             candidate_sha256,
             runtime: Mutex::new(None),
             ledger,
+            baseline,
         }
     }
 
@@ -338,9 +348,11 @@ impl ExternalStrategySlot {
         runtime.load().map_err(|_| ())?;
         self.ledger.record(entry.module, Stage::Loaded)?;
         let input = serde_json::to_value(ModuleObservation {
-            schema_id: "iteron-module-observation/1",
+            schema_id: "iteron-module-observation/2",
             module: entry.module,
             core_slot: self.core_slot,
+            production_port: entry.port.production_port,
+            stage: entry.port.stage,
             original: &observation.payload,
             prior,
         })
@@ -368,18 +380,39 @@ impl ExternalStrategySlot {
         };
         let decision: ExternalDecision =
             serde_json::from_value(terminal.observation).map_err(|_| ())?;
-        validate_decision_schema(self.core_slot, &decision.decision)?;
+        if decision.inherit == decision.decision.is_some() {
+            return Err(());
+        }
+        if let Some(value) = decision.decision.as_ref() {
+            validate_decision_schema(self.core_slot, value)?;
+        }
         self.ledger.record(entry.module, Stage::Terminal)?;
         runtime
             .stop("terminal observation consumed")
             .map_err(|_| ())?;
         self.ledger.record(entry.module, Stage::Stopped)?;
-        Ok(SlotOutcome {
-            admitted: decision
-                .admitted
-                .intersect(entry.plan.admitted_capabilities())
-                .intersect(ceiling),
-            decision: decision.decision,
+        let inherited = if decision.inherit {
+            Some(
+                prior
+                    .cloned()
+                    .unwrap_or_else(|| self.baseline.decide(observation)),
+            )
+        } else {
+            None
+        };
+        let admitted = decision
+            .admitted
+            .intersect(entry.plan.admitted_capabilities())
+            .intersect(ceiling);
+        Ok(match inherited {
+            Some(outcome) => SlotOutcome {
+                admitted: outcome.admitted.intersect(admitted),
+                decision: outcome.decision,
+            },
+            None => SlotOutcome {
+                admitted,
+                decision: decision.decision.expect("validated custom decision exists"),
+            },
         })
     }
 
@@ -411,6 +444,8 @@ struct ModuleObservation<'a> {
     schema_id: &'static str,
     module: ModuleId,
     core_slot: CoreSlot,
+    production_port: iteron_tunables::ProductionPortId,
+    stage: u8,
     original: &'a serde_json::Value,
     prior: Option<&'a SlotOutcome>,
 }
@@ -419,7 +454,10 @@ struct ModuleObservation<'a> {
 #[serde(deny_unknown_fields)]
 struct ExternalDecision {
     admitted: CapabilitySet,
-    decision: serde_json::Value,
+    #[serde(default)]
+    inherit: bool,
+    #[serde(default)]
+    decision: Option<serde_json::Value>,
 }
 
 fn validate_decision_schema(slot: CoreSlot, value: &serde_json::Value) -> Result<(), ()> {
@@ -495,5 +533,6 @@ fn rejected_outcome(slot: CoreSlot) -> SlotOutcome {
 
 #[cfg(test)]
 pub(super) fn module_has_production_consumer(module: ModuleId) -> bool {
-    CoreSlot::ALL.contains(&core_slot(module))
+    let port = module_port_for(module);
+    port.module == module && CoreSlot::ALL.contains(&port.core_slot)
 }

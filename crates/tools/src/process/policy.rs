@@ -21,6 +21,8 @@ const DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MILLISECONDS: u64 = 5 * 60 * 1_000;
 /// Whether a job blocked on stdin surfaces a prompt to the operator; on, because the alternative
 /// is a job that appears hung with no way to see what it wants.
 const DEFAULT_OPERATOR_PROMPT: bool = true;
+/// Process implementation selected when no installed profile overrides it.
+const DEFAULT_PERSISTENT_BACKEND: &str = "persistent";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +38,15 @@ impl PersistentBackendSelection {
             Self::Disabled => "disabled",
             Self::OneShot => "one_shot",
             Self::Persistent => "persistent",
+        }
+    }
+
+    fn from_profile(value: &str) -> Self {
+        match value {
+            "disabled" => Self::Disabled,
+            "one_shot" => Self::OneShot,
+            "persistent" => Self::Persistent,
+            _ => Self::Persistent,
         }
     }
 }
@@ -254,7 +265,11 @@ impl Default for ProcessRuntimePolicy {
         // path. A tier-2 override is therefore held to the same code-owned ceilings the constant
         // already satisfied, by clamping here rather than by panicking at startup. With no profile
         // installed every clamp is a no-op on its own compiled default.
-        let background_job_cap = iteron_tunables::param_usize(
+        let backend = PersistentBackendSelection::from_profile(iteron_tunables::param_str(
+            "tools.process.policy.default_persistent_backend",
+            DEFAULT_PERSISTENT_BACKEND,
+        ));
+        let configured_background_job_cap = iteron_tunables::param_usize(
             "tools.process.policy.default_background_job_cap",
             iteron_tunables::param_integer(
                 "tools.process.policy.default_background_job_cap",
@@ -268,6 +283,11 @@ impl Default for ProcessRuntimePolicy {
                 MAX_BACKGROUND_JOBS,
             ),
         );
+        let background_job_cap = if backend == PersistentBackendSelection::Disabled {
+            0
+        } else {
+            configured_background_job_cap
+        };
         let idle_stall_milliseconds = iteron_tunables::param_u64(
             "tools.process.policy.default_idle_stall_milliseconds",
             iteron_tunables::param_integer(
@@ -311,7 +331,7 @@ impl Default for ProcessRuntimePolicy {
             ),
         );
         Self::new(
-            PersistentBackendSelection::Persistent,
+            backend,
             background_job_cap,
             idle_stall_milliseconds,
             InteractiveStdinWaitPolicy {

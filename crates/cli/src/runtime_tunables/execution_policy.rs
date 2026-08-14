@@ -415,8 +415,14 @@ impl ExecutionRuntimePolicy {
                 RouteTopology::Direct
             },
             admission: ChildAdmissionPolicy {
-                minimum_remaining_turns: 4,
-                minimum_remaining_wall_seconds: 3,
+                minimum_remaining_turns: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.admission_minimum_remaining_turns",
+                    4,
+                ),
+                minimum_remaining_wall_seconds: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.admission_minimum_remaining_wall_seconds",
+                    3,
+                ),
                 require_capability_subset: true,
             },
             writer_fan_turn_split: WriterFanTurnPolicy {
@@ -424,15 +430,24 @@ impl ExecutionRuntimePolicy {
                     numerator: 1,
                     denominator: 2,
                 },
-                minimum_writer_turns: 4,
-                strictly_dominant: true,
+                minimum_writer_turns: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.writer_fan_minimum_writer_turns",
+                    4,
+                ),
+                strictly_dominant: iteron_tunables::param_bool(
+                    "cli.runtime_tunables.execution_policy.writer_fan_strictly_dominant",
+                    true,
+                ),
             },
             wall_split: WallSplitPolicy {
                 fan_share: ExactRatio {
                     numerator: 1,
                     denominator: 3,
                 },
-                minimum_fan_seconds: 1,
+                minimum_fan_seconds: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.wall_split_minimum_fan_seconds",
+                    1,
+                ),
             },
             fan_token_share: ExactRatio {
                 numerator: 1,
@@ -444,7 +459,10 @@ impl ExecutionRuntimePolicy {
                     numerator: 1,
                     denominator: 2,
                 },
-                strictly_dominant_writer: true,
+                strictly_dominant_writer: iteron_tunables::param_bool(
+                    "cli.runtime_tunables.execution_policy.direct_child_strictly_dominant_writer",
+                    true,
+                ),
                 child_token_share: ExactRatio {
                     numerator: 1,
                     denominator: 2,
@@ -453,8 +471,14 @@ impl ExecutionRuntimePolicy {
                     numerator: 1,
                     denominator: 3,
                 },
-                minimum_child_turns: 2,
-                minimum_remaining_wall_seconds: 3,
+                minimum_child_turns: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.direct_child_minimum_child_turns",
+                    2,
+                ),
+                minimum_remaining_wall_seconds: iteron_tunables::param_integer(
+                    "cli.runtime_tunables.execution_policy.direct_child_minimum_remaining_wall_seconds",
+                    3,
+                ),
             },
             subagent_effort: match effort {
                 Effort::Ultracode => Effort::Max,

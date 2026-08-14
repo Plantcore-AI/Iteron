@@ -8,9 +8,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 mod activation;
+mod candidate_graph;
 mod journal;
 mod state_ops;
 pub(crate) use activation::{MaterializedActivation, materialize_activation};
+pub use candidate_graph::*;
 use journal::TunerJournal;
 use state_ops::{apply_event, digest, initial_state, result_order, tpe_score, validate_spec};
 
@@ -25,8 +27,12 @@ const MAX_FAMILIES_PER_CANDIDATE: usize = iteron_tunables::EXPECTED_FAMILY_COUNT
 /// intentionally above the current registry total so registry growth cannot silently make a full
 /// candidate inexpressible before the bound is revised.
 pub const MAX_UNIVERSAL_CANDIDATE_DIMENSIONS: usize = 4_096;
-pub const UNIVERSAL_CANDIDATE_SCHEMA_VERSION: u16 = 2;
-pub const IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/1";
+pub const LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION: u16 = 2;
+pub const UNIVERSAL_CANDIDATE_SCHEMA_VERSION: u16 = CANDIDATE_GRAPH_SCHEMA_VERSION;
+/// Current implementation lifecycle protocol. Version 2 is required for state transfer/HMR.
+pub const IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/2";
+/// Stateless replay compatibility for candidate schemas v1/v2.
+pub const LEGACY_IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/1";
 const MAX_SPEC_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +52,7 @@ pub struct CandidateImplementation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunerCandidate {
-    /// Universal candidate wire schema. Version 2 adds executable implementation source locators.
+    /// Universal candidate wire schema. Version 3 uses the closed `graph` address space.
     pub schema_version: u16,
     pub id: String,
     /// Legacy schema-v1 family features. Schema v2 uses `profile` as its one canonical value
@@ -60,6 +66,9 @@ pub struct TunerCandidate {
     /// are bound here; admission, authority, loading, and lifecycle remain host responsibilities.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implementations: Vec<CandidateImplementation>,
+    /// Canonical v3 graph. Legacy values/profile/implementations must be absent when this exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<CandidateGraph>,
 }
 
 impl TunerCandidate {
@@ -77,15 +86,58 @@ impl TunerCandidate {
     /// Implementation artifacts remain separate because loading code and installing values have
     /// different admission authorities.
     pub fn rendered_profile(&self) -> Result<(String, String), TunerError> {
-        let profile = self.profile.as_ref().ok_or_else(|| {
-            TunerError::InvalidSpec("candidate has no universal profile document".into())
-        })?;
+        let materialized;
+        let profile = if self.schema_version == CANDIDATE_GRAPH_SCHEMA_VERSION {
+            materialized = self.materialize()?;
+            &materialized.profile
+        } else {
+            self.profile.as_ref().ok_or_else(|| {
+                TunerError::InvalidSpec("candidate has no universal profile document".into())
+            })?
+        };
         iteron_tunables::validate_profile(profile)
             .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
         let rendered = iteron_tunables::render_profile(profile)
             .map_err(|error| TunerError::Encode(error.to_string()))?;
         let digest = iteron_tunables::document_digest(&rendered);
         Ok((rendered, digest))
+    }
+
+    /// Deterministically expand the v3 graph into every runtime-addressed output.
+    pub fn materialize(&self) -> Result<CandidateMaterialization, TunerError> {
+        if self.schema_version != CANDIDATE_GRAPH_SCHEMA_VERSION {
+            return Err(TunerError::InvalidSpec(
+                "only iteron-candidate/3 has graph materialization".into(),
+            ));
+        }
+        self.graph
+            .as_ref()
+            .ok_or_else(|| TunerError::InvalidSpec("schema v3 candidate needs a graph".into()))?
+            .materialize(self)
+    }
+
+    pub fn graph_identity(&self) -> Result<Option<CandidateGraphIdentity>, TunerError> {
+        if self.schema_version == CANDIDATE_GRAPH_SCHEMA_VERSION {
+            return self.materialize()?.graph_identity().map(Some);
+        }
+        Ok(None)
+    }
+
+    pub fn implementation_bindings(&self) -> &[CandidateImplementation] {
+        self.graph
+            .as_ref()
+            .map_or(self.implementations.as_slice(), |graph| {
+                graph.implementations.as_slice()
+            })
+    }
+
+    pub fn candidate_schema_id(&self) -> &'static str {
+        match self.schema_version {
+            1 => "iteron-candidate/1",
+            LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION => "iteron-candidate/2",
+            CANDIDATE_GRAPH_SCHEMA_VERSION => CANDIDATE_GRAPH_SCHEMA_ID,
+            _ => "iteron-candidate/unknown",
+        }
     }
 }
 
@@ -161,9 +213,9 @@ pub struct TunerSnapshot {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum TunerEvent {
     Initialized { spec_digest: String },
-    TrialIssued { request: TrialRequest },
+    TrialIssued { request: Box<TrialRequest> },
     TrialAbandoned { trial_id: String },
-    ObservationRecorded { result: TrialResult },
+    ObservationRecorded { result: Box<TrialResult> },
     RoundAdvanced { round: u8, survivors: Vec<String> },
     Completed { selected_candidate: String },
 }
@@ -269,7 +321,7 @@ impl OfflineTuner {
                 budget: self.spec.round_budgets[usize::from(self.state.round)],
             };
             self.commit(TunerEvent::TrialIssued {
-                request: request.clone(),
+                request: Box::new(request.clone()),
             })?;
             issued.push(request);
         }
@@ -344,7 +396,7 @@ impl OfflineTuner {
             manifest_digest: digest(manifest)?,
         };
         self.commit(TunerEvent::ObservationRecorded {
-            result: result.clone(),
+            result: Box::new(result.clone()),
         })?;
         Ok(result)
     }

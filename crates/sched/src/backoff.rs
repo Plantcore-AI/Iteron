@@ -26,9 +26,9 @@ impl Default for BackoffPolicy {
         // Conservative: a handful of retries over ~30s, enough to ride out a rate-limit window
         // without hammering. Real values belong in config (R10).
         BackoffPolicy {
-            base_ms: 500,
-            cap_ms: 30_000,
-            max_attempts: 6,
+            base_ms: iteron_tunables::param_integer("sched.backoff.default_base_ms", 500),
+            cap_ms: iteron_tunables::param_integer("sched.backoff.default_cap_ms", 30_000),
+            max_attempts: iteron_tunables::param_integer("sched.backoff.default_max_attempts", 6),
         }
     }
 }

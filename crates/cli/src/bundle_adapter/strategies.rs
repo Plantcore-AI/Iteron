@@ -44,6 +44,20 @@ impl CompiledSlots {
             CoreSlot::ModelRouter => self.model_router = implementation,
         }
     }
+
+    pub(crate) fn get(&self, slot: CoreSlot) -> Arc<dyn StrategySlot> {
+        match slot {
+            CoreSlot::Context => self.context.clone(),
+            CoreSlot::ToolPolicy => self.tool_policy.clone(),
+            CoreSlot::Memory => self.memory.clone(),
+            CoreSlot::Router => self.router.clone(),
+            CoreSlot::Planner => self.planner.clone(),
+            CoreSlot::Collaboration => self.collaboration.clone(),
+            CoreSlot::Scheduler => self.scheduler.clone(),
+            CoreSlot::Verifier => self.verifier.clone(),
+            CoreSlot::ModelRouter => self.model_router.clone(),
+        }
+    }
 }
 
 pub(crate) const fn implementation_name(

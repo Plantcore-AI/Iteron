@@ -56,7 +56,7 @@ pub(super) fn apply_event(
             state.issued = state.issued.saturating_add(1);
             state
                 .inflight
-                .insert(request.trial_id.clone(), request.clone());
+                .insert(request.trial_id.clone(), request.as_ref().clone());
         }
         TunerEvent::TrialAbandoned { trial_id } => {
             if state.inflight.remove(trial_id).is_none() {
@@ -80,7 +80,7 @@ pub(super) fn apply_event(
             {
                 return Err(invalid("observation does not match its issued trial"));
             }
-            state.results.push(result.clone());
+            state.results.push(result.as_ref().clone());
         }
         TunerEvent::RoundAdvanced { round, survivors } => {
             let ranked = ranked_current(state);
@@ -121,7 +121,7 @@ pub(super) fn apply_event(
 pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
     let bytes = serde_json::to_vec(spec).map_err(|error| TunerError::Encode(error.to_string()))?;
     if bytes.len() > iteron_tunables::param_integer("eval.tuner.max_spec_bytes", MAX_SPEC_BYTES)
-        || !matches!(spec.schema_version, 1 | 2)
+        || !(1..=3).contains(&spec.schema_version)
         || spec.experiment_id.trim().is_empty()
         || spec.experiment_id.len() > 128
         || !valid_digest(&spec.train_dataset_digest)
@@ -174,7 +174,20 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
             || spec.max_concurrency > bridge.resources.max_concurrency
         {
             return Err(TunerError::InvalidSpec(
-                "schema v2 registry, dataset, or resource identity mismatch".into(),
+                "universal schema registry, dataset, or resource identity mismatch".into(),
+            ));
+        }
+        if spec.schema_version == 3
+            && (bridge.schema_version != crate::trainer_bridge::TRAINER_BRIDGE_SCHEMA_VERSION
+                || spec.candidates.iter().any(|candidate| {
+                    candidate.schema_version != CANDIDATE_GRAPH_SCHEMA_VERSION
+                        || candidate.graph.as_ref().is_none_or(|graph| {
+                            graph.experiment.dataset_sha256 != spec.train_dataset_digest
+                        })
+                }))
+        {
+            return Err(TunerError::InvalidSpec(
+                "schema v3 requires candidate graphs bound to the training experiment".into(),
             ));
         }
     }
@@ -196,6 +209,7 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         if spec.schema_version == 1 {
             if candidate.profile.is_some()
                 || !candidate.implementations.is_empty()
+                || candidate.graph.is_some()
                 || candidate.values.len() > MAX_FAMILIES_PER_CANDIDATE
             {
                 return Err(TunerError::InvalidSpec(
@@ -218,6 +232,15 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
                 ));
             }
         } else {
+            if (spec.schema_version == 2
+                && candidate.schema_version != LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION)
+                || (spec.schema_version == 3
+                    && candidate.schema_version != CANDIDATE_GRAPH_SCHEMA_VERSION)
+            {
+                return Err(TunerError::InvalidSpec(
+                    "tuner and candidate schema versions are incompatible".into(),
+                ));
+            }
             candidate.validate_universal()?;
         }
     }
@@ -311,10 +334,40 @@ pub(super) fn tpe_score(
 }
 
 pub(super) fn validate_universal_candidate(candidate: &TunerCandidate) -> Result<(), TunerError> {
-    if candidate.schema_version != UNIVERSAL_CANDIDATE_SCHEMA_VERSION {
+    if candidate.id.trim().is_empty()
+        || candidate.id.len() > 128
+        || candidate.id.chars().any(char::is_control)
+    {
+        return Err(TunerError::InvalidSpec(
+            "invalid candidate identity or width".into(),
+        ));
+    }
+    if candidate.schema_version == CANDIDATE_GRAPH_SCHEMA_VERSION {
+        if !candidate.values.is_empty()
+            || candidate.profile.is_some()
+            || !candidate.implementations.is_empty()
+        {
+            return Err(TunerError::InvalidSpec(
+                "schema v3 has one canonical graph; legacy fields must be empty".into(),
+            ));
+        }
+        let graph = candidate
+            .graph
+            .as_ref()
+            .ok_or_else(|| TunerError::InvalidSpec("schema v3 candidate needs a graph".into()))?;
+        graph.validate(candidate)?;
+        graph.materialize(candidate)?;
+        return Ok(());
+    }
+    if candidate.schema_version != LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION {
         return Err(TunerError::InvalidSpec(format!(
-            "universal candidate schema must be exactly {UNIVERSAL_CANDIDATE_SCHEMA_VERSION}"
+            "universal candidate schema must be 2 or {CANDIDATE_GRAPH_SCHEMA_VERSION}"
         )));
+    }
+    if candidate.graph.is_some() {
+        return Err(TunerError::InvalidSpec(
+            "schema v2 cannot carry a candidate graph".into(),
+        ));
     }
     if !candidate.values.is_empty() {
         return Err(TunerError::InvalidSpec(
@@ -343,29 +396,25 @@ pub(super) fn validate_universal_candidate(candidate: &TunerCandidate) -> Result
             "universal candidate is empty or exceeds its dimension bound".into(),
         ));
     }
-    let mut modules = BTreeSet::new();
-    let mut implementation_ids = BTreeSet::new();
     for implementation in &candidate.implementations {
-        if !modules.insert(implementation.module)
-            || !implementation_ids.insert(&implementation.implementation_id)
-            || !valid_identity(&implementation.implementation_id)
-            || implementation.protocol != IMPLEMENTATION_PROTOCOL
-            || !valid_source_path(&implementation.catalog_path)
-            || !valid_source_path(&implementation.artifact_root)
-            || !valid_digest(&implementation.manifest_sha256)
-            || !valid_digest(&implementation.artifact_sha256)
-        {
-            return Err(TunerError::InvalidSpec(
-                "invalid or duplicate implementation binding".into(),
-            ));
-        }
-        if let Some(scope) = profile.module_scope
-            && scope != implementation.module
-        {
-            return Err(TunerError::InvalidSpec(
-                "implementation is outside the candidate module scope".into(),
-            ));
-        }
+        validate_implementation_binding(implementation, profile.module_scope)?;
+    }
+    let modules = candidate
+        .implementations
+        .iter()
+        .map(|implementation| implementation.module)
+        .collect::<BTreeSet<_>>();
+    let implementation_ids = candidate
+        .implementations
+        .iter()
+        .map(|implementation| implementation.implementation_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if modules.len() != candidate.implementations.len()
+        || implementation_ids.len() != candidate.implementations.len()
+    {
+        return Err(TunerError::InvalidSpec(
+            "invalid or duplicate implementation binding".into(),
+        ));
     }
     Ok(())
 }
@@ -405,7 +454,48 @@ fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
             );
         }
     }
+    if let Some(graph) = &candidate.graph {
+        for dimension in &graph.dimensions {
+            if let Ok(token) = serde_json::to_string(dimension) {
+                features.insert(format!("graph/{}", dimension.address().selector), token);
+            }
+        }
+        for implementation in &graph.implementations {
+            if let Ok(token) = serde_json::to_string(implementation) {
+                features.insert(
+                    format!("implementation/{}", implementation.module.as_str()),
+                    token,
+                );
+            }
+        }
+    }
     features
+}
+
+pub(super) fn validate_implementation_binding(
+    implementation: &CandidateImplementation,
+    module_scope: Option<iteron_tunables::ModuleId>,
+) -> Result<(), TunerError> {
+    if !valid_identity(&implementation.implementation_id)
+        || !matches!(
+            implementation.protocol.as_str(),
+            IMPLEMENTATION_PROTOCOL | LEGACY_IMPLEMENTATION_PROTOCOL
+        )
+        || !valid_source_path(&implementation.catalog_path)
+        || !valid_source_path(&implementation.artifact_root)
+        || !valid_digest(&implementation.manifest_sha256)
+        || !valid_digest(&implementation.artifact_sha256)
+    {
+        return Err(TunerError::InvalidSpec(
+            "invalid implementation binding".into(),
+        ));
+    }
+    if module_scope.is_some_and(|scope| scope != implementation.module) {
+        return Err(TunerError::InvalidSpec(
+            "implementation is outside the candidate module scope".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -416,7 +506,7 @@ fn valid_identity(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64
             && digest

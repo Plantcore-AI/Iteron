@@ -122,7 +122,10 @@ nav:
       - External harness: reference/external-harness.md
       - Research harness protocol: reference/research-harness-protocol.md
       - Replaceable implementation protocol: reference/implementation-protocol.md
+      - Runtime service graph: reference/runtime-service-graph.md
+      - Transactional research hot swap: reference/transactional-hot-swap.md
       - Universal trainer bridge: reference/universal-trainer-protocol.md
+      - Cross-harness qualification: reference/cross-harness-qualification.md
       - Optimization invariant owner review: reference/optimization-invariant-review.md
       - Terminal-Bench 2.1: reference/terminal-bench-2.1.md
       - Files and directories: reference/files-and-directories.md

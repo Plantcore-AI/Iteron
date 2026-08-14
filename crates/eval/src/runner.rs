@@ -26,6 +26,7 @@ const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 const ITERON_PROCESS_MIN_GRACE_SECS: u64 = 1;
 const ITERON_PROCESS_MAX_GRACE_SECS: u64 = 30;
 const ITERON_PROCESS_GRACE_DIVISOR: u64 = 20;
+const DEFAULT_PARALLEL_EVAL_WORKERS: usize = 50;
 // These are operational limits, not integer-storage limits. Keeping every evaluator deadline at
 // or below one day makes the corresponding std/Tokio Instant additions portable and auditable.
 const MAX_ITERON_AGENT_WALL_SECS: u64 = 24 * 60 * 60;
@@ -137,7 +138,14 @@ impl From<&EvalOptions> for ParallelEvalOptions {
             run_timeout: options.run_timeout,
             checkout_timeout: options.checkout_timeout,
             oracle_timeout: options.oracle_timeout,
-            workers: 50,
+            workers: iteron_tunables::param_usize(
+                "eval.runner.default_parallel_eval_workers",
+                iteron_tunables::param_integer(
+                    "eval.runner.default_parallel_eval_workers",
+                    DEFAULT_PARALLEL_EVAL_WORKERS,
+                ),
+            )
+            .clamp(1, 100),
             max_turns: options.max_turns,
             uncapped: options.max_turns == 0,
             max_attempts: options.max_attempts,

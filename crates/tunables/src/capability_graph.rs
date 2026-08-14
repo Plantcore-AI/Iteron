@@ -7,7 +7,7 @@ use crate::ModuleId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const CAPABILITY_SEAM_GRAPH_SCHEMA_VERSION: u16 = 1;
+pub const CAPABILITY_SEAM_GRAPH_SCHEMA_VERSION: u16 = 2;
 pub const MAX_CAPABILITY_SEAMS: usize = 28;
 pub const MAX_SEAM_DEPENDENCIES: usize = 8;
 pub const MAX_CAPABILITY_SEAM_GRAPH_BYTES: usize = 128 * 1024;
@@ -27,6 +27,14 @@ pub struct LifecycleContracts {
     pub start: ContractRef,
     pub cancel: ContractRef,
     pub stop: ContractRef,
+    /// Export one quiesced generation's bounded, content-addressed state.
+    pub snapshot: ContractRef,
+    /// Restore an already-compatible snapshot into a shadow generation.
+    pub restore: ContractRef,
+    /// Transform a snapshot across declared state-schema versions.
+    pub migrate: ContractRef,
+    /// Prove a shadow generation is ready before the host may switch to it.
+    pub readiness: ContractRef,
 }
 
 /// These owners always remain outside a replaceable implementation.
@@ -119,6 +127,10 @@ fn node(module: ModuleId, dependencies: &[ModuleId]) -> CapabilitySeamNode {
             start: contract(module, "lifecycle/start"),
             cancel: contract(module, "lifecycle/cancel"),
             stop: contract(module, "lifecycle/stop"),
+            snapshot: contract(module, "lifecycle/snapshot"),
+            restore: contract(module, "lifecycle/restore"),
+            migrate: contract(module, "lifecycle/migrate"),
+            readiness: contract(module, "lifecycle/readiness"),
         },
         observation_schema: contract(module, "observation"),
         failure_semantics: vec![
@@ -239,6 +251,10 @@ pub fn validate_capability_seam_graph(
             &node.lifecycle.start,
             &node.lifecycle.cancel,
             &node.lifecycle.stop,
+            &node.lifecycle.snapshot,
+            &node.lifecycle.restore,
+            &node.lifecycle.migrate,
+            &node.lifecycle.readiness,
             &node.observation_schema,
         ];
         for contract in contracts {

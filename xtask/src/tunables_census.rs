@@ -1,20 +1,23 @@
-//! Covered-class production optimization census and honesty gate.
+//! Source-form-complete production optimization census and honesty gate.
 //!
 //! The Tier-2 catalog remains the compatibility surface for const/static parameters. This module
-//! adds syntax-aware discovery of defaults expressed through serde/clap and named runtime policy
-//! constructors, then emits one exact generated artifact covering those inventories. It does not
-//! claim that these syntax classes exhaust every optimization input in the repository.
+//! adds syntax-aware discovery for a closed list of production source forms, then emits one exact
+//! generated artifact covering those inventories. It deliberately claims completeness only for
+//! those declared forms, never for the mathematical set of every possible optimization input.
+
+mod discovery;
 
 use crate::tunables_params::{
     CandidateKind, Disposition, InvariantReason, OwnerRow, ParamRow, UseSiteRow,
 };
 use anyhow::{Context, Result, bail};
-use quote::ToTokens as _;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use syn::spanned::Spanned as _;
-use syn::visit::{self, Visit};
+use std::path::Path;
+
+use discovery::{DiscoveryReport, scan_production_sources, source_form_invariant_matches};
+#[cfg(test)]
+use discovery::{discover_source, source_form_observation_counts, unclassified_source_form_count};
 
 const EXCLUDED_CRATES: &[&str] = &["xtask"];
 
@@ -154,6 +157,8 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "eval.research_protocol.max_prompt_bytes",
     "eval.research_protocol.max_protocol_request_bytes",
     "eval.research_protocol.max_protocol_response_bytes",
+    "eval.research_protocol.max_native_materialization_bytes",
+    "eval.research_protocol.max_native_receipt_bytes",
     "eval.research_protocol.max_turns",
     "eval.research_protocol.max_wall_secs",
     "eval.research_execution.process.max_group_processes",
@@ -163,6 +168,7 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "eval.research_execution.response_validation.max_output",
     "eval.research_execution.response_validation.max_path",
     "eval.trainer_bridge.max_distributed_workers",
+    "eval.trainer_bridge.max_batch_suggestions",
     "eval.trainer_bridge.max_id_bytes",
     "eval.trainer_bridge.max_resource_bytes",
     "eval.trainer_bridge.max_reward_objectives",
@@ -170,6 +176,11 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "eval.trainer_bridge.max_trainer_bridge_message_bytes",
     "eval.tuner.max_families_per_candidate",
     "eval.tuner.max_universal_candidate_dimensions",
+    "eval.tuner.candidate_graph.max_address_text_bytes",
+    "eval.tuner.candidate_graph.max_candidate_topology_edges",
+    "eval.tuner.candidate_graph.max_native_value_bytes",
+    "eval.tuner.candidate_graph.max_value_depth",
+    "eval.tuner.candidate_graph.max_value_nodes",
     "evolve.dataset.max_governed_dataset_bytes",
     "evolve.held_out.max_held_out_report_tasks",
     "evolve.registry.max_trajectory_lineage_policies",
@@ -193,11 +204,20 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "marketplace.implementation_activation.max_implementation_activation_sources",
     "marketplace.implementation_activation.strict_json.duplicate_marker",
     "marketplace.implementation_runtime.max_implementation_stdin_bytes",
+    "marketplace.implementation_runtime.max_implementation_state_evidence",
     "marketplace.implementation.max_implementations",
     "marketplace.implementation_protocol.max_failure_message_bytes",
+    "marketplace.implementation_protocol.duplicate_key_marker",
     "marketplace.implementation_protocol.max_implementation_message_bytes",
     "marketplace.implementation_protocol.max_implementation_payload_bytes",
+    "marketplace.implementation_protocol.max_implementation_state_bytes",
+    "marketplace.implementation_protocol.max_implementation_state_deadline_ms",
     "marketplace.implementation_protocol.max_protocol_id_bytes",
+    "marketplace.hotswap.max_hotswap_deadline_ms",
+    "marketplace.hotswap.max_hotswap_id_bytes",
+    "marketplace.hotswap.max_hotswap_ledger_bytes",
+    "marketplace.hotswap.max_hotswap_reason_bytes",
+    "marketplace.hotswap.max_hotswap_record_bytes",
     "protocol.input.max_input_images",
     "protocol.input.max_input_segments",
     "protocol.input.max_total_image_base64_bytes",
@@ -215,6 +235,7 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "tunables.capability_graph.max_capability_seam_graph_bytes",
     "tunables.capability_graph.max_capability_seams",
     "tunables.capability_graph.max_contract_id_bytes",
+    "tunables.service_graph.max_runtime_service_graph_bytes",
     "tunables.capability_graph.max_seam_dependencies",
     "tunables.requirements.rate_limit_inference",
     "tunables.resolution_metadata.appendix.defaults",
@@ -223,9 +244,9 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "tunables.resolution_types.max_profile_values",
 ];
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-enum CensusCandidateKind {
+pub(super) enum CensusCandidateKind {
     Const,
     Static,
     AssociatedConst,
@@ -233,11 +254,43 @@ enum CensusCandidateKind {
     ClapDefault,
     PolicyDefaultConstructor,
     PolicyFallbackCall,
+    BuilderQualityDefault,
+    IncludeStrAsset,
+    IncludeBytesAsset,
+    DynamicImplementationManifest,
+    DynamicPluginManifest,
+}
+
+impl CensusCandidateKind {
+    fn all() -> [Self; 12] {
+        [
+            Self::Const,
+            Self::Static,
+            Self::AssociatedConst,
+            Self::SerdeDefault,
+            Self::ClapDefault,
+            Self::PolicyDefaultConstructor,
+            Self::PolicyFallbackCall,
+            Self::BuilderQualityDefault,
+            Self::IncludeStrAsset,
+            Self::IncludeBytesAsset,
+            Self::DynamicImplementationManifest,
+            Self::DynamicPluginManifest,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CensusDisposition {
+    RuntimeSettable,
+    InvariantReadOnly,
+    BindingRequired,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-enum ExternalAddressKind {
+pub(super) enum ExternalAddressKind {
     UnifiedProfile,
     DirectConfig,
     CallerInput,
@@ -245,7 +298,7 @@ enum ExternalAddressKind {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum AddressSelectorKind {
+pub(super) enum AddressSelectorKind {
     Key,
     Path,
     Argument,
@@ -253,7 +306,7 @@ enum AddressSelectorKind {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum AddressOwnerKind {
+pub(super) enum AddressOwnerKind {
     Schema,
     Protocol,
 }
@@ -262,7 +315,7 @@ enum AddressOwnerKind {
 /// "addressable". `selector` is interpreted according to `selector_kind`; `owner` prevents two
 /// independent schemas/protocols which happen to use the same spelling from colliding.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct ExternalAddress {
+pub(super) struct ExternalAddress {
     kind: ExternalAddressKind,
     selector_kind: AddressSelectorKind,
     selector: String,
@@ -270,9 +323,28 @@ struct ExternalAddress {
     owner: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CallerInputProofKind {
+    PublicFunction,
+    PublicMethod,
+    PublicTraitMethod,
+    SerdeEnvelope,
+    ClapEnvelope,
+    ProtocolEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct CallerInputProof {
+    pub(super) kind: CallerInputProofKind,
+    pub(super) path: String,
+    pub(super) symbol: String,
+    pub(super) evidence: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-enum InvariantKind {
+pub(super) enum InvariantKind {
     Identity,
     WireCompatibility,
     Authority,
@@ -288,33 +360,51 @@ enum InvariantKind {
 /// owning human approved it. Every invariant remains explicitly pending that governance step.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum OwningHumanReviewStatus {
+pub(super) enum OwningHumanReviewStatus {
     RequiredNotSourceProven,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct CensusRow {
-    id: String,
-    candidate_kind: CensusCandidateKind,
-    rust_type: String,
-    value: String,
-    owner: OwnerRow,
-    use_sites: Vec<UseSiteRow>,
-    disposition: Disposition,
+pub(super) struct CensusRow {
+    pub(super) id: String,
+    pub(super) candidate_kind: CensusCandidateKind,
+    pub(super) rust_type: String,
+    pub(super) value: String,
+    pub(super) owner: OwnerRow,
+    pub(super) use_sites: Vec<UseSiteRow>,
+    pub(super) disposition: CensusDisposition,
     #[serde(skip_serializing_if = "Option::is_none")]
-    external_address: Option<ExternalAddress>,
+    pub(super) external_address: Option<ExternalAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    invariant_kind: Option<InvariantKind>,
+    pub(super) caller_input_proof: Option<CallerInputProof>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    review_evidence: Option<String>,
+    pub(super) binding_requirement: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    owning_human_review: Option<OwningHumanReviewStatus>,
-    explicit_invariant_override: bool,
-    applied: bool,
+    pub(super) invariant_kind: Option<InvariantKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    behavior_oracle: Option<String>,
+    pub(super) review_evidence: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tier2_id: Option<String>,
+    pub(super) owning_human_review: Option<OwningHumanReviewStatus>,
+    pub(super) explicit_invariant_override: bool,
+    pub(super) applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) behavior_oracle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tier2_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct SourceCoverage {
+    completeness_claim: &'static str,
+    production_rust_files_scanned: usize,
+    /// Observed syntax forms, including constructors/use sites which are coverage evidence but
+    /// are not themselves independent optimization candidates.
+    source_form_counts: BTreeMap<CensusCandidateKind, usize>,
+    /// Emitted independent candidate rows. This deliberately does not have to equal the source
+    /// observation counts: one builder declaration can expose several real parameters, while
+    /// many constructor calls expose no new parameter at all.
+    candidate_row_counts: BTreeMap<CensusCandidateKind, usize>,
+    unclassified_source_forms: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -323,6 +413,7 @@ struct CensusDocument {
     total: usize,
     runtime_settable: usize,
     invariant_read_only: usize,
+    binding_required: usize,
     advertised_runtime_settable: usize,
     runtime_applied: usize,
     externally_addressed_runtime_settable: usize,
@@ -332,6 +423,7 @@ struct CensusDocument {
     explicit_invariant_overrides: usize,
     address_kind_counts: BTreeMap<ExternalAddressKind, usize>,
     invariant_kind_counts: BTreeMap<InvariantKind, usize>,
+    source_coverage: SourceCoverage,
     candidates: Vec<CensusRow>,
 }
 
@@ -341,11 +433,11 @@ pub(crate) fn run(root: &Path, write: bool) -> Result<()> {
     if write {
         std::fs::write(&path, &rendered).with_context(|| format!("writing {}", path.display()))?;
         println!(
-            "wrote governance/optimization-census.json ({} profile, {} direct config, {} caller input, {} unaddressed, {} invariant / {} owning-human review required)",
+            "wrote governance/optimization-census.json ({} profile, {} direct config, {} proven caller input, {} binding required, {} invariant / {} owning-human review required)",
             document.address_kind_counts[&ExternalAddressKind::UnifiedProfile],
             document.address_kind_counts[&ExternalAddressKind::DirectConfig],
             document.address_kind_counts[&ExternalAddressKind::CallerInput],
-            document.unaddressed_runtime_settable,
+            document.binding_required,
             document.invariant_read_only,
             document.owning_human_review_required,
         );
@@ -359,12 +451,19 @@ pub(crate) fn run(root: &Path, write: bool) -> Result<()> {
              iteron-xtask -- tunables generate-optimization-census`"
         );
     }
+    if document.binding_required != 0 {
+        bail!(
+            "optimization census has {} binding_required candidate(s); bind each to a public protocol or classify it as a reviewed invariant before claiming external completeness",
+            document.binding_required
+        );
+    }
     println!(
-        "optimization census matches covered source classes: {} candidates, {} runtime-settable/applied/addressed ({} unified-profile), {} invariant awaiting owning-human review",
+        "optimization census matches all declared production source forms: {} candidates, {} runtime-settable/applied/addressed ({} unified-profile), {} invariant awaiting owning-human review; {} Rust files scanned, 0 unclassified forms",
         document.total,
         document.runtime_applied,
         document.address_kind_counts[&ExternalAddressKind::UnifiedProfile],
         document.owning_human_review_required,
+        document.source_coverage.production_rust_files_scanned,
     );
     Ok(())
 }
@@ -379,16 +478,49 @@ pub(crate) fn render_current(root: &Path) -> Result<String> {
 fn current_document_and_render(root: &Path) -> Result<(CensusDocument, String)> {
     let document = scan(root)?;
     validate(&document.candidates)?;
+    validate_source_coverage(&document.source_coverage, document.total)?;
     validate_override_registry(&document.candidates)?;
     let mut rendered = serde_json::to_string_pretty(&document)?;
     rendered.push('\n');
     Ok((document, rendered))
 }
 
+fn validate_source_coverage(coverage: &SourceCoverage, total: usize) -> Result<()> {
+    if coverage.production_rust_files_scanned == 0 {
+        bail!("optimization census scanned no production Rust files");
+    }
+    if coverage.unclassified_source_forms != 0 {
+        bail!(
+            "optimization census found {} unclassified declared source form(s); extend the closed candidate_kind vocabulary before generation",
+            coverage.unclassified_source_forms
+        );
+    }
+    let expected = CensusCandidateKind::all()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let actual = coverage
+        .source_form_counts
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let candidate_kinds = coverage
+        .candidate_row_counts
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if actual != expected || candidate_kinds != expected {
+        bail!("optimization census source-form coverage summary is not exhaustive");
+    }
+    if coverage.candidate_row_counts.values().sum::<usize>() != total {
+        bail!("optimization census source-form coverage summary is not exhaustive");
+    }
+    Ok(())
+}
+
 fn validate_override_registry(rows: &[CensusRow]) -> Result<()> {
     let invariant_ids: BTreeSet<&str> = rows
         .iter()
-        .filter(|row| matches!(row.disposition, Disposition::InvariantReadOnly))
+        .filter(|row| matches!(row.disposition, CensusDisposition::InvariantReadOnly))
         .map(|row| row.id.as_str())
         .collect();
     let mut registered = BTreeSet::new();
@@ -409,38 +541,29 @@ fn scan(root: &Path) -> Result<CensusDocument> {
     let params = crate::tunables_params::scan(root)?;
     crate::tunables_params::validate_rows(&params)?;
     let mut rows: Vec<CensusRow> = params.iter().map(CensusRow::from_param).collect();
-
-    let mut files = Vec::new();
-    collect_rust_files(&root.join("crates"), &mut files)?;
-    files.sort();
-    for file in files {
-        let relative = file
-            .strip_prefix(root)
-            .unwrap_or(&file)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if is_test_path(&relative) {
-            continue;
-        }
-        let Some(krate) = crate_of(&relative) else {
-            continue;
-        };
-        if EXCLUDED_CRATES.contains(&krate) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&file)
-            .with_context(|| format!("reading {}", file.display()))?;
-        rows.extend(discover_source(krate, &relative, &source)?);
-    }
+    let DiscoveryReport {
+        rows: discovered,
+        production_rust_files_scanned,
+        source_form_counts: discovered_source_form_counts,
+        unclassified_source_forms,
+    } = scan_production_sources(root, EXCLUDED_CRATES)?;
+    rows.extend(discovered);
     rows.sort_by(|left, right| left.id.cmp(&right.id));
     let runtime_settable = rows
         .iter()
-        .filter(|row| matches!(row.disposition, Disposition::RuntimeSettable))
+        .filter(|row| matches!(row.disposition, CensusDisposition::RuntimeSettable))
         .count();
-    let invariant_read_only = rows.len() - runtime_settable;
+    let invariant_read_only = rows
+        .iter()
+        .filter(|row| matches!(row.disposition, CensusDisposition::InvariantReadOnly))
+        .count();
+    let binding_required = rows
+        .iter()
+        .filter(|row| matches!(row.disposition, CensusDisposition::BindingRequired))
+        .count();
     let runtime_applied = rows
         .iter()
-        .filter(|row| matches!(row.disposition, Disposition::RuntimeSettable) && row.applied)
+        .filter(|row| matches!(row.disposition, CensusDisposition::RuntimeSettable) && row.applied)
         .count();
     let address_kind_counts = address_kind_counts(&rows);
     let invariant_kind_counts = invariant_kind_counts(&rows);
@@ -450,7 +573,7 @@ fn scan(root: &Path) -> Result<CensusDocument> {
     let mechanical_invariant_dispositions = rows
         .iter()
         .filter(|row| {
-            matches!(row.disposition, Disposition::InvariantReadOnly)
+            matches!(row.disposition, CensusDisposition::InvariantReadOnly)
                 && row.review_evidence.is_some()
         })
         .count();
@@ -462,11 +585,34 @@ fn scan(root: &Path) -> Result<CensusDocument> {
         .iter()
         .filter(|row| row.explicit_invariant_override)
         .count();
+    let mut source_form_counts = CensusCandidateKind::all()
+        .into_iter()
+        .map(|kind| (kind, 0usize))
+        .collect::<BTreeMap<_, _>>();
+    for row in params.iter() {
+        let kind = match row.candidate_kind {
+            CandidateKind::Const => CensusCandidateKind::Const,
+            CandidateKind::Static => CensusCandidateKind::Static,
+            CandidateKind::AssociatedConst => CensusCandidateKind::AssociatedConst,
+        };
+        *source_form_counts.entry(kind).or_default() += 1;
+    }
+    for (kind, count) in discovered_source_form_counts {
+        *source_form_counts.entry(kind).or_default() += count;
+    }
+    let mut candidate_row_counts = BTreeMap::new();
+    for kind in CensusCandidateKind::all() {
+        candidate_row_counts.insert(kind, 0usize);
+    }
+    for row in &rows {
+        *candidate_row_counts.entry(row.candidate_kind).or_default() += 1;
+    }
     Ok(CensusDocument {
-        schema_version: 3,
+        schema_version: 4,
         total: rows.len(),
         runtime_settable,
         invariant_read_only,
+        binding_required,
         advertised_runtime_settable: runtime_settable,
         runtime_applied,
         externally_addressed_runtime_settable,
@@ -476,6 +622,13 @@ fn scan(root: &Path) -> Result<CensusDocument> {
         explicit_invariant_overrides,
         address_kind_counts,
         invariant_kind_counts,
+        source_coverage: SourceCoverage {
+            completeness_claim: "complete_for_declared_production_source_forms_not_mathematical_universe",
+            production_rust_files_scanned,
+            source_form_counts,
+            candidate_row_counts,
+            unclassified_source_forms,
+        },
         candidates: rows,
     })
 }
@@ -553,7 +706,10 @@ impl CensusRow {
             value: param.default.clone(),
             owner: param.owner.clone(),
             use_sites: param.use_sites.clone(),
-            disposition: param.disposition,
+            disposition: match param.disposition {
+                Disposition::RuntimeSettable => CensusDisposition::RuntimeSettable,
+                Disposition::InvariantReadOnly => CensusDisposition::InvariantReadOnly,
+            },
             external_address: if matches!(param.disposition, Disposition::RuntimeSettable) {
                 Some(ExternalAddress {
                     kind: ExternalAddressKind::UnifiedProfile,
@@ -565,6 +721,8 @@ impl CensusRow {
             } else {
                 None
             },
+            caller_input_proof: None,
+            binding_requirement: None,
             invariant_kind,
             review_evidence,
             owning_human_review: if matches!(param.disposition, Disposition::InvariantReadOnly) {
@@ -644,373 +802,6 @@ fn invariant_kind(param: &ParamRow) -> InvariantKind {
     }
 }
 
-fn discover_source(krate: &str, relative: &str, source: &str) -> Result<Vec<CensusRow>> {
-    let syntax = syn::parse_file(source)
-        .with_context(|| format!("parsing {relative} for optimization candidates"))?;
-    let mut visitor = CensusVisitor {
-        krate,
-        relative,
-        modules: Vec::new(),
-        owner: Vec::new(),
-        serde_rename_all: Vec::new(),
-        ordinals: BTreeMap::new(),
-        found: Vec::new(),
-    };
-    visitor.visit_file(&syntax);
-    Ok(visitor.found)
-}
-
-struct CensusVisitor<'a> {
-    krate: &'a str,
-    relative: &'a str,
-    modules: Vec<String>,
-    owner: Vec<String>,
-    serde_rename_all: Vec<Option<String>>,
-    ordinals: BTreeMap<String, usize>,
-    found: Vec<CensusRow>,
-}
-
-impl CensusVisitor<'_> {
-    fn current_owner(&self) -> String {
-        self.modules
-            .iter()
-            .chain(self.owner.iter())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("::")
-    }
-
-    fn field_default(
-        &mut self,
-        field: &syn::Field,
-        field_index: usize,
-        kind: CensusCandidateKind,
-        value: String,
-        attribute: &str,
-    ) {
-        let field_name = field
-            .ident
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("unnamed_{field_index}"));
-        let owner = self.current_owner();
-        let serialized_field_name = serde_field_name(
-            field,
-            &field_name,
-            self.serde_rename_all.last().and_then(Option::as_deref),
-        );
-        let clap_argument = clap_argument(field, &field_name);
-        let flavor = match kind {
-            CensusCandidateKind::SerdeDefault => "serde_default",
-            CensusCandidateKind::ClapDefault => "clap_default",
-            _ => unreachable!("field defaults use serde or clap"),
-        };
-        self.found.push(CensusRow {
-            id: stable_id(
-                self.krate,
-                self.relative,
-                &format!("{owner}.{field_name}.{flavor}"),
-            ),
-            candidate_kind: kind,
-            rust_type: field.ty.to_token_stream().to_string(),
-            value,
-            owner: OwnerRow {
-                krate: self.krate.to_owned(),
-                path: self.relative.to_owned(),
-                symbol: format!("{owner}::{field_name}"),
-            },
-            use_sites: vec![UseSiteRow {
-                path: self.relative.to_owned(),
-                line: field.span().start().line,
-                evidence: format!("{attribute} production parser/deserializer default"),
-            }],
-            disposition: Disposition::RuntimeSettable,
-            external_address: Some(match kind {
-                CensusCandidateKind::ClapDefault => ExternalAddress {
-                    kind: ExternalAddressKind::DirectConfig,
-                    selector_kind: if clap_argument.is_some() {
-                        AddressSelectorKind::Argument
-                    } else {
-                        AddressSelectorKind::Path
-                    },
-                    selector: clap_argument.unwrap_or_else(|| format!("{owner}.{field_name}")),
-                    owner_kind: AddressOwnerKind::Schema,
-                    owner: format!("clap::{owner}"),
-                },
-                CensusCandidateKind::SerdeDefault => ExternalAddress {
-                    kind: ExternalAddressKind::DirectConfig,
-                    selector_kind: AddressSelectorKind::Path,
-                    selector: format!("{owner}.{serialized_field_name}"),
-                    owner_kind: AddressOwnerKind::Schema,
-                    owner: format!("serde::{owner}"),
-                },
-                _ => unreachable!("field defaults use serde or clap"),
-            }),
-            invariant_kind: None,
-            review_evidence: None,
-            owning_human_review: None,
-            explicit_invariant_override: false,
-            applied: true,
-            behavior_oracle: Some(format!(
-                "explicit input for {owner}::{field_name} replaces the declared {attribute} default"
-            )),
-            tier2_id: None,
-        });
-    }
-
-    fn inspect_fields<'a>(&mut self, fields: impl Iterator<Item = &'a syn::Field>) {
-        for (field_index, field) in fields.enumerate() {
-            if has_cfg_test(&field.attrs) {
-                continue;
-            }
-            for attr in &field.attrs {
-                let path = attr.path();
-                let rendered = attr.meta.to_token_stream().to_string();
-                if path.is_ident("serde") && attribute_option(&rendered, "default") {
-                    self.field_default(
-                        field,
-                        field_index,
-                        CensusCandidateKind::SerdeDefault,
-                        attribute_value(&rendered, "default")
-                            .unwrap_or_else(|| "Default::default()".to_owned()),
-                        "serde(default)",
-                    );
-                }
-                if (path.is_ident("arg") || path.is_ident("clap"))
-                    && (attribute_option(&rendered, "default_value")
-                        || attribute_option(&rendered, "default_value_t"))
-                {
-                    self.field_default(
-                        field,
-                        field_index,
-                        CensusCandidateKind::ClapDefault,
-                        attribute_value(&rendered, "default_value_t")
-                            .or_else(|| attribute_value(&rendered, "default_value"))
-                            .unwrap_or_else(|| "Default::default()".to_owned()),
-                        "clap(default_value)",
-                    );
-                }
-            }
-        }
-    }
-
-    fn inspect_container_default(
-        &mut self,
-        ident: &syn::Ident,
-        attrs: &[syn::Attribute],
-        span: proc_macro2::Span,
-    ) {
-        for attr in attrs {
-            let rendered = attr.meta.to_token_stream().to_string();
-            if !attr.path().is_ident("serde") || !attribute_option(&rendered, "default") {
-                continue;
-            }
-            let owner = self.current_owner();
-            self.found.push(CensusRow {
-                id: stable_id(self.krate, self.relative, &format!("{owner}.serde_default")),
-                candidate_kind: CensusCandidateKind::SerdeDefault,
-                rust_type: ident.to_string(),
-                value: attribute_value(&rendered, "default")
-                    .unwrap_or_else(|| "Default::default()".to_owned()),
-                owner: OwnerRow {
-                    krate: self.krate.to_owned(),
-                    path: self.relative.to_owned(),
-                    symbol: owner.clone(),
-                },
-                use_sites: vec![UseSiteRow {
-                    path: self.relative.to_owned(),
-                    line: span.start().line,
-                    evidence: "serde(default) production container deserializer".to_owned(),
-                }],
-                disposition: Disposition::RuntimeSettable,
-                external_address: Some(ExternalAddress {
-                    kind: ExternalAddressKind::DirectConfig,
-                    selector_kind: AddressSelectorKind::Path,
-                    selector: owner.clone(),
-                    owner_kind: AddressOwnerKind::Schema,
-                    owner: format!("serde::{owner}"),
-                }),
-                invariant_kind: None,
-                review_evidence: None,
-                owning_human_review: None,
-                explicit_invariant_override: false,
-                applied: true,
-                behavior_oracle: Some(format!(
-                    "explicit input fields for {owner} replace its serde container defaults"
-                )),
-                tier2_id: None,
-            });
-        }
-    }
-
-    fn policy_call(&mut self, node: &syn::ExprCall, callee: &syn::Path) {
-        let rendered = callee.to_token_stream().to_string().replace(' ', "");
-        let leaf = callee
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-            .unwrap_or_default();
-        let context = format!("{}::{rendered}", self.current_owner()).to_ascii_lowercase();
-        let named_default = leaf == "default" || leaf.starts_with("default_");
-        let named_fallback = leaf.contains("fallback");
-        if !(named_default || named_fallback) || !is_policy_context(&context) {
-            return;
-        }
-        let key = format!("{}::{rendered}", self.current_owner());
-        let ordinal = {
-            let entry = self.ordinals.entry(key).or_default();
-            *entry += 1;
-            *entry
-        };
-        let kind = if named_fallback {
-            CensusCandidateKind::PolicyFallbackCall
-        } else {
-            CensusCandidateKind::PolicyDefaultConstructor
-        };
-        let owner = self.current_owner();
-        let address_owner = owner.clone();
-        self.found.push(CensusRow {
-            id: stable_id(
-                self.krate,
-                self.relative,
-                &format!("{owner}.{rendered}.{ordinal}"),
-            ),
-            candidate_kind: kind,
-            rust_type: "_ (inferred by rustc)".to_owned(),
-            value: node.to_token_stream().to_string(),
-            owner: OwnerRow {
-                krate: self.krate.to_owned(),
-                path: self.relative.to_owned(),
-                symbol: owner,
-            },
-            use_sites: vec![UseSiteRow {
-                path: self.relative.to_owned(),
-                line: node.span().start().line,
-                evidence: "production policy constructor call".to_owned(),
-            }],
-            disposition: Disposition::RuntimeSettable,
-            external_address: Some(ExternalAddress {
-                kind: ExternalAddressKind::CallerInput,
-                selector_kind: AddressSelectorKind::Argument,
-                selector: format!("{address_owner}::{rendered}#{ordinal}"),
-                owner_kind: AddressOwnerKind::Protocol,
-                owner: format!("rust-call::{}::{address_owner}", self.relative),
-            }),
-            invariant_kind: None,
-            review_evidence: None,
-            owning_human_review: None,
-            explicit_invariant_override: false,
-            applied: true,
-            behavior_oracle: Some(
-                "caller-provided policy/configuration replaces this constructor fallback"
-                    .to_owned(),
-            ),
-            tier2_id: None,
-        });
-    }
-}
-
-impl<'ast> Visit<'ast> for CensusVisitor<'_> {
-    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.modules.push(item.ident.to_string());
-        if let Some((_, items)) = &item.content {
-            for item in items {
-                self.visit_item(item);
-            }
-        }
-        self.modules.pop();
-    }
-
-    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.ident.to_string());
-        self.serde_rename_all
-            .push(serde_container_rename(&item.attrs, "rename_all"));
-        self.inspect_container_default(&item.ident, &item.attrs, item.span());
-        self.inspect_fields(item.fields.iter());
-        self.serde_rename_all.pop();
-        self.owner.pop();
-    }
-
-    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.ident.to_string());
-        self.serde_rename_all
-            .push(serde_container_rename(&item.attrs, "rename_all_fields"));
-        self.inspect_container_default(&item.ident, &item.attrs, item.span());
-        for variant in &item.variants {
-            if has_cfg_test(&variant.attrs) {
-                continue;
-            }
-            self.owner.push(variant.ident.to_string());
-            self.inspect_fields(variant.fields.iter());
-            self.owner.pop();
-        }
-        self.serde_rename_all.pop();
-        self.owner.pop();
-    }
-
-    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.sig.ident.to_string());
-        visit::visit_item_fn(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner
-            .push(item.self_ty.to_token_stream().to_string().replace(' ', ""));
-        visit::visit_item_impl(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.ident.to_string());
-        visit::visit_item_trait(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.sig.ident.to_string());
-        visit::visit_trait_item_fn(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        if has_cfg_test(&item.attrs) {
-            return;
-        }
-        self.owner.push(item.sig.ident.to_string());
-        visit::visit_impl_item_fn(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if let syn::Expr::Path(function) = node.func.as_ref() {
-            self.policy_call(node, &function.path);
-        }
-        visit::visit_expr_call(self, node);
-    }
-}
-
 fn validate(rows: &[CensusRow]) -> Result<()> {
     let mut ids = BTreeSet::new();
     let mut addresses = BTreeSet::new();
@@ -1031,7 +822,7 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
             bail!("{} has incomplete ownership", row.id);
         }
         match row.disposition {
-            Disposition::RuntimeSettable => {
+            CensusDisposition::RuntimeSettable => {
                 advertised += 1;
                 let address = row.external_address.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("{} is runtime_settable without an external address", row.id)
@@ -1039,6 +830,31 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                 if address.selector.trim().is_empty() || address.owner.trim().is_empty() {
                     bail!(
                         "{} has an empty external selector or schema/protocol owner",
+                        row.id
+                    );
+                }
+                if matches!(address.kind, ExternalAddressKind::CallerInput) {
+                    let proof = row.caller_input_proof.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{} claims caller_input without a public protocol proof",
+                            row.id
+                        )
+                    })?;
+                    if proof.path != row.owner.path
+                        || proof.symbol.trim().is_empty()
+                        || proof.evidence.trim().is_empty()
+                    {
+                        bail!("{} has an inexact caller_input protocol proof", row.id);
+                    }
+                } else if row.caller_input_proof.is_some() {
+                    bail!(
+                        "{} carries caller_input proof for a non-caller address",
+                        row.id
+                    );
+                }
+                if row.binding_requirement.is_some() {
+                    bail!(
+                        "{} is runtime_settable but still marked binding_required",
                         row.id
                     );
                 }
@@ -1080,9 +896,12 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                     );
                 }
             }
-            Disposition::InvariantReadOnly => {
+            CensusDisposition::InvariantReadOnly => {
                 if row.external_address.is_some() {
                     bail!("{} is invariant but carries a settable address", row.id);
+                }
+                if row.caller_input_proof.is_some() || row.binding_requirement.is_some() {
+                    bail!("{} invariant carries caller-binding metadata", row.id);
                 }
                 if row.invariant_kind.is_none() {
                     bail!("{} is read-only without a closed invariant kind", row.id);
@@ -1116,7 +935,15 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                 {
                     bail!("{} carries an unregistered invariant override", row.id);
                 }
-                if quality_affecting_candidate(row) && !row.explicit_invariant_override {
+                let exact_source_invariant = source_form_invariant_matches(row);
+                if exact_source_invariant && !evidence.contains("closed source-form invariant rule")
+                {
+                    bail!("{} has incomplete source-form invariant evidence", row.id);
+                }
+                if quality_affecting_candidate(row)
+                    && !row.explicit_invariant_override
+                    && !exact_source_invariant
+                {
                     missing_quality_overrides.push(row.id.as_str());
                 }
                 if row.applied {
@@ -1127,6 +954,36 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                         "{} is invariant_read_only but carries a writable behavior oracle",
                         row.id
                     );
+                }
+            }
+            CensusDisposition::BindingRequired => {
+                if row.external_address.is_some() || row.caller_input_proof.is_some() {
+                    bail!(
+                        "{} is binding_required but claims a concrete/proven external address",
+                        row.id
+                    );
+                }
+                if row.binding_requirement.as_deref().is_none_or(str::is_empty) {
+                    bail!(
+                        "{} is binding_required without an exact missing proof",
+                        row.id
+                    );
+                }
+                if row.use_sites.is_empty()
+                    || !row.applied
+                    || row.behavior_oracle.as_deref().is_none_or(str::is_empty)
+                {
+                    bail!(
+                        "{} binding_required row must retain its applied use site and behavior oracle",
+                        row.id
+                    );
+                }
+                if row.invariant_kind.is_some()
+                    || row.review_evidence.is_some()
+                    || row.owning_human_review.is_some()
+                    || row.explicit_invariant_override
+                {
+                    bail!("{} binding_required row carries invariant evidence", row.id);
                 }
             }
         }
@@ -1170,430 +1027,5 @@ fn quality_affecting_candidate(row: &CensusRow) -> bool {
     semantic_marker || threshold_token
 }
 
-fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
-    let module = relative
-        .rsplit_once("/src/")
-        .map(|(_, tail)| tail)
-        .unwrap_or(relative)
-        .trim_end_matches(".rs");
-    format!("{krate}.{module}.{symbol}")
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '.'
-            }
-        })
-        .collect::<String>()
-        .split('.')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn is_policy_context(context: &str) -> bool {
-    [
-        "policy",
-        "config",
-        "options",
-        "limits",
-        "budget",
-        "retry",
-        "timeout",
-        "cache",
-        "routing",
-        "router",
-        "model",
-        "provider",
-        "workflow",
-        "verifier",
-        "context",
-        "memory",
-        "compact",
-        "prompt",
-        "tool",
-        "sandbox",
-        "admission",
-        "sampling",
-        "reasoning",
-        "queue",
-        "concurrency",
-        "turnstate",
-    ]
-    .iter()
-    .any(|marker| context.contains(marker))
-}
-
-fn attribute_option(rendered: &str, name: &str) -> bool {
-    rendered
-        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        .any(|token| token == name)
-}
-
-fn attribute_value(rendered: &str, name: &str) -> Option<String> {
-    let (_, tail) = rendered.split_once(name)?;
-    let value = tail.trim_start().strip_prefix('=')?.trim_start();
-    Some(
-        value
-            .split(',')
-            .next()
-            .unwrap_or(value)
-            .trim()
-            .trim_end_matches(')')
-            .trim()
-            .to_owned(),
-    )
-}
-
-fn serde_container_rename(attrs: &[syn::Attribute], key: &str) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        attr.path()
-            .is_ident("serde")
-            .then(|| attribute_value(&attr.meta.to_token_stream().to_string(), key))
-            .flatten()
-            .map(|value| value.trim_matches('"').to_owned())
-    })
-}
-
-fn serde_field_name(field: &syn::Field, rust_name: &str, rename_all: Option<&str>) -> String {
-    if let Some(explicit) = field.attrs.iter().find_map(|attr| {
-        attr.path()
-            .is_ident("serde")
-            .then(|| attribute_value(&attr.meta.to_token_stream().to_string(), "rename"))
-            .flatten()
-    }) {
-        return explicit.trim_matches('"').to_owned();
-    }
-    let rust_name = rust_name.strip_prefix("r#").unwrap_or(rust_name);
-    match rename_all {
-        Some("camelCase") => camel_case(rust_name, false),
-        Some("PascalCase") => camel_case(rust_name, true),
-        Some("kebab-case") => rust_name.replace('_', "-"),
-        Some("SCREAMING_SNAKE_CASE") => rust_name.to_ascii_uppercase(),
-        Some("SCREAMING-KEBAB-CASE") => rust_name.replace('_', "-").to_ascii_uppercase(),
-        Some("UPPERCASE") => rust_name.to_ascii_uppercase(),
-        Some("lowercase") => rust_name.to_ascii_lowercase(),
-        Some("snake_case") | None => rust_name.to_owned(),
-        Some(_) => rust_name.to_owned(),
-    }
-}
-
-fn camel_case(name: &str, upper_first: bool) -> String {
-    let mut parts = name.split('_').filter(|part| !part.is_empty());
-    let Some(first) = parts.next() else {
-        return String::new();
-    };
-    let mut rendered = if upper_first {
-        capitalize(first)
-    } else {
-        first.to_ascii_lowercase()
-    };
-    for part in parts {
-        rendered.push_str(&capitalize(part));
-    }
-    rendered
-}
-
-fn capitalize(part: &str) -> String {
-    let mut chars = part.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    first.to_uppercase().chain(chars).collect()
-}
-
-fn clap_argument(field: &syn::Field, rust_name: &str) -> Option<String> {
-    for attr in &field.attrs {
-        if !(attr.path().is_ident("arg") || attr.path().is_ident("clap")) {
-            continue;
-        }
-        let rendered = attr.meta.to_token_stream().to_string();
-        if let Some(explicit) = attribute_value(&rendered, "long") {
-            return Some(format!("--{}", explicit.trim_matches('"')));
-        }
-        if attribute_option(&rendered, "long") {
-            return Some(format!(
-                "--{}",
-                rust_name
-                    .strip_prefix("r#")
-                    .unwrap_or(rust_name)
-                    .replace('_', "-")
-            ));
-        }
-    }
-    None
-}
-
-fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg") && attr.meta.to_token_stream().to_string().contains("test")
-    })
-}
-
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_rust_files(&path, out)?;
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn is_test_path(relative: &str) -> bool {
-    relative.contains("/tests/")
-        || relative.ends_with("_tests.rs")
-        || relative.ends_with("/tests.rs")
-        || relative.contains("/benches/")
-}
-
-fn crate_of(relative: &str) -> Option<&str> {
-    relative
-        .strip_prefix("crates/")
-        .and_then(|rest| rest.split('/').next())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovers_serde_clap_and_policy_defaults_but_excludes_tests() {
-        let source = r#"
-            struct RuntimePolicy {
-                #[serde(default = "default_timeout")]
-                timeout: u64,
-                #[arg(default_value_t = 4)]
-                workers: usize,
-            }
-            fn build_policy() { let _ = RuntimePolicy::default(); }
-            #[cfg(test)]
-            mod tests {
-                struct Hidden { #[serde(default)] field: bool }
-                fn policy_test() { let _ = RuntimePolicy::default(); }
-            }
-        "#;
-        let rows = discover_source("demo", "crates/demo/src/lib.rs", source).unwrap();
-        assert!(
-            rows.iter()
-                .any(|row| matches!(row.candidate_kind, CensusCandidateKind::SerdeDefault))
-        );
-        assert!(
-            rows.iter()
-                .any(|row| matches!(row.candidate_kind, CensusCandidateKind::ClapDefault))
-        );
-        assert!(rows.iter().any(|row| matches!(
-            row.candidate_kind,
-            CensusCandidateKind::PolicyDefaultConstructor
-        )));
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.owner.symbol.contains("Hidden"))
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn honesty_gate_rejects_settable_without_evidence() {
-        let mut rows = discover_source(
-            "demo",
-            "crates/demo/src/lib.rs",
-            "struct Config { #[serde(default)] value: usize }",
-        )
-        .unwrap();
-        rows[0].use_sites.clear();
-        assert!(
-            validate(&rows)
-                .unwrap_err()
-                .to_string()
-                .contains("without production use-site")
-        );
-        rows[0].use_sites.push(UseSiteRow {
-            path: "crates/demo/src/lib.rs".to_owned(),
-            line: 1,
-            evidence: "serde".to_owned(),
-        });
-        rows[0].behavior_oracle = None;
-        assert!(
-            validate(&rows)
-                .unwrap_err()
-                .to_string()
-                .contains("without a behavior oracle")
-        );
-    }
-
-    #[test]
-    fn addressability_distinguishes_profile_config_and_injection() {
-        let source = r#"
-            #[serde(rename_all = "camelCase")]
-            struct RuntimePolicy {
-                #[serde(default)]
-                feature_enabled: bool,
-                #[arg(long, default_value_t = 4)]
-                workers: usize,
-            }
-            fn build_policy() { let _ = RuntimePolicy::default(); }
-        "#;
-        let rows = discover_source("demo", "crates/demo/src/lib.rs", source).unwrap();
-        let counts = address_kind_counts(&rows);
-        assert_eq!(counts[&ExternalAddressKind::DirectConfig], 2);
-        assert_eq!(counts[&ExternalAddressKind::CallerInput], 1);
-        assert_eq!(counts[&ExternalAddressKind::UnifiedProfile], 0);
-        let clap = rows
-            .iter()
-            .find(|row| matches!(row.candidate_kind, CensusCandidateKind::ClapDefault))
-            .unwrap()
-            .external_address
-            .as_ref()
-            .unwrap();
-        assert_eq!(clap.selector_kind, AddressSelectorKind::Argument);
-        assert_eq!(clap.selector, "--workers");
-        let serde = rows
-            .iter()
-            .find(|row| matches!(row.candidate_kind, CensusCandidateKind::SerdeDefault))
-            .unwrap()
-            .external_address
-            .as_ref()
-            .unwrap();
-        assert_eq!(serde.selector, "RuntimePolicy.featureEnabled");
-    }
-
-    #[test]
-    fn invariant_kind_vocabulary_is_closed_and_specific() {
-        let kinds = [
-            InvariantKind::Identity,
-            InvariantKind::WireCompatibility,
-            InvariantKind::Authority,
-            InvariantKind::Security,
-            InvariantKind::Durability,
-            InvariantKind::Replay,
-            InvariantKind::HardBudget,
-            InvariantKind::EffectLedger,
-            InvariantKind::NonValueStructural,
-        ];
-        let json = serde_json::to_string(&kinds).unwrap();
-        assert!(!json.contains("other"));
-        assert!(!json.contains("generic"));
-    }
-
-    #[test]
-    fn quality_affecting_invariant_requires_an_explicit_override() {
-        let mut row = discover_source(
-            "demo",
-            "crates/demo/src/lib.rs",
-            "struct Policy { #[serde(default)] threshold: usize }",
-        )
-        .unwrap()
-        .remove(0);
-        row.disposition = Disposition::InvariantReadOnly;
-        row.external_address = None;
-        row.invariant_kind = Some(InvariantKind::NonValueStructural);
-        row.id = "tools.web.block_tags".to_owned();
-        row.review_evidence = Some(format!(
-            "closed Tier-2 disposition rule: `{}` at {} — mechanical test; observed at {}:1; mechanical source evidence only, not a claim of human review",
-            row.owner.symbol, row.owner.path, row.owner.path
-        ));
-        row.owning_human_review = Some(OwningHumanReviewStatus::RequiredNotSourceProven);
-        row.applied = false;
-        row.behavior_oracle = None;
-        assert!(
-            validate(std::slice::from_ref(&row))
-                .unwrap_err()
-                .to_string()
-                .contains("have no explicit override")
-        );
-        row.explicit_invariant_override = true;
-        validate(std::slice::from_ref(&row)).unwrap();
-    }
-
-    #[test]
-    fn invariant_cannot_retain_a_writable_address_or_claim_human_approval() {
-        let mut row = discover_source(
-            "demo",
-            "crates/demo/src/lib.rs",
-            "struct Policy { #[serde(default)] threshold: usize }",
-        )
-        .unwrap()
-        .remove(0);
-        row.disposition = Disposition::InvariantReadOnly;
-        row.id = "tools.web.default_search_result_count".to_owned();
-        row.invariant_kind = Some(InvariantKind::NonValueStructural);
-        row.review_evidence = Some(format!(
-            "explicit census disposition override: `{}` at {} — mechanical test; observed at {}:1; mechanical source evidence only, not a claim of human review",
-            row.owner.symbol, row.owner.path, row.owner.path
-        ));
-        row.owning_human_review = Some(OwningHumanReviewStatus::RequiredNotSourceProven);
-        row.explicit_invariant_override = true;
-        row.applied = false;
-        row.behavior_oracle = None;
-        assert!(
-            validate(std::slice::from_ref(&row))
-                .unwrap_err()
-                .to_string()
-                .contains("carries a settable address")
-        );
-        row.external_address = None;
-        row.owning_human_review = None;
-        assert!(
-            validate(std::slice::from_ref(&row))
-                .unwrap_err()
-                .to_string()
-                .contains("owning-human review is required")
-        );
-    }
-
-    #[test]
-    fn every_discovered_runtime_row_has_one_concrete_external_address() {
-        let rows = discover_source(
-            "demo",
-            "crates/demo/src/lib.rs",
-            r#"
-                struct RuntimePolicy {
-                    #[serde(default)] enabled: bool,
-                    #[arg(long, default_value_t = 4)] workers: usize,
-                }
-                fn build_policy() { let _ = RuntimePolicy::default(); }
-            "#,
-        )
-        .unwrap();
-        validate(&rows).unwrap();
-        assert!(rows.iter().all(|row| {
-            matches!(row.disposition, Disposition::RuntimeSettable)
-                && row.external_address.as_ref().is_some_and(|address| {
-                    !address.selector.is_empty() && !address.owner.is_empty()
-                })
-        }));
-        assert_eq!(
-            address_kind_counts(&rows).values().sum::<usize>(),
-            rows.len()
-        );
-    }
-
-    #[test]
-    fn duplicate_external_addresses_require_owner_qualification() {
-        let mut rows = discover_source(
-            "demo",
-            "crates/demo/src/lib.rs",
-            "struct Config { #[serde(default)] value: usize }",
-        )
-        .unwrap();
-        let mut duplicate = rows[0].clone();
-        duplicate.id.push_str(".duplicate");
-        rows.push(duplicate);
-        assert!(
-            validate(&rows)
-                .unwrap_err()
-                .to_string()
-                .contains("collides with another external address")
-        );
-        rows[1].external_address.as_mut().unwrap().owner = "serde::OtherConfig".to_owned();
-        validate(&rows).unwrap();
-    }
-}
+mod tests;

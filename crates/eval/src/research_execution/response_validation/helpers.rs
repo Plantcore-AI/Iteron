@@ -84,6 +84,20 @@ pub(super) fn activation(
     Ok(())
 }
 
+pub(super) fn graph_identity(
+    identity: Option<&crate::tuner::CandidateGraphIdentity>,
+) -> Result<(), ResearchProtocolError> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    if identity.schema_id != crate::tuner::CANDIDATE_GRAPH_SCHEMA_ID {
+        return invalid("candidate graph schema");
+    }
+    candidate_digest(&identity.materialization_sha256)?;
+    candidate_digest(&identity.experiment_sha256)?;
+    candidate_digest(&identity.topology_sha256)
+}
+
 pub(super) fn validate_candidate_id(value: &str) -> Result<(), ResearchProtocolError> {
     if value.is_empty()
         || value.len() > 256

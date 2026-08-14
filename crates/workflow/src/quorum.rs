@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum accepted quorum count. This matches the workflow DSL's per-parallel-call ceiling.
 pub const MAX_EARLY_STOP_QUORUM: usize = 4_096;
+const DEFAULT_EARLY_STOP_MINIMUM_EVIDENCE: usize = 1;
+const DEFAULT_EARLY_STOP_REQUIRED_ROLES: usize = 0;
+const DEFAULT_EARLY_STOP_STRONG_VETO: bool = true;
 
 /// The production default represented by tunable family 142.
 ///
@@ -65,7 +68,32 @@ impl EarlyStopQuorumPolicy {
 
 impl Default for EarlyStopQuorumPolicy {
     fn default() -> Self {
-        Self::new(1, 0, true).expect("the built-in quorum policy is valid")
+        let minimum_evidence = iteron_tunables::param_usize(
+            "workflow.quorum.default_early_stop_minimum_evidence",
+            iteron_tunables::param_integer(
+                "workflow.quorum.default_early_stop_minimum_evidence",
+                DEFAULT_EARLY_STOP_MINIMUM_EVIDENCE,
+            ),
+        )
+        .clamp(1, MAX_EARLY_STOP_QUORUM);
+        let required_roles = iteron_tunables::param_usize(
+            "workflow.quorum.default_early_stop_required_roles",
+            iteron_tunables::param_integer(
+                "workflow.quorum.default_early_stop_required_roles",
+                DEFAULT_EARLY_STOP_REQUIRED_ROLES,
+            ),
+        )
+        .min(minimum_evidence)
+        .min(256);
+        Self::new(
+            minimum_evidence,
+            required_roles,
+            iteron_tunables::param_bool(
+                "workflow.quorum.default_early_stop_strong_veto",
+                DEFAULT_EARLY_STOP_STRONG_VETO,
+            ),
+        )
+        .expect("the resolved quorum policy is valid")
     }
 }
 

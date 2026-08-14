@@ -5,6 +5,10 @@ pub(super) struct CandidateRecord {
     pub(super) adapter: AdapterPin,
     pub(super) candidate_sha256: String,
     pub(super) profile_sha256: String,
+    pub(super) candidate_schema_id: String,
+    pub(super) candidate_graph_identity: Option<crate::tuner::CandidateGraphIdentity>,
+    pub(super) native_materialization:
+        Option<crate::research_execution::native_materialization::MaterializedNativePatches>,
     pub(super) rendered_profile: String,
     pub(super) activation: Option<MaterializedActivation>,
 }
@@ -15,6 +19,7 @@ pub(super) struct RunIdentity<'a> {
     pub(super) candidate_sha256: &'a str,
     pub(super) profile_sha256: &'a str,
     pub(super) implementation_activation_sha256: Option<&'a str>,
+    pub(super) candidate_graph_identity: Option<&'a crate::tuner::CandidateGraphIdentity>,
     pub(super) run_id: &'a str,
 }
 
@@ -30,6 +35,18 @@ impl ResearchSession {
     pub fn with_pinned_iteron_cli(path: &std::path::Path) -> Result<Self, ResearchProtocolError> {
         Ok(Self {
             registry: BenchmarkAdapterRegistry::with_iteron_cli_executable(path)?,
+            execution_mode: ResearchExecutionMode::Execute,
+            candidates: BTreeMap::new(),
+            runs: BTreeMap::new(),
+        })
+    }
+
+    /// Construct an execute session bound to an operator-selected native-patch adapter.
+    pub fn with_pinned_native_adapter(
+        path: &std::path::Path,
+    ) -> Result<Self, ResearchProtocolError> {
+        Ok(Self {
+            registry: BenchmarkAdapterRegistry::with_external_native_executable(path)?,
             execution_mode: ResearchExecutionMode::Execute,
             candidates: BTreeMap::new(),
             runs: BTreeMap::new(),
@@ -53,15 +70,21 @@ impl Drop for ResearchSession {
 pub(super) fn candidate_validation_response(
     identity: &crate::research_protocol::ValidatedCandidate,
     activation: Option<&MaterializedActivation>,
+    native: Option<&crate::research_execution::native_materialization::MaterializedNativePatches>,
 ) -> ResearchResponse {
     ResearchResponse::CandidateValidate {
         candidate_id: identity.candidate_id.clone(),
+        candidate_schema_id: identity.candidate_schema_id.clone(),
         candidate_sha256: identity.candidate_sha256.clone(),
         profile_sha256: identity.profile_sha256.clone(),
+        candidate_graph_identity: identity.candidate_graph_identity.clone(),
         rendered_bytes: identity.rendered_bytes,
         implementation_count: identity.implementation_count,
         implementation_activation_sha256: activation.map(|item| item.sha256.clone()),
         implementation_activation_bytes: activation.map_or(0, |item| item.bytes),
+        native_patch_count: native.map_or(0, |item| item.patch_count),
+        native_materialization_sha256: native.map(|item| item.sha256.clone()),
+        native_materialization_bytes: native.map_or(0, |item| item.bytes),
     }
 }
 

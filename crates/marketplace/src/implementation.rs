@@ -16,7 +16,8 @@ pub use launch_plan::ProcessLaunchPlan;
 use validation::validate_manifest;
 
 pub const IMPLEMENTATION_CATALOG_SCHEMA_VERSION: u16 = 1;
-pub const IMPLEMENTATION_PROCESS_PROTOCOL_VERSION: u16 = 1;
+pub const IMPLEMENTATION_PROCESS_PROTOCOL_V1: u16 = 1;
+pub const IMPLEMENTATION_PROCESS_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_IMPLEMENTATION_CATALOG_BYTES: usize = 512 * 1024;
 pub const MAX_IMPLEMENTATIONS: usize = 256;
 pub const MAX_IMPLEMENTATION_ID_BYTES: usize = 96;

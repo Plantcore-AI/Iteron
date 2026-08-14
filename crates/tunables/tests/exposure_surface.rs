@@ -6,8 +6,10 @@
 
 use iteron_tunables::{
     ImplementationStatus, ModuleId, ParamClass, ProfileDocument, ProfileLoadError, ResolutionValue,
-    SourceKind, families, load_profile, params, surface, validate_profile,
+    RuntimeServiceDisposition, RuntimeServiceImplementationStatus, RuntimeServiceLayer, SourceKind,
+    families, load_profile, params, surface, validate_profile, validate_runtime_service_graph,
 };
+use std::collections::BTreeSet;
 
 fn document(values: Vec<iteron_tunables::ProfileValue>) -> ProfileDocument {
     ProfileDocument {
@@ -41,6 +43,84 @@ fn the_module_axis_is_total_and_has_no_empty_module() {
         .map(|entry| entry.id)
         .collect();
     assert!(empty.is_empty(), "modules with no members: {empty:?}");
+}
+
+#[test]
+fn the_runtime_service_graph_export_is_fail_closed_and_truthful() {
+    let exported = surface();
+    validate_runtime_service_graph(&exported.runtime_services).unwrap();
+    assert_eq!(
+        exported.counts.runtime_service_nodes,
+        exported.runtime_services.nodes.len()
+    );
+    let trainable = exported
+        .runtime_services
+        .nodes
+        .iter()
+        .filter(|node| node.disposition == RuntimeServiceDisposition::Trainable)
+        .collect::<Vec<_>>();
+    assert_eq!(trainable.len(), ModuleId::ALL.len());
+    assert!(trainable.iter().all(|node| {
+        node.implementation_status == RuntimeServiceImplementationStatus::ExternalProcess
+    }));
+    assert_eq!(
+        trainable
+            .iter()
+            .filter_map(|node| node.module)
+            .collect::<BTreeSet<_>>(),
+        ModuleId::ALL.into_iter().collect()
+    );
+
+    let platform = exported
+        .runtime_services
+        .nodes
+        .iter()
+        .filter(|node| node.layer == RuntimeServiceLayer::PlatformService)
+        .collect::<Vec<_>>();
+    let replaceable = platform
+        .iter()
+        .filter(|node| node.disposition == RuntimeServiceDisposition::ReplaceableOnly)
+        .collect::<Vec<_>>();
+    assert_eq!(replaceable.len(), 6);
+    assert!(replaceable.iter().all(|node| {
+        node.implementation_status == RuntimeServiceImplementationStatus::ExternalProtocol
+    }));
+    let host_fixed = platform
+        .iter()
+        .filter(|node| node.disposition == RuntimeServiceDisposition::HostFixedNonOptimization)
+        .collect::<Vec<_>>();
+    assert_eq!(host_fixed.len(), 16);
+    assert!(host_fixed.iter().all(|node| {
+        node.implementation_status == RuntimeServiceImplementationStatus::HostFixed
+            && node
+                .non_optimization_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty())
+            && (!node.delegated_modules.is_empty() || !node.closed_host_invariants.is_empty())
+    }));
+    assert_eq!(
+        host_fixed
+            .iter()
+            .flat_map(|node| node.delegated_modules.iter().copied())
+            .collect::<BTreeSet<_>>(),
+        ModuleId::ALL.into_iter().collect()
+    );
+    assert!(!platform.iter().any(|node| {
+        node.disposition == RuntimeServiceDisposition::ReplaceableOnly
+            && node.implementation_status == RuntimeServiceImplementationStatus::CompiledInterface
+    }));
+    assert_eq!(
+        exported.counts.runtime_service_compiled_interfaces,
+        exported
+            .runtime_services
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.implementation_status == RuntimeServiceImplementationStatus::CompiledInterface
+            })
+            .count()
+    );
+    assert_eq!(exported.counts.runtime_service_compiled_interfaces, 0);
 }
 
 #[test]

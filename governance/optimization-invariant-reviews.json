@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "census_sha256": "630083c3478ae22e01c380a472ad718f693bf4d604d17d98e620f3b2fa43db69",
-  "boundary_registry_sha256": "90d9ffe02f49580c11a867c8d0bb95f06470ab2924dc2a0c2c9477c5141b0672",
-  "reviews": []
+  "schema_version": 2,
+  "census_sha256": "8b175b673695be85cababa0923d8ad55b2b162ae83ca78bea47d7c5043e478b8",
+  "boundary_registry_sha256": "ee8bf04dd578f26aedae98d1a50080dc40ba7eb85049a6c55a50c9e12a991867",
+  "batches": []
 }

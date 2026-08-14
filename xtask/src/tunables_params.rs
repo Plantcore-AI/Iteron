@@ -1617,6 +1617,14 @@ fn row_for(
                 "crates/marketplace/src/implementation_runtime/process.rs",
                 "SIGKILL"
             ) | (
+                "marketplace",
+                "crates/marketplace/src/hotswap.rs",
+                "GENESIS_HASH"
+            ) | (
+                "marketplace",
+                "crates/marketplace/src/implementation.rs",
+                "IMPLEMENTATION_PROCESS_PROTOCOL_V1"
+            ) | (
                 "eval",
                 "crates/eval/src/research_execution/process.rs",
                 "PROC_PGRP_ONLY"
@@ -1640,6 +1648,8 @@ fn row_for(
                 | ("eval", "crates/eval/src/research_protocol.rs")
                 | ("eval", "crates/eval/src/terminal_bench.rs")
                 | ("eval", "crates/eval/src/trainer_bridge.rs")
+                | ("eval", "crates/eval/src/tuner/candidate_graph.rs")
+                | ("marketplace", "crates/marketplace/src/hotswap.rs")
                 | ("marketplace", "crates/marketplace/src/implementation.rs")
                 | (
                     "marketplace",
@@ -1654,6 +1664,7 @@ fn row_for(
                     "crates/marketplace/src/implementation_protocol.rs"
                 )
                 | ("tunables", "crates/tunables/src/capability_graph.rs")
+                | ("tunables", "crates/tunables/src/service_graph.rs")
         )
         || matches!(
             (krate, relative, name),
@@ -1683,6 +1694,27 @@ fn row_for(
             Some(ParamClass::Bounded)
         }
         ("tools", "crates/tools/src/lsp/session.rs", "PROCESS_EXIT_TIMEOUT") => {
+            Some(ParamClass::Bounded)
+        }
+        (
+            "evolve",
+            "crates/evolve/src/transcript.rs",
+            "DEFAULT_PRIMARY_PRODUCER" | "DEFAULT_SECONDARY_PRODUCER",
+        )
+        | ("tools", "crates/tools/src/process/policy.rs", "DEFAULT_PERSISTENT_BACKEND")
+        | ("workflow", "crates/workflow/src/execution_policy.rs", "DEFAULT_TASK_FAILURE_ACTION")
+        | (
+            "verify",
+            "crates/verify/src/runtime_policy.rs",
+            "DEFAULT_VERIFICATION_SELECTION"
+            | "DEFAULT_VERIFICATION_CHECKPOINT_TURN_BOUNDARY"
+            | "DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION"
+            | "DEFAULT_FLAKY_REPEAT_COUNT",
+        ) => Some(ParamClass::Searchable),
+        ("workflow", "crates/workflow/src/schema_retry.rs", "DEFAULT_SCHEMA_RETRY_BASE_MS") => {
+            Some(ParamClass::Searchable)
+        }
+        ("workflow", "crates/workflow/src/schema_retry.rs", "DEFAULT_SCHEMA_RETRY_CAP_MS") => {
             Some(ParamClass::Bounded)
         }
         ("tools", "crates/tools/src/shell.rs", "MAX_PER_STREAM_BYTES") => Some(ParamClass::Bounded),

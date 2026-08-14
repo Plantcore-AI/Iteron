@@ -319,12 +319,19 @@ impl Default for CompactionPolicy {
                     DEFAULT_KEEP_RECENT,
                 ),
             ),
-            enabled: true,
+            enabled: iteron_tunables::param_bool("ctx.compact.default_enabled", true),
             hysteresis: crate::CompactionHysteresis::default(),
-            summary_topology: crate::SummaryTopology::SingleStage,
+            summary_topology: crate::SummaryTopology::parse(iteron_tunables::param_enum(
+                "ctx.compact.default_summary_topology",
+                "single_stage",
+            ))
+            .expect("admitted default summary topology"),
             summary_profile: crate::SummaryProfile::default(),
-            coverage_check: true,
-            window_relative: true,
+            coverage_check: iteron_tunables::param_bool("ctx.compact.default_coverage_check", true),
+            window_relative: iteron_tunables::param_bool(
+                "ctx.compact.default_window_relative",
+                true,
+            ),
         }
     }
 }

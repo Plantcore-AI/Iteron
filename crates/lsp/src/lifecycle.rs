@@ -71,11 +71,12 @@ pub struct RestartPolicy {
 
 impl Default for RestartPolicy {
     fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_backoff_ms: 250,
-            max_backoff_ms: 10_000,
-        }
+        Self::new(
+            iteron_tunables::param_integer("lsp.lifecycle.default_max_attempts", 3),
+            iteron_tunables::param_integer("lsp.lifecycle.default_base_backoff_ms", 250),
+            iteron_tunables::param_integer("lsp.lifecycle.default_max_backoff_ms", 10_000),
+        )
+        .expect("admitted default LSP restart policy")
     }
 }
 

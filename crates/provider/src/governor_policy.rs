@@ -130,7 +130,10 @@ pub struct CircuitPolicy {
 impl Default for CircuitPolicy {
     fn default() -> Self {
         Self {
-            failure_threshold: 3,
+            failure_threshold: iteron_tunables::param_integer(
+                "provider.governor_policy.circuit_default_failure_threshold",
+                3,
+            ),
             open_for: Duration::from_secs(iteron_tunables::param_u64(
                 "provider.governor_policy.circuit_open_for_secs",
                 iteron_tunables::param_integer(
@@ -138,8 +141,14 @@ impl Default for CircuitPolicy {
                     CIRCUIT_OPEN_FOR_SECS,
                 ),
             )),
-            half_open_probes: 1,
-            success_threshold: 1,
+            half_open_probes: iteron_tunables::param_integer(
+                "provider.governor_policy.circuit_default_half_open_probes",
+                1,
+            ),
+            success_threshold: iteron_tunables::param_integer(
+                "provider.governor_policy.circuit_default_success_threshold",
+                1,
+            ),
         }
     }
 }
@@ -160,11 +169,25 @@ pub struct RateAdmissionPolicy {
 
 impl Default for RateAdmissionPolicy {
     fn default() -> Self {
+        let unknown_quota = match iteron_tunables::param_enum(
+            "provider.governor_policy.rate_default_unknown_quota",
+            "conservative",
+        ) {
+            "conservative" => UnknownQuotaPolicy::Conservative,
+            "reject" => UnknownQuotaPolicy::Reject,
+            value => panic!("unadmitted unknown-quota policy `{value}`"),
+        };
         Self {
-            minimum_remaining_requests: 0,
-            minimum_remaining_tokens: 0,
+            minimum_remaining_requests: iteron_tunables::param_integer(
+                "provider.governor_policy.rate_default_minimum_remaining_requests",
+                0,
+            ),
+            minimum_remaining_tokens: iteron_tunables::param_integer(
+                "provider.governor_policy.rate_default_minimum_remaining_tokens",
+                0,
+            ),
             reset_wait_max: Duration::ZERO,
-            unknown_quota: UnknownQuotaPolicy::Conservative,
+            unknown_quota,
         }
     }
 }
@@ -180,9 +203,15 @@ pub struct HedgePolicy {
 impl Default for HedgePolicy {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: iteron_tunables::param_bool(
+                "provider.governor_policy.hedge_default_enabled",
+                false,
+            ),
             delay: Duration::ZERO,
-            max_duplicates: 0,
+            max_duplicates: iteron_tunables::param_integer(
+                "provider.governor_policy.hedge_default_max_duplicates",
+                0,
+            ),
             // This is the canonical fail-closed baseline even while hedging is disabled. A
             // future enabling override must never inherit a duplicate-unsafe owner default.
             idempotent_only: true,
@@ -203,7 +232,10 @@ pub struct GovernorPolicy {
 impl Default for GovernorPolicy {
     fn default() -> Self {
         Self {
-            max_in_flight_per_route: 1,
+            max_in_flight_per_route: iteron_tunables::param_integer(
+                "provider.governor_policy.default_max_in_flight_per_route",
+                1,
+            ),
             objectives: ObjectiveWeights::default(),
             failover: BTreeSet::new(),
             circuit: CircuitPolicy::default(),

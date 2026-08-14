@@ -5,6 +5,8 @@
 //! owns the candidate's source boundary. The review body must contain the packet's exact batch
 //! token, which binds every candidate id and source-evidence digest in that boundary.
 
+mod batch;
+
 use crate::model::{Boundary, Registry};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -12,12 +14,15 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use batch::check_batch_ledger;
+
 const CENSUS_PATH: &str = "governance/optimization-census.json";
 const LEDGER_PATH: &str = "governance/optimization-invariant-reviews.json";
 const BOUNDARIES_PATH: &str = "governance/boundaries.json";
-const CENSUS_SCHEMA_VERSION: u16 = 3;
-const REVIEW_SCHEMA_VERSION: u16 = 1;
-const PACKET_SCHEMA_VERSION: u16 = 1;
+const CENSUS_SCHEMA_VERSION: u16 = 4;
+const LEGACY_REVIEW_SCHEMA_VERSION: u16 = 1;
+const BATCH_REVIEW_SCHEMA_VERSION: u16 = 2;
+const PACKET_SCHEMA_VERSION: u16 = 2;
 const MAX_CENSUS_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_LEDGER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REVIEW_EVIDENCE_BYTES: u64 = 16 * 1024 * 1024;
@@ -31,6 +36,7 @@ struct CensusFile {
     total: usize,
     runtime_settable: usize,
     invariant_read_only: usize,
+    binding_required: usize,
     advertised_runtime_settable: usize,
     runtime_applied: usize,
     externally_addressed_runtime_settable: usize,
@@ -40,7 +46,18 @@ struct CensusFile {
     explicit_invariant_overrides: usize,
     address_kind_counts: BTreeMap<String, usize>,
     invariant_kind_counts: BTreeMap<String, usize>,
+    source_coverage: SourceCoverage,
     candidates: Vec<CensusCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceCoverage {
+    completeness_claim: String,
+    production_rust_files_scanned: usize,
+    source_form_counts: BTreeMap<String, usize>,
+    candidate_row_counts: BTreeMap<String, usize>,
+    unclassified_source_forms: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -71,6 +88,15 @@ struct ExternalAddress {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CallerInputProof {
+    kind: String,
+    path: String,
+    symbol: String,
+    evidence: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CensusCandidate {
     id: String,
     candidate_kind: String,
@@ -80,6 +106,8 @@ struct CensusCandidate {
     use_sites: Vec<CensusUseSite>,
     disposition: String,
     external_address: Option<ExternalAddress>,
+    caller_input_proof: Option<CallerInputProof>,
+    binding_requirement: Option<String>,
     invariant_kind: Option<String>,
     review_evidence: Option<String>,
     owning_human_review: Option<String>,
@@ -133,7 +161,27 @@ struct ReviewPacket {
     census_sha256: String,
     boundary_registry_sha256: String,
     required_reviews: usize,
+    required_batches: usize,
+    batches: Vec<ReviewPacketBatch>,
     candidates: Vec<ReviewPacketEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ReviewPacketBatch {
+    ownership_boundary_id: String,
+    owner_person_id: String,
+    owner_github: String,
+    candidate_count: usize,
+    candidates: Vec<BatchCandidateEvidence>,
+    approval_token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct BatchCandidateEvidence {
+    candidate_id: String,
+    candidate_evidence_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -152,11 +200,25 @@ struct ReviewContext {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ReviewLedger {
+struct LegacyReviewLedger {
     schema_version: u16,
     census_sha256: String,
     boundary_registry_sha256: String,
     reviews: Vec<InvariantReview>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchReviewLedger {
+    schema_version: u16,
+    census_sha256: String,
+    boundary_registry_sha256: String,
+    batches: Vec<InvariantBatchReview>,
+}
+
+enum ReviewLedger {
+    Legacy(LegacyReviewLedger),
+    Batch(BatchReviewLedger),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -177,6 +239,21 @@ struct InvariantReview {
     invariant_overlay_ids: Vec<String>,
     owner_person_id: String,
     github_reviewer: String,
+    decision: ReviewDecision,
+    rationale: String,
+    github_review_id: u64,
+    github_review_commit_sha: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InvariantBatchReview {
+    ownership_boundary_id: String,
+    owner_person_id: String,
+    github_reviewer: String,
+    candidate_evidence: Vec<BatchCandidateEvidence>,
+    census_sha256: String,
+    boundary_registry_sha256: String,
     decision: ReviewDecision,
     rationale: String,
     github_review_id: u64,
@@ -205,11 +282,34 @@ pub(crate) fn print_packet(root: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn print_review_body(root: &Path) -> Result<()> {
+    let context = load_context(root)?;
+    println!("## Iteron optimization invariant owner review\n");
+    println!(
+        "This review covers {} invariant candidates in {} owner×boundary batches. The tokens bind the exact census and boundary registry digests; approval is valid only for the reviewed commit.\n",
+        context.packet.required_reviews, context.packet.required_batches
+    );
+    println!(
+        "Approve only after reviewing every candidate in the packet. Keep every token below on its own line in the GitHub APPROVED review body.\n"
+    );
+    for batch in &context.packet.batches {
+        println!(
+            "### `{}` — `{}` ({}, {} candidates)\n\n{}\n",
+            batch.ownership_boundary_id,
+            batch.owner_person_id,
+            batch.owner_github,
+            batch.candidate_count,
+            batch.approval_token
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn check(root: &Path, review_evidence: Option<&Path>) -> Result<()> {
     let context = load_context(root)?;
     let ledger_bytes = read_bounded(&root.join(LEDGER_PATH), MAX_LEDGER_BYTES, "review ledger")?;
-    let ledger: ReviewLedger = serde_json::from_slice(&ledger_bytes)
-        .with_context(|| format!("{LEDGER_PATH} is not a valid schema-v1 review ledger"))?;
+    let ledger = parse_review_ledger(&ledger_bytes)
+        .with_context(|| format!("{LEDGER_PATH} is not a valid schema-v1/v2 review ledger"))?;
     let evidence = match review_evidence {
         Some(path) => {
             let bytes = read_bounded(path, MAX_REVIEW_EVIDENCE_BYTES, "GitHub review evidence")?;
@@ -222,6 +322,26 @@ pub(crate) fn check(root: &Path, review_evidence: Option<&Path>) -> Result<()> {
         "optimization invariant owner reviews valid: {approved}/{approved} current, externally attested approvals"
     );
     Ok(())
+}
+
+fn parse_review_ledger(bytes: &[u8]) -> Result<ReviewLedger> {
+    #[derive(Deserialize)]
+    struct VersionOnly {
+        schema_version: u16,
+    }
+    let version: VersionOnly = serde_json::from_slice(bytes)
+        .context("review ledger is not a JSON object with schema_version")?;
+    match version.schema_version {
+        LEGACY_REVIEW_SCHEMA_VERSION => Ok(ReviewLedger::Legacy(
+            serde_json::from_slice(bytes).context("invalid legacy candidate review ledger")?,
+        )),
+        BATCH_REVIEW_SCHEMA_VERSION => Ok(ReviewLedger::Batch(
+            serde_json::from_slice(bytes).context("invalid batch review ledger")?,
+        )),
+        other => bail!(
+            "unsupported ledger schema {other}; expected {LEGACY_REVIEW_SCHEMA_VERSION} or {BATCH_REVIEW_SCHEMA_VERSION}"
+        ),
+    }
 }
 
 fn load_context(root: &Path) -> Result<ReviewContext> {
@@ -238,7 +358,7 @@ fn load_context(root: &Path) -> Result<ReviewContext> {
         );
     }
     let census: CensusFile = serde_json::from_slice(&census_bytes)
-        .with_context(|| format!("{CENSUS_PATH} is not a valid schema-v3 census"))?;
+        .with_context(|| format!("{CENSUS_PATH} is not a valid schema-v4 census"))?;
     validate_census(&census)?;
 
     let boundary_bytes = read_bounded(
@@ -273,6 +393,7 @@ fn validate_census(census: &CensusFile) -> Result<()> {
     let mut ids = BTreeSet::new();
     let mut runtime = 0usize;
     let mut invariants = 0usize;
+    let mut binding_required = 0usize;
     let mut addressed = BTreeSet::new();
     let mut address_counts = BTreeMap::new();
     for candidate in &census.candidates {
@@ -322,6 +443,36 @@ fn validate_census(census: &CensusFile) -> Result<()> {
                 {
                     bail!("{} lacks a behavioral oracle", candidate.id);
                 }
+                if address.kind == "caller_input" {
+                    let proof = candidate.caller_input_proof.as_ref().with_context(|| {
+                        format!(
+                            "{} has caller_input without public protocol proof",
+                            candidate.id
+                        )
+                    })?;
+                    for (field, value) in [
+                        ("proof kind", proof.kind.as_str()),
+                        ("proof path", proof.path.as_str()),
+                        ("proof symbol", proof.symbol.as_str()),
+                        ("proof evidence", proof.evidence.as_str()),
+                    ] {
+                        bounded_text(field, value, MAX_TEXT_BYTES)?;
+                    }
+                    if proof.path != candidate.owner.path {
+                        bail!(
+                            "{} caller proof path does not match its owner",
+                            candidate.id
+                        );
+                    }
+                } else if candidate.caller_input_proof.is_some() {
+                    bail!("{} has caller proof for a non-caller address", candidate.id);
+                }
+                if candidate.binding_requirement.is_some() {
+                    bail!(
+                        "{} is runtime_settable but marked binding_required",
+                        candidate.id
+                    );
+                }
             }
             "invariant_read_only" => {
                 invariants += 1;
@@ -338,9 +489,32 @@ fn validate_census(census: &CensusFile) -> Result<()> {
                         != Some("required_not_source_proven")
                     || candidate.applied
                     || candidate.behavior_oracle.is_some()
+                    || candidate.caller_input_proof.is_some()
+                    || candidate.binding_requirement.is_some()
                     || candidate.use_sites.is_empty()
                 {
                     bail!("{} has an invalid pending-invariant shape", candidate.id);
+                }
+            }
+            "binding_required" => {
+                binding_required += 1;
+                if candidate.external_address.is_some()
+                    || candidate.caller_input_proof.is_some()
+                    || candidate
+                        .binding_requirement
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                    || candidate.use_sites.is_empty()
+                    || !candidate.applied
+                    || candidate
+                        .behavior_oracle
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                    || candidate.invariant_kind.is_some()
+                    || candidate.review_evidence.is_some()
+                    || candidate.owning_human_review.is_some()
+                {
+                    bail!("{} has an invalid binding_required shape", candidate.id);
                 }
             }
             other => bail!("{} has unknown disposition `{other}`", candidate.id),
@@ -361,6 +535,8 @@ fn validate_census(census: &CensusFile) -> Result<()> {
         || invariants != census.mechanical_invariant_dispositions
         || invariants != census.owning_human_review_required
         || explicit != census.explicit_invariant_overrides
+        || binding_required != census.binding_required
+        || runtime + invariants + binding_required != census.total
         || address_counts
             != census
                 .address_kind_counts
@@ -370,6 +546,25 @@ fn validate_census(census: &CensusFile) -> Result<()> {
         || census.invariant_kind_counts.values().sum::<usize>() != invariants
     {
         bail!("optimization census summary does not match its candidate rows");
+    }
+    if census.source_coverage.production_rust_files_scanned == 0
+        || census.source_coverage.unclassified_source_forms != 0
+        || census
+            .source_coverage
+            .source_form_counts
+            .values()
+            .sum::<usize>()
+            < census.total
+        || census
+            .source_coverage
+            .candidate_row_counts
+            .values()
+            .sum::<usize>()
+            != census.total
+        || census.source_coverage.completeness_claim
+            != "complete_for_declared_production_source_forms_not_mathematical_universe"
+    {
+        bail!("optimization census source coverage is incomplete or unclassified");
     }
     Ok(())
 }
@@ -463,13 +658,15 @@ fn build_packet(
         });
     }
     entries.sort_by(|left, right| left.candidate_id.cmp(&right.candidate_id));
-    bind_approval_tokens(&mut entries, census_sha256, boundary_registry_sha256)?;
+    let batches = bind_approval_tokens(&mut entries, census_sha256, boundary_registry_sha256)?;
     Ok(ReviewPacket {
         schema_version: PACKET_SCHEMA_VERSION,
         census_schema_version: census.schema_version,
         census_sha256: census_sha256.to_owned(),
         boundary_registry_sha256: boundary_registry_sha256.to_owned(),
         required_reviews: entries.len(),
+        required_batches: batches.len(),
+        batches,
         candidates: entries,
     })
 }
@@ -478,7 +675,7 @@ fn bind_approval_tokens(
     entries: &mut [ReviewPacketEntry],
     census_sha256: &str,
     boundary_registry_sha256: &str,
-) -> Result<()> {
+) -> Result<Vec<ReviewPacketBatch>> {
     let mut batches: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
     for entry in entries.iter() {
         batches
@@ -492,6 +689,7 @@ fn bind_approval_tokens(
                 entry.candidate_evidence_sha256.clone(),
             ));
     }
+    let mut packet_batches = Vec::new();
     let mut tokens = BTreeMap::new();
     for ((boundary, owner), candidates) in &batches {
         let digest = sha256(&serde_json::to_vec(&ApprovalBatch {
@@ -505,9 +703,34 @@ fn bind_approval_tokens(
         tokens.insert(
             (boundary.clone(), owner.clone()),
             format!(
-                "ITERON-INVARIANT-OWNER-REVIEW-V1 boundary={boundary} owner={owner} batch_sha256={digest}"
+                "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary={boundary} owner={owner} batch_sha256={digest}"
             ),
         );
+        let first = entries
+            .iter()
+            .find(|entry| {
+                entry.ownership_boundary_id == *boundary && entry.owner_person_id == *owner
+            })
+            .context("approval batch has no packet entry")?;
+        packet_batches.push(ReviewPacketBatch {
+            ownership_boundary_id: boundary.clone(),
+            owner_person_id: owner.clone(),
+            owner_github: first.owner_github.clone(),
+            candidate_count: candidates.len(),
+            candidates: candidates
+                .iter()
+                .map(
+                    |(candidate_id, candidate_evidence_sha256)| BatchCandidateEvidence {
+                        candidate_id: candidate_id.clone(),
+                        candidate_evidence_sha256: candidate_evidence_sha256.clone(),
+                    },
+                )
+                .collect(),
+            approval_token: tokens
+                .get(&(boundary.clone(), owner.clone()))
+                .context("new approval batch token is missing")?
+                .clone(),
+        });
     }
     for entry in entries {
         entry.approval_token = tokens
@@ -518,7 +741,7 @@ fn bind_approval_tokens(
             .context("approval batch token is missing")?
             .clone();
     }
-    Ok(())
+    Ok(packet_batches)
 }
 
 fn check_ledger(
@@ -526,10 +749,21 @@ fn check_ledger(
     ledger: &ReviewLedger,
     github_reviews: &[GithubReview],
 ) -> Result<usize> {
+    match ledger {
+        ReviewLedger::Legacy(ledger) => check_legacy_ledger(context, ledger, github_reviews),
+        ReviewLedger::Batch(ledger) => check_batch_ledger(context, ledger, github_reviews),
+    }
+}
+
+fn check_legacy_ledger(
+    context: &ReviewContext,
+    ledger: &LegacyReviewLedger,
+    github_reviews: &[GithubReview],
+) -> Result<usize> {
     let mut errors = Vec::new();
-    if ledger.schema_version != REVIEW_SCHEMA_VERSION {
+    if ledger.schema_version != LEGACY_REVIEW_SCHEMA_VERSION {
         errors.push(format!(
-            "unsupported ledger schema {}; expected {REVIEW_SCHEMA_VERSION}",
+            "unsupported legacy ledger schema {}; expected {LEGACY_REVIEW_SCHEMA_VERSION}",
             ledger.schema_version
         ));
     }
@@ -800,200 +1034,4 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const CENSUS_DIGEST: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-    const REGISTRY_DIGEST: &str =
-        "2222222222222222222222222222222222222222222222222222222222222222";
-    const COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-    fn context() -> ReviewContext {
-        ReviewContext {
-            packet: ReviewPacket {
-                schema_version: PACKET_SCHEMA_VERSION,
-                census_schema_version: CENSUS_SCHEMA_VERSION,
-                census_sha256: CENSUS_DIGEST.to_owned(),
-                boundary_registry_sha256: REGISTRY_DIGEST.to_owned(),
-                required_reviews: 1,
-                candidates: vec![ReviewPacketEntry {
-                    candidate_id: "agents.catalog.domain".to_owned(),
-                    candidate_evidence_sha256: "33".repeat(32),
-                    candidate_kind: "const".to_owned(),
-                    rust_type: "&[u8]".to_owned(),
-                    value: "b\"domain\"".to_owned(),
-                    owner: CensusOwner {
-                        krate: "agents".to_owned(),
-                        path: "crates/agents/src/catalog.rs".to_owned(),
-                        symbol: "AgentCatalog::DOMAIN".to_owned(),
-                    },
-                    use_sites: vec![CensusUseSite {
-                        path: "crates/agents/src/catalog.rs".to_owned(),
-                        line: 10,
-                        evidence: "Rust path reference".to_owned(),
-                    }],
-                    invariant_kind: "identity".to_owned(),
-                    mechanical_review_evidence: "mechanical only".to_owned(),
-                    explicit_invariant_override: false,
-                    tier2_id: Some("agents.catalog.domain".to_owned()),
-                    ownership_boundary_id: "agents-runtime".to_owned(),
-                    invariant_overlay_ids: vec!["public-compatibility".to_owned()],
-                    owner_person_id: "core-owner".to_owned(),
-                    owner_github: "@human-owner".to_owned(),
-                    approval_token: "ITERON-INVARIANT-OWNER-REVIEW-V1 test-token".to_owned(),
-                }],
-            },
-        }
-    }
-
-    fn review() -> InvariantReview {
-        let expected = &context().packet.candidates[0];
-        InvariantReview {
-            candidate_id: expected.candidate_id.clone(),
-            candidate_evidence_sha256: expected.candidate_evidence_sha256.clone(),
-            census_sha256: CENSUS_DIGEST.to_owned(),
-            boundary_registry_sha256: REGISTRY_DIGEST.to_owned(),
-            ownership_boundary_id: expected.ownership_boundary_id.clone(),
-            invariant_overlay_ids: expected.invariant_overlay_ids.clone(),
-            owner_person_id: expected.owner_person_id.clone(),
-            github_reviewer: expected.owner_github.clone(),
-            decision: ReviewDecision::AffirmInvariant,
-            rationale: "Reviewed stable identity and all production uses.".to_owned(),
-            github_review_id: 7,
-            github_review_commit_sha: COMMIT.to_owned(),
-        }
-    }
-
-    fn ledger(review_rows: Vec<InvariantReview>) -> ReviewLedger {
-        ReviewLedger {
-            schema_version: REVIEW_SCHEMA_VERSION,
-            census_sha256: CENSUS_DIGEST.to_owned(),
-            boundary_registry_sha256: REGISTRY_DIGEST.to_owned(),
-            reviews: review_rows,
-        }
-    }
-
-    fn github_review(id: u64, state: &str, actor: &str, body: Option<&str>) -> GithubReview {
-        GithubReview {
-            id,
-            user: Some(GithubReviewUser {
-                login: actor.to_owned(),
-            }),
-            state: state.to_owned(),
-            commit_id: COMMIT.to_owned(),
-            body: body.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn strict_parser_rejects_self_attested_or_unknown_fields() {
-        let raw = format!(
-            r#"{{
-              "schema_version": 1,
-              "census_sha256": "{CENSUS_DIGEST}",
-              "boundary_registry_sha256": "{REGISTRY_DIGEST}",
-              "reviews": [],
-              "self_attested": true
-            }}"#
-        );
-        assert!(serde_json::from_str::<ReviewLedger>(&raw).is_err());
-    }
-
-    #[test]
-    fn checker_accepts_only_external_current_owner_approval() {
-        let context = context();
-        let token = context.packet.candidates[0].approval_token.as_str();
-        let evidence = vec![github_review(7, "APPROVED", "human-owner", Some(token))];
-        assert_eq!(
-            check_ledger(&context, &ledger(vec![review()]), &evidence).unwrap(),
-            1
-        );
-
-        let error = check_ledger(&context, &ledger(vec![review()]), &[])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("ledger-only/self-attested approval is forbidden"));
-
-        let agent = vec![github_review(7, "APPROVED", "agent-bot", Some(token))];
-        let error = check_ledger(&context, &ledger(vec![review()]), &agent)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("is not owning human"));
-    }
-
-    #[test]
-    fn checker_rejects_stale_unknown_duplicate_and_non_owner_rows() {
-        let context = context();
-        let token = context.packet.candidates[0].approval_token.as_str();
-        let evidence = vec![github_review(7, "APPROVED", "human-owner", Some(token))];
-
-        let mut stale = review();
-        stale.candidate_evidence_sha256 = "44".repeat(32);
-        assert!(
-            check_ledger(&context, &ledger(vec![stale]), &evidence)
-                .unwrap_err()
-                .to_string()
-                .contains("evidence digest is stale")
-        );
-
-        let mut unknown = review();
-        unknown.candidate_id = "unknown.candidate".to_owned();
-        assert!(
-            check_ledger(&context, &ledger(vec![unknown]), &evidence)
-                .unwrap_err()
-                .to_string()
-                .contains("unknown or no-longer-invariant")
-        );
-
-        let duplicate = review();
-        assert!(
-            check_ledger(
-                &context,
-                &ledger(vec![duplicate.clone(), duplicate]),
-                &evidence
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("repeats candidate approval")
-        );
-
-        let mut non_owner = review();
-        non_owner.github_reviewer = "@not-the-owner".to_owned();
-        assert!(
-            check_ledger(&context, &ledger(vec![non_owner]), &evidence)
-                .unwrap_err()
-                .to_string()
-                .contains("non-owner")
-        );
-    }
-
-    #[test]
-    fn checker_reports_missing_and_rejects_revoked_or_unbound_reviews() {
-        let context = context();
-        let error = check_ledger(&context, &ledger(Vec::new()), &[])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("missing owning-human approvals (1)"));
-        assert!(error.contains("agents.catalog.domain"));
-
-        let token = context.packet.candidates[0].approval_token.as_str();
-        let revoked = vec![
-            github_review(7, "APPROVED", "human-owner", Some(token)),
-            github_review(8, "CHANGES_REQUESTED", "human-owner", None),
-        ];
-        assert!(
-            check_ledger(&context, &ledger(vec![review()]), &revoked)
-                .unwrap_err()
-                .to_string()
-                .contains("latest decisive review")
-        );
-
-        let unbound = vec![github_review(7, "APPROVED", "human-owner", None)];
-        assert!(
-            check_ledger(&context, &ledger(vec![review()]), &unbound)
-                .unwrap_err()
-                .to_string()
-                .contains("exact deterministic approval token")
-        );
-    }
-}
+mod tests;

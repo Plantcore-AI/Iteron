@@ -8,11 +8,18 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_tunables::{
     ContractRef, ModuleId, capability_seam_graph, validate_capability_seam_graph,
 };
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
+use std::collections::BTreeSet;
+use std::fmt;
 
-pub const IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/1";
+pub const IMPLEMENTATION_PROTOCOL_V1: &str = "iteron-implementation/1";
+pub const IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/2";
 pub const MAX_IMPLEMENTATION_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_IMPLEMENTATION_PAYLOAD_BYTES: usize = 512 * 1024;
+pub const MAX_IMPLEMENTATION_STATE_BYTES: usize = 512 * 1024;
+pub const MAX_IMPLEMENTATION_STATE_DEADLINE_MS: u64 = 3_600_000;
 const MAX_PROTOCOL_ID_BYTES: usize = 128;
 const MAX_FAILURE_MESSAGE_BYTES: usize = 4096;
 
@@ -45,6 +52,45 @@ pub enum ImplementationRequest {
         lifecycle_contract: ContractRef,
         reason: String,
     },
+    Snapshot {
+        lifecycle_contract: ContractRef,
+        run_id: String,
+        generation: u64,
+        state_schema: ContractRef,
+        deadline_ms: u64,
+    },
+    Restore {
+        lifecycle_contract: ContractRef,
+        state: ImplementationState,
+        deadline_ms: u64,
+    },
+    Migrate {
+        lifecycle_contract: ContractRef,
+        source: ImplementationState,
+        target_generation: u64,
+        deadline_ms: u64,
+    },
+    Readiness {
+        lifecycle_contract: ContractRef,
+        run_id: String,
+        generation: u64,
+        state_schema: ContractRef,
+        state_sha256: String,
+        deadline_ms: u64,
+    },
+}
+
+/// Bounded, content-addressed provider state with an explicit source/target identity binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImplementationState {
+    pub module: ModuleId,
+    pub implementation_id: String,
+    pub run_id: String,
+    pub generation: u64,
+    pub state_schema: ContractRef,
+    pub state_sha256: String,
+    pub state: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +117,24 @@ pub enum ImplementationResponse {
         run_id: String,
     },
     Stopped,
+    Snapshotted {
+        state: ImplementationState,
+    },
+    Restored {
+        run_id: String,
+        generation: u64,
+        state_schema: ContractRef,
+        state_sha256: String,
+    },
+    Migrated {
+        state: ImplementationState,
+    },
+    Ready {
+        run_id: String,
+        generation: u64,
+        state_schema: ContractRef,
+        state_sha256: String,
+    },
     Failed {
         code: String,
         message: String,
@@ -108,6 +172,8 @@ pub enum ImplementationProtocolError {
     TooLarge { actual: usize, max: usize },
     #[error("implementation protocol message is invalid JSON: {0}")]
     MalformedJson(String),
+    #[error("implementation protocol JSON contains a duplicate object key")]
+    DuplicateJsonKey,
     #[error("implementation protocol identity or correlation is invalid")]
     Correlation,
     #[error("implementation protocol contract does not match the declared module seam")]
@@ -156,8 +222,20 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Implementati
             max: MAX_IMPLEMENTATION_MESSAGE_BYTES,
         });
     }
-    serde_json::from_slice(bytes)
+    serde_json::from_value(strict_json_value(bytes)?)
         .map_err(|error| ImplementationProtocolError::MalformedJson(error.to_string()))
+}
+
+pub(crate) fn strict_json_value(
+    bytes: &[u8],
+) -> Result<serde_json::Value, ImplementationProtocolError> {
+    use serde::de::DeserializeSeed as _;
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = StrictSeed
+        .deserialize(&mut deserializer)
+        .map_err(classify_json)?;
+    deserializer.end().map_err(classify_json)?;
+    Ok(value)
 }
 
 impl ImplementationRequestEnvelope {
@@ -221,6 +299,113 @@ impl ImplementationRequestEnvelope {
                 }
                 validate_text(reason, MAX_FAILURE_MESSAGE_BYTES, "stop.reason")?;
             }
+            ImplementationRequest::Snapshot {
+                lifecycle_contract,
+                run_id,
+                generation,
+                state_schema,
+                deadline_ms,
+            } => {
+                require_v2(&self.protocol)?;
+                if lifecycle_contract != &node.lifecycle.snapshot
+                    || state_schema != &node.lifecycle.snapshot
+                {
+                    return Err(ImplementationProtocolError::Contract);
+                }
+                validate_state_identity(run_id, *generation, *deadline_ms)?;
+            }
+            ImplementationRequest::Restore {
+                lifecycle_contract,
+                state,
+                deadline_ms,
+            } => {
+                require_v2(&self.protocol)?;
+                if lifecycle_contract != &node.lifecycle.restore {
+                    return Err(ImplementationProtocolError::Contract);
+                }
+                validate_state_deadline(*deadline_ms)?;
+                state.validate()?;
+                if state.module != self.module || state.implementation_id != self.implementation_id
+                {
+                    return Err(ImplementationProtocolError::Correlation);
+                }
+            }
+            ImplementationRequest::Migrate {
+                lifecycle_contract,
+                source,
+                target_generation,
+                deadline_ms,
+            } => {
+                require_v2(&self.protocol)?;
+                if lifecycle_contract != &node.lifecycle.migrate {
+                    return Err(ImplementationProtocolError::Contract);
+                }
+                validate_state_deadline(*deadline_ms)?;
+                source.validate()?;
+                if source.module != self.module {
+                    return Err(ImplementationProtocolError::Correlation);
+                }
+                if *target_generation <= source.generation {
+                    return Err(ImplementationProtocolError::Field("target_generation"));
+                }
+            }
+            ImplementationRequest::Readiness {
+                lifecycle_contract,
+                run_id,
+                generation,
+                state_schema,
+                state_sha256,
+                deadline_ms,
+            } => {
+                require_v2(&self.protocol)?;
+                if lifecycle_contract != &node.lifecycle.readiness
+                    || state_schema != &node.lifecycle.snapshot
+                {
+                    return Err(ImplementationProtocolError::Contract);
+                }
+                validate_state_identity(run_id, *generation, *deadline_ms)?;
+                if !valid_digest(state_sha256) {
+                    return Err(ImplementationProtocolError::Field("state_sha256"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ImplementationState {
+    pub fn new(
+        module: ModuleId,
+        implementation_id: impl Into<String>,
+        run_id: impl Into<String>,
+        generation: u64,
+        state_schema: ContractRef,
+        state: serde_json::Value,
+    ) -> Result<Self, ImplementationProtocolError> {
+        bounded_state(&state)?;
+        let state_sha256 = state_digest(&state)?;
+        Ok(Self {
+            module,
+            implementation_id: implementation_id.into(),
+            run_id: run_id.into(),
+            generation,
+            state_schema,
+            state_sha256,
+            state,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), ImplementationProtocolError> {
+        let node = seam(self.module)?;
+        if !valid_id(&self.implementation_id) || !valid_id(&self.run_id) || self.generation == 0 {
+            return Err(ImplementationProtocolError::Field("state.identity"));
+        }
+        if self.state_schema != node.lifecycle.snapshot {
+            return Err(ImplementationProtocolError::Contract);
+        }
+        bounded_state(&self.state)?;
+        if !valid_digest(&self.state_sha256) || state_digest(&self.state)? != self.state_sha256 {
+            return Err(ImplementationProtocolError::Field("state_sha256"));
         }
         Ok(())
     }
@@ -236,6 +421,7 @@ impl ImplementationResponseEnvelope {
         if self.request_id != request.request_id
             || self.implementation_id != request.implementation_id
             || self.module != request.module
+            || self.protocol != request.protocol
         {
             return Err(ImplementationProtocolError::Correlation);
         }
@@ -264,6 +450,71 @@ impl ImplementationResponseEnvelope {
                 },
             ) => run_id == response_id,
             (ImplementationRequest::Stop { .. }, ImplementationResponse::Stopped) => true,
+            (
+                ImplementationRequest::Snapshot {
+                    run_id,
+                    generation,
+                    state_schema,
+                    ..
+                },
+                ImplementationResponse::Snapshotted { state },
+            ) => {
+                state.validate()?;
+                state.run_id == *run_id
+                    && state.generation == *generation
+                    && state.state_schema == *state_schema
+                    && state.module == self.module
+                    && state.implementation_id == self.implementation_id
+            }
+            (
+                ImplementationRequest::Restore { state, .. },
+                ImplementationResponse::Restored {
+                    run_id,
+                    generation,
+                    state_schema,
+                    state_sha256,
+                },
+            ) => {
+                state.run_id == *run_id
+                    && state.generation == *generation
+                    && state.state_schema == *state_schema
+                    && state.state_sha256 == *state_sha256
+            }
+            (
+                ImplementationRequest::Migrate {
+                    source,
+                    target_generation,
+                    ..
+                },
+                ImplementationResponse::Migrated { state },
+            ) => {
+                state.validate()?;
+                state.run_id == source.run_id
+                    && state.generation == *target_generation
+                    && state.state_schema == source.state_schema
+                    && state.module == self.module
+                    && state.implementation_id == self.implementation_id
+            }
+            (
+                ImplementationRequest::Readiness {
+                    run_id,
+                    generation,
+                    state_schema,
+                    state_sha256,
+                    ..
+                },
+                ImplementationResponse::Ready {
+                    run_id: response_run,
+                    generation: response_generation,
+                    state_schema: response_schema,
+                    state_sha256: response_digest,
+                },
+            ) => {
+                run_id == response_run
+                    && generation == response_generation
+                    && state_schema == response_schema
+                    && state_sha256 == response_digest
+            }
             (_, ImplementationResponse::Failed { code, message }) => {
                 validate_text(code, MAX_PROTOCOL_ID_BYTES, "failure.code")?;
                 validate_text(message, MAX_FAILURE_MESSAGE_BYTES, "failure.message")?;
@@ -280,7 +531,7 @@ impl ImplementationResponseEnvelope {
 
 impl ImplementationObservationEnvelope {
     pub fn validate(&self) -> Result<(), ImplementationProtocolError> {
-        if self.protocol != IMPLEMENTATION_PROTOCOL
+        if !supported_protocol(&self.protocol)
             || !valid_id(&self.implementation_id)
             || !valid_id(&self.run_id)
         {
@@ -311,11 +562,44 @@ fn validate_envelope_identity(
     request_id: &str,
     implementation_id: &str,
 ) -> Result<(), ImplementationProtocolError> {
-    if protocol != IMPLEMENTATION_PROTOCOL || !valid_id(request_id) || !valid_id(implementation_id)
-    {
+    if !supported_protocol(protocol) || !valid_id(request_id) || !valid_id(implementation_id) {
         return Err(ImplementationProtocolError::Correlation);
     }
     Ok(())
+}
+
+fn supported_protocol(protocol: &str) -> bool {
+    matches!(
+        protocol,
+        IMPLEMENTATION_PROTOCOL_V1 | IMPLEMENTATION_PROTOCOL
+    )
+}
+
+fn require_v2(protocol: &str) -> Result<(), ImplementationProtocolError> {
+    if protocol == IMPLEMENTATION_PROTOCOL {
+        Ok(())
+    } else {
+        Err(ImplementationProtocolError::Operation)
+    }
+}
+
+fn validate_state_identity(
+    run_id: &str,
+    generation: u64,
+    deadline_ms: u64,
+) -> Result<(), ImplementationProtocolError> {
+    if !valid_id(run_id) || generation == 0 {
+        return Err(ImplementationProtocolError::Field("state.identity"));
+    }
+    validate_state_deadline(deadline_ms)
+}
+
+fn validate_state_deadline(deadline_ms: u64) -> Result<(), ImplementationProtocolError> {
+    if deadline_ms == 0 || deadline_ms > MAX_IMPLEMENTATION_STATE_DEADLINE_MS {
+        Err(ImplementationProtocolError::Field("state.deadline_ms"))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_run_reason(run_id: &str, reason: &str) -> Result<(), ImplementationProtocolError> {
@@ -353,6 +637,34 @@ fn bounded_payload(value: &serde_json::Value) -> Result<(), ImplementationProtoc
     Ok(())
 }
 
+fn bounded_state(value: &serde_json::Value) -> Result<(), ImplementationProtocolError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| ImplementationProtocolError::MalformedJson(error.to_string()))?;
+    if bytes.len() > MAX_IMPLEMENTATION_STATE_BYTES {
+        return Err(ImplementationProtocolError::TooLarge {
+            actual: bytes.len(),
+            max: MAX_IMPLEMENTATION_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+pub fn implementation_state_sha256(
+    value: &serde_json::Value,
+) -> Result<String, ImplementationProtocolError> {
+    bounded_state(value)?;
+    state_digest(value)
+}
+
+fn state_digest(value: &serde_json::Value) -> Result<String, ImplementationProtocolError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| ImplementationProtocolError::MalformedJson(error.to_string()))?;
+    Ok(format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(bytes))
+    ))
+}
+
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_PROTOCOL_ID_BYTES
@@ -369,4 +681,111 @@ fn valid_digest(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
+}
+
+const DUPLICATE_KEY_MARKER: &str = "__iteron_duplicate_json_key__";
+
+#[derive(Clone, Copy)]
+struct StrictSeed;
+
+impl<'de> DeserializeSeed<'de> for StrictSeed {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+
+struct StrictVisitor;
+
+impl<'de> Visitor<'de> for StrictVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a duplicate-free JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(value.to_owned().into())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        StrictSeed.deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(StrictSeed)? {
+            values.push(value);
+        }
+        Ok(serde_json::Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = BTreeSet::new();
+        let mut values = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
+                return Err(serde::de::Error::custom(DUPLICATE_KEY_MARKER));
+            }
+            values.insert(key, map.next_value_seed(StrictSeed)?);
+        }
+        Ok(serde_json::Value::Object(values))
+    }
+}
+
+fn classify_json(error: serde_json::Error) -> ImplementationProtocolError {
+    if error.to_string().contains(DUPLICATE_KEY_MARKER) {
+        ImplementationProtocolError::DuplicateJsonKey
+    } else {
+        ImplementationProtocolError::MalformedJson(error.to_string())
+    }
 }

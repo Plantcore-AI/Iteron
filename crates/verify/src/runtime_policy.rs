@@ -15,6 +15,21 @@ pub const MAX_PHYSICAL_VERIFIER_RUNS: usize = 64;
 pub const MAX_VERIFICATION_FEEDBACK_BYTES: usize = 2 * 1024 * 1024;
 pub const DEFAULT_VERIFIER_TIMEOUT_SECS: u64 = 300;
 pub const DEFAULT_VERIFICATION_REPAIR_ATTEMPTS: u32 = 3;
+const DEFAULT_VERIFICATION_FEEDBACK_COMMAND_OUTPUT_BYTES: usize = 1_000;
+const DEFAULT_VERIFICATION_FEEDBACK_ORACLE_OUTPUT_BYTES: usize = 4_000;
+const DEFAULT_VERIFICATION_FEEDBACK_TOTAL_BYTES: usize = 3_000;
+const DEFAULT_VERIFICATION_SELECTION: &str = "full";
+const DEFAULT_VERIFICATION_CHECKPOINT_TURN_BOUNDARY: bool = true;
+const DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION: bool = false;
+const DEFAULT_VERIFICATION_CHECKPOINT_MINIMUM_TURN_INTERVAL: u32 = 1;
+const DEFAULT_FLAKY_REPEAT_COUNT: u8 = 1;
+const DEFAULT_FLAKY_MINIMUM_DISAGREEMENTS: u8 = 1;
+const DEFAULT_FLAKY_QUARANTINE_SECONDS: u32 = 0;
+const DEFAULT_FLAKY_REPORT_DISAGREEMENT: bool = true;
+const DEFAULT_VERIFICATION_QUORUM_VERIFIERS: u8 = 1;
+const DEFAULT_VERIFICATION_QUORUM_REQUIRED_AGREEMENT: u8 = 1;
+const DEFAULT_VERIFICATION_QUORUM_STRONG_VETO: bool = true;
+const DEFAULT_VERIFICATION_MAX_COMMANDS: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,9 +165,30 @@ pub struct VerificationFeedbackTailPolicy {
 impl Default for VerificationFeedbackTailPolicy {
     fn default() -> Self {
         Self {
-            command_output_bytes: 1_000,
-            oracle_output_bytes: 4_000,
-            total_bytes: 3_000,
+            command_output_bytes: iteron_tunables::param_usize(
+                "verify.runtime_policy.default_verification_feedback_command_output_bytes",
+                iteron_tunables::param_integer(
+                    "verify.runtime_policy.default_verification_feedback_command_output_bytes",
+                    DEFAULT_VERIFICATION_FEEDBACK_COMMAND_OUTPUT_BYTES,
+                ),
+            )
+            .min(1_048_576),
+            oracle_output_bytes: iteron_tunables::param_usize(
+                "verify.runtime_policy.default_verification_feedback_oracle_output_bytes",
+                iteron_tunables::param_integer(
+                    "verify.runtime_policy.default_verification_feedback_oracle_output_bytes",
+                    DEFAULT_VERIFICATION_FEEDBACK_ORACLE_OUTPUT_BYTES,
+                ),
+            )
+            .min(1_048_576),
+            total_bytes: iteron_tunables::param_usize(
+                "verify.runtime_policy.default_verification_feedback_total_bytes",
+                iteron_tunables::param_integer(
+                    "verify.runtime_policy.default_verification_feedback_total_bytes",
+                    DEFAULT_VERIFICATION_FEEDBACK_TOTAL_BYTES,
+                ),
+            )
+            .clamp(1, MAX_VERIFICATION_FEEDBACK_BYTES),
         }
     }
 }
@@ -166,6 +202,17 @@ pub enum VerificationSelectionMode {
     Impacted,
     /// Run the mandatory full workspace gate.
     Full,
+}
+
+impl VerificationSelectionMode {
+    fn from_profile(value: &str) -> Self {
+        match value {
+            "incremental" => Self::Incremental,
+            "impacted" => Self::Impacted,
+            "full" => Self::Full,
+            _ => Self::Full,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,10 +234,20 @@ pub struct VerificationCheckpointPolicy {
 impl Default for VerificationCheckpointPolicy {
     fn default() -> Self {
         Self {
-            turn_boundary: true,
-            before_verification: false,
+            turn_boundary: iteron_tunables::param_bool(
+                "verify.runtime_policy.default_verification_checkpoint_turn_boundary",
+                DEFAULT_VERIFICATION_CHECKPOINT_TURN_BOUNDARY,
+            ),
+            before_verification: iteron_tunables::param_bool(
+                "verify.runtime_policy.default_verification_checkpoint_before_verification",
+                DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION,
+            ),
             before_drain: true,
-            minimum_turn_interval: 1,
+            minimum_turn_interval: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_verification_checkpoint_minimum_turn_interval",
+                DEFAULT_VERIFICATION_CHECKPOINT_MINIMUM_TURN_INTERVAL,
+            )
+            .min(10_000),
         }
     }
 }
@@ -224,11 +281,27 @@ pub struct FlakyQuarantinePolicy {
 
 impl Default for FlakyQuarantinePolicy {
     fn default() -> Self {
+        let repeat_count = iteron_tunables::param_integer(
+            "verify.runtime_policy.default_flaky_repeat_count",
+            DEFAULT_FLAKY_REPEAT_COUNT,
+        )
+        .clamp(1, 64);
         Self {
-            repeat_count: 1,
-            minimum_disagreements: 1,
-            quarantine_seconds: 0,
-            report_disagreement: true,
+            repeat_count,
+            minimum_disagreements: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_flaky_minimum_disagreements",
+                DEFAULT_FLAKY_MINIMUM_DISAGREEMENTS,
+            )
+            .clamp(1, repeat_count),
+            quarantine_seconds: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_flaky_quarantine_seconds",
+                DEFAULT_FLAKY_QUARANTINE_SECONDS,
+            )
+            .min(604_800),
+            report_disagreement: iteron_tunables::param_bool(
+                "verify.runtime_policy.default_flaky_report_disagreement",
+                DEFAULT_FLAKY_REPORT_DISAGREEMENT,
+            ),
         }
     }
 }
@@ -242,10 +315,22 @@ pub struct VerificationQuorumPolicy {
 
 impl Default for VerificationQuorumPolicy {
     fn default() -> Self {
+        let verifiers = iteron_tunables::param_integer(
+            "verify.runtime_policy.default_verification_quorum_verifiers",
+            DEFAULT_VERIFICATION_QUORUM_VERIFIERS,
+        )
+        .clamp(1, 64);
         Self {
-            verifiers: 1,
-            required_agreement: 1,
-            strong_veto: true,
+            verifiers,
+            required_agreement: iteron_tunables::param_integer(
+                "verify.runtime_policy.default_verification_quorum_required_agreement",
+                DEFAULT_VERIFICATION_QUORUM_REQUIRED_AGREEMENT,
+            )
+            .clamp(1, verifiers),
+            strong_veto: iteron_tunables::param_bool(
+                "verify.runtime_policy.default_verification_quorum_strong_veto",
+                DEFAULT_VERIFICATION_QUORUM_STRONG_VETO,
+            ),
         }
     }
 }
@@ -276,9 +361,22 @@ impl Default for VerificationRuntimePolicy {
                 "verify.runtime_policy.default_verifier_timeout_secs",
                 DEFAULT_VERIFIER_TIMEOUT_SECS,
             ),
-            selection: VerificationSelectionMode::Full,
+            selection: VerificationSelectionMode::from_profile(iteron_tunables::param_str(
+                "verify.runtime_policy.default_verification_selection",
+                DEFAULT_VERIFICATION_SELECTION,
+            )),
             required_commands: Vec::new(),
-            max_commands: 1,
+            max_commands: u16::try_from(
+                iteron_tunables::param_usize(
+                    "verify.runtime_policy.default_verification_max_commands",
+                    iteron_tunables::param_integer(
+                        "verify.runtime_policy.default_verification_max_commands",
+                        DEFAULT_VERIFICATION_MAX_COMMANDS,
+                    ),
+                )
+                .clamp(1, MAX_VERIFICATION_COMMANDS),
+            )
+            .expect("verification command ceiling fits u16"),
             flaky: FlakyQuarantinePolicy::default(),
             quorum: VerificationQuorumPolicy::default(),
             checkpoint: VerificationCheckpointPolicy::default(),

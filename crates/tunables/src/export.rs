@@ -162,6 +162,12 @@ pub struct SurfaceCounts {
     /// intentionally not counted because their text is supplied by an untrusted runtime source.
     pub tool_descriptions: usize,
     pub tool_descriptions_overridable: usize,
+    /// Multi-layer runtime nodes: module providers, production ports, platform services and host
+    /// invariants. This is intentionally separate from the optimization-module count.
+    pub runtime_service_nodes: usize,
+    pub runtime_service_external: usize,
+    /// Honest remainder: typed Rust seams that still lack a language-neutral external provider.
+    pub runtime_service_compiled_interfaces: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +182,7 @@ pub struct SurfaceExport {
     pub tool_text_registry_digest: String,
     pub counts: SurfaceCounts,
     pub modules: Vec<ModuleEntry>,
+    pub runtime_services: crate::RuntimeServiceGraph,
     pub families: Vec<FamilyEntry>,
     pub params: &'static [crate::params::Param],
     pub prompt_artifacts: &'static [PromptArtifact],
@@ -183,7 +190,7 @@ pub struct SurfaceExport {
 }
 
 /// Schema version of the export document.
-pub const SURFACE_SCHEMA_VERSION: u16 = 2;
+pub const SURFACE_SCHEMA_VERSION: u16 = 3;
 
 fn profile_addressable(family: &crate::Family) -> bool {
     family.is_profile_addressable()
@@ -248,6 +255,8 @@ pub fn surface() -> SurfaceExport {
         })
         .collect();
 
+    let runtime_services = crate::runtime_service_graph();
+    debug_assert!(crate::validate_runtime_service_graph(&runtime_services).is_ok());
     let counts = SurfaceCounts {
         families: families.len(),
         families_full: families
@@ -287,6 +296,26 @@ pub fn surface() -> SurfaceExport {
             .iter()
             .filter(|artifact| artifact.overridable)
             .count(),
+        runtime_service_nodes: runtime_services.nodes.len(),
+        runtime_service_external: runtime_services
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.implementation_status,
+                    crate::RuntimeServiceImplementationStatus::ExternalProcess
+                        | crate::RuntimeServiceImplementationStatus::ExternalProtocol
+                )
+            })
+            .count(),
+        runtime_service_compiled_interfaces: runtime_services
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.implementation_status
+                    == crate::RuntimeServiceImplementationStatus::CompiledInterface
+            })
+            .count(),
     };
 
     SurfaceExport {
@@ -300,6 +329,7 @@ pub fn surface() -> SurfaceExport {
         tool_text_registry_digest: crate::tool_text_registry_digest_sha256(),
         counts,
         modules,
+        runtime_services,
         families,
         params,
         prompt_artifacts: PROMPT_ARTIFACTS,

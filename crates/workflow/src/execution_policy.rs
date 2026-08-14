@@ -22,6 +22,8 @@ const DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Built-in task attempt ceiling: the assigned worker plus exactly one reassignment, so a transient
 /// negative terminal is retried once without letting a genuinely impossible task loop on budget.
 const DEFAULT_TASK_ATTEMPTS: usize = 2;
+/// Action after a child returns a definite negative terminal.
+const DEFAULT_TASK_FAILURE_ACTION: &str = "reassign";
 
 /// Immutable recursion ceiling for workflow-launched agents. A child may run tools but may never
 /// become a second workflow composition root.
@@ -332,6 +334,15 @@ impl TaskFailureAction {
             Self::Reassign => "reassign",
         }
     }
+
+    fn from_profile(value: &str) -> Self {
+        match value {
+            "stop" => Self::Stop,
+            "retry_same" => Self::RetrySame,
+            "reassign" => Self::Reassign,
+            _ => Self::Reassign,
+        }
+    }
 }
 
 /// Bounded reassignment after a child returns a definite negative terminal.
@@ -389,7 +400,10 @@ impl Default for TaskRetryPolicy {
                     DEFAULT_TASK_ATTEMPTS,
                 ),
             ),
-            TaskFailureAction::Reassign,
+            TaskFailureAction::from_profile(iteron_tunables::param_str(
+                "workflow.execution_policy.default_task_failure_action",
+                DEFAULT_TASK_FAILURE_ACTION,
+            )),
             true,
         )
         .expect("built-in task retry policy is valid")
