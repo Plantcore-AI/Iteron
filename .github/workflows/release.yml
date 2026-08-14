@@ -90,6 +90,9 @@ jobs:
           tested_tree=$(git rev-parse "$tag_commit^{tree}")
           [[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]
           candidate_root=$RUNNER_TEMP/core-schema-candidate
+          # RUNNER_TEMP is cleared between jobs, but Git retains auxiliary
+          # worktree registrations in this persistent DGX checkout.
+          git worktree prune --expire now
           test ! -e "$candidate_root"
           git worktree add --detach "$candidate_root" "$tag_commit"
           test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = "$tag_commit"
