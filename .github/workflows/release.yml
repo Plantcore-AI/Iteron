@@ -460,9 +460,18 @@ jobs:
             # rejects it at its old 128-surface parser ceiling. Use the exact,
             # already-merged compatibility policy that introduced the 160-surface
             # bound and the current parser, only for the v0.0.4 -> v0.0.5 bridge.
+            #
+            # The pin must name the newest already-merged commit that carries the
+            # candidate's exact `xtask/src/schema_compat*` sources, because the
+            # equality check below is what makes running this validator instead of
+            # the candidate's own an audited substitution rather than a stale one.
+            # It therefore moves whenever a merged change touches those sources:
+            # d3026afa (#310) widened the binary-target rule so `crates/eval` may
+            # declare `iteron-harness` alongside `iteron-eval`, which retired the
+            # earlier a9130edb pin.
             test "$GITHUB_REF_NAME" = v0.0.5
-            compatibility_commit=a9130edbb65aa2d37f3d7946926700b2c6b0ca6c
-            compatibility_schema_blob=6fb84965d37123263ae847c1d56bb536b25341f3
+            compatibility_commit=d3026afa8258ac29031b8f3007406e2f94aca053
+            compatibility_schema_blob=a61c3410a287a937e21714421ef109d91f1f271c
             test "$(git cat-file -t "$compatibility_commit")" = commit
             git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
             git merge-base --is-ancestor \
