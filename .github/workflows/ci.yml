@@ -81,6 +81,7 @@ jobs:
             }
 
             let files = [];
+            let filesKnown = true;
             if (pr) {
               const rows = await github.paginate(github.rest.pulls.listFiles, {
                 ...context.repo,
@@ -88,11 +89,37 @@ jobs:
                 per_page: 100,
               });
               files = rows.map((row) => row.filename);
+            } else if (event === "push") {
+              const before = context.payload.before;
+              const after = context.payload.after;
+              try {
+                if (
+                  !/^[0-9a-f]{40}$/.test(before || "") ||
+                  !/^[0-9a-f]{40}$/.test(after || "") ||
+                  /^0{40}$/.test(before)
+                ) {
+                  throw new Error("push payload has no comparable parent commit");
+                }
+                const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo,
+                  basehead: `${before}...${after}`,
+                  per_page: 100,
+                });
+                const comparedFiles = comparison.data.files;
+                if (!Array.isArray(comparedFiles) || comparedFiles.length >= 300) {
+                  throw new Error("comparison file list is absent or reached the API cap");
+                }
+                files = comparedFiles.map((row) => row.filename);
+              } catch (error) {
+                filesKnown = false;
+                core.warning(`Could not classify the main push; running full CI: ${error.message}`);
+              }
             }
             const actor = pr?.user?.login || context.actor;
             const outputs = classify({
               event,
               files,
+              filesKnown,
               actor,
               draft: Boolean(pr?.draft),
               manual,
@@ -688,9 +715,6 @@ jobs:
       - name: format
         shell: bash
         run: cargo fmt --all -- --check
-      - name: check
-        shell: bash
-        run: cargo check --workspace --all-targets --locked
       - name: clippy (deny warnings)
         shell: bash
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -769,7 +793,13 @@ jobs:
 
   release-build:
     name: release build / linux-arm64
-    if: needs.route.outputs.release_build == 'true'
+    if: >-
+      always() &&
+      needs.route.outputs.release_build == 'true' &&
+      needs.route.result == 'success' &&
+      needs.boundary.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs.route.outputs.audit != 'true' || needs.dependency-audit.result == 'success')
     needs: [route, boundary, dependency-audit, test]
     runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 30
