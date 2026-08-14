@@ -37,6 +37,10 @@ iteron_warn() {
     printf 'iteron: warning: %s\n' "$*" >&2
 }
 
+iteron_note() {
+    printf 'iteron: %s\n' "$*" >&2
+}
+
 # The shipped default is unconfined. When the operator selects `--confine` on Linux, the bubblewrap
 # backend fails CLOSED: no usable `bwrap`, no bash/build/test tool at all. The package may be absent,
 # and Ubuntu 24.04 restricts unprivileged user namespaces unless the invoking binary has an AppArmor
@@ -289,6 +293,7 @@ iteron_main() {
 
     iteron_checksums="$iteron_work_dir/SHA256SUMS"
     iteron_archive="$iteron_work_dir/$iteron_archive_name"
+    iteron_note "downloading Iteron $iteron_version_number for $iteron_target"
     iteron_download \
         "$iteron_base_url/SHA256SUMS" \
         "$iteron_checksums" \
@@ -311,6 +316,7 @@ iteron_main() {
         iteron_die 'release archive is empty or unexpectedly large'
     fi
 
+    iteron_note 'verifying release archive'
     iteron_checksum_rows=$(awk -v name="$iteron_archive_name" '
         $2 == name || $2 == "*" name { print $1 }
     ' "$iteron_checksums")
@@ -358,6 +364,7 @@ iteron_main() {
         || iteron_die "installation path is not a directory: $iteron_bin_dir"
     [ ! -d "$iteron_bin_dir/iteron" ] \
         || iteron_die 'installation destination is a directory'
+    iteron_note 'installing verified binary'
     iteron_install_tmp=$(mktemp "$iteron_bin_dir/.iteron.new.XXXXXXXX") \
         || iteron_die 'could not create an atomic installation staging file'
     install -m 0755 "$iteron_binary" "$iteron_install_tmp" \
