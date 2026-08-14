@@ -259,6 +259,7 @@ impl ResearchSession {
                         materialize_native_patches(
                             &identity.candidate_sha256,
                             materialization,
+                            activation.as_ref().map(|item| item.sha256.as_str()),
                             path,
                         )
                         .map_err(ResearchProtocolError::InvalidField)
@@ -306,6 +307,7 @@ impl ResearchSession {
             .candidates
             .get(candidate_id)
             .ok_or(ResearchProtocolError::UnknownCandidate)?;
+        let embedded_native_implementations = matches!(run, RunSpec::ExternalNative { .. });
         if &candidate.adapter != adapter
             || candidate.candidate_sha256 != candidate_sha256
             || candidate.profile_sha256 != profile_sha256
@@ -315,13 +317,14 @@ impl ResearchSession {
                 .as_ref()
                 .map(|item| item.sha256.as_str())
                 != implementation_activation_sha256
-            || candidate.activation.as_ref().map(|item| item.path.as_str())
-                != run.implementation_candidate_path()
-            || candidate
-                .activation
-                .as_ref()
-                .map(|item| item.sha256.as_str())
-                != run.implementation_candidate_digest()
+            || (!embedded_native_implementations
+                && (candidate.activation.as_ref().map(|item| item.path.as_str())
+                    != run.implementation_candidate_path()
+                    || candidate
+                        .activation
+                        .as_ref()
+                        .map(|item| item.sha256.as_str())
+                        != run.implementation_candidate_digest()))
             || candidate.candidate_graph_identity.as_ref() != candidate_graph_identity
             || candidate
                 .native_materialization
@@ -353,6 +356,11 @@ impl ResearchSession {
             if document.candidate_sha256 != candidate.candidate_sha256
                 || Some(&document.candidate_graph_identity)
                     != candidate.candidate_graph_identity.as_ref()
+                || document.implementation_activation_sha256.as_deref()
+                    != candidate
+                        .activation
+                        .as_ref()
+                        .map(|item| item.sha256.as_str())
             {
                 return Err(ResearchProtocolError::CandidateIdentity);
             }

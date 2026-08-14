@@ -34,7 +34,7 @@
 
 **被显式置于范围之外（命名的残余攻击面）。** 以下 **不在**本规范的安全断言内，实现方 **MUST** 单独处理并 **SHOULD** 红队检验：一个**不诚实或被攻陷的 evaluator**；一个被污染或可被博弈的 held-out 评测集；**在授权内**的 reward-hacking（准入不阻止「合法权限内」的坏行为）；下一代 candidate 的**数据集投毒**；以及一切**语义安全**（「中介不等于语义安全」：端到端论证：把副作用统一中介，并不保证副作用在语义上是「好」的）。本规范只声称**权威爆炸半径**的有界，不声称语义正确。
 
-**同意与轨迹回流治理 (consent regime)。** 轨迹、修正与 held-out 数据是敏感资产。任何将轨迹回流用于（可选的）model post-training 的路径 **MUST** 以记录在案的同意 (recorded consent) 为前提，且 **MUST NOT** 超出该同意所覆盖的数据用途；数据面**永不**因被回流而获得权威。删除/撤销 **MUST** 传播到未来的上下文与数据集（记录本身的防篡改性不等于其内容为真，故内容级撤销走 record 的 tombstone 机制，而非改链）。
+**同意与轨迹治理 (consent regime)。** 轨迹、修正与 held-out 数据是敏感资产。记录的同意只可授权 harness 优化与评估，**MUST NOT** 被解释为 model post-training 权限；Iteron 不提供该导出目标。数据面永不因被优化使用而获得权威。删除/撤销 **MUST** 传播到未来的上下文与数据集（记录本身的防篡改性不等于其内容为真，故内容级撤销走 record 的 tombstone 机制，而非改链）。
 
 **deny-by-default。** 权限模式构成一张覆盖能力格的策略表；plan 模式为硬只读叠加；trust-mutating 与 irreversible-external 两类动作 **MUST NOT** 被任何模式或会话规则自动批准。仓库配置只能**收紧**一个已授予的信任或预算，**MUST NOT** 凭空铸造代码执行、provider 路由、MCP 进程或生命周期 hook。
 

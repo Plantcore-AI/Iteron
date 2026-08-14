@@ -2,6 +2,9 @@
 
 use super::*;
 use iteron_eval::VerifiedEvidenceBundle;
+use iteron_eval::evidence_bundle::{
+    EvidenceRowOutcome, EvidenceRowsDocument, EvidenceRowsProvenance,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -27,12 +30,46 @@ struct CandidateRequest {
     value: serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PromotionMode {
+    ExternalHumanAuthorityOnly,
+}
+
+/// A serialized boolean whose only inhabitant is `false`. This preserves the request-v1 wire
+/// shape while making self-promotion and runtime activation impossible to represent in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Denied;
+
+impl Serialize for Denied {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bool(false)
+    }
+}
+
+impl<'de> Deserialize<'de> for Denied {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if bool::deserialize(deserializer)? {
+            return Err(serde::de::Error::custom(
+                "experiment lab promotion/activation must be false",
+            ));
+        }
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromotionBoundary {
-    mode: String,
-    self_promotion: bool,
-    runtime_activation: bool,
+    mode: PromotionMode,
+    self_promotion: Denied,
+    runtime_activation: Denied,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,9 +281,9 @@ fn create_request(
         tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
         candidate,
         promotion: PromotionBoundary {
-            mode: "external_human_authority_only".into(),
-            self_promotion: false,
-            runtime_activation: false,
+            mode: PromotionMode::ExternalHumanAuthorityOnly,
+            self_promotion: Denied,
+            runtime_activation: Denied,
         },
     };
     let directory = secure_subdir(workspace, &[".iteron", "experiments", "requests"], true)?
@@ -296,6 +333,14 @@ fn render_comparison(app: &mut App, bundle_id: &str, verified: &VerifiedEvidence
     let comparison = &verified.paired.comparison;
     let mut rows = vec![
         kv("trust", "verified · signed bytes + recomputed reports"),
+        kv(
+            "result status",
+            if verified.is_synthetic_fixture() {
+                "synthetic fixture · acceptance only · not a performance result"
+            } else {
+                "measured evidence"
+            },
+        ),
         kv("bundle", bundle_id),
         kv(
             "baseline",
@@ -339,6 +384,7 @@ fn render_comparison(app: &mut App, bundle_id: &str, verified: &VerifiedEvidence
             .map(|delta| format!("${delta:+.6}"))
             .unwrap_or_else(|| "unknown · not promotion-ready".into()),
     ));
+    append_evidence_summary(&mut rows, &verified.evidence_rows);
     for point in &verified.pareto.points {
         rows.push(item(
             "◆",
@@ -359,6 +405,54 @@ fn render_comparison(app: &mut App, bundle_id: &str, verified: &VerifiedEvidence
         "Evidence comparison is read-only. Promotion still requires the separate human-owned authority and held-out gate.".into(),
     ));
     app.panel("◆", "experiment evidence", rows);
+}
+
+fn append_evidence_summary(rows: &mut Vec<block::PanelRow>, evidence: &EvidenceRowsDocument) {
+    let count = |outcome| {
+        evidence
+            .rows
+            .iter()
+            .filter(|row| row.outcome == outcome)
+            .count()
+    };
+    let success = count(EvidenceRowOutcome::Success);
+    let task_failure = count(EvidenceRowOutcome::TaskFailure);
+    let infrastructure_failure = count(EvidenceRowOutcome::InfrastructureFailure);
+    let censored = count(EvidenceRowOutcome::Censored);
+    let held_out = evidence
+        .rows
+        .iter()
+        .filter(|row| row.partition == iteron_eval::Partition::HeldOut)
+        .count();
+    let denominator = evidence
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.outcome,
+                EvidenceRowOutcome::Success | EvidenceRowOutcome::TaskFailure
+            )
+        })
+        .count();
+    rows.push(kv(
+        "row provenance",
+        match evidence.provenance {
+            EvidenceRowsProvenance::Measured => "measured · signed and recomputed",
+            EvidenceRowsProvenance::SyntheticFixture => {
+                "synthetic fixture · acceptance only · not a result"
+            }
+        },
+    ));
+    rows.push(kv(
+        "resolved denominator",
+        &format!("{denominator} / {} total rows", evidence.rows.len()),
+    ));
+    rows.push(kv(
+        "row outcomes",
+        &format!(
+            "{success} success · {task_failure} task failure · {infrastructure_failure} infrastructure failure · {censored} censored · {held_out} held out"
+        ),
+    ));
 }
 
 fn split_once_whitespace(value: &str) -> Option<(&str, &str)> {
@@ -430,8 +524,20 @@ mod tests {
         assert!(second.reused);
         assert_eq!(first.request.evaluation_purpose, "tune");
         assert_eq!(first.request.allowed_partition, "train");
-        assert!(!first.request.promotion.self_promotion);
-        assert!(!first.request.promotion.runtime_activation);
+        assert_eq!(
+            first.request.promotion.mode,
+            PromotionMode::ExternalHumanAuthorityOnly
+        );
+        assert_eq!(first.request.promotion.self_promotion, Denied);
+        assert_eq!(first.request.promotion.runtime_activation, Denied);
+        assert!(
+            serde_json::from_value::<PromotionBoundary>(serde_json::json!({
+                "mode": "external_human_authority_only",
+                "self_promotion": false,
+                "runtime_activation": true
+            }))
+            .is_err()
+        );
         let mut app = App::new();
         render_request(&mut app, &first);
         let block::BlockKind::Panel { title, rows } = &app.transcript.last().unwrap().kind else {
@@ -460,5 +566,34 @@ mod tests {
             assert!(create_request(&workspace, full_search_family(), "true").is_err());
         }
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn exact_frozen_fixture_renders_with_unmistakable_non_result_provenance() {
+        let verified = iteron_eval::verify_evidence_bundle(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../eval/fixtures/evidence-bundle-v1"),
+            "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        )
+        .unwrap();
+        let mut app = App::new();
+        render_comparison(&mut app, "evidence-bundle-v1", &verified);
+        let block::BlockKind::Panel { title, rows } = &app.transcript.last().unwrap().kind else {
+            panic!("verified fixture must render as a semantic panel");
+        };
+        assert_eq!(title, "experiment evidence");
+        assert!(rows.iter().any(|row| matches!(
+            row,
+            block::PanelRow::KeyValue { key, value }
+                if key == "row provenance" && value.contains("not a result")
+        )));
+        assert!(rows.iter().any(|row| matches!(
+            row,
+            block::PanelRow::KeyValue { key, value }
+                if key == "row outcomes"
+                    && value.contains("2 success")
+                    && value.contains("1 task failure")
+                    && value.contains("1 infrastructure failure")
+                    && value.contains("1 held out")
+        )));
     }
 }

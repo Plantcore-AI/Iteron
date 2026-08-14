@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "runner_version": "synthetic-fixture",
+  "run_id": "fixture-candidate-run",
+  "corpus_version": "evidence-bundle-v1-fixture",
+  "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tunables_registry_digest": "synthetic-fixture-not-runtime",
+  "model": "synthetic-fixed-model",
+  "provider": "synthetic-provider",
+  "bundle_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "purpose": "score",
+  "limits": {
+    "seeds": 1,
+    "minimum_seeds": 1,
+    "workers": 1,
+    "max_attempts": 1,
+    "max_turns": 1,
+    "run_timeout_secs": 1,
+    "checkout_timeout_secs": 1,
+    "oracle_timeout_secs": 1
+  },
+  "attempt_ledger_head": "0000000000000000000000000000000000000000000000000000000000000000",
+  "attempt_record_count": 0,
+  "adapters": [],
+  "artifacts": [
+    {
+      "role": "evaluation_result",
+      "file_name": "candidate.json",
+      "bytes": 2091,
+      "sha256": "5458afaa5bb7f557346ec067bdff68271cf32e86b85ba3461f4a283c9ce3fc8a"
+    }
+  ],
+  "attestation_sha256": "01355c56ed2735cef7bbfaf8a6852110759e149d9f8b15d8dbe3d51f80a60579"
+}

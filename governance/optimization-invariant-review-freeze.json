@@ -1,235 +1,234 @@
 {
   "schema_version": 2,
   "census_schema_version": 4,
-  "census_sha256": "8b175b673695be85cababa0923d8ad55b2b162ae83ca78bea47d7c5043e478b8",
+  "census_sha256": "c7fa7a6613496199f2caecd9e690d1c96bbca27e7562b70aaaa4943c79b6d0fe",
   "boundary_registry_sha256": "ee8bf04dd578f26aedae98d1a50080dc40ba7eb85049a6c55a50c9e12a991867",
-  "required_reviews": 825,
+  "required_reviews": 830,
   "required_batches": 32,
   "batches": [
     {
       "ownership_boundary_id": "agent-catalog",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
-      "candidate_count": 12,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=agent-catalog owner=core-owner batch_sha256=1960936f0f89086fa50016554a7ba57027e3d0213c3d31cefe6a89f928b8f8f5"
+      "candidate_count": 10,
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=agent-catalog owner=core-owner batch_sha256=4384531ab0f0ad255db7e3359be3e86175894d96506387cfb345b4d77c92f066"
     },
     {
       "ownership_boundary_id": "agent-orchestration",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 7,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=agent-orchestration owner=core-owner batch_sha256=7069e267285d49119e1e33b694fb5ea61df7656038ab463bbb8569a59c7e08e1"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=agent-orchestration owner=core-owner batch_sha256=28aec8040ec1e2d1db337884395812e6565fd81ccab87c7f367eb5102fb2be9b"
     },
     {
       "ownership_boundary_id": "cli-host",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
-      "candidate_count": 149,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-host owner=core-owner batch_sha256=5bbcd4736efbe1e483f9754076acf76c425d99e7b112a8dc6809d976a4884278"
+      "candidate_count": 146,
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-host owner=core-owner batch_sha256=4bd5987e44bd2c97db97e61cebe1dd9ca851b31654c57c87cdd0ee10ec1de21d"
     },
     {
       "ownership_boundary_id": "cli-output",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 23,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-output owner=core-owner batch_sha256=f8e98763f5e9e23cabf5123a73a120572ee731de4506f983e7abc807f554d75d"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-output owner=core-owner batch_sha256=5e14e5771e4acf10da130cf070c5e87f071003dc571274db83804b109f479e92"
     },
     {
       "ownership_boundary_id": "cli-render",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 2,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-render owner=core-owner batch_sha256=14e381492c5bed28879fc2e860bb43bb64f0c6adc4dffae0a9a5d269f3344b64"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-render owner=core-owner batch_sha256=401c81cd5ebdc571ac17c7e853c0b6afa3e35c55a65a5f41e58c74aa85c636ca"
     },
     {
       "ownership_boundary_id": "cli-tui",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 33,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-tui owner=core-owner batch_sha256=064ff2c653e05befe394db0b6c6f94d7172d6272c1ca544492dc29bfaa574b86"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=cli-tui owner=core-owner batch_sha256=602f70cd90bc5b2372934d7a5c4142d7a9ced00b5e200cb644f97d43918fe70c"
     },
     {
       "ownership_boundary_id": "context-core",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 8,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=context-core owner=core-owner batch_sha256=a4806331592860a0e510e58e5a682a6796f242fe1ff913a033453dabe683cd3b"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=context-core owner=core-owner batch_sha256=670af7877497c5becddbcf252a2bf7fcac7995deffda10aa369914de315b40f9"
     },
     {
       "ownership_boundary_id": "context-knowledge",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 7,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=context-knowledge owner=core-owner batch_sha256=d07c382b17a2a98b20c629618d78833a99769b1ed849401ab5aa1080fd3cfdeb"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=context-knowledge owner=core-owner batch_sha256=d17dcd16c3f4ab3f56e654926da5be0d48e4d721f7a3a93efb4771b2da07f65e"
     },
     {
       "ownership_boundary_id": "evaluation",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
-      "candidate_count": 89,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=evaluation owner=core-owner batch_sha256=ffd133780668a93b8acbf3fc499540f8c06100a505319b8ddfb62334b021be58"
+      "candidate_count": 99,
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=evaluation owner=core-owner batch_sha256=9ac4a1733c5d5d0f8936d091d7b2bca0232c14c6348c7eb1930c4eacd6efa1db"
     },
     {
       "ownership_boundary_id": "evolution-control",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 59,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=evolution-control owner=core-owner batch_sha256=c800ee6b2c2e1ba733882817572a33bb2acf536eea0ce829552e4b6ec885970b"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=evolution-control owner=core-owner batch_sha256=bf5dab0e188fac6adab6ffa6fa92701f797ca252a93e099f0895124a837c7fbb"
     },
     {
       "ownership_boundary_id": "kernel-effects",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 3,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-effects owner=core-owner batch_sha256=d659d48fbfae548444c02bd583de52a0b0e2c894b14cc74f323076cf604a561c"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-effects owner=core-owner batch_sha256=78e32d45dfcb435552b630997ce762d71c104a49a024f5030a1f3e208ddf35d3"
     },
     {
       "ownership_boundary_id": "kernel-hooks",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 2,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-hooks owner=core-owner batch_sha256=31e4d4328a07a600011af686b1eb944abfa7bb8a42d65b97cb75eb579801bdbe"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-hooks owner=core-owner batch_sha256=6b3f281938262949cb89eeb53ab41889f1ee949b2a98577dbca0ec16d78070d3"
     },
     {
       "ownership_boundary_id": "kernel-reduction",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 3,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-reduction owner=core-owner batch_sha256=58279b98afe1b68179746abd71db7f3ab714873c189657529d06b12bdd8842ea"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-reduction owner=core-owner batch_sha256=f38da33c720817a4efb62788c5f17e0243905b7ea580727b7d777edefa5b0f88"
     },
     {
       "ownership_boundary_id": "kernel-runtime",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 20,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-runtime owner=core-owner batch_sha256=f803927e1fdb90557a11fb7487c72b3e5d29f0d22b8a1364e4240010b78942ee"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=kernel-runtime owner=core-owner batch_sha256=2797c34a8fa5f8be9a8fac6ae90a64dec4bbf7c406b9eb53b74828e65975d2be"
     },
     {
       "ownership_boundary_id": "language-server-lifecycle",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 3,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=language-server-lifecycle owner=core-owner batch_sha256=f86fcc1f882d9430f358bc0affbac66bdebe557e428a415e691f65a91e081896"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=language-server-lifecycle owner=core-owner batch_sha256=c1f6441a155a21a4094e03b99c8474e9285cd35c711e7be1837b17746664538b"
     },
     {
       "ownership_boundary_id": "mcp-interop",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 23,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=mcp-interop owner=core-owner batch_sha256=07d874fc169c22b92b82752ff4d44c12a070a2ca86f11efa3ccef3366cbd2b15"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=mcp-interop owner=core-owner batch_sha256=2c0d32d3916c9e8b06a79284cb61a5357981bfa9396f3b16a2b545e1fb7be832"
     },
     {
       "ownership_boundary_id": "observability",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 17,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=observability owner=core-owner batch_sha256=f4316c08ca3d58c2e8bf460712b8dee8eeccac4c6a108cdd7dc8277028ecad17"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=observability owner=core-owner batch_sha256=0451e33f05fc619f50af5499f9a06be4cb3ff0ea49c4e7b3cdbd978f94779322"
     },
     {
       "ownership_boundary_id": "plugin-marketplace",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 42,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=plugin-marketplace owner=core-owner batch_sha256=dcf69ad6915666882eb128fd26ecfa8b64f26ef68f3203c7b12db46762adf72b"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=plugin-marketplace owner=core-owner batch_sha256=9ea314dafd09a4114c2f6ec2529ea12482cc43caf2fb9c1d268e5afa3bd71072"
     },
     {
       "ownership_boundary_id": "protocol-compat",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 40,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=protocol-compat owner=core-owner batch_sha256=af93f23205ac55dcc23e0477e3af3f30f7ab8ef1525d245eb87438092842b890"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=protocol-compat owner=core-owner batch_sha256=0e99105c41094b5324cf724c0afd18578955aaab520290fee078f1fee186bfea"
     },
     {
       "ownership_boundary_id": "provider-adapters",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 11,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=provider-adapters owner=core-owner batch_sha256=38c2bbdb52f8958bd6c0bc73ff6792f5eb5e84ed62e1d728904aca161fc5bfb0"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=provider-adapters owner=core-owner batch_sha256=0a213fd03ac8723b4318340dad6545ed0db044236cad89491b9b36d57c253a2f"
     },
     {
       "ownership_boundary_id": "provider-core",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 40,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=provider-core owner=core-owner batch_sha256=4cbee6376d2bf4a33c4bce8597d52071f39af76c65dcde38b00ca1788b58614a"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=provider-core owner=core-owner batch_sha256=d6bea4413b96d5bc5e8f8950fb98e52693327abdafe51cf133991dab2707ea48"
     },
     {
       "ownership_boundary_id": "record-core",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 37,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=record-core owner=core-owner batch_sha256=e856f691b5479ab6f7f7806fef918f66f839375d0e350bee8a0696311a215c73"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=record-core owner=core-owner batch_sha256=c4a0cf9dfffcc5d25fbce4b881fd24d78d007b8ce1f4da47404468f8c8d2d68a"
     },
     {
       "ownership_boundary_id": "record-sessions",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 7,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=record-sessions owner=core-owner batch_sha256=7b40b40f0b434974ea30061a4ea88042ccd419a1049e0c893aa29ca9c4c399e6"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=record-sessions owner=core-owner batch_sha256=f383a766bd52cbf19e89b61abb407cb271e27d0f08c76493dc797e644ff5714a"
     },
     {
       "ownership_boundary_id": "sandbox",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 18,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=sandbox owner=core-owner batch_sha256=c8e972191e4604a3ba7487cb474612a268f244f139a037593b690b92a9da4232"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=sandbox owner=core-owner batch_sha256=6ca41243c1b4ae02ff633f4d5446ed0a0d89cefc874b26fa2b0a2180249a4678"
     },
     {
       "ownership_boundary_id": "scheduler",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 2,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=scheduler owner=core-owner batch_sha256=e01066c329b1ba276a5b167cd9cb96c3d9741277ebe88220103952b0caaa904e"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=scheduler owner=core-owner batch_sha256=14ae6511779bb46ed3311552353258994d0cb2d591c995ea2b4e3875459e67a8"
     },
     {
       "ownership_boundary_id": "status-surface",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 1,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=status-surface owner=core-owner batch_sha256=f4019ab57eb85ed1fe9ba5e4ed5fe84b4c71d7c7a07cf931ab5c314c052c08c2"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=status-surface owner=core-owner batch_sha256=2b6810c6750392a3fcded7d1360db7298e9bd4da536eb639952fe29aec414989"
     },
     {
       "ownership_boundary_id": "support-bundle",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 1,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=support-bundle owner=core-owner batch_sha256=cb6bda2f217daa85a1d86a7ba5ab4049249e8b770e97370d578d9dd545196b60"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=support-bundle owner=core-owner batch_sha256=86d7f826a5ef789599c5f009d350c61e75aad1882fba9fbebd1d393eb23e8dbf"
     },
     {
       "ownership_boundary_id": "tools-core",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 12,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tools-core owner=core-owner batch_sha256=21dc3443f62a7283ca83f0b0edd3dd4ff3e223a498876189a6cd1592eb410662"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tools-core owner=core-owner batch_sha256=f9e26161b2c6c48530be6b4e24935ae7c05389aaa2522159e1358c9e55e0dff5"
     },
     {
       "ownership_boundary_id": "tools-execution",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 6,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tools-execution owner=core-owner batch_sha256=8ece633732613c9fb046d54381637c482dea76a7b8fabbd2be7d6fb3a6780273"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tools-execution owner=core-owner batch_sha256=d6d3a91c1ac088cf3f1c0579faa7fc4685f2b380235b47dc6914279815eb7c25"
     },
     {
       "ownership_boundary_id": "tunability-registry",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 114,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tunability-registry owner=core-owner batch_sha256=19152eac970a3d4b717011a50c6a2246f2b0d1ba097020828e863f2a3d94be61"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=tunability-registry owner=core-owner batch_sha256=543e8274a3beac7cfe3d3a7bf81b8de813d94985a6b67a38421c898ec836beb9"
     },
     {
       "ownership_boundary_id": "verification",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 8,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=verification owner=core-owner batch_sha256=1ab8c387da200a6321e63921a769a33382c59cdde51383fa65e8ee563f015c6f"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=verification owner=core-owner batch_sha256=a0eeeb7bc0c2b8ea0d15daac1739c9e986bda2e4c6d41bcb47d28fbc135cdfd6"
     },
     {
       "ownership_boundary_id": "workflow-engine",
       "owner_person_id": "core-owner",
       "owner_github": "@fr0m-scratch",
       "candidate_count": 26,
-      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=workflow-engine owner=core-owner batch_sha256=3922fdc53b8637de9a66558f9966ac7c53407aae5daa15905fc872688601cdd7"
+      "approval_token": "ITERON-INVARIANT-OWNER-REVIEW-V2 boundary=workflow-engine owner=core-owner batch_sha256=13fb02ba7024d0d508c22ff8ef196d8f8fae5f4e455669577ebf33fe053c8287"
     }
-  ],
-  "purpose": "Freeze manifest for the optimization invariant owner review. Every approval_token commits to the exact owner, boundary, census, boundary registry, and candidate evidence list in the source-current packet."
+  ]
 }

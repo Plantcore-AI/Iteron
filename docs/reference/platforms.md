@@ -1,7 +1,9 @@
 # Supported platforms
 
 Iteron is developed and tested on macOS and Linux. Those are the only supported
-source and release platforms. The current `v0.0.4` assets cover macOS arm64 only;
+source and release platforms. The source workspace is `v0.0.5`; verify the
+selected release's asset list for actual host availability. Historical `v0.0.4`
+assets cover macOS arm64 only;
 the remaining release rows are the release workflow's required matrix, not a
 claim that every historical tag contains every archive.
 

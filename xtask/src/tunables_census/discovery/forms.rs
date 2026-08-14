@@ -204,7 +204,8 @@ pub(super) fn source_invariant_disposition(
     let value = value.to_ascii_lowercase();
     let invariant = |kind, rationale| SourceInvariantDisposition { kind, rationale };
 
-    if identity.contains("subagent_budget_ceiling")
+    if identity.contains("eval.runner.hermetic.max_hermetic_manifest_bytes")
+        || identity.contains("subagent_budget_ceiling")
         || (identity.contains("ultracode_planner")
             && (identity.contains("max_consecutive_tool_errors")
                 || identity.contains("max.consecutive.tool.errors")))
@@ -216,7 +217,7 @@ pub(super) fn source_invariant_disposition(
     {
         return Some(invariant(
             InvariantKind::HardBudget,
-            "the declaration is an owner-named hard ceiling or deny-by-default fallback",
+            "the declaration is an owner-named hard ceiling, bounded protocol parser ceiling, or deny-by-default fallback",
         ));
     }
     if identity.contains("routerroute::direct") || identity.contains("routerroute.direct") {

@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "bundle_type": "iteron-eval-signed-evidence",
+  "public_key": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+  "comparison": {
+    "baseline_id": "baseline",
+    "baseline_arm": "baseline_arm",
+    "candidate_id": "candidate",
+    "candidate_arm": "candidate_arm",
+    "minimum_pairs": 1
+  },
+  "evidence_rows": {
+    "schema_version": 1,
+    "schema_id": "iteron-eval/evidence-rows/v1",
+    "provenance": "synthetic_fixture",
+    "rows": [
+      {
+        "row_id": "sha256:03184ebf94ffcff283c13c27c2f95bc15806e0631efdb9f04cc7c807024d8c23",
+        "run_id": "fixture-run-0001",
+        "candidate_id": "candidate-a",
+        "candidate_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "task": "held-out-task",
+        "config": "arm",
+        "seed": 3,
+        "partition": "held_out",
+        "outcome": "success",
+        "resolved": true,
+        "elapsed_ms": 15,
+        "cost_status": "zero",
+        "cost_usd": null
+      },
+      {
+        "row_id": "sha256:4cf6b4848bf55d4d29ebd1f7ada165de1672f7d2a191f26388d52ed35074cbd1",
+        "run_id": "fixture-run-0001",
+        "candidate_id": "candidate-a",
+        "candidate_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "task": "task-failure",
+        "config": "arm",
+        "seed": 1,
+        "partition": "train",
+        "outcome": "task_failure",
+        "resolved": false,
+        "elapsed_ms": 20,
+        "cost_status": "known",
+        "cost_usd": 0.02
+      },
+      {
+        "row_id": "sha256:a0804f24bcc97990d6128be53adaf0db7e70f22d9b9690d085333db8f6e3e59c",
+        "run_id": "fixture-run-0001",
+        "candidate_id": "candidate-a",
+        "candidate_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "task": "task-success",
+        "config": "arm",
+        "seed": 0,
+        "partition": "train",
+        "outcome": "success",
+        "resolved": true,
+        "elapsed_ms": 12,
+        "cost_status": "known",
+        "cost_usd": 0.01
+      },
+      {
+        "row_id": "sha256:f813a2a468b9e3efa0a5f2f5b7e3c0421403b4aee85f128dad4a2820fed8f3a0",
+        "run_id": "fixture-run-0001",
+        "candidate_id": "candidate-a",
+        "candidate_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "task": "infrastructure-failure",
+        "config": "arm",
+        "seed": 2,
+        "partition": "train",
+        "outcome": "infrastructure_failure",
+        "resolved": null,
+        "elapsed_ms": 30,
+        "cost_status": "unknown",
+        "cost_usd": null
+      }
+    ],
+    "document_sha256": "sha256:6600d0b8ae31c9750d6520be021c1f3be3743825ee19bf61e18dadc4fe064d48"
+  },
+  "files": [
+    {
+      "role": "baseline_manifest",
+      "file_name": "baseline.json",
+      "bytes": 2013,
+      "sha256": "8f445f09296a7c1a80701875231dd08e4cc9cd8426031ffa6bbf3dd2393843e5"
+    },
+    {
+      "role": "candidate_manifest",
+      "file_name": "candidate.json",
+      "bytes": 2091,
+      "sha256": "5458afaa5bb7f557346ec067bdff68271cf32e86b85ba3461f4a283c9ce3fc8a"
+    },
+    {
+      "role": "baseline_attestation",
+      "file_name": "baseline.attestation.json",
+      "bytes": 1079,
+      "sha256": "9626a368425ced43ffe0223a1e9f6c9d51729f11f03182b5e293f15d752ada3a"
+    },
+    {
+      "role": "candidate_attestation",
+      "file_name": "candidate.attestation.json",
+      "bytes": 1150,
+      "sha256": "dcd400b76589405a826a0edff672f1dfe060dc82d61fc95a6a648e3ae050db3a"
+    },
+    {
+      "role": "paired_report",
+      "file_name": "paired.json",
+      "bytes": 1157,
+      "sha256": "c7eb4e56bb0654cfdbee486d738aae9d52dc7cfd12242642dac32b25c28cdf16"
+    },
+    {
+      "role": "pareto_report",
+      "file_name": "pareto.json",
+      "bytes": 407,
+      "sha256": "0b4c46a31624c67ecb5230a7828f70e4a816bc2b8a49357dfdd085b2a5bd531c"
+    }
+  ],
+  "index_sha256": "6539e63626e0bb9c42f3a1416589f19e3be04d7b7b8035c3e80ae466ef8703a2",
+  "signature": "7d98f118427817a303ae606eb9f2b72535c141484b29080c91dc937ee497b3b1eea2aeb0c75f9fff7c0b606de143c0f5a8dd2a11bf1f202b02433997fdaa7c05"
+}

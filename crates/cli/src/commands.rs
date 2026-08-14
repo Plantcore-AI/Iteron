@@ -231,7 +231,7 @@ pub const COMMANDS: &[Cmd] = &[
         command: SlashCommand::Workflows,
         name: "workflows",
         args: "",
-        help: "show ultracode workflow and investigator progress",
+        help: "show workflow and agent progress",
     },
     Cmd {
         command: SlashCommand::Jobs,

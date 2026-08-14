@@ -66,6 +66,7 @@ pub(crate) struct WriterFanTurnPolicy {
 }
 
 impl WriterFanTurnPolicy {
+    #[cfg(test)]
     pub(crate) fn writer_reserve(self, remaining_turns: u32) -> u32 {
         let mut reserve = self.writer_share.floor_u32(remaining_turns);
         if self.strictly_dominant

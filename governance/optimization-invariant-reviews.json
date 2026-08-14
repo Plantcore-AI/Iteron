@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "census_sha256": "8b175b673695be85cababa0923d8ad55b2b162ae83ca78bea47d7c5043e478b8",
+  "census_sha256": "c7fa7a6613496199f2caecd9e690d1c96bbca27e7562b70aaaa4943c79b6d0fe",
   "boundary_registry_sha256": "ee8bf04dd578f26aedae98d1a50080dc40ba7eb85049a6c55a50c9e12a991867",
   "batches": []
 }

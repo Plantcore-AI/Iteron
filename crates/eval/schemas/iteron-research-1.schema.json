@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plantcore-ai.github.io/Iteron/schemas/iteron-research-1.schema.json",
+  "title": "Iteron research protocol request envelope",
+  "description": "Language-neutral request schema for iteron-research/1. Runtime validation remains authoritative and additionally rejects duplicate JSON keys and invalid cross-field identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "request_id", "payload"],
+  "properties": {
+    "protocol": { "const": "iteron-research/1" },
+    "request_id": { "$ref": "#/$defs/id" },
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/surface" },
+        { "$ref": "#/$defs/candidate_validate" },
+        { "$ref": "#/$defs/run" },
+        { "$ref": "#/$defs/correlated_run", "properties": { "operation": { "const": "cancel" } } },
+        { "$ref": "#/$defs/correlated_run", "properties": { "operation": { "const": "result" } } },
+        { "$ref": "#/$defs/correlated_run", "properties": { "operation": { "const": "evidence" } } }
+      ]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_.:@+\\/-]+$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "prefixed_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "absolute_path": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^/" },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["benchmark_id", "benchmark_version"],
+      "properties": {
+        "benchmark_id": { "$ref": "#/$defs/id" },
+        "benchmark_version": { "$ref": "#/$defs/id" }
+      }
+    },
+    "graph_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_id", "materialization_sha256", "experiment_sha256", "topology_sha256"],
+      "properties": {
+        "schema_id": { "const": "iteron-candidate/3" },
+        "materialization_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+        "experiment_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+        "topology_sha256": { "$ref": "#/$defs/prefixed_sha256" }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "adapter"],
+      "properties": {
+        "operation": { "const": "surface" },
+        "adapter": { "$ref": "#/$defs/adapter" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "description": "Closed Candidate Graph v3 object. Its semantic and cross-address validation is performed by the digest-pinned runtime candidate validator.",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "graph"],
+      "properties": {
+        "schema_version": { "const": 3 },
+        "id": { "$ref": "#/$defs/id" },
+        "graph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_id", "dimensions", "lineage", "experiment", "topology", "implementations"],
+          "properties": {
+            "schema_id": { "const": "iteron-candidate/3" },
+            "dimensions": { "type": "array", "maxItems": 16384, "items": { "type": "object" } },
+            "lineage": { "type": "object" },
+            "experiment": { "type": "object" },
+            "topology": { "type": "array", "maxItems": 16384, "items": { "type": "object" } },
+            "implementations": { "type": "array", "maxItems": 28, "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "candidate_validate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "adapter", "candidate_sha256", "candidate"],
+      "properties": {
+        "operation": { "const": "candidate_validate" },
+        "adapter": { "$ref": "#/$defs/adapter" },
+        "candidate_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+        "candidate": { "$ref": "#/$defs/candidate" },
+        "implementation_candidate_path": { "$ref": "#/$defs/absolute_path" },
+        "native_materialization_path": { "$ref": "#/$defs/absolute_path" }
+      }
+    },
+    "run_spec": {
+      "type": "object",
+      "description": "Closed adapter-specific run specification; the pinned adapter registry owns the exact Iteron CLI, Terminal-Bench 2.1, or external-native subtype.",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["iteron_cli", "terminal_bench21", "external_native"] }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "required": ["adapter", "candidate_id", "candidate_sha256", "profile_sha256", "run_id"],
+      "properties": {
+        "adapter": { "$ref": "#/$defs/adapter" },
+        "candidate_id": { "$ref": "#/$defs/id" },
+        "candidate_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "implementation_activation_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_graph_identity": { "$ref": "#/$defs/graph_identity" },
+        "run_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "run": {
+      "allOf": [
+        { "$ref": "#/$defs/correlation" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "adapter", "candidate_id", "candidate_sha256", "profile_sha256", "run_id", "run"],
+          "properties": {
+            "operation": { "const": "run" },
+            "adapter": { "$ref": "#/$defs/adapter" },
+            "candidate_id": { "$ref": "#/$defs/id" },
+            "candidate_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+            "profile_sha256": { "$ref": "#/$defs/sha256" },
+            "implementation_activation_sha256": { "$ref": "#/$defs/sha256" },
+            "candidate_graph_identity": { "$ref": "#/$defs/graph_identity" },
+            "run_id": { "$ref": "#/$defs/id" },
+            "run": { "$ref": "#/$defs/run_spec" }
+          }
+        }
+      ]
+    },
+    "correlated_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "adapter", "candidate_id", "candidate_sha256", "profile_sha256", "run_id"],
+      "properties": {
+        "operation": { "enum": ["cancel", "result", "evidence"] },
+        "adapter": { "$ref": "#/$defs/adapter" },
+        "candidate_id": { "$ref": "#/$defs/id" },
+        "candidate_sha256": { "$ref": "#/$defs/prefixed_sha256" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "implementation_activation_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_graph_identity": { "$ref": "#/$defs/graph_identity" },
+        "run_id": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

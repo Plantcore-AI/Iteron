@@ -8,13 +8,13 @@ DeepSeek reference: `deepseek-ai/deepseek-harness` commit
 ## Verdict
 
 Iteron now has the broader *declared optimization and research contract*: Candidate Graph v3,
-1,895 externally addressed runtime values, 28 independently identified optimization modules, a
+1,894 externally addressed runtime values, 28 independently identified optimization modules, a
 66-node runtime service graph, a language-neutral research protocol, content-pinned external
 implementations, and transactional stateful hot swap. Those are stronger optimization-specific
 contracts than the audited DeepSeek Harness revision exposes.
 
 The source-form gap is now closed: the census reports zero unresolved bindings and zero unaddressed
-runtime values. The universal-harness goal is nevertheless not complete. All 825 mechanically
+runtime values. The universal-harness goal is nevertheless not complete. All 830 mechanically
 classified invariants still require owning-human approval, and the official installed
 Terminal-Bench 2.1 campaign has not been executed. Thus Iteron may claim a larger governed
 *declared* surface, but not a mathematical inventory of every possible generated value or
@@ -46,15 +46,15 @@ Generated registry revision 18 reports:
 - 66 runtime-service nodes: 28 optimization modules, nine production consumer ports, 22 platform
   services, and seven immutable host-invariant classes.
 
-Optimization census schema v4 reports 2,720 independent candidate rows. Of these, 1,895 are applied
+Optimization census schema v4 reports 2,724 independent candidate rows. Of these, 1,894 are applied
 and have concrete external addresses: 1,281 `unified_profile`, 296 `direct_config`, and 318
 `caller_input`.
 Candidate Graph v3 materializes these address classes, and the generic native adapter accepts only
 after a correlated consumption receipt proves every patch was loaded, applied, and observed.
 
-The same fail-closed census reports zero `binding_required` rows and 825 read-only invariant rows.
+The same fail-closed census reports zero `binding_required` rows and 830 read-only invariant rows.
 Every runtime row is advertised, applied, and uniquely externally addressed. The invariant rows
-are only mechanically classified and all 825 still require owning-human approval across 32 owner ×
+are only mechanically classified and all 830 still require owning-human approval across 32 owner ×
 boundary batches. The census states its limit explicitly: it is complete for the currently declared
 production source forms, not a mathematical universe of every possible generated or dynamic value.
 
@@ -96,7 +96,7 @@ The local qualification command executes 28 swaps plus 28 ablations as real exte
 process lifecycles, negotiates five optimizer families, and exercises state migration, all nine
 hot-swap fault phases, rollback, and deterministic ledger replay. It deliberately emits a refusal,
 not a proof manifest, because the installed Harbor/Terminal-Bench campaign and credentialed model
-execution are absent. The 825 pending human invariant decisions and that missing external campaign
+execution are absent. The 830 pending human invariant decisions and that missing external campaign
 still prevent the final universal and performance claims.
 
 The audited DeepSeek Harness tree contains session/runtime checkpoints, but no general trainer,
@@ -121,7 +121,7 @@ universal module training.
 
 ### P0 — close the remaining evidence, not the already-addressed surface
 
-1. Obtain owning-human GitHub approval for all 825 invariant rows across the 32 owner × boundary
+1. Obtain owning-human GitHub approval for all 830 invariant rows across the 32 owner × boundary
    batches. Agent-authored or ledger-only assertions do not count.
 2. Run the installed black-box campaign and retain its evidence bundle before publishing the
    universal-surface A or superiority claim.

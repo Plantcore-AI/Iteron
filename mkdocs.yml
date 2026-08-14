@@ -77,6 +77,8 @@ nav:
       - Overview: getting-started/overview.md
       - Installation: getting-started/installation.md
       - Setup and BYOK: getting-started/setup-and-byok.md
+      - Credential-free provider diagnosis: getting-started/provider-diagnosis.md
+      - 无凭据 Provider 诊断: getting-started/provider-diagnosis.zh-CN.md
       - Quickstart: getting-started/quickstart.md
       - Configure a provider: getting-started/providers.md
       - First session: getting-started/first-session.md
@@ -109,6 +111,8 @@ nav:
       - Capability mapping: spec/capability-mapping.md
       - Conformance & security: spec/conformance-and-security.md
   - Reference:
+      - Evidence-bound claim sheet: reference/claim-sheet.md
+      - Harness Checkpoints paper draft: reference/harness-checkpoints-paper.md
       - CLI: reference/cli.md
       - Slash commands: reference/slash-commands.md
       - Configuration: reference/configuration.md
@@ -121,6 +125,7 @@ nav:
       - Agent definitions: reference/agent-definitions.md
       - External harness: reference/external-harness.md
       - Research harness protocol: reference/research-harness-protocol.md
+      - Research harness protocol (中文): reference/research-harness-protocol.zh-CN.md
       - Replaceable implementation protocol: reference/implementation-protocol.md
       - Runtime service graph: reference/runtime-service-graph.md
       - Transactional research hot swap: reference/transactional-hot-swap.md
@@ -143,6 +148,7 @@ nav:
       - Repository enforcement: repository-enforcement.md
       - Decision records:
           - One workflow renderer: project/decisions/0001-workflow-renderer-convergence.md
+          - Model-directed workflow topology: project/decisions/0002-model-directed-workflow-topology.md
       - Development:
           - Setup: development/setup.md
           - Testing: development/testing.md

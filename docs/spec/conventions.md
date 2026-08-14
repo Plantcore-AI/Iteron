@@ -43,6 +43,6 @@
 
 **R2：成熟形态 vs 早期切片。** 成熟形态（覆盖度与业界生产级 coding agent 同量级）是**前瞻性定位**，**MUST NOT** 被用来描述任何早期演示切片的工作量。早期切片是一条薄的垂直切片（单一垂类、单一冻结模型、少数几个槽被训练）。二者的口径在本规范中**严格分开**（公开侧只谈成熟形态的目标边界；内部侧 §8 给出切片范围）。
 
-**关于「是否训练 model」（规范性正本）。** 默认 **MUST NOT** 训练 model：主路径是在**冻结**的 base model 之上进化 harness，以求得 model×harness 协同设计之*效*（可移植、model 无关）；harness 会自适应该 model 的能力，**包括**其 post-training 引入的标记/能力（例如某个 `ultracode` 之类的标记）。当确需改权重时，curated 轨迹与 harness checkpoint **MAY** 作为 post-training 语料回流，但 **MUST** 重新经过 §6 的同一道 admission 与评测门。即：训练可发生在两侧，但 harness 是那个恒可用、可移植、model 无关的一侧；本规范的主张不依赖训练 model。
+**关于「是否训练 model」（规范性正本）。** Iteron **MUST NOT** 训练 model。base model 与 safety kernel 冻结；系统只优化 harness。`ModelAdapter`/`ModelWeights` 是保留 wire 值并被 manifest validation 恒定拒绝。SFT/preference/GRPO/RL 名称仅是 harness producer provenance，trajectory 不存在 model-training export target。
 
 **关于「ABI 在进化中是否改变」（规范性正本，正文见 §4）。** 稳定类型 ABI 的**形状**在一次运行内与跨进化过程中 **MUST NOT** 改变；进化改变的是 ABI **之后**的模块**实现**（PolicyManifest 的内容），而非 ABI 契约本身。ABI 的演进只走显式的版本化路径（§16 变更控制）。

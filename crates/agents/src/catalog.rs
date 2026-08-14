@@ -68,10 +68,10 @@ const MAX_SCAN_DIRS: usize = 4096;
 const MAX_SCAN_ENTRIES: usize = 65_536;
 const MAX_AGENT_FILES_PER_DIR: usize = 1_024;
 const MAX_AGENT_SOURCE_BYTES: usize = 256 * 1024;
-// The governed catalog schema admits 4,096 entries total. Three built-ins are always present, so
+// The governed catalog schema admits 4,096 entries total. Two built-ins are always present, so
 // filesystem/plugin sources get the remaining slots and can never make the live owner exceed the
 // identity recorded in the immutable checkpoint.
-const MAX_CATALOG_SOURCES: usize = 4_096 - 3;
+const MAX_CATALOG_SOURCES: usize = 4_096 - 2;
 const MAX_LOAD_ERRORS: usize = 4_096;
 
 impl AgentCatalog {
@@ -163,7 +163,6 @@ impl AgentCatalog {
             errors_truncated: false,
         };
         cat.defs.push(AgentDef::generic());
-        cat.defs.push(AgentDef::ultracode_planner());
         cat.defs.push(AgentDef::isolated_writer());
 
         // User definitions: read directly (do not scan the whole home tree). Trusted.
@@ -192,11 +191,7 @@ impl AgentCatalog {
     /// A catalog with only the built-ins (no filesystem access) — for tests and headless runs.
     pub fn builtin_only() -> Self {
         AgentCatalog {
-            defs: vec![
-                AgentDef::generic(),
-                AgentDef::ultracode_planner(),
-                AgentDef::isolated_writer(),
-            ],
+            defs: vec![AgentDef::generic(), AgentDef::isolated_writer()],
             errors: Vec::new(),
             sources_seen: 0,
             source_limit_reported: false,
@@ -609,22 +604,10 @@ mod tests {
     fn builtin_generic_always_present() {
         let cat = AgentCatalog::builtin_only();
         assert!(cat.get("generic").is_some());
-        let planner = cat
-            .get(crate::ULTRACODE_PLANNER_NAME)
-            .expect("dynamic workflow planner is pinned beside the investigator");
-        assert!(planner.tools.narrow().is_empty());
-        assert_eq!(planner.budget.max_turns, 1);
         // Name the built-ins rather than counting them: a bare count says nothing about which
         // agent arrived, and the isolated writer is the one the workspace-boundary registry admits.
         let names: Vec<_> = cat.defs().iter().map(|def| def.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "generic",
-                crate::ULTRACODE_PLANNER_NAME,
-                crate::ISOLATED_WRITER_NAME
-            ]
-        );
+        assert_eq!(names, vec!["generic", crate::ISOLATED_WRITER_NAME]);
     }
 
     #[test]
@@ -781,17 +764,7 @@ mod tests {
             .collect();
         assert_eq!(names1, names2, "sorted discovery => reproducible order");
         // Built-ins first, then sorted workspace definitions.
-        assert_eq!(
-            names1,
-            vec![
-                "generic",
-                "ultracode-planner",
-                "isolated-writer",
-                "a",
-                "b",
-                "c"
-            ]
-        );
+        assert_eq!(names1, vec!["generic", "isolated-writer", "a", "b", "c"]);
         std::fs::remove_dir_all(&user).ok();
         std::fs::remove_dir_all(&repo).ok();
     }

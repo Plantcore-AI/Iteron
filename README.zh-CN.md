@@ -35,6 +35,7 @@
 
 Iteron 将专注的全屏编码体验构建在模块化 Rust 运行时之上，支持交互式工作、
 有界单次自动化、显式权限、模型提供商路由、持久会话、验证以及机器可读输出。
+当前工作区版本为 **v0.0.5**。
 
 ## 安装
 
@@ -45,6 +46,16 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/rel
 安装器会校验所选版本的归档文件，无需 `sudo`，也不会修改 shell 启动文件。
 发布目标包括 macOS arm64、Linux arm64 与 Linux x86-64。版本固定、校验和、
 证明材料与源码构建方式见[安装与验证指南](docs/getting-started/installation.md)。
+
+无需提供商凭据即可检查命令是否进入当前 shell 的搜索路径：
+
+```sh
+command -v iteron
+iteron --version
+```
+
+若第一条命令没有输出，请把安装目录（通常为 `$HOME/.local/bin`）加入 `PATH`，
+然后重新打开 shell。
 
 ## 快速开始
 
@@ -84,6 +95,8 @@ iteron -p -C /path/to/untrusted-repository --ask-permissions --confine \
 继续阅读[五分钟快速开始](docs/getting-started/quickstart.md)、
 [设置与 BYOK](docs/getting-started/setup-and-byok.md)以及
 [权限与沙箱指南](docs/using/permissions-and-sandbox.md)。
+如需在不读取或暴露凭据值的情况下检查 provider 设置，请参阅
+[无凭据 Provider 诊断](docs/getting-started/provider-diagnosis.zh-CN.md)。
 
 ## BYOK 设置
 
@@ -126,6 +139,11 @@ iteron config get provider
 可替换。离线候选只有通过留出评估、影子运行、金丝雀和显式人工晋升，才能
 进入运行时。当前实现边界和拆分路径见[架构指南](docs/architecture.md)。
 
+Iteron **只优化 harness 制品**。Base-model 权重与 adapter 均被冻结；manifest 中
+为兼容历史协议而保留的 model-weight 形态会被拒绝。SFT、preference、GRPO 与 RL
+名称只描述 harness candidate producer 的来源，不授权模型训练，也不允许把 trajectory
+导出用于模型训练。
+
 ![Iteron 目标架构中文版](docs/assets/architecture/iteron-architecture-zh.png)
 
 ## 当前已交付
@@ -141,9 +159,11 @@ iteron config get provider
 - 带恢复、继续、分叉、检查点和面向回放契约的哈希链本地会话。
 
 Iteron 当前仍是模块化单体；项目不声称已实现完整微内核一致性、生产就绪、
-机密性隔离或在线自我演化。[架构](docs/architecture.md)、
-[项目状态](docs/project/status.md)和[路线图](docs/roadmap.md)明确区分已交付行为与
-目标契约。
+机密性隔离、在线自我演化或 benchmark 性能提升。
+[证据约束的 claim sheet](docs/reference/claim-sheet.md)、
+[Harness Checkpoints 论文草稿](docs/reference/harness-checkpoints-paper.md)、
+[架构](docs/architecture.md)、[项目状态](docs/project/status.md)和
+[路线图](docs/roadmap.md)明确区分已交付行为与目标契约。
 
 ## 文档
 

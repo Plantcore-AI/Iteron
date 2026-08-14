@@ -1,0 +1,22 @@
+{
+  "schema_id": "iteron-synthetic-cycle-authorization/1",
+  "authorization_id": "synthetic-fixture-authorization",
+  "authorized_by": "synthetic-fixture-owner",
+  "authorization_scope": "synthetic_harness_promotion_and_rollback",
+  "approval_artifact_path": "synthetic-cycle-approval.txt",
+  "approval_artifact_sha256": "sha256:52199c8c96025166dc169a30ff5bdec840187ebae87469293a526c26a26e575b",
+  "source_frozen_model": {
+    "model_family": "synthetic/frozen",
+    "model_id": "fixture-source-v1",
+    "model_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "target_frozen_model": {
+    "model_family": "synthetic/frozen",
+    "model_id": "fixture-target-v1",
+    "model_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "primary_producer": "rule_search",
+  "secondary_producer": "prompt_preference",
+  "provider": "none",
+  "model_training_authorized": false
+}

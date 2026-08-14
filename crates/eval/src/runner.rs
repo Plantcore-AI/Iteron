@@ -18,6 +18,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub mod hermetic;
+#[cfg(test)]
+mod hermetic_tests;
+
 const PROCESS_OUTPUT_LIMIT: usize = 1024 * 1024;
 const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;

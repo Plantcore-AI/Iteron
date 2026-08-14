@@ -88,14 +88,9 @@ pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation suba
     done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
     file:line references for anything you claim.";
 
-/// Internal agent type used by the built-in Ultracode workflow's first, dynamic planning phase.
-/// It is intentionally tool-less and one-turn: the model proposes investigation leaves, while the
-/// harness still normalizes, narrows, and caps those leaves before the workflow may fan out.
-pub const ULTRACODE_PLANNER_NAME: &str = "ultracode-planner";
-
-/// Exact non-trainable owner for the built-in planner's model envelope. The agent definition
-/// consumes these ceilings directly; runtime tunables attest this same typed value rather than
-/// copying the planner's old 4096/low/zero literals into a second owner.
+/// Exact non-trainable owner for the decomposition strategy's model envelope. Runtime tunables
+/// attest this typed value rather than copying its token, effort, wall, and turn ceilings into a
+/// second owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecompositionProfile {
     pub max_output_tokens: u64,
@@ -120,12 +115,6 @@ impl DecompositionProfile {
 /// Harness-reserved writer identity. The catalog installs this definition before reading any
 /// filesystem source, so repository/user definitions cannot shadow its authority contract.
 pub const ISOLATED_WRITER_NAME: &str = "isolated-writer";
-
-const ULTRACODE_PLANNER_SYSTEM: &str = "You plan a READ-ONLY repository investigation. Return \
-    mutually distinct, non-overlapping, self-contained assignments. Every line must name a \
-    concrete search scope and the evidence expected from that worker. Cover different causal \
-    surfaces rather than paraphrasing the task. Do not inspect the repository, propose edits, ask \
-    questions, add a preamble, or add a conclusion. Output exactly one assignment per line.";
 
 const ISOLATED_WRITER_SYSTEM: &str = "You are the single isolated writer for one bounded task. \
     Work only inside the worktree supplied as your workspace. Read the current files, make the \
@@ -281,34 +270,6 @@ impl AgentDef {
             tools: ToolFilter::All,
             model: None,
             budget: subagent_budget_ceiling(),
-            trust: Trust::Trusted,
-        }
-    }
-
-    /// The built-in dynamic-workflow planner. It is visible to the engine's pinned catalog but has
-    /// no tools and exactly one provider turn, so planning cannot quietly become a second explorer.
-    pub fn ultracode_planner() -> AgentDef {
-        let profile = DecompositionProfile::owner();
-        AgentDef {
-            name: ULTRACODE_PLANNER_NAME.into(),
-            description: "Internal one-turn planner for the built-in Ultracode workflow.".into(),
-            system: iteron_tunables::prompt_artifact(
-                "prompt/planner@v1",
-                iteron_tunables::param_str(
-                    "agents.def.ultracode_planner_system",
-                    ULTRACODE_PLANNER_SYSTEM,
-                ),
-            )
-            .into(),
-            tools: ToolFilter::Allow(Vec::new()),
-            model: None,
-            budget: Budget {
-                max_turns: profile.max_turns,
-                max_usd: None,
-                max_tokens: Some(profile.max_output_tokens),
-                max_wall_secs: profile.max_wall_secs,
-                max_consecutive_tool_errors: 1,
-            },
             trust: Trust::Trusted,
         }
     }

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 pub const ITERON_CLI_ID: &str = "iteron-cli";
 pub const ITERON_CLI_VERSION: &str = "1";
 pub const EXTERNAL_NATIVE_ID: &str = "iteron-native-adapter";
-pub const EXTERNAL_NATIVE_VERSION: &str = "1";
+pub const EXTERNAL_NATIVE_VERSION: &str = "2";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

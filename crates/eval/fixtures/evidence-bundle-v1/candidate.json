@@ -1,0 +1,79 @@
+{
+  "schema_version": 3,
+  "run_id": "fixture-candidate-run",
+  "corpus_version": "evidence-bundle-v1-fixture",
+  "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "model": "synthetic-fixed-model",
+  "provider": "synthetic-provider",
+  "bundle_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "purpose": "score",
+  "seeds": 1,
+  "minimum_seeds": 1,
+  "workers": 1,
+  "max_turns": 1,
+  "core_agent_wall_secs": 1,
+  "core_process_grace_secs": 1,
+  "core_process_timeout_secs": 2,
+  "result_path": "result.json",
+  "cells": [
+    {
+      "task": "fixture-task",
+      "config": "candidate_arm",
+      "seed": 0,
+      "partition": "held_out",
+      "repo_url": "https://example.invalid/fixture.git",
+      "commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "benchmark": null,
+      "resolved": false,
+      "run_status": "completed",
+      "failure_phase": null,
+      "exit_code": 0,
+      "terminal_outcome": "completed",
+      "cost_status": "known",
+      "cost_usd": 0.2,
+      "cost_reason": null,
+      "turns": 1,
+      "kernel_tax": null,
+      "oracle_status": "test_failed",
+      "oracle_detail": null,
+      "sampling": {
+        "requested_seed": 0,
+        "enforcement": "synthetic_fixture",
+        "reason": null
+      },
+      "elapsed_ms": 20,
+      "error": null,
+      "candidate_diff": "fixture patch"
+    }
+  ],
+  "aggregate": {
+    "total_cells": 1,
+    "minimum_seeds": 1,
+    "underpowered": false,
+    "configs": [],
+    "pass_k": []
+  },
+  "comparison": {
+    "baseline": "candidate_arm",
+    "treatment": "missing",
+    "resolved_rate_delta": 0.0,
+    "delta_ci95": [
+      -1.0,
+      1.0
+    ],
+    "statistical_conclusion": {
+      "status": "not_significant"
+    },
+    "statistically_significant": false,
+    "cost_delta_usd": null,
+    "cost_delta_reason": "synthetic_fixture"
+  },
+  "selections": [],
+  "kernel_tax": {
+    "admission_latency_us": 0,
+    "broker_latency_us": 0,
+    "record_fsync_latency_us": 0,
+    "estimated_tokens": 0,
+    "failed_runs": 0
+  }
+}

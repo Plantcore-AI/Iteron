@@ -173,7 +173,6 @@ impl Agent {
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
-            workspace_file_count: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             verification_policy: iteron_verify::VerificationRuntimePolicy::default(),

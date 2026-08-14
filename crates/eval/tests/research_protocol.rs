@@ -1,14 +1,15 @@
 use iteron_eval::{
     AdapterOperation, AdapterPin, ArtifactReference, BenchmarkAdapterRegistry, BenchmarkPin,
     CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,
-    CandidateAddressKind, CandidateDimension, CandidateExperiment, CandidateGraph,
-    CandidateImplementation, CandidateLineage, CandidateOwnerKind, CandidateSelectorKind,
-    CliRunSpec, DryRunState, EXTERNAL_NATIVE_ID, EXTERNAL_NATIVE_VERSION, ExternalHarnessResult,
-    ExternalNativeRunSpec, ITERON_CLI_ID, ITERON_CLI_VERSION, ProfileIdentity, RESEARCH_PROTOCOL,
-    ResearchProtocolError, ResearchRequest, ResearchRequestEnvelope, ResearchResponse,
-    ResearchResponseEnvelope, ResearchRunState, ResearchSession, ResourceBounds, ResourceUsage,
-    RunEvidence, RunSpec, TaskIdentity, TerminalBenchRequest, TerminalOutcome, TimingEvidence,
-    TunerCandidate, parse_research_request, parse_research_response,
+    CandidateAddressKind, CandidateCondition, CandidateDimension, CandidateExperiment,
+    CandidateGraph, CandidateImplementation, CandidateLineage, CandidateOwnerKind,
+    CandidateSelectorKind, CandidateTopologyEdge, CliRunSpec, DryRunState, EXTERNAL_NATIVE_ID,
+    EXTERNAL_NATIVE_VERSION, ExternalHarnessResult, ExternalNativeRunSpec, ITERON_CLI_ID,
+    ITERON_CLI_VERSION, ProfileIdentity, RESEARCH_PROTOCOL, ResearchProtocolError, ResearchRequest,
+    ResearchRequestEnvelope, ResearchResponse, ResearchResponseEnvelope, ResearchRunState,
+    ResearchSession, ResourceBounds, ResourceUsage, RunEvidence, RunSpec, TaskIdentity,
+    TerminalBenchRequest, TerminalOutcome, TimingEvidence, TunerCandidate, parse_research_request,
+    parse_research_response,
 };
 use iteron_tunables::ProfileDocument;
 use std::collections::BTreeMap;
@@ -102,45 +103,6 @@ fn graph_candidate() -> TunerCandidate {
                 resource_sha256: digest('d'),
                 fidelity_sha256: digest('e'),
                 seed: 7,
-            },
-            topology: Vec::new(),
-            implementations: Vec::new(),
-        }),
-    }
-}
-
-fn native_graph_candidate() -> TunerCandidate {
-    let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
-    TunerCandidate {
-        schema_version: CANDIDATE_GRAPH_SCHEMA_VERSION,
-        id: "research/native-candidate-v3".into(),
-        values: BTreeMap::new(),
-        profile: None,
-        implementations: Vec::new(),
-        graph: Some(CandidateGraph {
-            schema_id: CANDIDATE_GRAPH_SCHEMA_ID.into(),
-            dimensions: vec![CandidateDimension::NativeValue {
-                address: CandidateAddress {
-                    kind: CandidateAddressKind::DirectConfig,
-                    selector_kind: CandidateSelectorKind::Path,
-                    selector: "/provider/temperature".into(),
-                    owner_kind: CandidateOwnerKind::Schema,
-                    owner: "iteron-provider-config/1".into(),
-                },
-                value: iteron_tunables::ResolutionValue::Integer { value: 17 },
-            }],
-            lineage: CandidateLineage {
-                parent_sha256: None,
-                generation: 0,
-                sparse_delta: Vec::new(),
-            },
-            experiment: CandidateExperiment {
-                dataset_sha256: digest('1'),
-                evaluator_sha256: digest('2'),
-                environment_sha256: digest('3'),
-                resource_sha256: digest('4'),
-                fidelity_sha256: digest('5'),
-                seed: 19,
             },
             topology: Vec::new(),
             implementations: Vec::new(),
@@ -866,7 +828,9 @@ impl ExecuteHarness {
 impl Drop for ExecuteHarness {
     fn drop(&mut self) {
         self.input.take();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // The production wall clock is ten seconds. Poll beyond that bound so a stuck adapter is
+        // observed as its typed timeout instead of turning workspace scheduling into a test race.
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => break,
@@ -1002,7 +966,7 @@ fn implementation_candidate_fixture(layout: &ExecuteLayout) -> (TunerCandidate, 
     let artifact_root = layout.root.join("implementation-artifact");
     fs::create_dir(&artifact_root).unwrap();
     let executable = artifact_root.join("fixture-implementation");
-    let artifact_bytes = b"#!/bin/sh\nexit 0\n";
+    let artifact_bytes = b"#!/bin/sh\nprintf 'fixture-implementation-observed\\n'\n";
     fs::write(&executable, artifact_bytes).unwrap();
     let mut permissions = fs::metadata(&executable).unwrap().permissions();
     permissions.set_mode(0o700);
@@ -1054,6 +1018,94 @@ fn implementation_candidate_fixture(layout: &ExecuteLayout) -> (TunerCandidate, 
         candidate,
         layout.root.join("implementation-activation.json"),
     )
+}
+
+#[cfg(unix)]
+fn combined_native_graph_candidate(layout: &ExecuteLayout) -> (TunerCandidate, PathBuf) {
+    let (implementation_candidate, activation_path) = implementation_candidate_fixture(layout);
+    let implementation = implementation_candidate.implementations[0].clone();
+    let prefixed = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    let profile_address = CandidateAddress {
+        kind: CandidateAddressKind::UnifiedProfile,
+        selector_kind: CandidateSelectorKind::Key,
+        selector: "eval.tuner.max_candidates".into(),
+        owner_kind: CandidateOwnerKind::Schema,
+        owner: "iteron_tunables::Param/ResolutionValue".into(),
+    };
+    let direct_address = CandidateAddress {
+        kind: CandidateAddressKind::DirectConfig,
+        selector_kind: CandidateSelectorKind::Path,
+        selector: "/provider/temperature".into(),
+        owner_kind: CandidateOwnerKind::Schema,
+        owner: "iteron-provider-config/1".into(),
+    };
+    let caller_address = CandidateAddress {
+        kind: CandidateAddressKind::CallerInput,
+        selector_kind: CandidateSelectorKind::Argument,
+        selector: "sampling-seed".into(),
+        owner_kind: CandidateOwnerKind::Protocol,
+        owner: "iteron-native-adapter/2".into(),
+    };
+    let profile_value = iteron_tunables::ResolutionValue::Integer { value: 64 };
+    let direct_value = iteron_tunables::ResolutionValue::Integer { value: 17 };
+    let candidate = TunerCandidate {
+        schema_version: CANDIDATE_GRAPH_SCHEMA_VERSION,
+        id: "research/native-candidate-v3".into(),
+        values: BTreeMap::new(),
+        profile: None,
+        implementations: Vec::new(),
+        graph: Some(CandidateGraph {
+            schema_id: CANDIDATE_GRAPH_SCHEMA_ID.into(),
+            dimensions: vec![
+                CandidateDimension::Param {
+                    address: profile_address.clone(),
+                    param: profile_address.selector.clone(),
+                    value: profile_value.clone(),
+                },
+                CandidateDimension::NativeValue {
+                    address: direct_address.clone(),
+                    value: direct_value.clone(),
+                },
+                CandidateDimension::NativeValue {
+                    address: caller_address.clone(),
+                    value: iteron_tunables::ResolutionValue::Integer { value: 29 },
+                },
+            ],
+            lineage: CandidateLineage {
+                parent_sha256: None,
+                generation: 0,
+                sparse_delta: Vec::new(),
+            },
+            experiment: CandidateExperiment {
+                dataset_sha256: prefixed('1'),
+                evaluator_sha256: prefixed('2'),
+                environment_sha256: prefixed('3'),
+                resource_sha256: prefixed('4'),
+                fidelity_sha256: prefixed('5'),
+                seed: 19,
+            },
+            topology: vec![
+                CandidateTopologyEdge {
+                    dependency: profile_address.clone(),
+                    dependent: direct_address.clone(),
+                    condition: Some(CandidateCondition {
+                        address: profile_address,
+                        equals: profile_value,
+                    }),
+                },
+                CandidateTopologyEdge {
+                    dependency: direct_address.clone(),
+                    dependent: caller_address,
+                    condition: Some(CandidateCondition {
+                        address: direct_address,
+                        equals: direct_value,
+                    }),
+                },
+            ],
+            implementations: vec![implementation],
+        }),
+    };
+    (candidate, activation_path)
 }
 
 #[cfg(unix)]
@@ -1776,7 +1828,17 @@ fn native_patch_adapter_requires_pinned_execution_and_exact_consumption_receipt(
     let layout = ExecuteLayout::new("native-materialization");
     layout.write_script(
         r#"exec /usr/bin/python3 - "$@" <<'PY'
-import hashlib, json, sys
+import hashlib, json, os, subprocess, sys
+
+def encoded(value):
+    return json.dumps(value, separators=(",", ":")).encode()
+
+def digest(value):
+    return "sha256:" + hashlib.sha256(encoded(value)).hexdigest()
+
+def address_key(address):
+    return json.dumps(address, sort_keys=True, separators=(",", ":"))
+
 args = sys.argv[1:]
 flags = {}
 i = 0
@@ -1784,33 +1846,154 @@ while i < len(args) and args[i] != "--":
     flags[args[i]] = args[i + 1]
     i += 2
 task = args[i + 1:] if i < len(args) else []
+if flags.get("--protocol") != "iteron-native-adapter/2":
+    raise SystemExit("wrong native adapter protocol")
 with open(flags["--native-materialization"], "rb") as source:
     materialization = json.load(source)
 with open(flags["--candidate-profile"], "rb") as source:
-    profile = source.read()
+    profile_bytes = source.read()
+profile = json.loads(profile_bytes)
 with open(flags["--effective-profile"], "xb") as output:
-    output.write(profile)
-patches = []
-for patch in materialization["direct_config_patches"] + materialization["caller_input_patches"]:
-    encoded = json.dumps(patch["value"], separators=(",", ":")).encode()
-    digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
-    observed = "sha256:" + ("0" * 64) if "forge" in task else digest
-    patches.append({
-        "address": patch["address"],
-        "input_value_sha256": digest,
-        "observed_value_sha256": observed,
+    output.write(profile_bytes)
+
+profile_params = {item["param"]: item["value"] for item in profile["params"]}
+direct_patches = {
+    address_key(item["address"]): item["value"]
+    for item in materialization["direct_config_patches"]
+}
+caller_patches = {
+    address_key(item["address"]): item["value"]
+    for item in materialization["caller_input_patches"]
+}
+applied = {}
+direct_config = {}
+caller_input = {}
+nodes = []
+for expected_ordinal, node in enumerate(materialization["production_plan"]["nodes"]):
+    if node["ordinal"] != expected_ordinal:
+        raise SystemExit("production plan ordinal was not contiguous")
+    dependencies_loaded = all(
+        address_key(dependency["address"]) in applied
+        for dependency in node["dependencies"]
+    )
+    conditions_satisfied = all(
+        dependency.get("condition") is None
+        or applied.get(address_key(dependency["condition"]["address"]))
+            == dependency["condition"]["equals"]
+        for dependency in node["dependencies"]
+    )
+    if not dependencies_loaded or not conditions_satisfied:
+        raise SystemExit("production topology dependency was not satisfied")
+    dimension = node["dimension"]
+    address = dimension["address"]
+    key = address_key(address)
+    if node["class"] == "unified_profile":
+        value = profile_params.get(dimension.get("param"))
+        if value != dimension.get("value"):
+            raise SystemExit("unified profile value was not loaded")
+    elif node["class"] == "direct_config":
+        value = direct_patches.get(key)
+        if value != dimension.get("value"):
+            raise SystemExit("direct configuration patch was not loaded")
+        direct_config[address["selector"]] = value
+    elif node["class"] == "caller_input":
+        value = caller_patches.get(key)
+        if value != dimension.get("value"):
+            raise SystemExit("caller input patch was not loaded")
+        caller_input[address["selector"]] = value
+    else:
+        raise SystemExit("unknown production node class")
+    applied[key] = value
+    node_digest = digest(node)
+    nodes.append({
+        "ordinal": node["ordinal"],
+        "address": address,
+        "class": node["class"],
+        "input_node_sha256": node_digest,
+        "observed_node_sha256": node_digest,
+        "dependencies_loaded": dependencies_loaded,
+        "conditions_satisfied": conditions_satisfied,
         "loaded": True,
         "applied": True,
-        "observed": True,
+        "observed": applied[key] == value,
+    })
+
+implementations = []
+implementation_markers = []
+for binding in materialization["production_plan"]["implementations"]:
+    with open(binding["catalog_path"], "rb") as source:
+        catalog = json.load(source)
+    manifest = next(
+        item for item in catalog["implementations"]
+        if item["implementation_id"] == binding["implementation_id"]
+        and item["module"] == binding["module"]
+    )
+    executable = os.path.join(binding["artifact_root"], manifest["executable"])
+    with open(executable, "rb") as source:
+        artifact_digest = "sha256:" + hashlib.sha256(source.read()).hexdigest()
+    if artifact_digest != binding["artifact_sha256"]:
+        raise SystemExit("implementation artifact identity changed")
+    completed = subprocess.run(
+        [executable] + manifest["argv"],
+        cwd=os.getcwd(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=1,
+    )
+    marker = completed.stdout.decode("utf-8", "strict")
+    terminal = completed.returncode == 0 and marker == "fixture-implementation-observed\n"
+    if not terminal:
+        raise SystemExit("bound implementation did not produce its marker")
+    implementation_markers.append(marker.strip())
+    binding_digest = digest(binding)
+    implementations.append({
+        "module": binding["module"],
+        "implementation_id": binding["implementation_id"],
+        "input_binding_sha256": binding_digest,
+        "observed_binding_sha256": binding_digest,
+        "loaded": True,
+        "applied": True,
+        "observed": marker.strip() == "fixture-implementation-observed",
+        "started": True,
+        "terminal": terminal,
+        "stopped": completed.returncode is not None,
+    })
+
+combined = (
+    profile_params["eval.tuner.max_candidates"]["value"]
+    + direct_config["/provider/temperature"]["value"]
+    + caller_input["sampling-seed"]["value"]
+)
+if combined != 110 or implementation_markers != ["fixture-implementation-observed"]:
+    raise SystemExit("combined candidate did not affect production behavior")
+patches = []
+for patch in materialization["direct_config_patches"] + materialization["caller_input_patches"]:
+    patch_digest = digest(patch["value"])
+    observed = "sha256:" + ("0" * 64) if "forge" in task else patch_digest
+    key = address_key(patch["address"])
+    applied_value = direct_config.get(patch["address"]["selector"])
+    if patch["address"]["kind"] == "caller_input":
+        applied_value = caller_input.get(patch["address"]["selector"])
+    patches.append({
+        "address": patch["address"],
+        "input_value_sha256": patch_digest,
+        "observed_value_sha256": observed,
+        "loaded": key in direct_patches or key in caller_patches,
+        "applied": applied_value == patch["value"],
+        "observed": applied_value == patch["value"],
     })
 receipt = {
-    "schema_id": "iteron-candidate-materialization-consumption/1",
+    "schema_id": "iteron-candidate-materialization-consumption/2",
     "candidate_sha256": flags["--candidate-sha256"],
     "materialization_sha256": flags["--materialization-sha256"],
     "experiment_sha256": flags["--experiment-sha256"],
     "topology_sha256": flags["--topology-sha256"],
     "native_materialization_sha256": flags["--native-materialization-sha256"],
+    "implementation_activation_sha256": materialization["implementation_activation_sha256"],
     "run_id": flags["--run-id"],
+    "nodes": nodes,
+    "implementations": implementations,
     "patches": patches,
 }
 with open(flags["--consumption-receipt"], "x") as output:
@@ -1821,13 +2004,43 @@ result = {
     "outcome": "completed",
     "success": True,
     "exit_code": 0,
-    "score_micros": 900000,
+    "score_micros": combined * 1000,
 }
 with open(flags["--result"], "x") as output:
     json.dump(result, output, separators=(",", ":"))
+print(json.dumps({
+    "combined": combined,
+    "implementation": implementation_markers[0],
+    "node_order": [node["class"] for node in nodes],
+}, separators=(",", ":")))
 PY"#,
     );
-    let candidate = native_graph_candidate();
+    let (candidate, activation_path) = combined_native_graph_candidate(&layout);
+    let mut missing = candidate.clone();
+    missing.graph.as_mut().unwrap().topology[0]
+        .dependent
+        .selector = "/missing-node".into();
+    missing.graph.as_mut().unwrap().topology.sort();
+    assert!(missing.validate_universal().is_err());
+
+    let mut cycle = candidate.clone();
+    let graph = cycle.graph.as_mut().unwrap();
+    graph.topology.push(CandidateTopologyEdge {
+        dependency: graph.dimensions[2].address().clone(),
+        dependent: graph.dimensions[0].address().clone(),
+        condition: None,
+    });
+    graph.topology.sort();
+    assert!(cycle.validate_universal().is_err());
+
+    let mut invalid_condition = candidate.clone();
+    invalid_condition.graph.as_mut().unwrap().topology[0]
+        .condition
+        .as_mut()
+        .unwrap()
+        .equals = iteron_tunables::ResolutionValue::Integer { value: 65 };
+    assert!(invalid_condition.validate_universal().is_err());
+
     let (candidate_sha256, profile_sha256) = candidate_digests(&candidate);
     let graph_identity = candidate.graph_identity().unwrap().unwrap();
     let sidecar = layout.root.join("native-materialization.json");
@@ -1840,7 +2053,13 @@ PY"#,
                 adapter: cli_pin(),
                 candidate_sha256: candidate_sha256.clone(),
                 candidate: candidate.clone(),
-                implementation_candidate_path: None,
+                implementation_candidate_path: Some(
+                    layout
+                        .root
+                        .join("unsupported-activation.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
                 native_materialization_path: Some(sidecar.to_string_lossy().into_owned()),
             },
         )),
@@ -1856,17 +2075,19 @@ PY"#,
             adapter: native_pin(),
             candidate_sha256: candidate_sha256.clone(),
             candidate,
-            implementation_candidate_path: None,
+            implementation_candidate_path: Some(activation_path.to_string_lossy().into_owned()),
             native_materialization_path: Some(sidecar.to_string_lossy().into_owned()),
         },
     ));
-    let native_digest = match validated.payload {
+    let (native_digest, activation_digest) = match validated.payload {
         ResearchResponse::CandidateValidate {
-            native_patch_count: 1,
+            native_patch_count: 2,
             native_materialization_sha256: Some(digest),
+            implementation_activation_sha256: Some(activation_digest),
+            implementation_count: 1,
             native_materialization_bytes,
             ..
-        } if native_materialization_bytes > 0 => digest,
+        } if native_materialization_bytes > 0 => (digest, activation_digest),
         other => panic!("unexpected native candidate response: {other:?}"),
     };
 
@@ -1919,7 +2140,7 @@ PY"#,
                 candidate_id: "research/native-candidate-v3".into(),
                 candidate_sha256: candidate_sha256.clone(),
                 profile_sha256: profile_sha256.clone(),
-                implementation_activation_sha256: None,
+                implementation_activation_sha256: Some(activation_digest.clone()),
                 candidate_graph_identity: Some(graph_identity.clone()),
                 run_id: "native-stale".into(),
                 run: Box::new(RunSpec::ExternalNative { spec: stale }),
@@ -1941,7 +2162,7 @@ PY"#,
                 candidate_id: "research/native-candidate-v3".into(),
                 candidate_sha256: candidate_sha256.clone(),
                 profile_sha256: profile_sha256.clone(),
-                implementation_activation_sha256: None,
+                implementation_activation_sha256: Some(activation_digest.clone()),
                 candidate_graph_identity: Some(graph_identity.clone()),
                 run_id: run_id.clone(),
                 run: Box::new(RunSpec::ExternalNative { spec }),
@@ -1957,16 +2178,29 @@ PY"#,
                     candidate_id: "research/native-candidate-v3".into(),
                     candidate_sha256: candidate_sha256.clone(),
                     profile_sha256: profile_sha256.clone(),
-                    implementation_activation_sha256: None,
+                    implementation_activation_sha256: Some(activation_digest.clone()),
                     candidate_graph_identity: Some(graph_identity.clone()),
                     run_id: run_id.clone(),
                 },
             ));
             if matches!(
-                result.payload,
-                ResearchResponse::Result { state, .. } if state == expected
+                &result.payload,
+                ResearchResponse::Result { state, .. } if *state == expected
             ) {
                 if expected == ResearchRunState::Completed {
+                    let production_result: serde_json::Value = serde_json::from_slice(
+                        &fs::read(layout.root.join("result-success.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(production_result["score_micros"], 110_000);
+                    assert_eq!(production_result["outcome"], "completed");
+                    let production_stdout =
+                        fs::read_to_string(layout.root.join("stdout-success.txt")).unwrap();
+                    assert!(production_stdout.contains("\"combined\":110"));
+                    assert!(production_stdout.contains("fixture-implementation-observed"));
+                    assert!(production_stdout.contains(
+                        "\"node_order\":[\"unified_profile\",\"direct_config\",\"caller_input\"]"
+                    ));
                     let evidence = session.handle(envelope(
                         "native-evidence",
                         ResearchRequest::Evidence {
@@ -1974,7 +2208,7 @@ PY"#,
                             candidate_id: "research/native-candidate-v3".into(),
                             candidate_sha256: candidate_sha256.clone(),
                             profile_sha256: profile_sha256.clone(),
-                            implementation_activation_sha256: None,
+                            implementation_activation_sha256: Some(activation_digest.clone()),
                             candidate_graph_identity: Some(graph_identity.clone()),
                             run_id: run_id.clone(),
                         },
@@ -1990,7 +2224,19 @@ PY"#,
                 }
                 break;
             }
-            assert!(Instant::now() < deadline, "native adapter did not finish");
+            if let ResearchResponse::Result { state, detail, .. } = &result.payload
+                && !matches!(
+                    state,
+                    ResearchRunState::Running | ResearchRunState::AwaitingResult
+                )
+            {
+                panic!("native adapter `{suffix}` reached unexpected state {state:?}: {detail:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native adapter `{suffix}` did not finish; last response: {:?}",
+                result.payload
+            );
             thread::sleep(Duration::from_millis(10));
         }
     }

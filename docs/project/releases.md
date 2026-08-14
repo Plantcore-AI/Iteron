@@ -15,12 +15,17 @@ assets attached to each tag.
 | `v0.0.2` | 2026-08-07 | local macOS build | `aarch64-apple-darwin` |
 | `v0.0.3` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
 | `v0.0.4` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
+| `v0.0.5` | 2026-08-14 | release workflow | release page is authoritative |
 
-All four were produced while hosted Actions capacity was unavailable. They carry
+The first four were produced while hosted Actions capacity was unavailable. They carry
 content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
 not GitHub OIDC attestations or the complete three-target matrix. They are useful
 historical pre-alpha artifacts and do **not** satisfy the accepted workflow
 release contract below.
+
+`v0.0.5` is the current pre-alpha release. Its release manifest and GitHub asset
+list, rather than this summary table, are authoritative for its exact targets and
+attestations.
 
 ## Accepted release artifacts
 
@@ -40,6 +45,11 @@ complete supported matrix:
 - Apache-2.0 and third-party license and notice material;
 - per-target SPDX SBOMs;
 - GitHub build provenance, SBOM attestations, and offline bundles.
+
+The only executable payload is `iteron`. The repository research binary `iteron-harness`, its
+fixture optimizer, and its protocol development assets are not release or installer payloads.
+Researchers build that binary explicitly from a reviewed source checkout; see the
+[research harness protocol](../reference/research-harness-protocol.md).
 
 Windows is not a release target. Published releases are expected to use GitHub's
 immutable-release control; if a correction is required, the project publishes a

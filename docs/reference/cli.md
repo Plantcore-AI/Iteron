@@ -66,7 +66,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--timeline <RUN_ID>` | Read one session's latency timeline and exit: the per-class effect breakdown, the distribution behind it, and what could not be accounted for. Pair with `--output-format json` for the machine document. Purely offline -- it reads the hash-verified record and measures nothing itself. |
 | `--fork <FORK>` | Fork a prior run at its tail into a new branch (shared past, divergent future) and print the new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork point (ADR-008 §4), so a later edit to the parent prefix is detected on resume. |
 | `--verify <VERIFY>` | Verification gate: a test command the harness runs itself when the agent claims done. If it fails, "done" is refused and the failure is fed back (don't trust the self-report). e.g. --verify "python3 -m pytest -q". Code execution must remain enabled (the default). |
-| `--effort <EFFORT>` | Effort level: low \| medium \| high \| xhigh \| max \| ultracode. Higher = more model reasoning budget; ultracode additionally enables internal workflow/subagent orchestration. |
+| `--effort <EFFORT>` | Effort level: low \| medium \| high \| xhigh \| max \| ultracode. Higher = more model reasoning budget; ultracode additionally exposes model-directed bounded workflows. |
 | `--provider <PROVIDER>` | Provider instance id. Built-ins: anthropic, openai, deepseek, glm, minimax, fireworks. |
 | `--base-url <BASE_URL>` | Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a named provider in ~/.iteron/config.json for persistent configuration. Requires --key-env. |
 | `--key-env <NAME>` | Environment variable holding the credential for --base-url. Required alongside it: without it a gateway would silently receive the default provider's key. |
@@ -86,7 +86,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
 | `iteron prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
 | `iteron serve [--listen <LISTEN>]` | Run a local-only versioned App Server for headless clients. |
-| `iteron workflow <SUBCOMMAND>` | Run an ultracode workflow (.js) end-to-end, streaming progress to stdout. |
+| `iteron workflow <SUBCOMMAND>` | Run a bounded JavaScript workflow end-to-end, streaming progress to stdout. |
 | `iteron workflow run <SCRIPT> [--args <ARGS>]` | Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()). |
 | `iteron workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |
 | `iteron workflow resume <RUN_ID> [--script <SCRIPT>] [--args <ARGS>]` | Resume a prior run by id, replaying its journaled agent outcomes and continuing (blocking). |

@@ -1,7 +1,8 @@
 # Evolution boundary
 
-Iteron includes types for a future governed strategy-evolution control plane.
-It does **not** currently train, fine-tune, run GRPO, or promote a live policy.
+Iteron includes types for a governed strategy-evolution control plane. It
+optimizes harness artifacts only and does **not** train or fine-tune a model or
+promote a live policy autonomously.
 
 ## Intended separation
 
@@ -11,9 +12,13 @@ The target architecture separates:
 2. replaceable strategy and world modules;
 3. an isolated evolution control plane that produces immutable candidates.
 
-Possible candidate-production methods include search, bandits, supervised
-fine-tuning, preference optimization, GRPO, and offline reinforcement learning.
-The method is replaceable; the promotion boundary is not.
+Candidate producers may use search or other optimizer families. The retained
+supervised-fine-tuning, preference, GRPO, and RL method names are provenance
+labels for a harness artifact only. They do not authorize model training. The
+producer is replaceable; the promotion boundary is not.
+
+`ModelAdapter` and `ModelWeights` are reserved wire values that manifest
+validation always rejects. Trajectory projection has no model-training target.
 
 ## Promotion path
 

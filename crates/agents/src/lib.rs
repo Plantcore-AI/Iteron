@@ -1,43 +1,16 @@
-//! iteron-agents — provider-free policy + data for the ultracode orchestration engine.
+//! iteron-agents — provider-free agent definitions and bounded orchestration policy utilities.
 //!
-//! This crate owns the *what* of ultracode orchestration — the agent catalog, the stage
-//! vocabulary, the task-class router, and the deterministic `reduce()` — as **pure data and pure
-//! functions**. It holds no provider, no kernel, no tokio (see `Cargo.toml`), so the plan and the
-//! reduction are unit-testable without a network — the reproducibility invariant (Principal §可复现:
-//! "a run can be replayed from its record and produce the same decisions"). The executor that
-//! spawns real subagents is `crates/workflow` plus the CLI's `KernelSpawner`; the split mirrors the
-//! existing `ctx`/kernel seam (ctx holds compaction *policy*; the runtime makes the LLM call).
+//! This crate owns the agent catalog plus optional typed decomposition, planning, stage, and
+//! reduction strategies as pure data and pure functions. It holds no provider, kernel, or Tokio
+//! dependency (see `Cargo.toml`), so policy decisions remain unit-testable without a network and
+//! reproducible from their recorded inputs. The workflow topology itself belongs to model-authored
+//! scripts executed by `crates/workflow`; the CLI's `KernelSpawner` supplies bounded, governed
+//! children without imposing a fixed plan.
 //!
-//! # Scope (re-scoped by the R5 design review, `docs/reviews/R5-design-review.md`)
-//!
-//! The R5 design (`docs/design/r5-design-effort-orchestration.md`) proposed a six-variant Stage DAG.
-//! The review is the gate and it **cut the engine to `Fan` + `Reduce` only**. `Pipe`, `Judge`,
-//! `LoopUntilDry`, and `AdversarialVerify` are **deferred, not built**: `Pipe` is the existing
-//! single-agent loop, `Judge`/sample-N need the not-yet-built disposable-workspace substrate, and
-//! `LoopUntilDry`/`AdversarialVerify` have no proven consumer. Only `Fan → declaration-order Reduce
-//! → single writer` is justified and buildable today (it is `spawn_subagent` + `Governor` +
-//! index-ordered collect, all already present in the kernel). This crate therefore ships exactly
-//! those two variants as the typed plan consumed by the built-in workflow script.
-//!
-//! # The honest benefit (do not overstate)
-//!
-//! The review corrected the R5 draft's rationale: ultracode fans out **only read-only
-//! investigation** and forbids parallel edit/verify (ADR-001, the single-writer invariant). The
-//! workflow engine runs those read-only workers **bounded-concurrent** (each an owned task under
-//! one `Governor` permit cap), so there is a real but modest wall-clock overlap; the harness makes no
-//! inflated "2.9× speedup" claim. The primary, defensible benefit remains
-//! **context-window management and investigation breadth**: N read-only workers each explore an
-//! isolated slice in their own context window and return ~1–2k tokens, so the single writer sees a
-//! wide, bounded synthesis instead of drowning in raw file contents. No "2.9× speedup" claim
-//! appears anywhere in this crate, by design.
-//!
-//! # What makes it worth building in-house
-//!
-//! `reduce()` reads worker results in **declaration (index) order, never completion order** — the
-//! exact discipline the kernel already proves at the tool layer, lifted to the subagent layer. An
-//! imported orchestrator (LangGraph/CrewAI) branches on the first finisher, which is
-//! non-deterministic and breaks replay. Determinism is the whole reason for the hand-built engine,
-//! and it is unit-tested here (`reduce::tests`).
+//! The helpers retain the runtime's safety properties when a script chooses to use them. Fan tasks
+//! are read-only, concurrency is governed, writer authority is isolated and serialized, and
+//! `reduce()` consumes worker results in declaration order rather than completion order. Scripts
+//! may compose these utilities or use the generic bounded workflow engine directly.
 
 mod catalog;
 mod decompose;
@@ -55,8 +28,7 @@ pub use decompose::{
 };
 pub use def::{
     AgentDef, DecompositionProfile, ISOLATED_WRITER_NAME, ISOLATED_WRITER_TOOLS,
-    MIN_SUBAGENT_TURNS, READ_ONLY_TOOLS, ToolFilter, ULTRACODE_PLANNER_NAME, subagent_budget,
-    subagent_budget_ceiling,
+    MIN_SUBAGENT_TURNS, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling,
 };
 pub use planner::{
     PLANNER_SLOT_VERSION, PlannerDecision, PlannerError, PlannerObservation, PlannerPlan,

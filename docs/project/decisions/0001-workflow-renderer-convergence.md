@@ -2,15 +2,16 @@
 
 - Status: accepted
 - Date: 2026-08-03
-- Implementation: migration steps 1–2 complete; native-card retirement and the compatibility
-  cleanup in steps 3–4 remain.
+- Implementation: migration steps 1–2 completed historically; ADR-0002 supersedes the fixed
+  built-in topology from step 2. Native-card retirement and compatibility cleanup remain.
 - Supersedes: nothing
 - Applies to: `crates/cli/src/block.rs`, `crates/cli/src/runtime.rs`,
   `crates/cli/src/workflow.rs`, `crates/workflow`
 
 ## Context
 
-Iteron ships two subsystems that share the word *workflow* and nothing else.
+At the time of this decision, Iteron shipped two subsystems that shared the word
+*workflow* and nothing else.
 
 **Native ultracode orchestration.** The kernel decomposes a task, fans out
 read-only investigators, reduces their evidence, and hands one writer the
@@ -57,15 +58,16 @@ Concretely:
 1. `WorkflowRunCard` / `render_workflow_run` (`block.rs`) is the one workflow
    renderer. New progress affordances — headers, run totals, per-row clocks,
    queued rows, phase layout — land there and only there.
-2. Ultracode's Fan → Reduce is migrated onto the script engine as a **built-in
-   decomposition script**, rather than the reverse. The engine already owns the
+2. ~~Ultracode's Fan → Reduce is migrated onto the script engine as a **built-in
+   decomposition script**, rather than the reverse.~~ ADR-0002 supersedes the fixed-preset part of
+   this decision: the main model now authors task-specific scripts on the same engine. The engine owns the
    parts that would otherwise have to be rebuilt inside the native path: a
    permit-bounded fan, a content-addressed resume journal, schema-forced
    structured output, background launch with cancellation, and a declarative
    phase header.
-3. `WorkflowCard` / `render_workflow` retires **when, and only when,** ultracode
-   runs as a script. Until then it stays live and correct — it is the only thing
-   rendering ultracode today.
+3. `WorkflowCard` / `render_workflow` retires **when, and only when,** no runtime
+   path constructs it. It does not define current Ultracode topology; ADR-0002
+   makes direct execution versus a task-specific `Workflow` call a model choice.
 4. `WorkflowUiEvent` is **not** deleted. It is a published compatibility
    surface: `iteron --output-format stream-json` consumers read
    `workflow_start` / `workflow_plan` / `workflow_phase` /
@@ -104,10 +106,10 @@ Ordered, each step independently shippable:
    (`new CLI stream surface ... requires a shared CLI schema version bump`).
    It therefore cannot ride along with a renderer change; it is its own
    release-contract PR.
-2. **Move ultracode's decomposition into a built-in script** driven by
-   `KernelSpawner`, keeping the existing authority, budget, and read-only
-   investigator guarantees exactly as they are. Investigators become
-   `agent()` calls inside a `phase()`; the writer stays on the kernel path.
+2. ~~**Move ultracode's decomposition into a built-in script** driven by
+   `KernelSpawner`.~~ This historical step was completed and then superseded by
+   ADR-0002. No built-in Ultracode preset remains: the model either works
+   directly or authors a task-specific workflow.
 3. **Delete `WorkflowCard`, `render_workflow`, `App::workflow_event`, and
    `workflow_index`** once nothing constructs them, keeping `WorkflowUiEvent`
    and its `stream_event` producer for the machine surface.
@@ -124,6 +126,6 @@ Ordered, each step independently shippable:
   `render_workflow` is limited to correctness of what is already there
   (for example: rendering one row per concurrent investigator); new capability
   goes to `render_workflow_run`.
-- Until step 1 lands, an in-turn `Workflow` tool call renders no live progress.
-  That is a known, named gap with a named cost, not an oversight.
+- Step 1 closed the historical in-turn live-progress gap; it is not an argument
+  for restoring a fixed Ultracode topology.
 - The `stream-json` contract is unaffected by steps 2 and 3.

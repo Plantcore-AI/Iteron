@@ -10,10 +10,12 @@ iteron -p "Describe the failure"
 
 ## Provider or model is grey
 
-Check `/model` and `/status`, then verify that the provider's credential variable
-is present in the `iteron` process. Catalog presence does not prove account
-entitlement. Use `/model retry MODEL_ID` only when you deliberately want to retry
-one unavailable route.
+First follow [credential-free provider diagnosis](../getting-started/provider-diagnosis.md).
+It separates executable resolution, configuration parsing, provider selection,
+and network reachability from authentication. Only after those checks should you
+load a credential into the `iteron` process. Catalog presence does not prove
+account entitlement. Use `/model retry MODEL_ID` only when you deliberately want
+to retry one unavailable route.
 
 Never paste a key into an issue or config file.
 

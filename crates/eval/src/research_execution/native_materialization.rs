@@ -8,7 +8,9 @@ use crate::research_protocol::{
 };
 use crate::strict_json::parse_json_no_duplicates;
 use crate::terminal_bench::ArtifactReference;
-use crate::tuner::{CandidateMaterialization, CandidatePatch};
+use crate::tuner::{
+    CandidateExecutionNode, CandidateImplementation, CandidateMaterialization, CandidatePatch,
+};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -20,6 +22,8 @@ pub(crate) struct MaterializedNativePatches {
     pub(crate) sha256: String,
     pub(crate) bytes: u64,
     pub(crate) patch_count: u64,
+    pub(crate) node_count: u64,
+    pub(crate) implementation_count: u64,
 }
 
 impl MaterializedNativePatches {
@@ -45,6 +49,8 @@ impl MaterializedNativePatches {
             .map_err(|_| "native materialization has the wrong schema".to_owned())?;
         if document.schema_id != NATIVE_MATERIALIZATION_SCHEMA
             || patch_count(&document) != self.patch_count
+            || document.production_plan.nodes.len() as u64 != self.node_count
+            || document.production_plan.implementations.len() as u64 != self.implementation_count
         {
             return Err("native materialization identity changed".into());
         }
@@ -55,17 +61,23 @@ impl MaterializedNativePatches {
 pub(crate) fn materialize_native_patches(
     candidate_sha256: &str,
     materialization: &CandidateMaterialization,
+    implementation_activation_sha256: Option<&str>,
     destination: &str,
 ) -> Result<MaterializedNativePatches, String> {
     if !materialization.has_native_patches() {
         return Err("empty native materialization is forbidden".into());
     }
+    let production_plan = materialization
+        .production_plan()
+        .map_err(|error| error.to_string())?;
     let document = NativeMaterializationDocument {
         schema_id: NATIVE_MATERIALIZATION_SCHEMA.into(),
         candidate_sha256: candidate_sha256.into(),
         candidate_graph_identity: materialization
             .graph_identity()
             .map_err(|error| error.to_string())?,
+        implementation_activation_sha256: implementation_activation_sha256.map(str::to_owned),
+        production_plan,
         direct_config_patches: materialization.direct_config_patches.clone(),
         caller_input_patches: materialization.caller_input_patches.clone(),
     };
@@ -79,6 +91,8 @@ pub(crate) fn materialize_native_patches(
         sha256: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         patch_count: patch_count(&document),
+        node_count: document.production_plan.nodes.len() as u64,
+        implementation_count: document.production_plan.implementations.len() as u64,
     })
 }
 
@@ -160,6 +174,18 @@ fn validate_receipt(
         .iter()
         .chain(&document.caller_input_patches)
         .collect::<Vec<_>>();
+    let activation_correlated = match (
+        document.implementation_activation_sha256.as_deref(),
+        receipt.implementation_activation_sha256.as_deref(),
+    ) {
+        (None, None) => document.production_plan.implementations.is_empty(),
+        (Some(expected), Some(observed)) => {
+            expected == observed
+                && valid_raw_digest(expected)
+                && !document.production_plan.implementations.is_empty()
+        }
+        _ => false,
+    };
     let correlated = document.schema_id == NATIVE_MATERIALIZATION_SCHEMA
         && document.candidate_sha256 == spec.candidate_sha256
         && document.candidate_graph_identity == spec.candidate_graph_identity
@@ -169,8 +195,23 @@ fn validate_receipt(
         && receipt.experiment_sha256 == spec.candidate_graph_identity.experiment_sha256
         && receipt.topology_sha256 == spec.candidate_graph_identity.topology_sha256
         && receipt.native_materialization_sha256 == spec.native_materialization_sha256
+        && activation_correlated
         && receipt.run_id == spec.run_id
         && receipt.run_id == terminal_run_id
+        && receipt.nodes.len() == document.production_plan.nodes.len()
+        && document
+            .production_plan
+            .nodes
+            .iter()
+            .zip(&receipt.nodes)
+            .all(|(expected, observed)| node_consumed(expected, observed))
+        && receipt.implementations.len() == document.production_plan.implementations.len()
+        && document
+            .production_plan
+            .implementations
+            .iter()
+            .zip(&receipt.implementations)
+            .all(|(expected, observed)| implementation_consumed(expected, observed))
         && receipt.patches.len() == patches.len()
         && patches
             .iter()
@@ -186,6 +227,40 @@ fn validate_receipt(
     })
 }
 
+fn node_consumed(
+    expected: &CandidateExecutionNode,
+    observed: &crate::research_protocol::NativeNodeConsumption,
+) -> bool {
+    let digest = canonical_prefixed_digest(expected);
+    observed.ordinal == expected.ordinal
+        && observed.address == *expected.dimension.address()
+        && observed.class == expected.class
+        && digest.as_deref() == Some(observed.input_node_sha256.as_str())
+        && observed.input_node_sha256 == observed.observed_node_sha256
+        && observed.dependencies_loaded
+        && observed.conditions_satisfied
+        && observed.loaded
+        && observed.applied
+        && observed.observed
+}
+
+fn implementation_consumed(
+    expected: &CandidateImplementation,
+    observed: &crate::research_protocol::NativeImplementationConsumption,
+) -> bool {
+    let digest = canonical_prefixed_digest(expected);
+    observed.module == expected.module
+        && observed.implementation_id == expected.implementation_id
+        && digest.as_deref() == Some(observed.input_binding_sha256.as_str())
+        && observed.input_binding_sha256 == observed.observed_binding_sha256
+        && observed.loaded
+        && observed.applied
+        && observed.observed
+        && observed.started
+        && observed.terminal
+        && observed.stopped
+}
+
 fn patch_consumed(
     expected: &CandidatePatch,
     observed: &crate::research_protocol::NativePatchConsumption,
@@ -199,6 +274,19 @@ fn patch_consumed(
         && observed.loaded
         && observed.applied
         && observed.observed
+}
+
+fn canonical_prefixed_digest(value: &impl serde::Serialize) -> Option<String> {
+    serde_json::to_vec(value)
+        .ok()
+        .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
+fn valid_raw_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn patch_count(document: &NativeMaterializationDocument) -> u64 {

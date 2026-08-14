@@ -1026,9 +1026,9 @@ fn replace_description_only(spec: &mut ToolSpec, description: &str) {
 /// here only so the model sees the spec; its executor is never run (the kernel handles it).
 pub const DISPATCH_AGENT: &str = "dispatch_agent";
 
-/// The name the kernel intercepts to launch an in-turn ultracode workflow (parallels
-/// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so the
-/// registered executor's fallback message is only reached by a non-kernel caller.
+/// The name the kernel intercepts to launch a model-directed workflow (parallels
+/// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so
+/// the registered executor's fallback message is only reached by a non-kernel caller.
 pub use workflow_tool::WORKFLOW_TOOL;
 
 fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {

@@ -454,10 +454,6 @@ mod gate_integration_tests {
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
     use super::*;
 
-    /// The system prompt every agent in this module is constructed with. Named so a fake provider
-    /// can tell the parent's own turn apart from a child it must never see admitted.
-    const PARENT_SYSTEM: &str = "sys";
-
     /// Pin the registry-driven resolved tunable set onto a test agent.
     ///
     /// Production resolves tunables at the composition root and hands them to
@@ -1157,13 +1153,33 @@ mod gate_integration_tests {
         }
     }
 
-    /// Drives an ultracode run: emits leaves on the decompose turn, a finding for each fan worker,
-    /// and "done" for the writer — distinguished by the system prompt (all share one provider).
     #[derive(Default)]
-    struct ScriptedUltra {
-        fan_calls: AtomicUsize,
-        total_calls: AtomicUsize,
-        fan_efforts: std::sync::Mutex<Vec<(iteron_protocol::ReasoningEffort, u32)>>,
+    struct CaptureWriter {
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CaptureWriter {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.requests.lock().unwrap().push(req.clone());
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct ScriptedWorkflowCall {
+        turn: AtomicUsize,
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
     }
 
     /// Answers at a fixed, large size so a transcript grows past a compaction trigger over a few
@@ -1345,214 +1361,40 @@ mod gate_integration_tests {
         }
     }
 
-    #[derive(Default)]
-    struct BlockingUltraDecomposition {
-        started: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-        calls: AtomicUsize,
-        /// The system prompt of the first turn, recorded for the test to assert after joining.
-        ///
-        /// It used to be asserted here. An assertion inside the provider panics in the spawned
-        /// turn, so `started` was never notified and the test's `notified().await` deadlocked
-        /// instead of failing: one stale expectation hung the whole suite.
-        first_system: std::sync::Mutex<Option<String>>,
-    }
-
     #[async_trait::async_trait]
-    impl Provider for BlockingUltraDecomposition {
+    impl Provider for ScriptedWorkflowCall {
         async fn turn(
             &self,
             req: &TurnRequest,
-            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.first_system
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| req.system.clone());
-            self.started.notify_one();
-            self.release.notified().await;
-            Ok(TurnResult {
-                blocks: vec![Block::Text {
-                    text: "Inspect first boundary\nInspect second boundary".into(),
-                }],
-                stop_reason: StopReason::EndTurn,
-                usage: UsageReport::complete(Usage::default()),
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct BlockingUltraChild {
-        child_started: tokio::sync::Notify,
-        // A persistent release latch (not a one-shot Notify): concurrent investigators may reach
-        // their block at different times and, under a permit cap of 1, sequentially — a latch avoids
-        // both a missed-notification hang and any dependence on the machine's iteron count.
-        released: std::sync::atomic::AtomicBool,
-        total_calls: AtomicUsize,
-        child_calls: AtomicUsize,
-        /// A turn that is neither the parent's own nor a planner/investigator one: that is a writer
-        /// child, which drain must never admit. Recorded, not panicked — a panic here fires inside
-        /// the provider task and deadlocks the test awaiting `child_started`.
-        writer_admitted: std::sync::atomic::AtomicBool,
-    }
-
-    #[async_trait::async_trait]
-    impl Provider for BlockingUltraChild {
-        async fn turn(
-            &self,
-            req: &TurnRequest,
-            _on_item: &mut (dyn FnMut(StreamItem) + Send),
-        ) -> Result<TurnResult, ProviderError> {
-            self.total_calls.fetch_add(1, Ordering::SeqCst);
-            let text = if req.system.starts_with("You plan a READ-ONLY") {
-                "Inspect first boundary\nInspect second boundary".to_string()
-            } else if req.system.contains("read-only investigation subagent") {
-                // Bounded-concurrent fan: an admitted investigator enters its first turn before
-                // drain is observed, makes exactly one provider turn, then quiesces at its post-turn
-                // safe point on the shared drain flag (the old sequential loop stopped the second
-                // child before it ever started). Block on the persistent release latch.
-                self.child_calls.fetch_add(1, Ordering::SeqCst);
-                self.child_started.notify_one();
-                while !self.released.load(Ordering::SeqCst) {
-                    tokio::time::sleep(Duration::from_millis(2)).await;
-                }
-                "child quiesced".to_string()
-            } else if req.system == PARENT_SYSTEM {
-                // Ultracode planning now runs inside the workflow engine, so the parent issues an
-                // ordinary turn before any planning happens and it reaches this fake provider,
-                // which the previous ordering made impossible.
-                "parent turn".to_string()
+            self.requests.lock().unwrap().push(req.clone());
+            if self.turn.fetch_add(1, Ordering::SeqCst) == 0 {
+                let tool = ToolUse {
+                    id: "workflow-1".into(),
+                    name: iteron_tools::WORKFLOW_TOOL.into(),
+                    input: serde_json::json!({
+                        "script": SEAM_SCRIPT,
+                        "background": false
+                    }),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                })
             } else {
-                self.writer_admitted.store(true, Ordering::SeqCst);
-                String::new()
-            };
-            Ok(TurnResult {
-                blocks: vec![Block::Text { text }],
-                stop_reason: StopReason::EndTurn,
-                usage: UsageReport::complete(Usage::default()),
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Provider for ScriptedUltra {
-        async fn turn(
-            &self,
-            req: &TurnRequest,
-            _on_item: &mut (dyn FnMut(StreamItem) + Send),
-        ) -> Result<TurnResult, ProviderError> {
-            self.total_calls.fetch_add(1, Ordering::SeqCst);
-            let text = if req.system.starts_with("You decompose")
-                || req.system.starts_with("You plan a READ-ONLY")
-            {
-                // Legacy decomposition and the WorkflowEngine planning agent both propose the
-                // same two bounded leaves; the latter is normalized by the planner adapter.
-                "Investigate the error types\nInvestigate the logging paths".to_string()
-            } else if req.system.contains("read-only investigation subagent") {
-                self.fan_calls.fetch_add(1, Ordering::SeqCst);
-                self.fan_efforts
-                    .lock()
-                    .unwrap()
-                    .push((req.reasoning_effort, req.thinking_budget));
-                "Finding: error handling lives in src/err.rs:10".to_string()
-            } else {
-                "done".to_string()
-            };
-            Ok(TurnResult {
-                blocks: vec![Block::Text { text }],
-                stop_reason: StopReason::EndTurn,
-                usage: UsageReport::complete(Usage::default()),
-            })
-        }
-    }
-
-    /// Every model turn that matters here is MID-STREAM and never finishes on its own — the shape of
-    /// the 16-way ultracode fan-out an operator pressed Esc on. Decomposition answers immediately;
-    /// each fan investigator, and the background agent inside a detached workflow run, parks
-    /// forever. So nothing in a test using this provider can terminate except by having its
-    /// in-flight stream dropped, which is what makes "the stop landed mid-stream" observable at all
-    /// — and, for the detached run, makes "the stop did NOT land here" observable too.
-    ///
-    /// Parked turns are counted separately by role so parent-stop and run-kill scopes cannot be
-    /// accidentally conflated.
-    /// The prompt that marks a parked turn as the DETACHED run's background agent rather than a
-    /// fan worker. One constant, because the provider that recognises it and the script that plants
-    /// it must not drift — a typo would silently reclassify the run this test is proving untouched.
-    const BACKGROUND_AGENT_PROMPT: &str = "keep-sweeping-in-the-background";
-
-    #[derive(Default)]
-    struct ParkedFan {
-        fan_started: AtomicUsize,
-        fan_cancelled: AtomicUsize,
-        background_started: AtomicUsize,
-        background_cancelled: AtomicUsize,
-        writer_started: AtomicUsize,
-        writer_cancelled: AtomicUsize,
-    }
-
-    /// Increments a counter when dropped, which for a parked provider turn happens exactly when
-    /// something cancelled it. A plain counter could only say the turn started.
-    struct CountOnCancel<'a>(&'a AtomicUsize);
-    impl Drop for CountOnCancel<'_> {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Provider for ParkedFan {
-        async fn turn(
-            &self,
-            req: &TurnRequest,
-            _on_item: &mut (dyn FnMut(StreamItem) + Send),
-        ) -> Result<TurnResult, ProviderError> {
-            if req.system.starts_with("You plan a READ-ONLY") {
-                return Ok(TurnResult {
+                Ok(TurnResult {
                     blocks: vec![Block::Text {
-                        text: "Investigate the error types\nInvestigate the logging paths\n\
-                               Investigate the retry paths\nInvestigate the timeout paths"
-                            .to_string(),
+                        text: "done".into(),
                     }],
                     stop_reason: StopReason::EndTurn,
                     usage: UsageReport::complete(Usage::default()),
-                });
-            }
-            // Checked before the investigator system prompt: a workflow's `agent()` child is built
-            // from the same read-only definition, so only its prompt tells the two roles apart.
-            let prompt = req
-                .messages
-                .iter()
-                .flat_map(|message| message.content.iter())
-                .filter_map(|block| match block {
-                    Block::Text { text } => Some(text.as_str()),
-                    _ => None,
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if prompt.contains(BACKGROUND_AGENT_PROMPT) {
-                self.background_started.fetch_add(1, Ordering::SeqCst);
-                let _cancelled = CountOnCancel(&self.background_cancelled);
-                std::future::pending::<()>().await;
-                unreachable!("a parked provider turn is only ever cancelled");
             }
-            if req.system.contains("read-only investigation subagent") {
-                self.fan_started.fetch_add(1, Ordering::SeqCst);
-                let _cancelled = CountOnCancel(&self.fan_cancelled);
-                // Park. Only dropping this future ends the "stream", which is exactly what a
-                // mid-flight cancellation has to do.
-                std::future::pending::<()>().await;
-                unreachable!("a parked provider turn is only ever cancelled");
-            }
-            self.writer_started.fetch_add(1, Ordering::SeqCst);
-            let _cancelled = CountOnCancel(&self.writer_cancelled);
-            std::future::pending::<()>().await;
-            unreachable!("the parked main writer exits only through the parent stop surface");
         }
     }
-
-    /// Issues the SAME failing edit (to a nonexistent file) on turns 0 and 1, then "done" — to
-    /// exercise the ADR-003 failed-action dedup.
     #[derive(Default)]
     struct ScriptedRepeatFail {
         turn: AtomicUsize,
@@ -2766,67 +2608,6 @@ mod gate_integration_tests {
     }
 
     #[test]
-    fn named_ultracode_prepares_one_dynamic_planning_fan_reduce_run() {
-        let ws = temp_ws("workflow-ultracode-dynamic");
-        let mut agent = workflow_seam_agent(&ws);
-        agent.budget.max_turns = 20;
-        let prepared = agent
-            .prepare_workflow(&serde_json::json!({
-                "name": "ultracode",
-                "args": {
-                    "task": "Trace the cross-crate workflow lifecycle",
-                    "taskClass": "multi_file",
-                    "maxLeaves": 3
-                }
-            }))
-            .expect("the built-in dynamic workflow prepares");
-
-        assert_eq!(prepared.name, "ultracode");
-        assert_eq!(
-            prepared.declared_phases,
-            vec!["planning", "exploring", "reducing"]
-        );
-        assert_eq!(prepared.spec.script, ULTRACODE_DYNAMIC_SCRIPT);
-        assert_eq!(prepared.spec.args["taskClass"], "multi_file");
-        assert_eq!(prepared.spec.args["maxLeaves"], 3);
-        assert!(
-            prepared.spec.args["coverage"]
-                .as_str()
-                .is_some_and(|v| !v.is_empty())
-        );
-        assert_eq!(
-            prepared.spec.limits.max_agent_calls(),
-            4,
-            "one planner plus three bounded investigators share one engine lifecycle"
-        );
-        assert!(
-            prepared.background,
-            "the session owner receives it by default"
-        );
-
-        let manifest = crate::workflow::load_manifest(&prepared.workflows_dir, &prepared.run_id)
-            .expect("the built-in remains resumable through the ordinary manifest");
-        assert_eq!(manifest.name, "ultracode");
-        assert_eq!(manifest.args, prepared.spec.args);
-        let run_id = prepared.run_id.clone();
-        drop(prepared);
-        let resumed = agent
-            .prepare_workflow_resume(&run_id)
-            .expect("the persisted exact script restores the planner adapter");
-        assert_eq!(
-            resumed.declared_phases,
-            vec!["planning", "exploring", "reducing"]
-        );
-        assert_eq!(
-            resumed.spec.resume_from.as_ref().map(|id| id.as_str()),
-            Some(run_id.as_str())
-        );
-
-        drop(agent);
-        std::fs::remove_dir_all(ws).unwrap();
-    }
-
-    #[test]
     fn preparing_a_panel_resume_reuses_the_persisted_identity_and_cache_source() {
         let ws = temp_ws("workflow-panel-resume");
         let mut agent = workflow_seam_agent(&ws);
@@ -2966,12 +2747,10 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
-    /// The decoupling has to be the DEFAULT to be worth having: a run only left the turn when the
-    /// model remembered to ask, which meant the common case was still a conversation frozen behind a
-    /// fan-out. `background: false` is the opt-out, and it has to keep working, or a model that
-    /// genuinely needs the result inside its turn cannot say so.
+    /// Generic workflows remain in-turn by default so their evidence is available to the model;
+    /// explicit independent work may opt into a session-owned background run.
     #[tokio::test]
-    async fn a_workflow_detaches_by_default_and_waits_only_when_asked_to() {
+    async fn a_workflow_waits_by_default_and_detaches_only_when_asked_to() {
         #[derive(Clone)]
         struct Recording(std::sync::Arc<std::sync::atomic::AtomicBool>);
         impl crate::workflow::WorkflowLauncher for Recording {
@@ -2991,7 +2770,7 @@ mod gate_integration_tests {
 
         let ws = temp_ws("workflow-detach-default");
         let mut agent = workflow_seam_agent(&ws);
-        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         agent.set_workflow_launcher(std::sync::Arc::new(Recording(asked.clone())));
 
         agent
@@ -2999,20 +2778,20 @@ mod gate_integration_tests {
             .await
             .expect("a launch with no `background` key");
         assert!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
-            "a workflow that says nothing about background asks to outlive its turn"
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "a workflow that says nothing about background stays in the current turn"
         );
 
         agent
             .launch_workflow(
                 TurnId(0),
-                serde_json::json!({ "script": SEAM_SCRIPT, "background": false }),
+                serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
             .expect("an explicit in-turn launch");
         assert!(
-            !asked.load(std::sync::atomic::Ordering::SeqCst),
-            "`background: false` is how a model asks to wait for the result"
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "`background: true` is how a model asks to detach independent work"
         );
 
         drop(agent);
@@ -3774,17 +3553,17 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(success_ws).ok();
     }
 
-    /// Exercise the exact production decision seams rather than synthesizing nine recorder
+    /// Exercise the exact production decision seams rather than synthesizing recorder
     /// inputs.  Multiple scheduler opportunities are expected (one explicit admission plus one
     /// per provider turn); the invariant is one durable terminal for every minted opportunity,
     /// not one decision per slot for the lifetime of a run.
     #[tokio::test]
-    async fn h03_all_nine_live_slot_seams_are_durable_unique_and_leave_no_pending_opportunity() {
+    async fn h03_all_exercised_slot_seams_are_durable_unique_and_leave_no_pending_opportunity() {
         let ws = temp_ws("h03-nine-live-slots");
         init_git_workspace(&ws);
         std::fs::write(ws.join("fixture.txt"), "bounded evidence").unwrap();
         iteron_ctx::MemoryStore::at(&ws)
-            .add("bounded evidence for the nine live policy slots")
+            .add("bounded evidence for the live policy slots")
             .unwrap();
 
         let provider = std::sync::Arc::new(CaptureTwoTurnImages::default());
@@ -3811,7 +3590,7 @@ mod gate_integration_tests {
         agent.workspace = ws.clone();
         agent.memory_workspace = Some(ws.clone());
         pin_test_tunables(&mut agent);
-        // Keep this evidence oracle focused on the nine policy seams: the deferred catalog still
+        // Keep this evidence oracle focused on the live policy seams: the deferred catalog still
         // makes every tool reachable, while one eager schema stays inside the fixture's small
         // default context allocation.
         agent.deferred_tool_eager_limit = Some(1);
@@ -3837,11 +3616,11 @@ mod gate_integration_tests {
         // Context materialization invokes both context and memory exactly once and shares the
         // memory result with the injected bytes and evidence projection.
         agent
-            .resolve_injection(TurnId(0), "bounded evidence for the nine live policy slots")
+            .resolve_injection(TurnId(0), "bounded evidence for the live policy slots")
             .unwrap();
 
         // These are the production router and scheduler admission functions used by the run loop.
-        let route = agent
+        agent
             .route_submission(
                 "inspect several boundaries across the repository",
                 iteron_agents::RepoSignals {
@@ -3859,34 +3638,12 @@ mod gate_integration_tests {
             .unwrap();
         drop(prepared);
 
-        // The dynamic workflow's physical planner normalizer consumes the same pinned strategy;
-        // it may select only leaves present in the model result passed by the child runner.
-        let selected_route = agent.selected_route.as_ref().unwrap().route.clone();
-        let mut spawner_context =
-            agent.kernel_spawner_context(&selected_route, "h03-nine-live-slots-workflow");
-        spawner_context.ultracode_planning = Some(workflow_spawner::UltracodePlanning {
-            class: route.class,
-            max_leaves: 2,
-        });
-        let spawner = workflow_spawner::KernelSpawner::new(spawner_context);
-        let normalized = spawner.normalize_ultracode_plan(
-            &mut agent,
-            iteron_workflow::AgentOutcome::text(
-                "Inspect the context owner\nInspect the provider boundary",
-                8,
-            ),
-        );
-        assert!(matches!(
-            normalized,
-            iteron_workflow::AgentOutcome::Text { .. }
-        ));
-
         // The ordinary run performs the real streaming tool-policy decision, scheduler admission,
         // and verifier planning before their respective tool/provider effects.
         agent.verify_command = Some("scripted-check".into());
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::Pass,
-            "nine-slot evidence passed",
+            "policy-slot evidence passed",
         )));
         assert_eq!(
             agent.run("read fixture.txt and verify it").await.unwrap(),
@@ -3922,9 +3679,10 @@ mod gate_integration_tests {
             slots,
             policy_evidence_recorder::FROZEN_POLICY_SLOT_NAMES
                 .iter()
+                .filter(|slot| **slot != policy_evidence::PLANNER_SLOT)
                 .map(|slot| (*slot).to_owned())
                 .collect(),
-            "the physical seams must cover every frozen slot"
+            "this path covers every live physical seam; model-authored workflow topology does not invoke core/planner"
         );
         assert!(events.iter().any(|event| matches!(
             &event.kind,
@@ -5488,7 +5246,7 @@ mod gate_integration_tests {
     }
 
     #[tokio::test]
-    async fn orchestrated_images_reach_only_the_single_writer() {
+    async fn ultracode_images_reach_the_primary_model_without_an_implicit_workflow() {
         let ws = temp_ws("multimodal-orchestrated-scope");
         let provider = std::sync::Arc::new(CaptureImageInput {
             capable: true,
@@ -5522,24 +5280,12 @@ mod gate_integration_tests {
 
         assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
         let requests = provider.requests.lock().unwrap();
-        let mut planning = 0;
-        let mut investigators = 0;
-        let mut writers = 0;
-        for request in requests.iter() {
-            if request.system.starts_with("You plan a READ-ONLY") {
-                planning += 1;
-                assert!(request.input_images.is_empty());
-            } else if request.system.contains("read-only investigation subagent") {
-                investigators += 1;
-                assert!(request.input_images.is_empty());
-            } else {
-                writers += 1;
-                assert_eq!(request.input_images, vec![image.clone()]);
-            }
-        }
-        assert_eq!(planning, 1);
-        assert!(investigators >= 1);
-        assert_eq!(writers, 1);
+        assert_eq!(
+            requests.len(),
+            1,
+            "Ultracode must not insert planning or investigator turns before the primary model"
+        );
+        assert_eq!(requests[0].input_images, vec![image]);
         drop(requests);
         drop(agent);
         let _ = std::fs::remove_dir_all(ws);
@@ -7264,9 +7010,8 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn ultracode_decomposition_declares_its_stable_prefix_cacheable() {
-        // I-62: the decomposition prefix is a fixed literal, so shipping it uncached paid a cold
-        // round on every ultracode run that no other request in the kernel pays.
+    async fn explicit_decomposition_declares_its_stable_prefix_cacheable() {
+        // I-62: the explicit decomposition prefix is a fixed literal, so callers may cache it.
         #[derive(Default)]
         struct CacheableCapture {
             requests: std::sync::Mutex<Vec<TurnRequest>>,
@@ -7426,42 +7171,6 @@ ant-api03-SuperSecretModelToken12345"
             "planner and compaction drafts must not enter the parent transcript: {ui_events:?}"
         );
         drop(agent);
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    #[tokio::test]
-    async fn workspace_file_count_leaves_the_async_worker_and_is_memoized() {
-        // I-62: the routing signal walked the tree synchronously on the async path, once per
-        // submission.
-        let ws = temp_ws("workspace-file-count");
-        std::fs::write(ws.join("first.rs"), "fn a() {}\n").unwrap();
-        let rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("workspace-file-count".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut agent = Agent::new(
-            std::sync::Arc::new(CaptureSteering::default()),
-            Registry::coding_agent(&ws).unwrap(),
-            rollout,
-            "model-a".into(),
-            "sys".into(),
-            Budget::default(),
-        );
-        agent.workspace = ws.clone();
-
-        let first = agent.workspace_file_count().await;
-        assert_eq!(first, approx_workspace_file_count(&ws));
-
-        // A second submission reuses the session answer instead of walking the tree again.
-        std::fs::write(ws.join("second.rs"), "fn b() {}\n").unwrap();
-        assert_ne!(
-            approx_workspace_file_count(&ws),
-            first,
-            "the fixture must actually change the on-disk count"
-        );
-        assert_eq!(agent.workspace_file_count().await, first);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -10413,7 +10122,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn d6_02_ultracode_context_append_failure_precedes_decomposition_provider_call() {
+    async fn d6_02_ultracode_context_append_failure_precedes_main_model_call() {
         let ws = temp_ws("environment-context-ultracode-fault");
         let provider = std::sync::Arc::new(CaptureSteering::default());
         let rollout = Rollout::open(
@@ -10447,13 +10156,13 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert!(
             provider.requests.lock().unwrap().is_empty(),
-            "decomposition cannot cross a failed ContextInjection WAL"
+            "the main model cannot cross a failed ContextInjection WAL"
         );
         let _ = std::fs::remove_dir_all(ws);
     }
 
     #[tokio::test]
-    async fn d6_02_ultracode_phase_append_failure_precedes_decomposition_provider_call() {
+    async fn d6_02_ultracode_phase_append_failure_precedes_main_model_call() {
         let ws = temp_ws("environment-phase-ultracode-fault");
         let provider = std::sync::Arc::new(CaptureSteering::default());
         let rollout = Rollout::open(
@@ -10487,7 +10196,7 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert!(
             provider.requests.lock().unwrap().is_empty(),
-            "decomposition cannot cross a failed durable Context phase"
+            "the main model cannot cross a failed durable Context phase"
         );
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
         assert!(
@@ -11074,646 +10783,132 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn ultracode_fans_out_then_the_writer_runs() {
-        let ws = temp_ws("ultra");
-        let registry = Registry::coding_agent(&ws).unwrap();
+    async fn ultracode_enters_the_main_model_before_any_workflow_decision() {
+        let ws = temp_ws("ultracode-main-model-first");
         let runs = ws.join(".iteron/runs");
-        let run = iteron_protocol::RunId("ultra".into());
+        let run = iteron_protocol::RunId("ultracode-main-model-first".into());
+        let provider = std::sync::Arc::new(CaptureWriter::default());
         let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
-        let budget = Budget {
-            // Writer-first allocation reserves about half; 20 leaves enough for two 2+ turn
-            // investigators and a multi-turn writer.
-            max_turns: 20,
-            max_usd: None,
-            max_tokens: None,
-            max_wall_secs: 60,
-            max_consecutive_tool_errors: 5,
-        };
-        let provider = std::sync::Arc::new(ScriptedUltra::default());
-        let mut a = Agent::new(
-            provider.clone(),
-            registry,
-            rollout,
-            "m".into(),
-            "sys".into(),
-            budget,
-        );
-        a.workspace = ws.clone();
-        a.effort = iteron_protocol::Effort::Ultracode; // -> Orchestrated
-        // The public resolved fixture carries one bounded synthetic provider/model route. Align
-        // this provider-less fake with that executable route so the child-model identity proves
-        // the workflow behavior under test instead of failing at route attestation.
-        a.model = "fixture:value-2".into();
-        bind_unrecorded_test_route(&mut a);
-        a.selected_route.as_mut().unwrap().route.provider_id = "fixture:value-1".into();
-        a.set_environment_context(
-            "\nEnvironment facts\ngit: branch=original; status=clean\n".into(),
-            Trust::Workspace,
-        )
-        .unwrap();
-        record_test_genesis_with_tunable_edits(
-            &mut a,
-            &ws,
-            [
-                (
-                    "route_topology",
-                    iteron_tunables::ResolutionValue::Enum {
-                        value: "orchestrated".into(),
-                    },
-                ),
-                (
-                    "per_agent_effort_thinking",
-                    iteron_tunables::ResolutionValue::Enum {
-                        value: "max".into(),
-                    },
-                ),
-            ],
-        );
-        install_test_provider_governor_from_tunables(&mut a);
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        a.set_ui(ui_tx);
-        let (workflow_tx, mut workflow_rx) = tokio::sync::mpsc::unbounded_channel();
-        a.set_workflow_progress(workflow_tx);
-        // A vague, cross-cutting task routes to an evidence class (not Localized) -> fans out.
-        let outcome = a
-            .run("improve error handling across the whole project")
-            .await
-            .unwrap();
-        assert_eq!(outcome, Outcome::Done);
-        assert!(
-            provider.fan_calls.load(Ordering::SeqCst) >= 2,
-            "the fan must have spawned >=2 investigators"
-        );
-        assert!(
-            provider
-                .fan_efforts
-                .lock()
-                .unwrap()
-                .iter()
-                .all(
-                    |(reasoning, thinking)| *reasoning == iteron_protocol::ReasoningEffort::Max
-                        && *thinking == iteron_protocol::Effort::Max.thinking_budget()
-                ),
-            "Ultracode children inherit Max provider effort without recursively orchestrating"
-        );
-        // the parent rollout records a SubagentSpawned per fan worker.
-        let path = runs.join(format!("{run}.jsonl"));
-        let events = iteron_record::replay(&path).unwrap();
-        let submission = events
-            .iter()
-            .position(|event| {
-                matches!(
-                    &event.kind,
-                    EventKind::Message { message }
-                        if message.content.iter().any(|block| matches!(
-                            block,
-                            Block::Text { text }
-                                if text.contains("improve error handling across the whole project")
-                        ))
-                )
-            })
-            .expect("durable operator submission");
-        let first_provider_attempt = events
-            .iter()
-            .position(|event| matches!(event.kind, EventKind::TurnStart))
-            .expect("decomposition provider attempt");
-        let context_injection = events
-            .iter()
-            .position(|event| matches!(event.kind, EventKind::ContextInjection { .. }))
-            .expect("durable environment context");
-        assert!(
-            submission < context_injection && context_injection < first_provider_attempt,
-            "submission and context must be durable before decomposition"
-        );
-        let spawned = events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::SubagentSpawned { .. }))
-            .count();
-        assert_eq!(
-            spawned, 0,
-            "WorkflowEngine children own their child journals; the main writer must not forge parent SubagentSpawned rows"
-        );
-        let workflow_events = events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                EventKind::WorkflowV2 {
-                    event: workflow, ..
-                } => Some((event.seq, workflow)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut ui_events = Vec::new();
-        while let Ok(event) = ui_rx.try_recv() {
-            ui_events.push(event);
-        }
-        // Frozen compatibility projections are still understood on replay, but the production
-        // built-in now has one authoritative WorkflowEngine lifecycle. Exercise the old assertions
-        // only if an old record actually supplied that projection.
-        if !workflow_events.is_empty() {
-            let started_seq = workflow_events
-                .iter()
-                .find_map(|(seq, event)| {
-                    matches!(event, iteron_protocol::WorkflowEvent::Started { .. }).then_some(*seq)
-                })
-                .expect("durable workflow start");
-            let (planned_seq, fan_turns, writer_turns) = workflow_events
-                .iter()
-                .find_map(|(seq, event)| match event {
-                    iteron_protocol::WorkflowEvent::Planned {
-                        fan_turn_budget,
-                        writer_turn_reserve,
-                        ..
-                    } => Some((*seq, *fan_turn_budget, *writer_turn_reserve)),
-                    _ => None,
-                })
-                .expect("durable workflow plan");
-            assert!(started_seq < planned_seq);
-            assert!(
-                writer_turns > fan_turns,
-                "writer-first allocation must dominate fan spend ({writer_turns} vs {fan_turns})"
-            );
-            let child_starts = workflow_events
-                .iter()
-                .filter(|(_, event)| {
-                    matches!(event, iteron_protocol::WorkflowEvent::ChildStarted { .. })
-                })
-                .count();
-            let child_finishes = workflow_events
-                .iter()
-                .filter(|(_, event)| {
-                    matches!(event, iteron_protocol::WorkflowEvent::ChildFinished { .. })
-                })
-                .count();
-            assert_eq!(child_starts, 2);
-            assert_eq!(child_finishes, 2, "every admitted child must terminalize");
-            let (reduced_seq, adopted_message_seq) = workflow_events
-                .iter()
-                .find_map(|(seq, event)| match event {
-                    iteron_protocol::WorkflowEvent::Reduced {
-                        evidence_message_seq: Some(message_seq),
-                        ..
-                    } => Some((*seq, *message_seq)),
-                    _ => None,
-                })
-                .expect("durable reduce adoption");
-            assert!(events.iter().any(|event| {
-                event.seq == adopted_message_seq
-                    && matches!(
-                        &event.kind,
-                        EventKind::Message { message }
-                            if message.content.iter().any(|block| matches!(
-                                block,
-                                Block::Text { text }
-                                    if text.starts_with("[Core workflow evidence")
-                            ))
-                    )
-            }));
-            let finished_seq = workflow_events
-                .iter()
-                .find_map(|(seq, event)| {
-                    matches!(event, iteron_protocol::WorkflowEvent::Finished { .. }).then_some(*seq)
-                })
-                .expect("durable workflow terminal");
-            assert!(adopted_message_seq < reduced_seq && reduced_seq < finished_seq);
-
-            assert!(matches!(
-                ui_events.first(),
-                Some(UiEvent::Phase(Phase::Context))
-            ));
-            assert!(matches!(
-                ui_events
-                    .iter()
-                    .find(|event| matches!(event, UiEvent::Workflow(_))),
-                Some(UiEvent::Workflow(WorkflowUiEvent::RunStarted { name, .. })) if name == "ultracode"
-            ));
-            assert!(ui_events.iter().any(|event| matches!(
-                event,
-                UiEvent::Workflow(WorkflowUiEvent::PlanReady { tasks, .. }) if tasks.len() == 2
-            )));
-            let position = |needle: fn(&UiEvent) -> bool| {
-                ui_events
-                    .iter()
-                    .position(needle)
-                    .expect("workflow lifecycle event")
-            };
-            let agent_0_start = position(|event| {
-                matches!(
-                    event,
-                    UiEvent::Workflow(WorkflowUiEvent::AgentStarted { agent_id: 0, .. })
-                )
-            });
-            let agent_0_end = position(|event| {
-                matches!(
-                    event,
-                    UiEvent::Workflow(WorkflowUiEvent::AgentFinished {
-                        agent_id: 0,
-                        outcome: WorkflowAgentOutcomeUi::Done,
-                        ..
-                    })
-                )
-            });
-            let agent_1_start = position(|event| {
-                matches!(
-                    event,
-                    UiEvent::Workflow(WorkflowUiEvent::AgentStarted { agent_id: 1, .. })
-                )
-            });
-            // Bounded-concurrent fan: workers are admitted in declaration order (all AgentStarted are
-            // emitted during the sequential setup phase), then run concurrently — so the second worker
-            // starts before the first finishes. Completion order is not asserted (it is not guaranteed).
-            assert!(
-                agent_0_start < agent_1_start,
-                "workers are admitted in declaration order"
-            );
-            assert!(
-                agent_1_start < agent_0_end,
-                "the fan runs investigators concurrently: every admitted worker starts before any finishes"
-            );
-            assert!(matches!(
-                ui_events.last(),
-                Some(UiEvent::Workflow(WorkflowUiEvent::RunFinished {
-                    outcome: WorkflowRunOutcomeUi::Done,
-                    ..
-                }))
-            ));
-        }
-        assert!(
-            !ui_events
-                .iter()
-                .any(|event| matches!(event, UiEvent::Workflow(_))),
-            "the migrated built-in has one WorkflowEngine presentation, not a parallel legacy card"
-        );
-        let mut engine_events = Vec::new();
-        while let Ok(event) = workflow_rx.try_recv() {
-            engine_events.push(event);
-        }
-        let (engine_run_id, declared_phases) = engine_events
-            .iter()
-            .find_map(|event| match event {
-                crate::workflow::WorkflowRunUiEvent::Started { run_id, phases, .. } => {
-                    Some((run_id, phases))
-                }
-                _ => None,
-            })
-            .expect("the built-in fan starts the surviving engine progress surface");
-        assert_eq!(
-            declared_phases,
-            &["planning", "exploring", "reducing"],
-            "the engine declares planning and the whole dynamic fan/reduce shape on frame one"
-        );
-        assert_eq!(
-            engine_events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    crate::workflow::WorkflowRunUiEvent::Progress {
-                        event: iteron_workflow::ProgressEvent::AgentQueued { .. },
-                        ..
-                    }
-                ))
-                .count(),
-            3,
-            "one planner plus two normalized investigators are declared exactly once"
-        );
-        assert!(engine_events.iter().any(|event| matches!(
-            event,
-            crate::workflow::WorkflowRunUiEvent::Progress {
-                event: iteron_workflow::ProgressEvent::Phase { title, .. },
-                ..
-            } if title == "planning"
-        )));
-        assert!(matches!(
-            engine_events.last(),
-            Some(crate::workflow::WorkflowRunUiEvent::Finished { run_id, .. })
-                if run_id == engine_run_id
-        ));
-        let listed = crate::workflow::list_runs(&runs.join("subagents/workflows"));
-        assert!(listed.iter().any(|run| {
-            run.run_id == *engine_run_id && run.name == "ultracode" && run.status == "done"
-        }));
-        let expected_attempts = a.ledger.provider_attempts;
-        let expected_turns = a.ledger.turns;
-        let expected_usage = a.ledger.usage;
-        let expected_reproducible = serde_json::to_vec(&a.ledger.reproducible_counters()).unwrap();
-        let resume_messages = Agent::messages_from_rollout(&path).unwrap();
-        drop(a);
-        let resume_rollout =
-            Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
-        let mut resumed = Agent::new(
-            std::sync::Arc::new(ScriptedDone),
-            Registry::coding_agent(&ws).unwrap(),
-            resume_rollout,
-            "m".into(),
-            "sys".into(),
-            Budget::default(),
-        );
-        resumed.set_resume(resume_messages).unwrap();
-        assert_eq!(resumed.ledger.provider_attempts, expected_attempts);
-        assert_eq!(resumed.ledger.turns, expected_turns);
-        assert_eq!(resumed.ledger.usage, expected_usage);
-        assert_eq!(
-            serde_json::to_vec(&resumed.ledger.reproducible_counters()).unwrap(),
-            expected_reproducible,
-            "workflow child counters must replay byte-for-byte"
-        );
-        drop(resumed);
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// An operator stop pressed after Ultracode launches must stop the main writer and leave every
-    /// session-owned background run alone. A run-scoped kill is the only control that reaches the
-    /// detached engine and its investigators.
-    ///
-    /// Every provider turn here parks forever, making ownership observable: queued
-    /// the interactive stop flag plus its queued `Op::Interrupt` drop the parent writer promptly,
-    /// neither detached run changes state, and cancelling each run id drops only that run's parked
-    /// children.
-    #[tokio::test]
-    async fn an_operator_stop_ends_the_writer_and_leaves_detached_runs_running() {
-        let background_script = format!(
-            "export const meta = {{ name: 'sweep', description: '', phases: ['one'] }};\n\
-             return await agent('{BACKGROUND_AGENT_PROMPT}');\n"
-        );
-
-        let ws = temp_ws("ultra-stop-scope");
-        let registry = Registry::coding_agent(&ws).unwrap();
-        let runs = ws.join(".iteron/runs");
-        let run = iteron_protocol::RunId("ultra-stop-scope".into());
-        let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
-        let provider = std::sync::Arc::new(ParkedFan::default());
-        let mut a = Agent::new(
-            provider.clone(),
-            registry,
-            rollout,
-            // Matches the durable model selection below: the `Workflow` tool only prepares a run
-            // under a bound route.
-            "model-a".into(),
-            "sys".into(),
-            Budget {
-                max_turns: 20,
-                max_usd: None,
-                max_tokens: None,
-                // Far longer than the test's own bound, so a wall deadline can never be what ends
-                // this run. Only a mid-stream cancellation can.
-                max_wall_secs: 600,
-                max_consecutive_tool_errors: 5,
-            },
-        );
-        a.workspace = ws.clone();
-        record_orchestrated_test_genesis(&mut a, &ws);
-
-        // A real detached run, started through the production owner, parked in a background agent.
-        use crate::workflow::WorkflowLauncher as _;
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
-        let supervisor = crate::workflow::WorkflowSupervisor::new(settled_tx);
-        a.set_workflow_launcher(supervisor.clone());
-        let receipt = a
-            .launch_workflow(
-                TurnId(0),
-                serde_json::json!({ "script": background_script, "background": true }),
-            )
-            .await
-            .expect("the owner detaches a requested background run");
-        assert!(receipt.contains("is running"), "{receipt}");
-        let detached_run_id = receipt
-            .split_once("Task ID: ")
-            .and_then(|(_, tail)| tail.lines().next())
-            .map(str::to_string)
-            .expect("the receipt names the detached run");
-        // Bounded like the fan/writer wait below. An unbounded spin turns a background agent that
-        // never starts into a hung suite, which is indistinguishable from a slow one.
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while provider.background_started.load(Ordering::SeqCst) == 0 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the background agent starts");
-
-        // Now launch Ultracode. The engine-owned planner/fan detaches; the ordinary parent writer
-        // remains the only work this turn owns. Mirror the interactive frontend exactly: it flips
-        // the low-latency interrupt flag and queues the durable control operation.
-        a.effort = iteron_protocol::Effort::Ultracode;
-        let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        a.set_interrupt(interrupt.clone());
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        a.set_approvals(rx);
-        let running = tokio::spawn(async move {
-            a.run("improve error handling across the whole project")
-                .await
-        });
-        // Starting the detached engine crosses durable workflow setup before its fan and the
-        // parent writer can each reach the provider. Under an all-target run those independent
-        // tasks may be scheduler-starved, so this is only a generous harness watchdog; the two
-        // counters below remain the exact rendezvous required before the stop is pressed.
-        tokio::time::timeout(Duration::from_secs(60), async {
-            while provider.fan_started.load(Ordering::SeqCst) == 0
-                || provider.writer_started.load(Ordering::SeqCst) == 0
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("both detached investigators and the main writer start");
-
-        let ultracode_run_id = supervisor
-            .inventory()
-            .into_iter()
-            .find(|run| run.name == ULTRACODE_WORKFLOW_NAME)
-            .map(|run| run.run_id)
-            .expect("the supervisor owns the one ultracode engine run");
-
-        let pressed = Instant::now();
-        tx.send(Op::Interrupt.into())
-            .expect("the parent writer still owns its submission queue");
-        interrupt.store(true, Ordering::SeqCst);
-        let outcome = tokio::time::timeout(Duration::from_secs(20), running)
-            .await
-            .expect("an operator stop must settle the parent writer while detached work continues")
-            .unwrap()
-            .unwrap();
-        let settled_in = pressed.elapsed();
-        assert_eq!(outcome, Outcome::Interrupted);
-        assert!(
-            settled_in < Duration::from_secs(10),
-            "the stop remains far below the 600s run wall and cannot wait for a parked child stream: {settled_in:?}"
-        );
-        assert!(
-            provider.fan_started.load(Ordering::SeqCst) > 0,
-            "the detached investigators must have been mid-stream"
-        );
-        assert_eq!(provider.writer_cancelled.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.fan_cancelled.load(Ordering::SeqCst), 0);
-
-        // The detached run never saw any of it. Its stop surface is its own, and it is still live.
-        assert!(
-            matches!(
-                supervisor.collect(&detached_run_id),
-                crate::workflow::Collected::Running { .. }
-            ),
-            "the parent stop must not reach a pre-existing detached run"
-        );
-        assert!(
-            matches!(
-                supervisor.collect(&ultracode_run_id),
-                crate::workflow::Collected::Running { .. }
-            ),
-            "the parent stop must not reach the newly detached ultracode run"
-        );
-        assert_eq!(
-            provider.background_cancelled.load(Ordering::SeqCst),
-            0,
-            "the background agent inside the detached run was never cancelled"
-        );
-
-        // A run-scoped kill is what reaches Ultracode's investigators.
-        supervisor.cancel(&ultracode_run_id);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if matches!(
-                    supervisor.collect(&ultracode_run_id),
-                    crate::workflow::Collected::Settled { .. }
-                ) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the ultracode run-scoped kill settles its engine");
-        assert!(provider.fan_cancelled.load(Ordering::SeqCst) > 0);
-        assert!(matches!(
-            supervisor.collect(&detached_run_id),
-            crate::workflow::Collected::Running { .. }
-        ));
-
-        // The independent run still requires its own kill.
-        supervisor.cancel(&detached_run_id);
-        let killed = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let crate::workflow::Collected::Settled { summary } =
-                    supervisor.collect(&detached_run_id)
-                {
-                    return summary;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("a detached run stops when its OWN kill is used");
-        assert!(killed.contains(&detached_run_id), "{killed}");
-        assert_eq!(
-            provider.background_cancelled.load(Ordering::SeqCst),
-            provider.background_started.load(Ordering::SeqCst),
-            "the run-scoped kill cancels every bounded task-retry attempt owned by that run"
-        );
-
-        supervisor
-            .shutdown(&mut settled_rx, Duration::from_secs(5))
-            .await;
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    #[tokio::test]
-    async fn ultracode_follow_up_orchestrates_and_zero_budgets_admit_no_extra_calls() {
-        // The normal empty-TUI path starts with a typed submission and later calls follow_up.
-        // A resumed transcript must not suppress orchestration for that new operator task.
-        let ws = temp_ws("ultra-follow-up");
-        let provider = std::sync::Arc::new(ScriptedUltra::default());
-        let rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("ultra-follow-up".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
         let mut agent = Agent::new(
             provider.clone(),
             Registry::coding_agent(&ws).unwrap(),
             rollout,
-            "m".into(),
+            "model-a".into(),
             "sys".into(),
-            Budget {
-                max_turns: 24,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: 60,
-                max_consecutive_tool_errors: 5,
-            },
+            Budget::default(),
         );
         agent.workspace = ws.clone();
+        agent.effort = Effort::Ultracode;
         record_orchestrated_test_genesis(&mut agent, &ws);
-        assert_eq!(agent.run("inspect README.md").await.unwrap(), Outcome::Done);
-        agent.effort = iteron_protocol::Effort::Ultracode;
+        let (workflow_tx, mut workflow_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_workflow_progress(workflow_tx);
+
         assert_eq!(
             agent
-                .follow_up("improve error handling across every module")
+                .run("improve error handling across the whole project")
                 .await
                 .unwrap(),
             Outcome::Done
         );
-        assert!(provider.fan_calls.load(Ordering::SeqCst) >= 2);
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "the main model receives the first and only turn"
+        );
+        assert_eq!(requests[0].system, "sys");
+        assert!(
+            requests[0]
+                .tools
+                .iter()
+                .any(|tool| tool.name == iteron_tools::WORKFLOW_TOOL),
+            "Ultracode keeps the generic Workflow tool available to the main model"
+        );
+        drop(requests);
+        assert!(
+            crate::workflow::list_runs(&runs.join("subagents/workflows")).is_empty(),
+            "the runtime must not start a workflow before the model requests one"
+        );
+        assert!(
+            workflow_rx.try_recv().is_err(),
+            "no synthetic workflow progress is emitted before a Workflow tool call"
+        );
+        let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event.kind,
+                EventKind::Workflow { .. } | EventKind::WorkflowV2 { .. }
+            )),
+            "ordinary Ultracode admission must not forge workflow lifecycle events"
+        );
+        let user_messages = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::Message { ref message } if message.role == Role::User))
+            .count();
+        assert_eq!(
+            user_messages, 1,
+            "the operator submission is admitted exactly once"
+        );
+
         drop(agent);
         let _ = std::fs::remove_dir_all(&ws);
+    }
 
-        for (label, max_turns, max_usd, expected, expected_calls) in [
-            (
-                "ultra-zero-usd",
-                6,
-                Some(0.0),
-                Outcome::BudgetExhausted("max_usd"),
-                0,
-            ),
-            (
-                "ultra-one-turn",
-                1,
-                None,
-                // The engine cannot reserve planner + fan work from a one-turn ceiling, so the
-                // launch fails closed and that single turn remains available to the main writer.
-                Outcome::Done,
-                1,
-            ),
-        ] {
-            let ws = temp_ws(label);
-            let provider = std::sync::Arc::new(ScriptedUltra::default());
-            let rollout = Rollout::open(
-                &ws.join(".iteron/runs"),
-                &iteron_protocol::RunId(label.into()),
-                iteron_protocol::TenantId::default(),
-            )
-            .unwrap();
-            let mut agent = Agent::new(
-                provider.clone(),
-                Registry::coding_agent(&ws).unwrap(),
-                rollout,
-                "m".into(),
-                "sys".into(),
-                Budget {
-                    max_turns,
-                    max_usd,
-                    max_tokens: None,
-                    max_wall_secs: 60,
-                    max_consecutive_tool_errors: 5,
-                },
-            );
-            agent.workspace = ws.clone();
-            agent.effort = iteron_protocol::Effort::Ultracode;
-            record_orchestrated_test_genesis(&mut agent, &ws);
-            assert_eq!(
-                agent
-                    .run("improve error handling across every module")
-                    .await
-                    .unwrap(),
-                expected
-            );
-            assert_eq!(
-                provider.total_calls.load(Ordering::SeqCst),
-                expected_calls,
-                "{label} admitted the wrong number of provider calls"
-            );
-            assert_eq!(agent.ledger.provider_attempts as usize, expected_calls);
-            drop(agent);
-            let _ = std::fs::remove_dir_all(&ws);
-        }
+    #[tokio::test]
+    async fn ultracode_launches_a_generic_workflow_only_after_the_model_calls_the_tool() {
+        let ws = temp_ws("ultracode-model-workflow");
+        let runs = ws.join(".iteron/runs");
+        let run = iteron_protocol::RunId("ultracode-model-workflow".into());
+        let provider = std::sync::Arc::new(ScriptedWorkflowCall::default());
+        let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.effort = Effort::Ultracode;
+        agent.permission_mode = PermissionMode::AcceptEdits;
+        record_orchestrated_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent.run("use a workflow if it adds value").await.unwrap(),
+            Outcome::Done
+        );
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the model acts before and after its Workflow result"
+        );
+        assert!(
+            requests[1].messages.iter().any(|message| {
+                message.content.iter().any(|block| matches!(
+                    block,
+                    Block::ToolResult(result) if result.tool_use_id == "workflow-1" && !result.is_error
+                ))
+            }),
+            "the ordinary writer loop returns the explicit Workflow result to the model"
+        );
+        drop(requests);
+        let listed = crate::workflow::list_runs(&runs.join("subagents/workflows"));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "seam");
+        assert_eq!(listed[0].status, "done");
+
+        drop(agent);
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
@@ -16664,183 +15859,6 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    #[tokio::test]
-    async fn d1_11_ultracode_stops_after_planning_or_current_engine_child() {
-        let ws = temp_ws("drain-ultra-decompose");
-        init_git_workspace(&ws);
-        let provider = std::sync::Arc::new(BlockingUltraDecomposition::default());
-        let rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("drain-ultra-decompose".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut agent = Agent::new(
-            provider.clone(),
-            Registry::coding_agent(&ws).unwrap(),
-            rollout,
-            "m".into(),
-            "sys".into(),
-            Budget {
-                max_turns: 20,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: 30,
-                max_consecutive_tool_errors: 3,
-            },
-        );
-        agent.workspace = ws.clone();
-        agent.effort = Effort::Ultracode;
-        record_orchestrated_test_genesis(&mut agent, &ws);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        agent.set_approvals(rx);
-        let running = tokio::spawn(async move {
-            agent
-                .run("improve error handling across the whole project")
-                .await
-        });
-        await_signal(&provider.started, "the provider's first turn").await;
-        tx.send(Op::Drain.into()).unwrap();
-        provider.release.notify_one();
-        assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-        // The immutable orchestrated route enters the engine-owned planner first. Drain may let
-        // that already-admitted turn settle, but it must quiesce before any investigator or writer
-        // opens another provider attempt.
-        assert!(
-            provider
-                .first_system
-                .lock()
-                .unwrap()
-                .as_deref()
-                .is_some_and(|system| system.starts_with("You plan a READ-ONLY"))
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-
-        let ws = temp_ws("drain-ultra-child");
-        init_git_workspace(&ws);
-        let provider = std::sync::Arc::new(BlockingUltraChild::default());
-        let rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("drain-ultra-child".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut agent = Agent::new(
-            provider.clone(),
-            Registry::coding_agent(&ws).unwrap(),
-            rollout,
-            "m".into(),
-            "sys".into(),
-            Budget {
-                max_turns: 20,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: 30,
-                max_consecutive_tool_errors: 3,
-            },
-        );
-        agent.workspace = ws.clone();
-        agent.effort = Effort::Ultracode;
-        record_orchestrated_test_genesis(&mut agent, &ws);
-        // The ultracode fan runs through the workflow engine, which reports through the UI and
-        // workflow-progress channels. Without them the parent answers its own turn and stops, so
-        // no investigator ever enters one and this test could never observe a drain during a child.
-        let (ui_tx, _ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        agent.set_ui(ui_tx);
-        let (wf_tx, _wf_rx) = tokio::sync::mpsc::unbounded_channel();
-        agent.set_workflow_progress(wf_tx);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        agent.set_approvals(rx);
-        let running = tokio::spawn(async move {
-            agent
-                .run("improve error handling across the whole project")
-                .await
-        });
-        // Wait until an admitted investigator has entered its (blocked) first turn, so drain is
-        // observed only AFTER admission — the concurrent analogue of "drain during a child". How
-        // many children run a turn depends on the machine's concurrency permit count, so the test
-        // asserts the drain INVARIANT (writer never admitted), not an exact call count.
-        await_signal(
-            &provider.child_started,
-            "an admitted investigator's first turn",
-        )
-        .await;
-        tx.send(Op::Drain.into()).unwrap();
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        provider.released.store(true, Ordering::SeqCst);
-        assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
-        let child_calls = provider.child_calls.load(Ordering::SeqCst);
-        assert!(
-            child_calls >= 1,
-            "at least one admitted investigator runs its turn before drain"
-        );
-        // The writer is never admitted after drain. This is now recorded by the fake rather than
-        // panicked inside it, so a violation fails the test instead of hanging it.
-        assert!(
-            !provider.writer_admitted.load(Ordering::SeqCst),
-            "drain must prevent writer admission"
-        );
-        // Calls are the engine-owned planning turn and every investigator that entered one. The
-        // parent writer is the work drain must prevent after the current child safe point.
-        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 1 + child_calls);
-        let workflows_dir = ws.join(".iteron/runs/subagents/workflows");
-        let runs = crate::workflow::list_runs(&workflows_dir);
-        assert_eq!(
-            runs.len(),
-            1,
-            "one engine run owns planning and its children"
-        );
-        assert_eq!(
-            runs[0].agents, 3,
-            "the journal records the planner plus both planned child terminals even when drain prevents one child from entering its provider turn"
-        );
-        let result = crate::workflow::load_result(&workflows_dir, &runs[0].run_id)
-            .expect("the engine run settles its result sidecar");
-        assert_eq!(
-            result.errors, 2,
-            "both planned children settle as interrupted errors, including a child drain stopped before its provider turn"
-        );
-        assert!(result.stopped, "drain stops the engine immediately");
-
-        // The root owns the resumable checkpoint. Engine cancellation drops children immediately;
-        // waiting for every child to checkpoint would make drain non-immediate again.
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// Answers every turn; counts the engine-owned planning and investigator calls separately.
-    #[derive(Default)]
-    struct CountingUltraProvider {
-        calls: AtomicUsize,
-        planners: AtomicUsize,
-        investigators: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl Provider for CountingUltraProvider {
-        async fn turn(
-            &self,
-            req: &TurnRequest,
-            _on_item: &mut (dyn FnMut(StreamItem) + Send),
-        ) -> Result<TurnResult, ProviderError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let text = if req.system.starts_with("You plan a READ-ONLY") {
-                self.planners.fetch_add(1, Ordering::SeqCst);
-                "Inspect the first boundary\nInspect the second boundary\nInspect the third boundary"
-            } else if req.system.contains("read-only investigation subagent") {
-                self.investigators.fetch_add(1, Ordering::SeqCst);
-                "finding"
-            } else {
-                "done"
-            };
-            Ok(TurnResult {
-                blocks: vec![Block::Text { text: text.into() }],
-                stop_reason: StopReason::EndTurn,
-                usage: UsageReport::complete(Usage::default()),
-            })
-        }
-    }
-
     /// A pinned `core/router` that always answers with a fixed route.
     struct PinnedRouter {
         slot: iteron_protocol::slot::SlotId,
@@ -16873,147 +15891,13 @@ ant-api03-SuperSecretModelToken12345"
         })
     }
 
-    /// Run one ultracode submission and return the provider counters, optional engine-owned run,
-    /// and parent notices. The old parent-owned `WorkflowV2::Planned` projection deliberately no
-    /// longer exists: the WorkflowEngine journal/sidecars are now the run authority.
-    async fn ultracode_plan(
-        name: &str,
-        router: Option<std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>>,
-    ) -> (
-        std::sync::Arc<CountingUltraProvider>,
-        Option<crate::workflow::RunListing>,
-        Vec<String>,
-    ) {
-        let ws = temp_ws(name);
-        init_git_workspace(&ws);
-        let provider = std::sync::Arc::new(CountingUltraProvider::default());
-        let rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId(name.into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut agent = Agent::new(
-            provider.clone(),
-            Registry::coding_agent(&ws).unwrap(),
-            rollout,
-            "m".into(),
-            "sys".into(),
-            Budget {
-                max_turns: 40,
-                max_usd: None,
-                max_tokens: None,
-                max_wall_secs: 60,
-                max_consecutive_tool_errors: 3,
-            },
-        );
-        agent.workspace = ws.clone();
-        agent.effort = Effort::Ultracode;
-        record_orchestrated_test_genesis(&mut agent, &ws);
-        if let Some(router) = router {
-            agent.set_router(router).unwrap();
-        }
-        agent
-            .run("improve error handling across the whole project")
-            .await
-            .unwrap();
-        let events = iteron_record::replay(&ws.join(format!(".iteron/runs/{name}.jsonl"))).unwrap();
-        let notices = events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                EventKind::Notice { text } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        let listing = crate::workflow::list_runs(
-            &agent.runtime_state_dir.join("subagents").join("workflows"),
-        )
-        .into_iter()
-        .next();
-        drop(agent);
-        let _ = std::fs::remove_dir_all(&ws);
-        (provider, listing, notices)
-    }
-
-    /// The `core/router` seam is load-bearing on the live path, in all three directions:
-    /// the baseline still fans, a pinned route can decline the fan, and a pinned route that tries
-    /// to fan *wider* than the caller offered is refused rather than obeyed.
-    ///
-    /// This is the property a slot seam exists for. Before it, `Decomposer::route` was an inherent
-    /// call in `run_orchestrated` with nothing to substitute, so the ADR-011 classifier upgrade had
-    /// no way in and no test could have told a pinned policy from the hard-coded heuristic.
-    #[tokio::test]
-    async fn the_router_slot_decides_the_handling_path_and_cannot_widen_the_fan() {
-        // Baseline: the heuristic routes this broad ask to one engine run. Its journal has one
-        // planning result plus all three dynamically emitted investigator results.
-        let (provider, run, _) = ultracode_plan("router-slot-baseline", None).await;
-        assert_eq!(provider.planners.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.investigators.load(Ordering::SeqCst), 3);
-        let run = run.expect("the fanning route owns one durable engine run");
-        assert_eq!(run.status, "done");
-        assert_eq!(run.agents, 4);
-
-        // A pinned route that declines the fan takes the single-agent path — and never spends a
-        // provider call on decomposition, which is the whole point of routing before decomposing.
-        let (provider, run, _) = ultracode_plan(
-            "router-slot-direct",
-            Some(pinned_router(iteron_agents::RouterRoute::direct(
-                iteron_agents::TaskClass::Localized,
-            ))),
-        )
-        .await;
-        assert_eq!(provider.planners.load(Ordering::SeqCst), 0);
-        assert_eq!(provider.investigators.load(Ordering::SeqCst), 0);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-        assert!(run.is_none(), "a direct route must not mint a workflow run");
-
-        // A pinned route that narrows the fan is honoured, not recorded and ignored: the provider
-        // still emits three leaves and exactly two are fanned, with the third counted as dropped.
-        let (provider, run, _) = ultracode_plan(
-            "router-slot-narrow",
-            Some(pinned_router(iteron_agents::RouterRoute {
-                class: iteron_agents::TaskClass::MultiFile,
-                max_leaves: 2,
-            })),
-        )
-        .await;
-        assert_eq!(provider.planners.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.investigators.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            run.expect("the narrowed route still owns an engine run")
-                .agents,
-            3,
-            "one planner plus the two admitted leaves are journaled"
-        );
-
-        // A pinned route that asks for more breadth than the caller offered is refused by
-        // `route_with`, and the refusal degrades to the single-agent loop out loud.
-        let (provider, run, notices) = ultracode_plan(
-            "router-slot-widened",
-            Some(pinned_router(iteron_agents::RouterRoute {
-                class: iteron_agents::TaskClass::MultiFile,
-                max_leaves: iteron_agents::FAN_CAP as u16 + 1,
-            })),
-        )
-        .await;
-        assert_eq!(provider.planners.load(Ordering::SeqCst), 0);
-        assert_eq!(provider.investigators.load(Ordering::SeqCst), 0);
-        assert!(run.is_none());
-        assert!(
-            notices
-                .iter()
-                .any(|text| text.contains("core/router declined to route")),
-            "a refused route is said out loud, not swallowed: {notices:?}"
-        );
-    }
-
     /// A strategy for another slot cannot be installed as the router, and the router cannot be
     /// swapped once the run has started.
     #[tokio::test]
     async fn the_router_pinning_seam_checks_identity_and_closes_after_boot() {
         let ws = temp_ws("router-slot-identity");
         init_git_workspace(&ws);
-        let provider = std::sync::Arc::new(CountingUltraProvider::default());
+        let provider = std::sync::Arc::new(ScriptedDone);
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
             &iteron_protocol::RunId("router-slot-identity".into()),

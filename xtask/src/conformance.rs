@@ -9,6 +9,9 @@ use std::path::Path;
 use std::process::Command;
 use syn::visit::{self, Visit};
 
+mod frozen_model;
+mod research_distribution;
+
 const RUNTIME_SOURCE: &str = "crates/cli/src/runtime/workflow_collect.rs";
 const KERNEL_MANIFEST: &str = "crates/kernel/Cargo.toml";
 const KERNEL_SOURCE_DIR: &str = "crates/kernel/src";
@@ -224,6 +227,8 @@ pub fn validate(root: &Path) -> Result<()> {
         validate_kernel_context_facade(root)?;
     }
     validate_kernel_negative_space(root)?;
+    frozen_model::validate(root)?;
+    research_distribution::validate(root)?;
     let runtime = read_bounded_utf8(root, RUNTIME_SOURCE, MAX_RUNTIME_SOURCE_BYTES)?;
     validate_runtime_budget_binding(&runtime)
 }

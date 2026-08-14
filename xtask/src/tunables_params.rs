@@ -1648,6 +1648,7 @@ fn row_for(
                 | ("eval", "crates/eval/src/research_protocol.rs")
                 | ("eval", "crates/eval/src/terminal_bench.rs")
                 | ("eval", "crates/eval/src/trainer_bridge.rs")
+                | ("eval", "crates/eval/src/runner/hermetic.rs")
                 | ("eval", "crates/eval/src/tuner/candidate_graph.rs")
                 | ("marketplace", "crates/marketplace/src/hotswap.rs")
                 | ("marketplace", "crates/marketplace/src/implementation.rs")

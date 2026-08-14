@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.iteron.dev/eval/evidence-bundle-index-v1.schema.json",
+  "title": "Iteron Signed Evidence Bundle Index v1",
+  "description": "Frozen signed index envelope for a self-contained Iteron evidence bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_type",
+    "public_key",
+    "comparison",
+    "evidence_rows",
+    "files",
+    "index_sha256",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "bundle_type": {
+      "const": "iteron-eval-signed-evidence"
+    },
+    "public_key": {
+      "$ref": "#/$defs/sha256"
+    },
+    "comparison": {
+      "$ref": "#/$defs/comparison"
+    },
+    "evidence_rows": {
+      "$ref": "#/$defs/evidence_rows"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/bundle_file"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "baseline_manifest"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "candidate_manifest"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "baseline_attestation"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "candidate_attestation"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "paired_report"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "pareto_report"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "index_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "$defs": {
+    "evidence_rows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "schema_id",
+        "provenance",
+        "rows",
+        "document_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "schema_id": {
+          "const": "iteron-eval/evidence-rows/v1"
+        },
+        "provenance": {
+          "enum": [
+            "measured",
+            "synthetic_fixture"
+          ]
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/evidence_rows/$defs/evidence_row"
+          }
+        },
+        "document_sha256": {
+          "$ref": "#/$defs/evidence_rows/$defs/prefixed_sha256"
+        }
+      },
+      "$defs": {
+        "prefixed_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?=.*[!-~])[ -~]+$"
+        },
+        "evidence_row": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "row_id",
+            "run_id",
+            "candidate_id",
+            "candidate_digest",
+            "dataset_digest",
+            "task",
+            "config",
+            "seed",
+            "partition",
+            "outcome",
+            "resolved",
+            "elapsed_ms",
+            "cost_status",
+            "cost_usd"
+          ],
+          "properties": {
+            "row_id": {
+              "$ref": "#/$defs/evidence_rows/$defs/prefixed_sha256"
+            },
+            "run_id": {
+              "$ref": "#/$defs/evidence_rows/$defs/label"
+            },
+            "candidate_id": {
+              "$ref": "#/$defs/evidence_rows/$defs/label"
+            },
+            "candidate_digest": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/evidence_rows/$defs/prefixed_sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "dataset_digest": {
+              "$ref": "#/$defs/evidence_rows/$defs/prefixed_sha256"
+            },
+            "task": {
+              "$ref": "#/$defs/evidence_rows/$defs/label"
+            },
+            "config": {
+              "$ref": "#/$defs/evidence_rows/$defs/label"
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "partition": {
+              "enum": [
+                "train",
+                "held_out"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "success",
+                "task_failure",
+                "infrastructure_failure",
+                "censored"
+              ]
+            },
+            "resolved": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "elapsed_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "cost_status": {
+              "enum": [
+                "known",
+                "zero",
+                "unknown"
+              ]
+            },
+            "cost_usd": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "outcome": {
+                    "const": "success"
+                  }
+                },
+                "required": [
+                  "outcome"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "resolved": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "outcome": {
+                    "const": "task_failure"
+                  }
+                },
+                "required": [
+                  "outcome"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "resolved": {
+                    "const": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "infrastructure_failure",
+                      "censored"
+                    ]
+                  }
+                },
+                "required": [
+                  "outcome"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "resolved": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "cost_status": {
+                    "const": "known"
+                  }
+                },
+                "required": [
+                  "cost_status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "cost_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "cost_status": {
+                    "enum": [
+                      "zero",
+                      "unknown"
+                    ]
+                  }
+                },
+                "required": [
+                  "cost_status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "cost_usd": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?=.*[!-~])[ -~]+$"
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_id",
+        "baseline_arm",
+        "candidate_id",
+        "candidate_arm",
+        "minimum_pairs"
+      ],
+      "properties": {
+        "baseline_id": {
+          "$ref": "#/$defs/label"
+        },
+        "baseline_arm": {
+          "$ref": "#/$defs/label"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/label"
+        },
+        "candidate_arm": {
+          "$ref": "#/$defs/label"
+        },
+        "minimum_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "bundle_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "file_name",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "baseline_manifest",
+            "candidate_manifest",
+            "baseline_attestation",
+            "candidate_attestation",
+            "paired_report",
+            "pareto_report"
+          ]
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "not": {
+            "enum": [
+              ".",
+              "..",
+              "bundle.index.json"
+            ]
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 268435456
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "baseline_attestation",
+                  "candidate_attestation"
+                ]
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bytes": {
+                "maximum": 8388608
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "paired_report",
+                  "pareto_report"
+                ]
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bytes": {
+                "maximum": 16777216
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
