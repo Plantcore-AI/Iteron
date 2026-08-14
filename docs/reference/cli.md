@@ -41,6 +41,8 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--runs-dir <RUNS_DIR>` | Directory for the append-only rollout (the audit record). Default `.iteron/runs`. |
 | `--benchmark-attempt-scope <ATTEMPT>` | Internal eval-harness attempt identity. Activates strict parent-memory isolation and content-free contamination evidence; hidden because ordinary sessions must inherit memory. |
 | `--harness-profile <HARNESS_PROFILE>` | Immutable runtime-tunables profile. Benchmark attempts select `benchmark` automatically; ordinary runs select `interactive` unless this operator-owned flag says otherwise. |
+| `--implementation-candidate <PATH>` | Operator/eval-harness pinned external implementation activation document. |
+| `--implementation-candidate-digest <SHA256>` | Exact lowercase SHA-256 of --implementation-candidate bytes. |
 | `--tunables-export` | Print the whole machine-readable optimization surface as JSON and exit: every family, every exposed parameter, the module axis and the addressable prompt artifacts. This is what an external optimizer reads to construct a legal profile. |
 | `--tunables-profile <PATH>` | Apply a tunables profile document to this run. Requires --tunables-profile-digest; a candidate that can be swapped between digesting and applying is not pinned to anything. |
 | `--tunables-profile-json <JSON>` | A tunables profile as inline JSON, for a one-off experiment. Mutually exclusive with --tunables-profile; neither can be digest-pinned, because bytes produced in the same breath as the claim about them have nothing prior to pin to. |

@@ -2,8 +2,8 @@
   "by_crate": {
     "agents": {
       "bounded": 16,
-      "searchable": 12,
-      "structural": 18
+      "searchable": 19,
+      "structural": 11
     },
     "changeset": {
       "bounded": 5,
@@ -12,8 +12,8 @@
     },
     "cli": {
       "bounded": 201,
-      "searchable": 219,
-      "structural": 173
+      "searchable": 221,
+      "structural": 174
     },
     "ctx": {
       "bounded": 42,
@@ -23,7 +23,7 @@
     "eval": {
       "bounded": 40,
       "searchable": 7,
-      "structural": 32
+      "structural": 65
     },
     "evolve": {
       "bounded": 58,
@@ -43,7 +43,7 @@
     "marketplace": {
       "bounded": 12,
       "searchable": 1,
-      "structural": 3
+      "structural": 28
     },
     "mcp": {
       "bounded": 54,
@@ -63,7 +63,7 @@
     "provider": {
       "bounded": 68,
       "searchable": 32,
-      "structural": 48
+      "structural": 47
     },
     "record": {
       "bounded": 25,
@@ -91,14 +91,14 @@
       "structural": 1
     },
     "tools": {
-      "bounded": 98,
+      "bounded": 100,
       "searchable": 50,
-      "structural": 13
+      "structural": 11
     },
     "tunables": {
       "bounded": 18,
       "searchable": 4,
-      "structural": 101
+      "structural": 106
     },
     "verify": {
       "bounded": 6,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1245,
-  "structural": 625,
-  "total": 1870
+  "settable": 1256,
+  "structural": 679,
+  "total": 1935
 }

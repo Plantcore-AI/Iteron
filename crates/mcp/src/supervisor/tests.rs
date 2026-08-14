@@ -40,6 +40,16 @@ mod unix {
         false
     }
 
+    async fn wait_for_nonempty_file(path: &Path) -> bool {
+        for _ in 0..200 {
+            if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
     async fn wait_until_gone(pid: u32) -> bool {
         for _ in 0..200 {
             if !process_exists(pid) {
@@ -383,7 +393,9 @@ mod unix {
         let trigger = cancellation.clone();
         let observed_path = pid_path.clone();
         let canceller = tokio::spawn(async move {
-            assert!(wait_for_file(&observed_path).await);
+            // File creation and shell-redirection write are distinct syscalls. Waiting only for
+            // existence races the PID parser under a parallel workspace run.
+            assert!(wait_for_nonempty_file(&observed_path).await);
             trigger.cancel();
         });
         let error = server.search_tools("", 1, &cancellation).await.unwrap_err();

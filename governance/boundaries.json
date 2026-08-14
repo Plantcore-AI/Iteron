@@ -740,6 +740,7 @@
         { "kind": "tree", "path": "crates/cli/src/mcp" },
         { "kind": "file", "path": "crates/cli/src/plugin.rs" },
         { "kind": "file", "path": "crates/cli/src/plugin_runtime.rs" },
+        { "kind": "tree", "path": "crates/cli/src/plugin_runtime" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "tree", "path": "crates/cli/src/providers" },
@@ -1302,6 +1303,7 @@
       "iteron-eval": {
         "normal": [
           "iteron-evolve",
+          "iteron-marketplace",
           "iteron-protocol",
           "iteron-record",
           "iteron-sandbox",

@@ -101,6 +101,7 @@
 /crates/cli/src/config/** @fr0m-scratch
 /crates/cli/src/image_input/** @fr0m-scratch
 /crates/cli/src/mcp/** @fr0m-scratch
+/crates/cli/src/plugin_runtime/** @fr0m-scratch
 /crates/cli/src/prompt_history/** @fr0m-scratch
 /crates/cli/src/providers/** @fr0m-scratch
 /crates/cli/src/runtime/** @fr0m-scratch

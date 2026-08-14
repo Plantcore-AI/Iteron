@@ -33,13 +33,12 @@
 //! The kernel is async, and a real context or model-router slot will want to await. Making the
 //! trait method async is not free: it forces either `async_trait` (a boxing allocation per call
 //! on the hot path) or an associated future type (which makes the trait harder to store as
-//! `dyn`). Rather than guess, the trait is **synchronous over already-gathered inputs**: the
-//! caller performs any I/O and hands the slot a `SlotObservation`. A slot that needs to await is
-//! then a caller-side concern, not a signature change.
-//!
-//! This is a real constraint, not a preference, so it is stated here rather than discovered
-//! later: **a slot may not perform I/O.** If a future slot genuinely must, that is a signature
-//! change and it should be made deliberately, with its first real caller present.
+//! `dyn`). Rather than guess, the trait is **synchronous over already-gathered inputs**. Built-in
+//! implementations remain pure over `SlotObservation`. A host-owned external-process adapter may
+//! perform synchronous I/O only through the versioned implementation protocol and only while the
+//! host enforces a finite deadline, byte ceilings, cancellation, process-group termination and
+//! reap. The provider still sees only the gathered observation and cannot acquire an ambient
+//! handle or widen authority. Unbounded or provider-owned I/O remains forbidden.
 
 use crate::capability_set::CapabilitySet;
 use serde::{Deserialize, Serialize};
@@ -149,9 +148,10 @@ pub trait StrategySlot: Send + Sync {
 
     /// Decide, given only what the caller gathered.
     ///
-    /// Implementors **must not** perform I/O and **must not** return authority beyond
-    /// `observation.ceiling`. [`decide_narrowed`] enforces the second of those for every
-    /// implementor, so callers should use it rather than calling this directly.
+    /// Implementors **must not** return authority beyond `observation.ceiling`.
+    /// [`decide_narrowed`] enforces that for every implementor. Ordinary implementations are pure;
+    /// only a host-owned process adapter may do bounded synchronous protocol I/O under the host's
+    /// deadline/cancellation/reap contract.
     fn decide(&self, observation: &SlotObservation) -> SlotOutcome;
 }
 

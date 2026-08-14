@@ -1570,16 +1570,8 @@ fn row_for(
         (krate, relative, name),
         (
             "cli",
-            "crates/cli/src/runtime_tunables/execution_facts.rs",
-            "ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING"
-        ) | (
-            "cli",
             "crates/cli/src/runtime_tunables/core_facts.rs",
             "RATIO_EIGHT_TENTHS"
-        ) | (
-            "tools",
-            "crates/tools/src/tool_search.rs",
-            "DEFAULT_DEFERRED_TOOL_EAGER_LIMIT"
         )
     );
     let exact_schema_cardinality = matches!(
@@ -1617,11 +1609,79 @@ fn row_for(
         && owner_symbol.contains("Mcp")
         && owner_symbol.contains("BindingId"));
     let derived_object = ty_text.trim() == "Limits";
-    let platform_identity_invariant = name == "NULL_DEVICE";
-    let hard_budget_invariant = krate == "eval"
-        && relative == "crates/eval/src/terminal_bench.rs"
-        && name.starts_with("MAX_");
+    let platform_identity_invariant = name == "NULL_DEVICE"
+        || matches!(
+            (krate, relative, name),
+            (
+                "marketplace",
+                "crates/marketplace/src/implementation_runtime/process.rs",
+                "SIGKILL"
+            ) | (
+                "eval",
+                "crates/eval/src/research_execution/process.rs",
+                "PROC_PGRP_ONLY"
+            )
+        );
+    let hard_budget_invariant = name.starts_with("MAX_")
+        && matches!(
+            (krate, relative),
+            ("cli", "crates/cli/src/plugin_runtime/candidate.rs")
+                | ("eval", "crates/eval/src/adapter_registry.rs")
+                | ("eval", "crates/eval/src/lib.rs")
+                | (
+                    "eval",
+                    "crates/eval/src/research_execution/implementation.rs"
+                )
+                | ("eval", "crates/eval/src/research_execution/process.rs")
+                | (
+                    "eval",
+                    "crates/eval/src/research_execution/response_validation.rs"
+                )
+                | ("eval", "crates/eval/src/research_protocol.rs")
+                | ("eval", "crates/eval/src/terminal_bench.rs")
+                | ("eval", "crates/eval/src/trainer_bridge.rs")
+                | ("marketplace", "crates/marketplace/src/implementation.rs")
+                | (
+                    "marketplace",
+                    "crates/marketplace/src/implementation_activation.rs"
+                )
+                | (
+                    "marketplace",
+                    "crates/marketplace/src/implementation_runtime.rs"
+                )
+                | (
+                    "marketplace",
+                    "crates/marketplace/src/implementation_protocol.rs"
+                )
+                | ("tunables", "crates/tunables/src/capability_graph.rs")
+        )
+        || matches!(
+            (krate, relative, name),
+            (
+                "eval",
+                "crates/eval/src/tuner.rs",
+                "MAX_UNIVERSAL_CANDIDATE_DIMENSIONS"
+            )
+        );
     let deliberate_runtime_control = match (krate, relative, name) {
+        (
+            "agents",
+            "crates/agents/src/decompose.rs",
+            "CODE_EXTS"
+            | "FRAME_MARKERS"
+            | "RUN_MARKERS"
+            | "RUN_INTENT_MARKERS"
+            | "INTERNATIONAL_RUN_MARKERS"
+            | "MULTI_MARKERS"
+            | "INTERNATIONAL_MULTI_MARKERS",
+        )
+        | ("cli", "crates/cli/src/block/links.rs", "PATH_ARG_KEYS" | "URL_ARG_KEYS") => {
+            Some(ParamClass::Searchable)
+        }
+        ("tools", "crates/tools/src/tool_search.rs", "DEFAULT_DEFERRED_TOOL_EAGER_LIMIT")
+        | ("tools", "crates/tools/src/web.rs", "DEFAULT_SEARCH_RESULT_COUNT") => {
+            Some(ParamClass::Bounded)
+        }
         ("tools", "crates/tools/src/lsp/session.rs", "PROCESS_EXIT_TIMEOUT") => {
             Some(ParamClass::Bounded)
         }

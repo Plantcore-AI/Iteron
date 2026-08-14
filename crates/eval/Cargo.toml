@@ -9,14 +9,20 @@ publish.workspace = true
 name = "iteron-eval"
 path = "src/main.rs"
 
+[[bin]]
+name = "iteron-harness"
+path = "src/iteron_harness_main.rs"
+
 [dependencies]
 clap = { workspace = true }
 iteron-evolve = { path = "../evolve" }
+iteron-marketplace = { path = "../marketplace" }
 iteron-protocol = { path = "../protocol" }
 iteron-record = { path = "../record" }
 iteron-sandbox = { path = "../sandbox" }
 iteron-tunables = { path = "../tunables" }
 iteron-verify = { path = "../verify" }
+libc = "0.2"
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }

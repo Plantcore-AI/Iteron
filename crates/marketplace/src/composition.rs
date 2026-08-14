@@ -129,6 +129,12 @@ impl Wiring {
         self.exclusive.get(&Slot::new(Surface::Skill, name))
     }
 
+    /// Candidate selected for a public module seam. Resolution and activation remain host-owned.
+    pub fn implementation(&self, module: iteron_tunables::ModuleId) -> Option<&Binding> {
+        self.exclusive
+            .get(&Slot::new(Surface::Implementation, module.as_str()))
+    }
+
     pub fn agent(&self, name: &str) -> Option<&Binding> {
         self.exclusive.get(&Slot::new(Surface::Agent, name))
     }

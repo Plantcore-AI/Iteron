@@ -1,6 +1,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::path::{Component, Path};
 
 pub(super) fn initial_state(spec: &TunerSpec) -> TunerState {
     TunerState {
@@ -120,7 +121,7 @@ pub(super) fn apply_event(
 pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
     let bytes = serde_json::to_vec(spec).map_err(|error| TunerError::Encode(error.to_string()))?;
     if bytes.len() > iteron_tunables::param_integer("eval.tuner.max_spec_bytes", MAX_SPEC_BYTES)
-        || spec.schema_version != 1
+        || !matches!(spec.schema_version, 1 | 2)
         || spec.experiment_id.trim().is_empty()
         || spec.experiment_id.len() > 128
         || !valid_digest(&spec.train_dataset_digest)
@@ -146,6 +147,37 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
             "bounded spec invariant failed".into(),
         ));
     }
+    if spec.schema_version == 1 {
+        if spec.param_registry_digest.is_some()
+            || spec.tool_text_registry_digest.is_some()
+            || spec.trainer_bridge.is_some()
+        {
+            return Err(TunerError::InvalidSpec(
+                "schema v1 cannot carry universal trainer fields".into(),
+            ));
+        }
+    } else {
+        let bridge = spec
+            .trainer_bridge
+            .as_ref()
+            .ok_or_else(|| TunerError::InvalidSpec("schema v2 requires trainer_bridge".into()))?;
+        bridge
+            .validate()
+            .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
+        if spec.param_registry_digest.as_deref()
+            != Some(iteron_tunables::param_registry_digest_sha256().as_str())
+            || spec.tool_text_registry_digest.as_deref()
+                != Some(iteron_tunables::tool_text_registry_digest_sha256().as_str())
+            || spec.train_dataset_digest != bridge.train.digest
+            || spec.experiment_id != bridge.experiment_id
+            || spec.max_trials > bridge.resources.max_trials
+            || spec.max_concurrency > bridge.resources.max_concurrency
+        {
+            return Err(TunerError::InvalidSpec(
+                "schema v2 registry, dataset, or resource identity mismatch".into(),
+            ));
+        }
+    }
     let registry = iteron_tunables::families()
         .iter()
         .map(|family| (family.id, family.optimization.class))
@@ -156,26 +188,37 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
             || candidate.id.len() > 128
             || candidate.id.chars().any(char::is_control)
             || !ids.insert(&candidate.id)
-            || candidate.values.len() > MAX_FAMILIES_PER_CANDIDATE
         {
             return Err(TunerError::InvalidSpec(
                 "invalid candidate identity or width".into(),
             ));
         }
-        for family in candidate.values.keys() {
-            match registry.get(family.as_str()) {
-                Some(iteron_tunables::OptimizationClass::Pin) | None => {
-                    return Err(TunerError::InvalidSpec(format!(
-                        "family `{family}` is pinned or unknown"
-                    )));
-                }
-                Some(_) => {}
+        if spec.schema_version == 1 {
+            if candidate.profile.is_some()
+                || !candidate.implementations.is_empty()
+                || candidate.values.len() > MAX_FAMILIES_PER_CANDIDATE
+            {
+                return Err(TunerError::InvalidSpec(
+                    "schema v1 candidate must contain only bounded family values".into(),
+                ));
             }
-        }
-        if candidate.values.values().any(serde_json::Value::is_null) {
-            return Err(TunerError::InvalidSpec(
-                "a present conditional value cannot be null; omit inactive families".into(),
-            ));
+            for family in candidate.values.keys() {
+                match registry.get(family.as_str()) {
+                    Some(iteron_tunables::OptimizationClass::Pin) | None => {
+                        return Err(TunerError::InvalidSpec(format!(
+                            "family `{family}` is pinned or unknown"
+                        )));
+                    }
+                    Some(_) => {}
+                }
+            }
+            if candidate.values.values().any(serde_json::Value::is_null) {
+                return Err(TunerError::InvalidSpec(
+                    "a present conditional value cannot be null; omit inactive families".into(),
+                ));
+            }
+        } else {
+            candidate.validate_universal()?;
         }
     }
     let mut round_count = spec.candidates.len();
@@ -240,24 +283,22 @@ pub(super) fn tpe_score(
     good: &[&TrialResult],
     bad: &[&TrialResult],
 ) -> f64 {
-    let values = &spec
+    let candidate = spec
         .candidates
         .iter()
         .find(|candidate| candidate.id == candidate_id)
-        .expect("validated candidate")
-        .values;
+        .expect("validated candidate");
+    let values = candidate_features(candidate);
     values
         .iter()
-        .map(|(family, value)| {
-            let token = serde_json::to_string(value).unwrap_or_default();
+        .map(|(address, token)| {
             let count = |rows: &[&TrialResult]| {
                 rows.iter()
                     .filter(|row| {
                         spec.candidates
                             .iter()
                             .find(|candidate| candidate.id == row.candidate_id)
-                            .and_then(|candidate| candidate.values.get(family))
-                            .and_then(|value| serde_json::to_string(value).ok())
+                            .and_then(|candidate| candidate_features(candidate).remove(address))
                             .as_deref()
                             == Some(token.as_str())
                     })
@@ -269,10 +310,133 @@ pub(super) fn tpe_score(
         .sum()
 }
 
+pub(super) fn validate_universal_candidate(candidate: &TunerCandidate) -> Result<(), TunerError> {
+    if candidate.schema_version != UNIVERSAL_CANDIDATE_SCHEMA_VERSION {
+        return Err(TunerError::InvalidSpec(format!(
+            "universal candidate schema must be exactly {UNIVERSAL_CANDIDATE_SCHEMA_VERSION}"
+        )));
+    }
+    if !candidate.values.is_empty() {
+        return Err(TunerError::InvalidSpec(
+            "schema v2 has one address space; legacy values must be empty".into(),
+        ));
+    }
+    let profile = candidate
+        .profile
+        .as_ref()
+        .ok_or_else(|| TunerError::InvalidSpec("schema v2 candidate needs a profile".into()))?;
+    iteron_tunables::validate_profile(profile)
+        .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
+    if profile.profile_id != candidate.id {
+        return Err(TunerError::InvalidSpec(
+            "candidate id must equal profile_id".into(),
+        ));
+    }
+    let dimensions = profile
+        .values
+        .len()
+        .saturating_add(profile.params.len())
+        .saturating_add(profile.artifacts.len())
+        .saturating_add(candidate.implementations.len());
+    if dimensions == 0 || dimensions > MAX_UNIVERSAL_CANDIDATE_DIMENSIONS {
+        return Err(TunerError::InvalidSpec(
+            "universal candidate is empty or exceeds its dimension bound".into(),
+        ));
+    }
+    let mut modules = BTreeSet::new();
+    let mut implementation_ids = BTreeSet::new();
+    for implementation in &candidate.implementations {
+        if !modules.insert(implementation.module)
+            || !implementation_ids.insert(&implementation.implementation_id)
+            || !valid_identity(&implementation.implementation_id)
+            || implementation.protocol != IMPLEMENTATION_PROTOCOL
+            || !valid_source_path(&implementation.catalog_path)
+            || !valid_source_path(&implementation.artifact_root)
+            || !valid_digest(&implementation.manifest_sha256)
+            || !valid_digest(&implementation.artifact_sha256)
+        {
+            return Err(TunerError::InvalidSpec(
+                "invalid or duplicate implementation binding".into(),
+            ));
+        }
+        if let Some(scope) = profile.module_scope
+            && scope != implementation.module
+        {
+            return Err(TunerError::InvalidSpec(
+                "implementation is outside the candidate module scope".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
+    let mut features = candidate
+        .values
+        .iter()
+        .filter_map(|(id, value)| {
+            serde_json::to_string(value)
+                .ok()
+                .map(|value| (format!("family/{id}"), value))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(profile) = &candidate.profile {
+        for value in &profile.values {
+            if let Ok(token) = serde_json::to_string(&value.value) {
+                features.insert(format!("family/{}", value.family), token);
+            }
+        }
+        for assignment in &profile.params {
+            if let Ok(token) = serde_json::to_string(&assignment.value) {
+                features.insert(format!("param/{}", assignment.param), token);
+            }
+        }
+        for artifact in &profile.artifacts {
+            if let Ok(token) = serde_json::to_string(&artifact.text) {
+                features.insert(format!("artifact/{}", artifact.artifact), token);
+            }
+        }
+    }
+    for implementation in &candidate.implementations {
+        if let Ok(token) = serde_json::to_string(implementation) {
+            features.insert(
+                format!("implementation/{}", implementation.module.as_str()),
+                token,
+            );
+        }
+    }
+    features
+}
+
+fn valid_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= iteron_marketplace::MAX_IMPLEMENTATION_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 fn valid_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
-        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
+}
+
+fn valid_source_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.is_empty()
+        && value.len() <= iteron_marketplace::MAX_IMPLEMENTATION_PATH_BYTES
+        && !value.contains('\0')
+        && path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir | Component::ParentDir | Component::Prefix(_)
+            )
+        })
 }
 
 pub(super) fn digest(value: &impl Serialize) -> Result<String, TunerError> {

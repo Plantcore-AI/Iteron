@@ -356,15 +356,38 @@ fn normalized_item(source: &[u8], kind: SnapshotItemKind, name: &str) -> Result<
     file.items
         .into_iter()
         .find_map(|item| match (kind, item) {
-            (SnapshotItemKind::Trait, syn::Item::Trait(item)) if item.ident == name => {
+            (SnapshotItemKind::Trait, syn::Item::Trait(mut item)) if item.ident == name => {
+                strip_trait_docs(&mut item);
                 Some(item.to_token_stream().to_string())
             }
-            (SnapshotItemKind::Struct, syn::Item::Struct(item)) if item.ident == name => {
+            (SnapshotItemKind::Struct, syn::Item::Struct(mut item)) if item.ident == name => {
+                strip_doc_attrs(&mut item.attrs);
+                for field in &mut item.fields {
+                    strip_doc_attrs(&mut field.attrs);
+                }
                 Some(item.to_token_stream().to_string())
             }
             _ => None,
         })
         .with_context(|| format!("snapshot source lacks `{name}`"))
+}
+
+fn strip_trait_docs(item: &mut syn::ItemTrait) {
+    strip_doc_attrs(&mut item.attrs);
+    for member in &mut item.items {
+        let attrs = match member {
+            syn::TraitItem::Const(item) => &mut item.attrs,
+            syn::TraitItem::Fn(item) => &mut item.attrs,
+            syn::TraitItem::Type(item) => &mut item.attrs,
+            syn::TraitItem::Macro(item) => &mut item.attrs,
+            _ => continue,
+        };
+        strip_doc_attrs(attrs);
+    }
+}
+
+fn strip_doc_attrs(attrs: &mut Vec<syn::Attribute>) {
+    attrs.retain(|attribute| !attribute.path().is_ident("doc"));
 }
 
 fn require_identical_snapshot(label: &str, frozen: &[u8], current: &[u8]) -> Result<()> {
@@ -1170,6 +1193,36 @@ mod tests {
     fn a_planted_tcb_snapshot_change_turns_the_freeze_proof_red() {
         assert!(require_identical_snapshot("fixture", b"frozen", b"frozen").is_ok());
         assert!(require_identical_snapshot("fixture", b"frozen", b"changed").is_err());
+    }
+
+    #[test]
+    fn tcb_item_freeze_ignores_docs_but_rejects_a_trait_shape_change() {
+        let frozen = normalized_item(
+            b"/// old docs\npub trait StrategySlot: Send + Sync { /// old method docs\nfn slot(&self) -> &SlotId; }",
+            SnapshotItemKind::Trait,
+            "StrategySlot",
+        )
+        .unwrap();
+        let docs_changed = normalized_item(
+            b"/// clearer docs\npub trait StrategySlot: Send + Sync { /// bounded process adapter docs\nfn slot(&self) -> &SlotId; }",
+            SnapshotItemKind::Trait,
+            "StrategySlot",
+        )
+        .unwrap();
+        let shape_changed = normalized_item(
+            b"pub trait StrategySlot: Send + Sync { fn slot(&self) -> SlotId; }",
+            SnapshotItemKind::Trait,
+            "StrategySlot",
+        )
+        .unwrap();
+
+        require_identical_snapshot("StrategySlot", frozen.as_bytes(), docs_changed.as_bytes())
+            .expect("documentation is evidence, not an ABI shape");
+        assert!(
+            require_identical_snapshot("StrategySlot", frozen.as_bytes(), shape_changed.as_bytes())
+                .is_err(),
+            "an owned-return signature must remain a breaking TCB diff"
+        );
     }
 
     /// The pin used to compare for equality, and that made the constant unable to move at all --

@@ -52,8 +52,11 @@ fn pinned_family() -> &'static str {
 
 fn candidate(id: &str, value: &str) -> TunerCandidate {
     TunerCandidate {
+        schema_version: 1,
         id: id.into(),
         values: BTreeMap::from([(tunable_family().into(), value.into())]),
+        profile: None,
+        implementations: Vec::new(),
     }
 }
 
@@ -69,6 +72,9 @@ fn spec(candidates: Vec<TunerCandidate>, concurrency: u16, budgets: Vec<u32>) ->
         experiment_id: "fixture".into(),
         train_dataset_digest: format!("sha256:{}", "a".repeat(64)),
         tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: None,
+        tool_text_registry_digest: None,
+        trainer_bridge: None,
         max_trials: max_trials as u16,
         max_concurrency: concurrency,
         reduction_factor: 2,
@@ -302,5 +308,174 @@ fn candidate_width_tracks_the_family_count() {
     assert_eq!(
         crate::tuner::MAX_FAMILIES_PER_CANDIDATE,
         iteron_tunables::EXPECTED_FAMILY_COUNT
+    );
+}
+
+fn trainer_bridge(
+    experiment_id: &str,
+    max_trials: u16,
+) -> crate::trainer_bridge::TrainerBridgeSpec {
+    use crate::trainer_bridge::*;
+    TrainerBridgeSpec {
+        schema_version: TRAINER_BRIDGE_SCHEMA_VERSION,
+        experiment_id: experiment_id.into(),
+        train: TrainerDataset {
+            partition: DatasetPartition::Train,
+            digest: format!("sha256:{}", "a".repeat(64)),
+            schema_id: "dataset/train@v1".into(),
+        },
+        held_out: TrainerDataset {
+            partition: DatasetPartition::HeldOut,
+            digest: format!("sha256:{}", "c".repeat(64)),
+            schema_id: "dataset/held-out@v1".into(),
+        },
+        reward: RewardContract {
+            schema_id: "reward/resolved@v1".into(),
+            objectives: vec![RewardObjective {
+                metric: "resolved_rate".into(),
+                direction: RewardDirection::Maximize,
+                weight_micros: 1_000_000,
+            }],
+        },
+        trajectory: TrajectoryContract {
+            schema_id: "trajectory/iteron@v1".into(),
+            max_bytes_per_trial: 1_048_576,
+            max_events_per_trial: 1_000,
+            content_store_required: true,
+        },
+        checkpoint: CheckpointContract {
+            schema_id: "checkpoint/trainer@v1".into(),
+            max_checkpoint_bytes: 1_048_576,
+            checkpoint_every_trials: 1,
+        },
+        resources: TrainerResources {
+            max_trials,
+            max_concurrency: 1,
+            max_wall_secs_per_trial: 60,
+            max_memory_bytes_per_trial: 1_048_576,
+            max_evidence_bytes_per_trial: 1_048_576,
+        },
+        distributed: DistributedTrials {
+            coordinator_id: "local/coordinator".into(),
+            max_workers: 1,
+            lease_secs: 2,
+            heartbeat_secs: 1,
+            max_attempts_per_trial: 1,
+        },
+    }
+}
+
+fn universal_candidate(id: &str) -> TunerCandidate {
+    TunerCandidate {
+        schema_version: UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+        id: id.into(),
+        values: BTreeMap::new(),
+        profile: Some(iteron_tunables::ProfileDocument {
+            schema_version: iteron_tunables::PROFILE_DOCUMENT_SCHEMA_VERSION,
+            profile_id: id.into(),
+            registry_revision: iteron_tunables::REGISTRY_REVISION,
+            registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+            param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+            module_scope: None,
+            values: Vec::new(),
+            params: vec![iteron_tunables::ParamAssignment {
+                param: "eval.tuner.max_candidates".into(),
+                value: iteron_tunables::ResolutionValue::Integer { value: 128 },
+            }],
+            artifacts: vec![iteron_tunables::ArtifactOverride {
+                artifact: "prompt/system@v1".into(),
+                text: "bounded candidate system prompt".into(),
+            }],
+        }),
+        implementations: vec![CandidateImplementation {
+            module: iteron_tunables::ModuleId::VerificationQuorum,
+            implementation_id: "research-verifier-v1".into(),
+            protocol: "iteron-implementation/1".into(),
+            catalog_path: "/opt/iteron/marketplace/catalog.json".into(),
+            artifact_root: "/opt/iteron/marketplace/artifacts/verifier".into(),
+            manifest_sha256: format!("sha256:{}", "d".repeat(64)),
+            artifact_sha256: format!("sha256:{}", "e".repeat(64)),
+        }],
+    }
+}
+
+#[test]
+fn universal_candidate_covers_params_text_and_implementations() {
+    let root = TempRoot::new("universal");
+    let bridge = trainer_bridge("universal-fixture", 1);
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: "universal-fixture".into(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 1,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates: vec![universal_candidate("candidate-a")],
+    };
+    let mut tuner = OfflineTuner::create(spec, &root.join("universal.jsonl")).unwrap();
+    let request = tuner.issue_trials().unwrap().remove(0);
+    assert_eq!(request.candidate.id, "candidate-a");
+    assert!(request.candidate.profile.is_some());
+    assert_eq!(request.candidate.implementations.len(), 1);
+}
+
+#[test]
+fn universal_candidate_rejects_a_second_address_space() {
+    let root = TempRoot::new("universal-legacy-mix");
+    let bridge = trainer_bridge("mixed-fixture", 1);
+    let mut candidate = universal_candidate("mixed");
+    candidate
+        .values
+        .insert(tunable_family().into(), true.into());
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: "mixed-fixture".into(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 1,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates: vec![candidate],
+    };
+    assert!(OfflineTuner::create(spec, &root.join("mixed.jsonl")).is_err());
+}
+
+#[test]
+fn universal_candidate_v2_strictly_binds_executable_sources() {
+    let candidate = universal_candidate("strict-source");
+    candidate.validate_universal().unwrap();
+
+    let mut old_schema = candidate.clone();
+    old_schema.schema_version = 1;
+    assert!(old_schema.validate_universal().is_err());
+
+    let mut wrong_protocol = candidate.clone();
+    wrong_protocol.implementations[0].protocol = "iteron-implementation/2".into();
+    assert!(wrong_protocol.validate_universal().is_err());
+
+    let mut relative_source = candidate.clone();
+    relative_source.implementations[0].catalog_path = "catalog.json".into();
+    assert!(relative_source.validate_universal().is_err());
+
+    let mut duplicate = candidate.clone();
+    duplicate
+        .implementations
+        .push(candidate.implementations[0].clone());
+    assert!(duplicate.validate_universal().is_err());
+
+    let mut changed_path = candidate.clone();
+    changed_path.implementations[0].artifact_root = "/opt/iteron/other-artifact".into();
+    assert_ne!(
+        changed_path.digest_sha256().unwrap(),
+        candidate.digest_sha256().unwrap()
     );
 }

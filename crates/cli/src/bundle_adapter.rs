@@ -25,6 +25,12 @@ use iteron_protocol::slot::SlotId;
 mod checkpoint;
 #[path = "bundle_adapter/compiler.rs"]
 mod compiler;
+#[path = "bundle_adapter/external.rs"]
+mod external;
+#[path = "bundle_adapter/external_consumption.rs"]
+mod external_consumption;
+#[path = "bundle_adapter/external_mapping.rs"]
+mod external_mapping;
 #[path = "bundle_adapter/registry.rs"]
 mod registry;
 #[path = "bundle_adapter/schema.rs"]
@@ -34,9 +40,9 @@ mod strategies;
 
 pub(crate) use checkpoint::{
     CompiledPolicyBundle, baseline_compiled_bundle, compile_recorded_bundle,
-    install_compiled_bundle,
+    compile_recorded_bundle_with_external, install_compiled_bundle,
 };
-pub(crate) use compiler::compile_configured_bundle;
+pub(crate) use compiler::{compile_configured_bundle, compile_configured_bundle_with_external};
 #[cfg(test)]
 pub(crate) use compiler::{compile_operator_bundle, registered_implementations};
 #[cfg(test)]

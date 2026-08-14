@@ -21,7 +21,7 @@ pub(crate) struct FailedActionPolicy {
 impl Default for FailedActionPolicy {
     fn default() -> Self {
         Self {
-            max_identities: MAX_IDENTITIES,
+            max_identities: super::failed_action_cache_max_identities(),
             turn_scoped: false,
             enabled: true,
         }
@@ -112,10 +112,7 @@ impl FailedActionCache {
                 (
                     "max_identities".to_owned(),
                     iteron_tunables::ResolutionValue::Integer {
-                        value: iteron_tunables::param_integer(
-                            "cli.runtime.failed_action_cache.max_identities",
-                            MAX_IDENTITIES,
-                        ) as i64,
+                        value: super::failed_action_cache_max_identities() as i64,
                     },
                 ),
                 (

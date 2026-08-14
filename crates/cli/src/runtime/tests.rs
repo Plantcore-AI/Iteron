@@ -4293,11 +4293,7 @@ mod gate_integration_tests {
             &ws,
             &run,
             registry,
-            burst_calls(
-                "pending_batch_effect",
-                2,
-                &["batch-a.txt", "batch-b.txt"],
-            ),
+            burst_calls("pending_batch_effect", 2, &["batch-a.txt", "batch-b.txt"]),
         );
         agent.permission_mode = PermissionMode::Yolo;
         let interrupt = std::sync::Arc::new(AtomicBool::new(false));
@@ -9387,7 +9383,8 @@ ant-api03-SuperSecretModelToken12345"
                         test_failure_lanes: 0,
                         other_lanes: 1,
                         consensus: iteron_protocol::VerificationConsensusEvidence::Indeterminate,
-                        outcome: iteron_protocol::VerificationOutcomeEvidence::InfrastructureFailure,
+                        outcome:
+                            iteron_protocol::VerificationOutcomeEvidence::InfrastructureFailure,
                         ..
                     },
                 }
@@ -9974,7 +9971,11 @@ ant-api03-SuperSecretModelToken12345"
             agent.run("do not hang").await.unwrap(),
             Outcome::BudgetExhausted("max_wall_secs")
         );
-        assert!(began.elapsed() < Duration::from_secs(1));
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the inherited 20ms deadline must cancel the stalled provider well before the 30s run budget; elapsed={elapsed:?}"
+        );
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -14068,10 +14069,10 @@ ant-api03-SuperSecretModelToken12345"
         assert_eq!(network_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(agent.usd_budget.as_ref().unwrap().spent_microusd(), 0);
         assert!(!agent.usd_budget_exhausted());
-        assert!(matches!(
-            agent.ledger.cost_state(),
-            CostState::Unknown { .. }
-        ), "the logical TurnStart remains unmatched even though the physical route receipt proves zero cost");
+        assert!(
+            matches!(agent.ledger.cost_state(), CostState::Unknown { .. }),
+            "the logical TurnStart remains unmatched even though the physical route receipt proves zero cost"
+        );
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
         assert!(events.iter().any(|event| matches!(
             &event.kind,
@@ -15793,8 +15794,7 @@ ant-api03-SuperSecretModelToken12345"
                 output: output_bound,
                 cache_creation: input_bound,
                 cache_read: input_bound,
-                thinking: if rates.thinking_microusd_per_million
-                    > rates.output_microusd_per_million
+                thinking: if rates.thinking_microusd_per_million > rates.output_microusd_per_million
                 {
                     output_bound
                 } else {

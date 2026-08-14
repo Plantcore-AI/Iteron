@@ -535,7 +535,7 @@ fn extension_authorities(input: &FreshCompositionInput<'_>) -> ExtensionAuthorit
         _ => OAuthLifecycleMode::Mixed,
     };
     ExtensionAuthorities {
-        session_spawn_cap: crate::runtime::DEFAULT_SESSION_SPAWN_CAP,
+        session_spawn_cap: crate::runtime::default_session_spawn_cap(),
         routes: [format!(
             "{}:{}",
             input.selection.provider_id, input.selection.model_id

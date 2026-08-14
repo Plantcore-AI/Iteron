@@ -396,6 +396,40 @@ const INTERNATIONAL_MULTI_MARKERS: &[&str] = &[
     "in allen dateien",
 ];
 
+fn code_exts() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.code_exts", CODE_EXTS)
+}
+
+fn frame_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.frame_markers", FRAME_MARKERS)
+}
+
+fn run_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.run_markers", RUN_MARKERS)
+}
+
+fn run_intent_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.run_intent_markers", RUN_INTENT_MARKERS)
+}
+
+fn international_run_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list(
+        "agents.decompose.international_run_markers",
+        INTERNATIONAL_RUN_MARKERS,
+    )
+}
+
+fn multi_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("agents.decompose.multi_markers", MULTI_MARKERS)
+}
+
+fn international_multi_markers() -> &'static [&'static str] {
+    iteron_tunables::param_str_list(
+        "agents.decompose.international_multi_markers",
+        INTERNATIONAL_MULTI_MARKERS,
+    )
+}
+
 const TEST_INTENT: &[&str] = &[
     "make the tests pass",
     "get the tests passing",
@@ -431,16 +465,16 @@ const LARGE_REPO: usize = 200;
 
 fn evidence_class(task: &str, repo: &RepoSignals) -> TaskClass {
     let lower = task.to_lowercase();
-    if RUN_MARKERS
+    if run_markers()
         .iter()
-        .chain(INTERNATIONAL_RUN_MARKERS)
+        .chain(international_run_markers())
         .any(|m| lower.contains(m))
     {
         return TaskClass::RunToUnderstand;
     }
-    if MULTI_MARKERS
+    if multi_markers()
         .iter()
-        .chain(INTERNATIONAL_MULTI_MARKERS)
+        .chain(international_multi_markers())
         .any(|m| lower.contains(m))
     {
         return TaskClass::MultiFile;
@@ -459,17 +493,17 @@ fn evidence_class(task: &str, repo: &RepoSignals) -> TaskClass {
 
 fn explicit_evidence_intent(task: &str, repo: &RepoSignals) -> Option<TaskClass> {
     let lower = task.to_lowercase();
-    if RUN_INTENT_MARKERS
+    if run_intent_markers()
         .iter()
-        .chain(INTERNATIONAL_RUN_MARKERS)
+        .chain(international_run_markers())
         .any(|m| lower.contains(m))
         || (repo.has_test_command && test_intent().iter().any(|m| lower.contains(m)))
     {
         return Some(TaskClass::RunToUnderstand);
     }
-    if MULTI_MARKERS
+    if multi_markers()
         .iter()
-        .chain(INTERNATIONAL_MULTI_MARKERS)
+        .chain(international_multi_markers())
         .any(|m| lower.contains(m))
         || (repo.file_count
             >= iteron_tunables::param_usize("agents.decompose.large_repo", LARGE_REPO)
@@ -483,7 +517,7 @@ fn explicit_evidence_intent(task: &str, repo: &RepoSignals) -> Option<TaskClass>
 /// Does the task name a concrete path / symbol / line / stack frame?
 fn names_concrete_location(task: &str) -> bool {
     let lower = task.to_ascii_lowercase();
-    if FRAME_MARKERS.iter().any(|m| lower.contains(m)) {
+    if frame_markers().iter().any(|m| lower.contains(m)) {
         return true;
     }
     if lower.contains("::") {
@@ -518,7 +552,7 @@ fn token_has_code_ext(tok: &str) -> bool {
         tok.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';')),
     );
     let lower = base.to_ascii_lowercase();
-    CODE_EXTS.iter().any(|e| lower.ends_with(e))
+    code_exts().iter().any(|e| lower.ends_with(e))
 }
 
 fn token_is_path(tok: &str) -> bool {

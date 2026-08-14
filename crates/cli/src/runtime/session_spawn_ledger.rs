@@ -67,11 +67,7 @@ impl SessionSpawnLedger {
 
 impl Default for SessionSpawnLedger {
     fn default() -> Self {
-        Self::new(iteron_tunables::param_integer(
-            "cli.runtime.session_spawn_ledger.default_session_spawn_cap",
-            DEFAULT_SESSION_SPAWN_CAP,
-        ))
-        .expect("built-in session spawn cap is valid")
+        Self::new(super::default_session_spawn_cap()).expect("built-in session spawn cap is valid")
     }
 }
 

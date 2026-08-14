@@ -106,6 +106,10 @@ pub(crate) enum RejectionCode {
     WrongImplementationSlot,
     AtomicBundleRejected,
     ProjectSelectionForbidden,
+    ExternalModuleUnmapped,
+    ExternalIdentityMismatch,
+    ExternalOperatorIntentRequired,
+    ExternalReceiptUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

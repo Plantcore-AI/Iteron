@@ -351,7 +351,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 426,
+          "line": 460,
           "evidence": "param_str_list runtime resolution"
         }
       ],
@@ -360,16 +360,15 @@
     {
       "id": "agents.decompose.code_exts",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \".rs\", \".py\", \".ts\", \".tsx\", \".js\", \".jsx\", \".go\", \".c\", \".h\", \".cc\", \".cpp\", \".hpp\", \".rb\",\n    \".java\", \".kt\", \".toml\", \".json\", \".yaml\", \".yml\", \".sh\", \".sql\", \".cs\", \".php\", \".swift\",\n    \".scala\", \".ex\", \".exs\", \".lua\", \".md\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -378,10 +377,11 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 521,
-          "evidence": "Rust path reference"
+          "line": 400,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.code_exts is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.fan_cap",
@@ -417,12 +417,12 @@
         },
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 622,
+          "line": 656,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 652,
+          "line": 686,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -431,16 +431,15 @@
     {
       "id": "agents.decompose.frame_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"panicked at\",\n    \"stack trace\",\n    \"stacktrace\",\n    \"traceback\",\n    \"backtrace\",\n    \" at line \",\n    \"thread 'main'\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -449,24 +448,24 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 486,
-          "evidence": "Rust path reference"
+          "line": 404,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.frame_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.international_multi_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"重命名\",\n    \"重构\",\n    \"迁移\",\n    \"所有地方\",\n    \"所有文件\",\n    \"所有调用\",\n    \"所有引用\",\n    \"全局替换\",\n    \"跨文件\",\n    \"名前を変更\",\n    \"すべてのファイル\",\n    \"renombrar\",\n    \"en todas partes\",\n    \"todos los archivos\",\n    \"renommer partout\",\n    \"umbenennen\",\n    \"in allen dateien\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -475,29 +474,24 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 443,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/agents/src/decompose.rs",
-          "line": 472,
-          "evidence": "Rust path reference"
+          "line": 427,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.international_multi_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.international_run_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"复现\",\n    \"重现\",\n    \"再現\",\n    \"reproducir\",\n    \"reproduire\",\n    \"reproduzieren\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -506,15 +500,11 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 436,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/agents/src/decompose.rs",
-          "line": 464,
-          "evidence": "Rust path reference"
+          "line": 416,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.international_run_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.large_repo",
@@ -536,12 +526,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 452,
+          "line": 486,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 475,
+          "line": 509,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -601,12 +591,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 639,
+          "line": 673,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 641,
+          "line": 675,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -615,16 +605,15 @@
     {
       "id": "agents.decompose.multi_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"across\",\n    \"everywhere\",\n    \"all callers\",\n    \"all call sites\",\n    \"all usages\",\n    \"all references\",\n    \"throughout\",\n    \"codebase-wide\",\n    \"project-wide\",\n    \"rename\",\n    \"refactor\",\n    \"migrate\",\n    \"wherever\",\n    \"every file\",\n    \"multiple files\",\n    \"many files\",\n    \"each module\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -633,15 +622,11 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 441,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/agents/src/decompose.rs",
-          "line": 470,
-          "evidence": "Rust path reference"
+          "line": 423,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.multi_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.router_slot_version",
@@ -664,12 +649,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 618,
+          "line": 652,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 635,
+          "line": 669,
           "evidence": "Rust path reference"
         }
       ]
@@ -677,16 +662,15 @@
     {
       "id": "agents.decompose.run_intent_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"reproduce\",\n    \"repro \",\n    \"bisect\",\n    \"run the \",\n    \"run this \",\n    \"execute the \",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -695,24 +679,24 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 462,
-          "evidence": "Rust path reference"
+          "line": 412,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.run_intent_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.run_markers",
       "module": "planner_fanout",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"reproduce\",\n    \"repro \",\n    \"crash\",\n    \"panic\",\n    \"hang\",\n    \"deadlock\",\n    \"fails\",\n    \"failing\",\n    \"flaky\",\n    \"regression\",\n    \"bisect\",\n    \"segfault\",\n    \"stack overflow\",\n    \"times out\",\n    \"timeout\",\n    \"doesn't work\",\n    \"not working\",\n    \"broken\",\n]",
       "krate": "agents",
       "decl": "crates/agents/src/decompose.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "agents",
         "path": "crates/agents/src/decompose.rs",
@@ -721,10 +705,11 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 434,
-          "evidence": "Rust path reference"
+          "line": 408,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id agents.decompose.run_markers is resolved at every listed production helper call"
     },
     {
       "id": "agents.decompose.test_intent",
@@ -746,7 +731,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/decompose.rs",
-          "line": 422,
+          "line": 456,
           "evidence": "param_str_list runtime resolution"
         }
       ],
@@ -2013,7 +1998,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 106,
+          "line": 118,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2043,32 +2028,32 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 74,
+          "line": 86,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 114,
+          "line": 126,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 170,
+          "line": 182,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 186,
+          "line": 198,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 219,
+          "line": 231,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 233,
+          "line": 245,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2098,7 +2083,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 205,
+          "line": 217,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2107,16 +2092,15 @@
     {
       "id": "cli.block.links.path_arg_keys",
       "module": "scheduler_parallelism",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "[&str; 9]",
       "default": "[\n    \"path\",\n    \"file\",\n    \"file_path\",\n    \"filename\",\n    \"directory\",\n    \"dir\",\n    \"root\",\n    \"workspace\",\n    \"working_directory\",\n]",
       "krate": "cli",
       "decl": "crates/cli/src/block/links.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "cli",
         "path": "crates/cli/src/block/links.rs",
@@ -2125,24 +2109,24 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 72,
-          "evidence": "Rust path reference"
+          "line": 38,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id cli.block.links.path_arg_keys is resolved at every listed production helper call"
     },
     {
       "id": "cli.block.links.url_arg_keys",
       "module": "scheduler_parallelism",
-      "class": "structural",
+      "class": "searchable",
       "type": "array",
       "rust_type": "[&str; 6]",
       "default": "[\n    \"url\",\n    \"uri\",\n    \"href\",\n    \"docs_url\",\n    \"documentation_url\",\n    \"documentation\",\n]",
       "krate": "cli",
       "decl": "crates/cli/src/block/links.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "cli",
         "path": "crates/cli/src/block/links.rs",
@@ -2151,10 +2135,11 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block/links.rs",
-          "line": 72,
-          "evidence": "Rust path reference"
+          "line": 42,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id cli.block.links.url_arg_keys is resolved at every listed production helper call"
     },
     {
       "id": "cli.block.render_assistant_doc.gutter",
@@ -2357,7 +2342,135 @@
       "use_sites": [
         {
           "path": "crates/cli/src/bundle_adapter/checkpoint.rs",
-          "line": 60,
+          "line": 62,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.bundle_adapter.external.next_run",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "AtomicU64",
+      "default": "AtomicU64::new(1)",
+      "krate": "cli",
+      "decl": "crates/cli/src/bundle_adapter/external.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/bundle_adapter/external.rs",
+        "symbol": "NEXT_RUN"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/bundle_adapter/external.rs",
+          "line": 301,
+          "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.bundle_adapter.external_consumption.next_write",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "AtomicU64",
+      "default": "AtomicU64::new(1)",
+      "krate": "cli",
+      "decl": "crates/cli/src/bundle_adapter/external_consumption.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+        "symbol": "NEXT_WRITE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+          "line": 95,
+          "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.bundle_adapter.external_consumption.schema",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation-consumption/1\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/bundle_adapter/external_consumption.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+        "symbol": "SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+          "line": 38,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 213,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 252,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 314,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 344,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 369,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/providers/setup_effect.rs",
+          "line": 489,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/session_management.rs",
+          "line": 43,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/session_management.rs",
+          "line": 51,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/session_management.rs",
+          "line": 65,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/session_management.rs",
+          "line": 93,
           "evidence": "Rust path reference"
         }
       ]
@@ -2383,7 +2496,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/bundle_adapter/compiler.rs",
-          "line": 218,
+          "line": 266,
           "evidence": "Rust path reference"
         }
       ]
@@ -2471,22 +2584,37 @@
       "use_sites": [
         {
           "path": "crates/cli/src/bundle_adapter/compiler.rs",
-          "line": 147,
+          "line": 186,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/bundle_adapter/compiler.rs",
-          "line": 183,
+          "line": 231,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/bundle_adapter/compiler.rs",
-          "line": 204,
+          "line": 252,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/bundle_adapter/compiler.rs",
-          "line": 288,
+          "line": 336,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/bundle_adapter/external.rs",
+          "line": 36,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/bundle_adapter/external.rs",
+          "line": 121,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/bundle_adapter/external.rs",
+          "line": 248,
           "evidence": "Rust path reference"
         },
         {
@@ -2551,7 +2679,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_facts/values.rs",
-          "line": 1246,
+          "line": 1245,
           "evidence": "Rust path reference"
         },
         {
@@ -2612,7 +2740,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/bundle_adapter/schema.rs",
-          "line": 182,
+          "line": 186,
           "evidence": "Rust path reference"
         }
       ]
@@ -5164,12 +5292,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1440,
+          "line": 1488,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1452,
+          "line": 1500,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5205,12 +5333,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1441,
+          "line": 1489,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1453,
+          "line": 1501,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5262,17 +5390,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1788,
+          "line": 1853,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3456,
+          "line": 3536,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3669,
+          "line": 3749,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5299,22 +5427,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1826,
+          "line": 1891,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1844,
+          "line": 1909,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2130,
+          "line": 2195,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2415,
+          "line": 2480,
           "evidence": "Rust path reference"
         }
       ]
@@ -5339,7 +5467,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3328,
+          "line": 3408,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5366,7 +5494,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 921,
+          "line": 939,
           "evidence": "Rust path reference"
         }
       ]
@@ -5421,7 +5549,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3317,
+          "line": 3397,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5448,7 +5576,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2302,
+          "line": 2367,
           "evidence": "Rust path reference"
         }
       ]
@@ -5499,7 +5627,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3330,
+          "line": 3410,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5525,7 +5653,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 970,
+          "line": 988,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5551,7 +5679,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3575,
+          "line": 3655,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5577,17 +5705,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2260,
+          "line": 2325,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3717,
+          "line": 3797,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4120,
+          "line": 4201,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5813,7 +5941,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1135,
+          "line": 1153,
           "evidence": "Rust path reference"
         },
         {
@@ -5951,102 +6079,102 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 992,
+          "line": 1010,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1056,
+          "line": 1074,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1125,
+          "line": 1143,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1186,
+          "line": 1234,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1249,
+          "line": 1297,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1318,
+          "line": 1366,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1410,
+          "line": 1458,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1478,
+          "line": 1526,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1490,
+          "line": 1538,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1503,
+          "line": 1551,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1531,
+          "line": 1579,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1544,
+          "line": 1592,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1553,
+          "line": 1601,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1585,
+          "line": 1633,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1612,
+          "line": 1660,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2998,
+          "line": 3078,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3027,
+          "line": 3107,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3489,
+          "line": 3569,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3519,
+          "line": 3599,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3555,
+          "line": 3635,
           "evidence": "Rust path reference"
         },
         {
@@ -6245,12 +6373,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1155,
+          "line": 1203,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1314,
+          "line": 1362,
           "evidence": "macro token reference"
         },
         {
@@ -6376,12 +6504,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1156,
+          "line": 1204,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1313,
+          "line": 1361,
           "evidence": "macro token reference"
         },
         {
@@ -6647,6 +6775,84 @@
       "behavior_oracle": "installed profile id cli.plugin.max_public_key_file_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "cli.plugin_runtime.candidate.max_candidate_path_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "cli",
+      "decl": "crates/cli/src/plugin_runtime/candidate.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/plugin_runtime/candidate.rs",
+        "symbol": "MAX_CANDIDATE_PATH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/plugin_runtime/candidate.rs",
+          "line": 89,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.plugin_runtime.implementation.activation_path",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"implementations/activation.json\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/plugin_runtime/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/plugin_runtime/implementation.rs",
+        "symbol": "ACTIVATION_PATH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/plugin_runtime/implementation.rs",
+          "line": 107,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.plugin_runtime.implementation.catalog_path",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"implementations/catalog.json\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/plugin_runtime/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/plugin_runtime/implementation.rs",
+        "symbol": "CATALOG_PATH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/plugin_runtime/implementation.rs",
+          "line": 132,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "cli.plugin_runtime.max_runtime_diagnostics",
       "module": "scheduler_parallelism",
       "class": "bounded",
@@ -6670,7 +6876,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/plugin_runtime.rs",
-          "line": 269,
+          "line": 311,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8471,6 +8677,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+          "line": 38,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/cli/src/providers/setup_effect.rs",
           "line": 213,
           "evidence": "Rust path reference"
@@ -8695,12 +8906,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1243,
+          "line": 1255,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1244,
+          "line": 1256,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8752,7 +8963,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 2767,
+          "line": 2779,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -8934,7 +9145,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 305,
+          "line": 312,
           "evidence": "Rust path reference"
         }
       ]
@@ -9140,42 +9351,6 @@
       "behavior_oracle": "installed profile id cli.runtime.default_max_tool_concurrency is resolved at every listed production helper call"
     },
     {
-      "id": "cli.runtime.default_session_spawn_cap",
-      "module": "scheduler_parallelism",
-      "class": "structural",
-      "type": "integer",
-      "rust_type": "usize",
-      "default": "session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP",
-      "krate": "cli",
-      "decl": "crates/cli/src/runtime.rs",
-      "applied": false,
-      "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/runtime.rs",
-        "symbol": "DEFAULT_SESSION_SPAWN_CAP"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/runtime.rs",
-          "line": 148,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime/session_spawn_ledger.rs",
-          "line": 72,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime_tunables/composition.rs",
-          "line": 538,
-          "evidence": "Rust path reference"
-        }
-      ]
-    },
-    {
       "id": "cli.runtime.durability.absent_lifecycle_count",
       "module": "scheduler_parallelism",
       "class": "structural",
@@ -9230,7 +9405,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 893,
+          "line": 905,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9257,7 +9432,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 141,
+          "line": 138,
           "evidence": "Rust path reference"
         },
         {
@@ -9295,8 +9470,8 @@
       },
       "use_sites": [
         {
-          "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 115,
+          "path": "crates/cli/src/runtime.rs",
+          "line": 149,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9331,32 +9506,6 @@
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime.failed_action_cache.max_prior_error_bytes is resolved at every listed production helper call"
-    },
-    {
-      "id": "cli.runtime.failed_action_cache_max_identities",
-      "module": "scheduler_parallelism",
-      "class": "structural",
-      "type": "integer",
-      "rust_type": "usize",
-      "default": "failed_action_cache::MAX_IDENTITIES",
-      "krate": "cli",
-      "decl": "crates/cli/src/runtime.rs",
-      "applied": false,
-      "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/runtime.rs",
-        "symbol": "FAILED_ACTION_CACHE_MAX_IDENTITIES"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/runtime_tunables/execution_facts/constraints.rs",
-          "line": 53,
-          "evidence": "Rust path reference"
-        }
-      ]
     },
     {
       "id": "cli.runtime.frontend.workflow_label_max_bytes",
@@ -9893,7 +10042,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5933,
+          "line": 5945,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -9919,7 +10068,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3793,
+          "line": 3805,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -9946,7 +10095,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 838,
+          "line": 850,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -9973,7 +10122,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 206,
+          "line": 218,
           "evidence": "production declaration"
         }
       ]
@@ -10312,7 +10461,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1521,
+          "line": 1533,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10693,17 +10842,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3311,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime.rs",
-          "line": 3331,
+          "line": 3323,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
           "line": 3343,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime.rs",
+          "line": 3355,
           "evidence": "Rust path reference"
         },
         {
@@ -10734,17 +10883,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3953,
+          "line": 3965,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3966,
+          "line": 3978,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3980,
+          "line": 3992,
           "evidence": "Rust path reference"
         }
       ]
@@ -11369,8 +11518,8 @@
       },
       "use_sites": [
         {
-          "path": "crates/cli/src/runtime/session_spawn_ledger.rs",
-          "line": 70,
+          "path": "crates/cli/src/runtime.rs",
+          "line": 156,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11798,7 +11947,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4541,
+          "line": 4553,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -11917,7 +12066,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5997,
+          "line": 6009,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -11943,7 +12092,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1159,
+          "line": 1171,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11997,7 +12146,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5949,
+          "line": 5961,
           "evidence": "Rust path reference"
         },
         {
@@ -13306,42 +13455,6 @@
       "behavior_oracle": "installed profile id cli.runtime_tunables.effective_core.summary_coverage_check_default_enabled is resolved at every listed production helper call"
     },
     {
-      "id": "cli.runtime_tunables.execution_facts.absent_budget_decomposition_token_ceiling",
-      "module": "context_assembly",
-      "class": "structural",
-      "type": "integer",
-      "rust_type": "u64",
-      "default": "65_536",
-      "krate": "cli",
-      "decl": "crates/cli/src/runtime_tunables/execution_facts.rs",
-      "applied": false,
-      "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/runtime_tunables/execution_facts.rs",
-        "symbol": "ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/runtime_tunables/execution_facts/constraints.rs",
-          "line": 210,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime_tunables/execution_facts/values.rs",
-          "line": 255,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 476,
-          "evidence": "Rust path reference"
-        }
-      ]
-    },
-    {
       "id": "cli.runtime_tunables.execution_facts.known_schema_blockers",
       "module": "context_assembly",
       "class": "structural",
@@ -13362,12 +13475,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/execution_facts.rs",
-          "line": 151,
+          "line": 146,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_facts.rs",
-          "line": 156,
+          "line": 151,
           "evidence": "Rust path reference"
         }
       ]
@@ -13396,7 +13509,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 476,
+          "line": 12,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13428,7 +13541,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 305,
+          "line": 312,
           "evidence": "Rust path reference"
         }
       ]
@@ -13457,7 +13570,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 297,
+          "line": 304,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -17364,6 +17477,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/cli/src/bundle_adapter/external_consumption.rs",
+          "line": 38,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/cli/src/providers/setup_effect.rs",
           "line": 213,
           "evidence": "Rust path reference"
@@ -19089,7 +19207,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 141,
+          "line": 138,
           "evidence": "Rust path reference"
         },
         {
@@ -22998,6 +23116,89 @@
       ]
     },
     {
+      "id": "eval.adapter_registry.iteron_cli_id",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-cli\"",
+      "krate": "eval",
+      "decl": "crates/eval/src/adapter_registry.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/adapter_registry.rs",
+        "symbol": "ITERON_CLI_ID"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 160,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.adapter_registry.iteron_cli_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"1\"",
+      "krate": "eval",
+      "decl": "crates/eval/src/adapter_registry.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/adapter_registry.rs",
+        "symbol": "ITERON_CLI_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 161,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.adapter_registry.max_executable_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1024 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/adapter_registry.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/adapter_registry.rs",
+        "symbol": "MAX_EXECUTABLE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 73,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 122,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.attempts.domain",
       "module": "verification_quorum",
       "class": "structural",
@@ -24219,6 +24420,616 @@
       "behavior_oracle": "installed profile id eval.reference_harness.max_harness_arguments is resolved at every listed production helper call"
     },
     {
+      "id": "eval.research_execution.implementation.max_receipt_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "4 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/implementation.rs",
+        "symbol": "MAX_RECEIPT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/implementation.rs",
+          "line": 101,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.implementation.receipt_schema",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation-consumption/1\"",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/implementation.rs",
+        "symbol": "RECEIPT_SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/implementation.rs",
+          "line": 112,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.process.max_group_processes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/process.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/process.rs",
+        "symbol": "process_group_memory_within_limit::MAX_GROUP_PROCESSES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/process.rs",
+          "line": 207,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.process.proc_pgrp_only",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "2",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/process.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/process.rs",
+        "symbol": "process_group_memory_within_limit::PROC_PGRP_ONLY"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/process.rs",
+          "line": 211,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.response_validation.credentials",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[&str]",
+      "default": "&[\n    \"ANTHROPIC_API_KEY\",\n    \"DEEPSEEK_API_KEY\",\n    \"FIREWORKS_API_KEY\",\n    \"GLM_API_KEY\",\n    \"MINIMAX_API_KEY\",\n    \"OPENAI_API_KEY\",\n]",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/response_validation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/response_validation.rs",
+        "symbol": "CREDENTIALS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 22,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.response_validation.max_argument",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/response_validation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/response_validation.rs",
+        "symbol": "MAX_ARGUMENT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 12,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.response_validation.max_output",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "8 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/response_validation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/response_validation.rs",
+        "symbol": "MAX_OUTPUT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 13,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 14,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_execution.response_validation.max_path",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_execution/response_validation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_execution/response_validation.rs",
+        "symbol": "MAX_PATH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 40,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.credential_names",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[&str]",
+      "default": "&[\n    \"ANTHROPIC_API_KEY\",\n    \"DEEPSEEK_API_KEY\",\n    \"FIREWORKS_API_KEY\",\n    \"GLM_API_KEY\",\n    \"MINIMAX_API_KEY\",\n    \"OPENAI_API_KEY\",\n]",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "CREDENTIAL_NAMES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 441,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 445,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_evidence_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1024 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_EVIDENCE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 301,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 300,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_id_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 340,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 352,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 332,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_memory_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1024 * 1024 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_MEMORY_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 302,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 301,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_output_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "8 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_OUTPUT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 299,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 300,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 298,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 299,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_path_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_PATH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 425,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_prompt_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_PROMPT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 295,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_protocol_request_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "2 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_PROTOCOL_REQUEST_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 42,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 45,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 117,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 119,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_protocol.rs",
+          "line": 299,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_protocol_response_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "32 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_PROTOCOL_RESPONSE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 87,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_protocol.rs",
+          "line": 314,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_turns",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "1_000_000",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_TURNS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 298,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 297,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_wall_secs",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "86_400",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_WALL_SECS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 297,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/terminal_bench.rs",
+          "line": 296,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.research_protocol",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-research/1\"",
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "RESEARCH_PROTOCOL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 14,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation.rs",
+          "line": 219,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/session.rs",
+          "line": 68,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.runner.builtin_credential_envs",
       "module": "verification_quorum",
       "class": "structural",
@@ -24761,6 +25572,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 301,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 300,
           "evidence": "Rust path reference"
@@ -24787,6 +25603,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 302,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 301,
           "evidence": "Rust path reference"
@@ -24812,6 +25633,16 @@
         "symbol": "MAX_OUTPUT_BYTES"
       },
       "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 299,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 300,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 298,
@@ -24878,6 +25709,11 @@
           "path": "crates/eval/src/attestation.rs",
           "line": 200,
           "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution.rs",
+          "line": 321,
+          "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/terminal_bench.rs",
@@ -24963,6 +25799,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 298,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 297,
           "evidence": "Rust path reference"
@@ -24989,6 +25830,11 @@
       },
       "use_sites": [
         {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 297,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 296,
           "evidence": "Rust path reference"
@@ -25014,6 +25860,11 @@
         "symbol": "TERMINAL_BENCH_ID"
       },
       "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 168,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 244,
@@ -25045,6 +25896,11 @@
         "symbol": "TERMINAL_BENCH_VERSION"
       },
       "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 169,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 244,
@@ -25079,6 +25935,259 @@
         {
           "path": "crates/eval/src/trained.rs",
           "line": 112,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_distributed_workers",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "256",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_DISTRIBUTED_WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 239,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_id_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 340,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 352,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 332,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_resource_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1024 * 1024 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_RESOURCE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 211,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 218,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 230,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 232,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_reward_objectives",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "32",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_REWARD_OBJECTIVES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 191,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_schema_id_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_SCHEMA_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 317,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_trainer_bridge_message_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_TRAINER_BRIDGE_MESSAGE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 171,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.trainer_bridge_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "TRAINER_BRIDGE_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 181,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 255,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.implementation_protocol",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation/1\"",
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "IMPLEMENTATION_PROTOCOL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 164,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 229,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation.rs",
+          "line": 43,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 352,
           "evidence": "Rust path reference"
         }
       ]
@@ -25208,7 +26317,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 143,
+          "line": 144,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25235,7 +26344,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 159,
+          "line": 199,
           "evidence": "Rust path reference"
         }
       ]
@@ -25264,7 +26373,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 122,
+          "line": 123,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25294,7 +26403,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 130,
+          "line": 131,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25324,11 +26433,63 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 128,
+          "line": 129,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id eval.tuner.max_tuner_trials is resolved at every listed production helper call"
+    },
+    {
+      "id": "eval.tuner.max_universal_candidate_dimensions",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4_096",
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "MAX_UNIVERSAL_CANDIDATE_DIMENSIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 341,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.universal_candidate_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "2",
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "UNIVERSAL_CANDIDATE_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 314,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "eval.types.eval_exit_harness",
@@ -31823,7 +32984,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/composition_model.rs",
-          "line": 382,
+          "line": 417,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -31853,7 +33014,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/composition_model.rs",
-          "line": 355,
+          "line": 390,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -31883,7 +33044,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/composition_model.rs",
-          "line": 212,
+          "line": 240,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -31913,7 +33074,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/composition_model.rs",
-          "line": 392,
+          "line": 427,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -31943,11 +33104,846 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/composition_model.rs",
-          "line": 340,
+          "line": 373,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id marketplace.composition_model.max_slot_key_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "marketplace.implementation.implementation_catalog_schema_version",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "IMPLEMENTATION_CATALOG_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 204,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 206,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.implementation_process_protocol_version",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "IMPLEMENTATION_PROCESS_PROTOCOL_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 72,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 75,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 198,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_arg_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ARG_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 67,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 206,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_argv",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ARGV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 64,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 203,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_argv_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "16 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ARGV_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 65,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 204,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_cancellation_ms",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "300_000",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_CANCELLATION_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 83,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 217,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_catalog_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "512 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_CATALOG_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 196,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 199,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 185,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 189,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 195,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 198,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 202,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_dependencies",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_DEPENDENCIES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 93,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_evidence_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4 * 1024 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_EVIDENCE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 85,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 87,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 219,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 221,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_id_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "96",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 171,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 295,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_observations",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_OBSERVATIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 89,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 223,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_path_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "512",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_PATH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 20,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 221,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementation_runtime_ms",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "3_600_000",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATION_RUNTIME_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 81,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 215,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.max_implementations",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "MAX_IMPLEMENTATIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 210,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation.rs",
+          "line": 213,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_activation.implementation_activation_schema_version",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_activation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_activation.rs",
+        "symbol": "IMPLEMENTATION_ACTIVATION_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 27,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 29,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_activation.max_implementation_activation_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_activation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_activation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ACTIVATION_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_activation.rs",
+          "line": 181,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation.rs",
+          "line": 185,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_activation.max_implementation_activation_sources",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "ModuleId::ALL.len()",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_activation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_activation.rs",
+        "symbol": "MAX_IMPLEMENTATION_ACTIVATION_SOURCES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 36,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/source.rs",
+          "line": 39,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_activation.strict_json.duplicate_marker",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"__iteron_duplicate_json_key__\"",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_activation/strict_json.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_activation/strict_json.rs",
+        "symbol": "DUPLICATE_MARKER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_activation/strict_json.rs",
+          "line": 23,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_activation/strict_json.rs",
+          "line": 108,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.implementation_protocol",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation/1\"",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "IMPLEMENTATION_PROTOCOL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 283,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 314,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 71,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_failure_message_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_FAILURE_MESSAGE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 222,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 269,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 325,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_implementation_message_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1024 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_IMPLEMENTATION_MESSAGE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 153,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 156,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime.rs",
+          "line": 25,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 352,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 355,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 30,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_implementation_payload_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "512 * 1024",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_IMPLEMENTATION_PAYLOAD_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 347,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 350,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_protocol_id_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_PROTOCOL_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 268,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 358,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.max_implementation_stdin_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "8 * MAX_IMPLEMENTATION_MESSAGE_BYTES",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime.rs",
+        "symbol": "MAX_IMPLEMENTATION_STDIN_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 31,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 34,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.process.sigkill",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "i32",
+      "default": "9",
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime/process.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/process.rs",
+        "symbol": "kill_process_group::SIGKILL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 423,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "marketplace.lib.max_name_bytes",
@@ -31973,7 +33969,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/lib.rs",
-          "line": 160,
+          "line": 198,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -38902,7 +40898,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/slot.rs",
-          "line": 72,
+          "line": 71,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -41594,32 +43590,6 @@
         }
       ],
       "behavior_oracle": "installed profile id provider.lib.error_body_timeout is resolved at every listed production helper call"
-    },
-    {
-      "id": "provider.lib.markers",
-      "module": "provider_sampling",
-      "class": "structural",
-      "type": "array",
-      "rust_type": "&[(&str, &str)]",
-      "default": "&[\n        (\"current time\", \"a clock in the prefix\"),\n        (\"timestamp:\", \"a timestamp in the prefix\"),\n        (\"today's date\", \"a date in the prefix\"),\n        (\"request-id\", \"a per-request id in the prefix\"),\n        (\"nonce\", \"a nonce in the prefix\"),\n    ]",
-      "krate": "provider",
-      "decl": "crates/provider/src/lib.rs",
-      "applied": false,
-      "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "identity",
-      "owner": {
-        "krate": "provider",
-        "path": "crates/provider/src/lib.rs",
-        "symbol": "cache_bomb_in_prefix::MARKERS"
-      },
-      "use_sites": [
-        {
-          "path": "crates/provider/src/lib.rs",
-          "line": 1625,
-          "evidence": "Rust path reference"
-        }
-      ]
     },
     {
       "id": "provider.lib.max_diagnostic_bytes",
@@ -53518,16 +55488,19 @@
     {
       "id": "tools.tool_search.default_deferred_tool_eager_limit",
       "module": "tool_arguments",
-      "class": "structural",
+      "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
       "default": "12",
+      "domain": {
+        "min": 0,
+        "max": 12
+      },
       "krate": "tools",
       "decl": "crates/tools/src/tool_search.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "tools",
         "path": "crates/tools/src/tool_search.rs",
@@ -53535,11 +55508,12 @@
       },
       "use_sites": [
         {
-          "path": "crates/tools/src/tool_search.rs",
-          "line": 16,
-          "evidence": "production declaration"
+          "path": "crates/cli/src/runtime_tunables/extension_facts/values.rs",
+          "line": 308,
+          "evidence": "param_usize runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id tools.tool_search.default_deferred_tool_eager_limit is resolved at every listed production helper call"
     },
     {
       "id": "tools.tool_search.default_search_results",
@@ -53704,7 +55678,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 1056,
+          "line": 1062,
           "evidence": "Rust path reference"
         }
       ]
@@ -53729,22 +55703,22 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 383,
+          "line": 389,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 521,
+          "line": 527,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 634,
+          "line": 640,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 819,
+          "line": 825,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53770,12 +55744,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 245,
+          "line": 251,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 311,
+          "line": 317,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53784,16 +55758,19 @@
     {
       "id": "tools.web.default_search_result_count",
       "module": "tool_arguments",
-      "class": "structural",
+      "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
       "default": "5",
+      "domain": {
+        "min": 0,
+        "max": 5
+      },
       "krate": "tools",
       "decl": "crates/tools/src/web.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "tools",
         "path": "crates/tools/src/web.rs",
@@ -53802,10 +55779,11 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 190,
-          "evidence": "Rust path reference"
+          "line": 191,
+          "evidence": "param_usize runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id tools.web.default_search_result_count is resolved at every listed production helper call"
     },
     {
       "id": "tools.web.no_search_backend",
@@ -53827,7 +55805,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 199,
+          "line": 205,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -53853,12 +55831,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 637,
+          "line": 643,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 822,
+          "line": 828,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53884,7 +55862,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 1038,
+          "line": 1044,
           "evidence": "param_str_list runtime resolution"
         }
       ],
@@ -53911,7 +55889,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 1111,
+          "line": 1117,
           "evidence": "Rust path reference"
         }
       ]
@@ -53936,22 +55914,22 @@
       "use_sites": [
         {
           "path": "crates/tools/src/web.rs",
-          "line": 386,
+          "line": 392,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 528,
+          "line": 534,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 639,
+          "line": 645,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/web.rs",
-          "line": 824,
+          "line": 830,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -54232,6 +56210,156 @@
         {
           "path": "crates/tunables/src/benchmark_metadata.rs",
           "line": 211,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.capability_graph.capability_seam_graph_schema_version",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "krate": "tunables",
+      "decl": "crates/tunables/src/capability_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "capability_authority",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/capability_graph.rs",
+        "symbol": "CAPABILITY_SEAM_GRAPH_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 177,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 196,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 198,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.capability_graph.max_capability_seam_graph_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128 * 1024",
+      "krate": "tunables",
+      "decl": "crates/tunables/src/capability_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "capability_authority",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/capability_graph.rs",
+        "symbol": "MAX_CAPABILITY_SEAM_GRAPH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 209,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 212,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.capability_graph.max_capability_seams",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "28",
+      "krate": "tunables",
+      "decl": "crates/tunables/src/capability_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "capability_authority",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/capability_graph.rs",
+        "symbol": "MAX_CAPABILITY_SEAMS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 202,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 204,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.capability_graph.max_contract_id_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "160",
+      "krate": "tunables",
+      "decl": "crates/tunables/src/capability_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/capability_graph.rs",
+        "symbol": "MAX_CONTRACT_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 186,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.capability_graph.max_seam_dependencies",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "8",
+      "krate": "tunables",
+      "decl": "crates/tunables/src/capability_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/capability_graph.rs",
+        "symbol": "MAX_SEAM_DEPENDENCIES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 266,
           "evidence": "Rust path reference"
         }
       ]
@@ -54857,6 +56985,16 @@
         "symbol": "ModuleId::ALL"
       },
       "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 259,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 298,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/tunables/src/export.rs",
           "line": 230,
@@ -57653,6 +59791,16 @@
         "symbol": "RuntimeProfile::ALL"
       },
       "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 259,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 298,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/tunables/src/export.rs",
           "line": 230,

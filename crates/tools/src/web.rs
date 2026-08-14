@@ -187,7 +187,13 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .get("count")
                     .and_then(|x| x.as_u64())
                     .map(|v| (v as usize).clamp(1, cap))
-                    .unwrap_or(DEFAULT_SEARCH_RESULT_COUNT.min(cap));
+                    .unwrap_or_else(|| {
+                        iteron_tunables::param_usize(
+                            "tools.web.default_search_result_count",
+                            DEFAULT_SEARCH_RESULT_COUNT,
+                        )
+                        .min(cap)
+                    });
                 if query.is_empty() {
                     return err_result(id, "web_search: empty query".into());
                 }

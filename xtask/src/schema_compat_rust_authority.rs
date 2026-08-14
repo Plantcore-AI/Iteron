@@ -346,8 +346,15 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
     for (member, package_name) in workspace_member_identities(root)? {
         validate_member_target(root, &member, &package_name)?;
     }
-    validate_bin_target(root, "crates/cli/Cargo.toml", "iteron", "src/main.rs")?;
-    validate_bin_target(root, "crates/eval/Cargo.toml", "iteron-eval", "src/main.rs")?;
+    validate_bin_targets(root, "crates/cli/Cargo.toml", &[("iteron", "src/main.rs")])?;
+    validate_bin_targets(
+        root,
+        "crates/eval/Cargo.toml",
+        &[
+            ("iteron-eval", "src/main.rs"),
+            ("iteron-harness", "src/iteron_harness_main.rs"),
+        ],
+    )?;
     validate_optional_bin_target(
         root,
         "crates/evolve/Cargo.toml",
@@ -425,9 +432,9 @@ fn reject_implicit_targets(
     Ok(())
 }
 
-fn validate_bin_target(root: &Path, manifest: &str, name: &str, path: &str) -> Result<()> {
+fn validate_bin_targets(root: &Path, manifest: &str, expected: &[(&str, &str)]) -> Result<()> {
     let value = read_toml(root, manifest)?;
-    validate_bin_declaration(&value, manifest, name, path)
+    validate_bin_declarations(&value, manifest, expected)
 }
 
 /// Admit the transcript driver only if it is declared as the one canonical `iteron-evolve` binary.
@@ -439,32 +446,46 @@ fn validate_optional_bin_target(root: &Path, manifest: &str, name: &str, path: &
     if value.get("bin").is_none() {
         return Ok(());
     }
-    validate_bin_declaration(&value, manifest, name, path)
+    validate_bin_declarations(&value, manifest, &[(name, path)])
 }
 
+fn validate_bin_declarations(
+    value: &toml::Value,
+    manifest: &str,
+    expected: &[(&str, &str)],
+) -> Result<()> {
+    let bins = value
+        .get("bin")
+        .and_then(toml::Value::as_array)
+        .with_context(|| format!("managed manifest '{manifest}' lacks its explicit binary"))?;
+    if bins.len() != expected.len() {
+        bail!(
+            "managed manifest '{manifest}' must declare exactly {} governed binary target(s)",
+            expected.len()
+        );
+    }
+    for (bin, (name, path)) in bins.iter().zip(expected) {
+        let bin = bin
+            .as_table()
+            .context("managed binary target is not a table")?;
+        if bin.len() != 2
+            || bin.get("name").and_then(toml::Value::as_str) != Some(*name)
+            || bin.get("path").and_then(toml::Value::as_str) != Some(*path)
+        {
+            bail!("managed manifest '{manifest}' redirects its binary source");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn validate_bin_declaration(
     value: &toml::Value,
     manifest: &str,
     name: &str,
     path: &str,
 ) -> Result<()> {
-    let bins = value
-        .get("bin")
-        .and_then(toml::Value::as_array)
-        .with_context(|| format!("managed manifest '{manifest}' lacks its explicit binary"))?;
-    let [bin] = bins.as_slice() else {
-        bail!("managed manifest '{manifest}' must declare exactly one binary");
-    };
-    let bin = bin
-        .as_table()
-        .context("managed binary target is not a table")?;
-    if bin.len() != 2
-        || bin.get("name").and_then(toml::Value::as_str) != Some(name)
-        || bin.get("path").and_then(toml::Value::as_str) != Some(path)
-    {
-        bail!("managed manifest '{manifest}' redirects its binary source");
-    }
-    Ok(())
+    validate_bin_declarations(value, manifest, &[(name, path)])
 }
 
 fn validate_managed_modules(root: &Path) -> Result<()> {

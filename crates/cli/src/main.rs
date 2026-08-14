@@ -775,6 +775,24 @@ struct Cli {
     #[arg(long, value_enum)]
     harness_profile: Option<HarnessProfileArg>,
 
+    /// Operator/eval-harness pinned external implementation activation document.
+    #[arg(
+        long,
+        hide = true,
+        value_name = "PATH",
+        requires = "implementation_candidate_digest"
+    )]
+    implementation_candidate: Option<PathBuf>,
+
+    /// Exact lowercase SHA-256 of --implementation-candidate bytes.
+    #[arg(
+        long,
+        hide = true,
+        value_name = "SHA256",
+        requires = "implementation_candidate"
+    )]
+    implementation_candidate_digest: Option<String>,
+
     /// Print the whole machine-readable optimization surface as JSON and exit: every family,
     /// every exposed parameter, the module axis and the addressable prompt artifacts. This is
     /// what an external optimizer reads to construct a legal profile.
@@ -1151,6 +1169,36 @@ async fn run_cli() -> anyhow::Result<u8> {
     // machine contract.
     warn_if_stale();
     let cli = Cli::parse();
+
+    if cli.implementation_candidate.is_some() {
+        if cli.command.is_some()
+            || cli.machine_contract
+            || cli.tunables_export
+            || cli.tunables_explain
+            || cli.sessions
+            || cli.transcript.is_some()
+            || cli.otel_export.is_some()
+            || cli.timeline.is_some()
+            || cli.fork.is_some()
+        {
+            anyhow::bail!(
+                "--implementation-candidate is available only to a research-profile agent run"
+            );
+        }
+        let profile = cli
+            .harness_profile
+            .map(iteron_tunables::RuntimeProfile::from)
+            .unwrap_or_else(|| {
+                if cli.benchmark_attempt_scope.is_some() {
+                    iteron_tunables::RuntimeProfile::Benchmark
+                } else {
+                    iteron_tunables::RuntimeProfile::Interactive
+                }
+            });
+        if profile != iteron_tunables::RuntimeProfile::Research {
+            anyhow::bail!("--implementation-candidate requires --harness-profile research");
+        }
+    }
 
     let machine_schema_version = cli.output_schema_version.unwrap_or(output::SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
@@ -1691,18 +1739,35 @@ async fn run_cli() -> anyhow::Result<u8> {
         );
     }
     let user_file = FileConfig::load_user()?;
-    let plugin_store_root =
-        config::config_home().map(|home| iteron_protocol::home::path(&home, "plugins"));
-    let mut runtime_plugins = plugin_runtime::RuntimePlugins::load(
-        plugin_store_root.as_deref(),
+    let implementation_candidate = match (
+        cli.implementation_candidate.as_deref(),
+        cli.implementation_candidate_digest.as_deref(),
+    ) {
+        (Some(path), Some(digest)) => Some(plugin_runtime::CandidateFile::read(path, digest)?),
+        (None, None) => None,
+        _ => unreachable!("clap requires the external implementation arguments as a pair"),
+    };
+    let plugin_host_ceiling =
         iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
             iteron_protocol::Capability::ReadOnly,
             iteron_protocol::Capability::ReversibleLocal,
             iteron_protocol::Capability::CodeExecuting,
             iteron_protocol::Capability::TrustMutating,
             iteron_protocol::Capability::IrreversibleExternal,
-        ]),
-    );
+        ]);
+    let mut runtime_plugins = if let Some(candidate) = implementation_candidate {
+        // Research activation is intentionally independent of HOME, ITERON_CONFIG_HOME, and the
+        // installed plugin store. The paired CLI path/digest is its operator-intent boundary.
+        plugin_runtime::RuntimePlugins::research(candidate, plugin_host_ceiling)?
+    } else {
+        let plugin_store_root =
+            config::config_home().map(|home| iteron_protocol::home::path(&home, "plugins"));
+        plugin_runtime::RuntimePlugins::load(
+            plugin_store_root.as_deref(),
+            plugin_host_ceiling,
+            None,
+        )?
+    };
     for diagnostic in &runtime_plugins.diagnostics {
         eprintln!("{diagnostic}");
     }
@@ -2665,7 +2730,13 @@ async fn run_cli() -> anyhow::Result<u8> {
                     "cannot resume {run}: rollout has no immutable policy-bundle checkpoint"
                 )
             })?;
-            bundle_adapter::compile_recorded_bundle(&snapshot).map_err(|error| {
+            bundle_adapter::compile_recorded_bundle_with_external(
+                &snapshot,
+                runtime_plugins.implementation.as_ref(),
+                &runs_dir,
+                &run.to_string(),
+            )
+            .map_err(|error| {
                 anyhow::anyhow!(
                     "cannot resume {run}: {error}; receipt={}",
                     serde_json::to_string(&error.receipt)
@@ -2673,10 +2744,19 @@ async fn run_cli() -> anyhow::Result<u8> {
                 )
             })?
         }
-        None => bundle_adapter::compile_configured_bundle(
-            user_file.active_policy_bundle.as_ref(),
-            config::ConfigOrigin::UserConfig,
-        )
+        None => match runtime_plugins.implementation.as_ref() {
+            Some(external) => bundle_adapter::compile_configured_bundle_with_external(
+                user_file.active_policy_bundle.as_ref(),
+                config::ConfigOrigin::UserConfig,
+                external,
+                &runs_dir,
+                &run.to_string(),
+            ),
+            None => bundle_adapter::compile_configured_bundle(
+                user_file.active_policy_bundle.as_ref(),
+                config::ConfigOrigin::UserConfig,
+            ),
+        }
         .map_err(|error| {
             anyhow::anyhow!(
                 "{error}; receipt={}",
@@ -3921,7 +4001,8 @@ async fn run_workflow_command(
         iteron_protocol::capability_set::CapabilitySet::from_iter_capabilities([
             iteron_protocol::Capability::ReadOnly,
         ]),
-    );
+        None,
+    )?;
     let workflow_agent_catalog = discover_agent_catalog(repo, &runtime_plugins.agents);
     // Standalone workflow children have no MCP process/session owner and a read-only registry.
     // Do not activate MCP families merely because operator/plugin configuration exists on this
