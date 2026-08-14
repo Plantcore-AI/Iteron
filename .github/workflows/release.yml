@@ -672,9 +672,15 @@ jobs:
           set -euo pipefail
           normalized=()
           for argument in "$@"; do
-            if [[ "$argument" != --target=x86_64-unknown-linux-musl ]]; then
-              normalized+=("$argument")
-            fi
+            case "$argument" in
+              --target=x86_64-unknown-linux-musl|-lc)
+                ;;
+              *self-contained*crt*.o)
+                ;;
+              *)
+                normalized+=("$argument")
+                ;;
+            esac
           done
           exec "$ITERON_ZIG" cc -target x86_64-linux-musl "${normalized[@]}"
           WRAPPER
@@ -813,7 +819,7 @@ jobs:
           run_exact tui \
             cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
               --target "$target" \
-              tui::app_server::tests::version_skew_is_refused_up_front -- --exact
+              app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \
             cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test one_shot_output --target "$target" \
