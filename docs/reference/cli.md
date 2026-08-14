@@ -91,7 +91,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |
 | `iteron workflow resume <RUN_ID> [--script <SCRIPT>] [--args <ARGS>]` | Resume a prior run by id, replaying its journaled agent outcomes and continuing (blocking). |
 | `iteron workflow watch <RUN_ID> [--args <ARGS>]` | Re-launch a prior run in the BACKGROUND (RunHandle) and attach the live tree to it. |
-| `iteron setup [--plan] [--byok <PROVIDER>] [--provider <PROVIDER>] [--stdin] [--expires-at <UNIX>]` | First-run setup: choose a hosted plan or your own provider key, and validate it. `--stdin` reads the credential from standard input and asks nothing, so setup runs without a terminal; `--provider` names the provider for a flow that does not, such as `--plan`; `--expires-at` carries a hosted-plan expiry and is refused on a BYOK key. |
+| `iteron setup [--plan] [--byok <PROVIDER>] [--provider <PROVIDER>] [--stdin] [--expires-at <UNIX>]` | First-run setup: choose a hosted plan or your own provider key, and validate it. |
 | `iteron auth <SUBCOMMAND>` | Inspect or drop the credential in use. |
 | `iteron auth status [PROVIDER]` | Print provider, api_root, credential source, validation state, and expiry. |
 | `iteron auth logout [PROVIDER]` | Remove the stored credential, leaving the provider entry intact. |
