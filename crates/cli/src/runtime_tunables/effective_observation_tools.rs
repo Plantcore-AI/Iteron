@@ -50,6 +50,12 @@ fn decode_inner(
             timeout_seconds: u64_field(web, "web_fetch_limits", "timeout_seconds")?,
             max_lines: usize_field(web, "web_fetch_limits", "max_lines")?,
         },
+        web_search_max_results: usize::try_from(view.integer("web_search_cap")?).map_err(|_| {
+            EffectiveObservationToolError::Range {
+                family: "web_search_cap",
+                field: "$",
+            }
+        })?,
         shell: iteron_tools::ShellPolicy {
             timeout_seconds: u64_field(shell, "shell_timeout_output", "timeout_seconds")?,
             stdout_max_bytes: usize_field(shell, "shell_timeout_output", "stdout_max_bytes")?,

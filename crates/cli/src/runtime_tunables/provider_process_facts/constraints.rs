@@ -992,7 +992,7 @@ fn add_verification_constraints(
         "recovery_escalation_policy",
         "$",
         ExternalCeiling::VerificationFloor,
-        [en(iteron_verify::VerificationRecoveryEscalationPolicy::ID)],
+        iteron_verify::VerificationRecoveryEscalationPolicy::ALL_IDS.map(en),
     )?;
     report.constrained(
         "recovery_escalation_policy",

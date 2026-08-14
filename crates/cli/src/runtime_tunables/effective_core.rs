@@ -6,8 +6,8 @@
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
 use iteron_protocol::{
-    Budget, Capability, Effort, PermissionMode, PermissionRules, Verdict,
-    capability_set::CapabilitySet,
+    Budget, Capability, Effort, OrchestrationMode, PermissionMode, PermissionRules,
+    ReasoningEffort, Verdict, capability_set::CapabilitySet,
 };
 use iteron_sched::BackoffPolicy;
 use iteron_tunables::{DecimalValue, ResolutionValue, RuntimeGetterId};
@@ -26,12 +26,69 @@ const AUTO_COMPACTION_DEFAULT_ENABLED: bool = true;
 /// Summary coverage checking costs an extra verification pass, so it is opt-in.
 const SUMMARY_COVERAGE_CHECK_DEFAULT_ENABLED: bool = false;
 
+/// The three profile-addressable effort maps projected into the physical provider/orchestration
+/// decisions. Keeping the six entries in fixed arrays makes missing or additional map keys a
+/// decode error instead of allowing a partial override to fall back silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EffortRuntimePolicy {
+    reasoning: [ReasoningEffort; 6],
+    thinking_budget: [u32; 6],
+    orchestration: [OrchestrationMode; 6],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionFailurePolicy {
+    FailClosed,
+    RetainOriginal,
+    TruncateBounded,
+}
+
+impl EffortRuntimePolicy {
+    pub(crate) fn compiled() -> Self {
+        Self {
+            reasoning: Effort::ALL.map(Effort::reasoning_effort),
+            thinking_budget: Effort::ALL.map(Effort::thinking_budget),
+            orchestration: Effort::ALL.map(|effort| {
+                if effort.orchestrates() {
+                    OrchestrationMode::Orchestrated
+                } else {
+                    OrchestrationMode::SingleAgent
+                }
+            }),
+        }
+    }
+
+    pub(crate) fn reasoning(&self, effort: Effort) -> ReasoningEffort {
+        self.reasoning[effort_index(effort)]
+    }
+
+    pub(crate) fn thinking_budget(&self, effort: Effort) -> u32 {
+        self.thinking_budget[effort_index(effort)]
+    }
+
+    pub(crate) fn orchestration(&self, effort: Effort) -> OrchestrationMode {
+        self.orchestration[effort_index(effort)]
+    }
+}
+
+const fn effort_index(effort: Effort) -> usize {
+    match effort {
+        Effort::Low => 0,
+        Effort::Medium => 1,
+        Effort::High => 2,
+        Effort::XHigh => 3,
+        Effort::Max => 4,
+        Effort::Ultracode => 5,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveCoreSettings {
     pub provider_id: String,
     pub model_id: String,
     pub base_url: String,
     pub effort: Effort,
+    pub effort_policy: EffortRuntimePolicy,
     pub budget: Budget,
     pub allow_code: bool,
     pub permission_mode: PermissionMode,
@@ -40,6 +97,7 @@ pub(crate) struct EffectiveCoreSettings {
     pub retry: BackoffPolicy,
     pub token_estimator: iteron_ctx::TokenEstimatorPolicy,
     pub compaction: iteron_ctx::CompactionPolicy,
+    pub compaction_failure: CompactionFailurePolicy,
     pub verify_command: Option<String>,
     pub verification: iteron_verify::VerificationRuntimePolicy,
     pub memory_enabled: bool,
@@ -108,6 +166,7 @@ impl EffectiveCoreSettings {
 
         let effort_label = view.enumeration("effort")?;
         let effort = Effort::parse(effort_label).ok_or_else(|| unknown("effort", effort_label))?;
+        let effort_policy = decode_effort_policy(view)?;
         let mode_label = view.enumeration("permission_mode")?;
         let permission_mode = PermissionMode::parse(mode_label)
             .ok_or_else(|| unknown("permission_mode", mode_label))?;
@@ -131,7 +190,7 @@ impl EffectiveCoreSettings {
             .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
         let mcp_exposure = super::effective_mcp::McpCapabilityExposure::decode(view)
             .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
-        let execution = super::effective_execution::decode(view)
+        let execution = super::effective_execution::decode_with_effort_policy(view, &effort_policy)
             .map_err(|error| EffectiveCoreError::InvalidBudget(error.to_string()))?;
         if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0)
             && execution.workflow.max_concurrency != 1
@@ -163,6 +222,7 @@ impl EffectiveCoreSettings {
             model_id: view.enumeration("model")?.to_owned(),
             base_url: view.text("base_url")?.to_owned(),
             effort,
+            effort_policy,
             budget,
             allow_code,
             permission_mode,
@@ -175,6 +235,12 @@ impl EffectiveCoreSettings {
             },
             token_estimator,
             compaction: decode_compaction(view)?,
+            compaction_failure: match view.enumeration("compaction_failure")? {
+                "fail_closed" => CompactionFailurePolicy::FailClosed,
+                "retain_original" => CompactionFailurePolicy::RetainOriginal,
+                "truncate_bounded" => CompactionFailurePolicy::TruncateBounded,
+                value => return Err(unknown("compaction_failure", value)),
+            },
             verify_command,
             verification,
             memory_enabled: view.boolean("memory_enable")?,
@@ -298,6 +364,140 @@ pub(crate) fn constrain_prompt_cache(
         provider.controls.prompt_cache = iteron_provider::PromptCacheControl::default();
     }
     provider
+}
+
+fn decode_effort_policy(
+    view: &EffectiveTunablesView,
+) -> Result<EffortRuntimePolicy, EffectiveCoreError> {
+    let mut policy = EffortRuntimePolicy::compiled();
+    if let Some(reasoning) = optional_effort_map(view, "effort_reasoning_map")? {
+        policy.reasoning = [
+            reasoning_entry(reasoning, Effort::Low)?,
+            reasoning_entry(reasoning, Effort::Medium)?,
+            reasoning_entry(reasoning, Effort::High)?,
+            reasoning_entry(reasoning, Effort::XHigh)?,
+            reasoning_entry(reasoning, Effort::Max)?,
+            reasoning_entry(reasoning, Effort::Ultracode)?,
+        ];
+    }
+    if let Some(thinking) = optional_effort_map(view, "thinking_map")? {
+        policy.thinking_budget = [
+            thinking_entry(thinking, Effort::Low)?,
+            thinking_entry(thinking, Effort::Medium)?,
+            thinking_entry(thinking, Effort::High)?,
+            thinking_entry(thinking, Effort::XHigh)?,
+            thinking_entry(thinking, Effort::Max)?,
+            thinking_entry(thinking, Effort::Ultracode)?,
+        ];
+    }
+    if let Some(orchestration) = optional_effort_map(view, "orchestration_map")? {
+        policy.orchestration = [
+            orchestration_entry(orchestration, Effort::Low)?,
+            orchestration_entry(orchestration, Effort::Medium)?,
+            orchestration_entry(orchestration, Effort::High)?,
+            orchestration_entry(orchestration, Effort::XHigh)?,
+            orchestration_entry(orchestration, Effort::Max)?,
+            orchestration_entry(orchestration, Effort::Ultracode)?,
+        ];
+    }
+    Ok(policy)
+}
+
+fn optional_effort_map<'a>(
+    view: &'a EffectiveTunablesView,
+    family: &'static str,
+) -> Result<Option<&'a std::collections::BTreeMap<String, ResolutionValue>>, EffectiveCoreError> {
+    let Some(value) = view.optional_value(family) else {
+        return Ok(None);
+    };
+    let ResolutionValue::Map { entries } = value else {
+        return Err(EffectiveCoreError::WrongFieldType { family, field: "$" });
+    };
+    if entries.len() != Effort::ALL.len()
+        || Effort::ALL
+            .iter()
+            .any(|effort| !entries.contains_key(effort.label()))
+    {
+        return Err(EffectiveCoreError::UnknownValue {
+            family,
+            value: "expected exactly low, medium, high, xhigh, max, and ultracode".into(),
+        });
+    }
+    Ok(Some(entries))
+}
+
+fn reasoning_entry(
+    entries: &std::collections::BTreeMap<String, ResolutionValue>,
+    effort: Effort,
+) -> Result<ReasoningEffort, EffectiveCoreError> {
+    let family = "effort_reasoning_map";
+    let ResolutionValue::Enum { value } =
+        entries
+            .get(effort.label())
+            .ok_or(EffectiveCoreError::MissingField {
+                family,
+                field: "effort tier",
+            })?
+    else {
+        return Err(EffectiveCoreError::WrongFieldType {
+            family,
+            field: "effort tier",
+        });
+    };
+    match value.as_str() {
+        "low" => Ok(ReasoningEffort::Low),
+        "medium" => Ok(ReasoningEffort::Medium),
+        "high" => Ok(ReasoningEffort::High),
+        "xhigh" => Ok(ReasoningEffort::XHigh),
+        "max" => Ok(ReasoningEffort::Max),
+        value => Err(unknown(family, value)),
+    }
+}
+
+fn thinking_entry(
+    entries: &std::collections::BTreeMap<String, ResolutionValue>,
+    effort: Effort,
+) -> Result<u32, EffectiveCoreError> {
+    let family = "thinking_map";
+    let ResolutionValue::Integer { value } =
+        entries
+            .get(effort.label())
+            .ok_or(EffectiveCoreError::MissingField {
+                family,
+                field: "effort tier",
+            })?
+    else {
+        return Err(EffectiveCoreError::WrongFieldType {
+            family,
+            field: "effort tier",
+        });
+    };
+    u32v(*value, family)
+}
+
+fn orchestration_entry(
+    entries: &std::collections::BTreeMap<String, ResolutionValue>,
+    effort: Effort,
+) -> Result<OrchestrationMode, EffectiveCoreError> {
+    let family = "orchestration_map";
+    let ResolutionValue::Enum { value } =
+        entries
+            .get(effort.label())
+            .ok_or(EffectiveCoreError::MissingField {
+                family,
+                field: "effort tier",
+            })?
+    else {
+        return Err(EffectiveCoreError::WrongFieldType {
+            family,
+            field: "effort tier",
+        });
+    };
+    match value.as_str() {
+        "direct" => Ok(OrchestrationMode::SingleAgent),
+        "orchestrated" => Ok(OrchestrationMode::Orchestrated),
+        value => Err(unknown(family, value)),
+    }
 }
 
 fn decode_governance(
@@ -511,6 +711,20 @@ fn decode_verification(
         restore,
         feedback,
         retry,
+        recovery_escalation: iteron_verify::VerificationRecoveryEscalationPolicy::from_id(
+            view.enumeration("recovery_escalation_policy")?,
+        )
+        .ok_or_else(|| {
+            unknown(
+                "recovery_escalation_policy",
+                view.enumeration("recovery_escalation_policy")
+                    .unwrap_or("<invalid>"),
+            )
+        })?,
+        verifier_strategy_max_attempts: u32v(
+            view.integer("verifier_attempts")?,
+            "verifier_attempts",
+        )?,
     };
     policy
         .validate()

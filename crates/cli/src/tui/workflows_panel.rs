@@ -50,7 +50,8 @@ impl RunState {
 
     fn glyph(self, spin: usize) -> &'static str {
         const SPIN: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-        let spin_frames = iteron_tunables::param_str_list("cli.tui.workflows_panel.spin", &SPIN);
+        let spin_frames =
+            iteron_tunables::param_str_list("cli.tui.workflows_panel.runstate.glyph.spin", &SPIN);
         match self {
             Self::Running => spin_frames[spin % spin_frames.len()],
             Self::Cancelling => "◌",
@@ -303,9 +304,11 @@ fn agent_style(state: AgentState, theme: &theme::Theme) -> Style {
 
 fn agent_glyph(state: AgentState, spin: usize) -> &'static str {
     const SPIN: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+    let spin_frames =
+        iteron_tunables::param_str_list("cli.tui.workflows_panel.agent_glyph.spin", &SPIN);
     match state {
         AgentState::Queued => "○",
-        AgentState::Running => SPIN[spin % SPIN.len()],
+        AgentState::Running => spin_frames[spin % spin_frames.len()],
         AgentState::Done => "●",
         AgentState::Failed => "×",
         AgentState::Skipped => "–",

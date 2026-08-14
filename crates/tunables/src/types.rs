@@ -416,3 +416,44 @@ pub struct Family {
     /// fixed authority) to durable run-genesis evidence.
     pub runtime_binding: RuntimeBindingSpec,
 }
+
+/// Stable operator-owned source used by the universal external profile contract.
+///
+/// Existing `UserConfig` declarations retain their more specific locator and merge policy. This
+/// binding closes the historical gap for non-Pin families whose physical owner previously had
+/// only a built-in, derived, catalog, or runtime-observation source. It is deliberately absent
+/// for Pins: an external profile is an ordinary value source, never authority to replace an
+/// immutable safety, protocol, durability, replay, budget, or effect-ledger owner.
+pub const UNIVERSAL_PROFILE_SOURCE: SourceBinding = SourceBinding {
+    kind: SourceKind::UserConfig,
+    trust: SourceTrust::Operator,
+    locator: "iteron://tunables/external-profile/v1",
+    merge: SourceMergePolicy::Override,
+};
+
+impl Family {
+    /// Return the lawful binding used when a profile supplies `kind` for this family.
+    ///
+    /// Project configuration keeps its declared tighten-only/repository-scoped semantics. A
+    /// non-Pin family without an explicit user-config seam gains the universal operator profile
+    /// seam. Pins always return `None` and therefore fail before resolution.
+    #[must_use]
+    pub fn profile_binding(self, kind: SourceKind) -> Option<SourceBinding> {
+        if self.optimization.class == OptimizationClass::Pin {
+            return None;
+        }
+        self.source
+            .bindings
+            .iter()
+            .copied()
+            .find(|binding| binding.kind == kind)
+            .or_else(|| (kind == SourceKind::UserConfig).then_some(UNIVERSAL_PROFILE_SOURCE))
+    }
+
+    /// Whether this family is a legal dimension of the external research profile.
+    #[must_use]
+    pub fn is_profile_addressable(self) -> bool {
+        self.profile_binding(SourceKind::UserConfig).is_some()
+            || self.profile_binding(SourceKind::ProjectConfig).is_some()
+    }
+}

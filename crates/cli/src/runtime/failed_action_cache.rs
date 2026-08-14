@@ -11,22 +11,60 @@ use std::collections::{HashMap, VecDeque};
 pub(crate) const MAX_IDENTITIES: usize = 4_096;
 const MAX_PRIOR_ERROR_BYTES: usize = 4 * 1_024;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FailedActionPolicy {
+    pub max_identities: usize,
+    pub turn_scoped: bool,
+    pub enabled: bool,
+}
+
+impl Default for FailedActionPolicy {
+    fn default() -> Self {
+        Self {
+            max_identities: MAX_IDENTITIES,
+            turn_scoped: false,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct FailedActionCache {
     entries: HashMap<[u8; 32], String>,
     order: VecDeque<[u8; 32]>,
+    policy: FailedActionPolicy,
+}
+
+impl Default for FailedActionCache {
+    fn default() -> Self {
+        Self::new(FailedActionPolicy::default())
+    }
 }
 
 impl FailedActionCache {
+    pub(crate) fn new(policy: FailedActionPolicy) -> Self {
+        Self {
+            entries: HashMap::with_capacity(policy.max_identities),
+            order: VecDeque::with_capacity(policy.max_identities),
+            policy,
+        }
+    }
+
     pub(crate) fn get(&self, signature: &str) -> Option<&String> {
+        if !self.policy.enabled {
+            return None;
+        }
         self.entries.get(&digest(signature))
     }
 
     pub(crate) fn contains_key(&self, signature: &str) -> bool {
-        self.entries.contains_key(&digest(signature))
+        self.policy.enabled && self.entries.contains_key(&digest(signature))
     }
 
     pub(crate) fn insert(&mut self, signature: String, error: String) -> Option<String> {
+        if !self.policy.enabled {
+            return None;
+        }
         let key = digest(&signature);
         let error = bounded_tail(
             &error,
@@ -38,11 +76,7 @@ impl FailedActionCache {
         if let Some(existing) = self.entries.get_mut(&key) {
             return Some(std::mem::replace(existing, error));
         }
-        if self.entries.len()
-            == iteron_tunables::param_integer(
-                "cli.runtime.failed_action_cache.max_identities",
-                MAX_IDENTITIES,
-            )
+        if self.entries.len() == self.policy.max_identities
             && let Some(oldest) = self.order.pop_front()
         {
             self.entries.remove(&oldest);
@@ -54,6 +88,12 @@ impl FailedActionCache {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+    }
+
+    pub(crate) fn finish_turn(&mut self) {
+        if self.policy.turn_scoped {
+            self.clear();
+        }
     }
 
     #[cfg(test)]

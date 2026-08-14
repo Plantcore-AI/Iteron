@@ -366,6 +366,8 @@ pub(crate) struct ExecutionRuntimePolicy {
     pub admission: ChildAdmissionPolicy,
     pub writer_fan_turn_split: WriterFanTurnPolicy,
     pub wall_split: WallSplitPolicy,
+    pub fan_token_share: ExactRatio,
+    pub effecting_tool_admission: crate::runtime::EffectingToolAdmissionPolicy,
     pub direct_child_allocation: DirectChildAllocationPolicy,
     pub subagent_effort: Effort,
     pub per_agent_effort: Effort,
@@ -425,6 +427,11 @@ impl ExecutionRuntimePolicy {
                 },
                 minimum_fan_seconds: 1,
             },
+            fan_token_share: ExactRatio {
+                numerator: 1,
+                denominator: 2,
+            },
+            effecting_tool_admission: crate::runtime::effecting_tool_admission_policy(),
             direct_child_allocation: DirectChildAllocationPolicy {
                 writer_share: ExactRatio {
                     numerator: 1,
@@ -522,7 +529,10 @@ impl ExecutionRuntimePolicy {
         policy
     }
 
-    pub(crate) fn validate(self) -> Result<Self, &'static str> {
+    pub(crate) fn validate_with_effort_policy(
+        self,
+        effort_policy: &super::effective_core::EffortRuntimePolicy,
+    ) -> Result<Self, &'static str> {
         ExactRatio::new(
             self.writer_fan_turn_split.writer_share.numerator,
             self.writer_fan_turn_split.writer_share.denominator,
@@ -530,6 +540,10 @@ impl ExecutionRuntimePolicy {
         ExactRatio::new(
             self.wall_split.fan_share.numerator,
             self.wall_split.fan_share.denominator,
+        )?;
+        ExactRatio::new(
+            self.fan_token_share.numerator,
+            self.fan_token_share.denominator,
         )?;
         for ratio in [
             self.direct_child_allocation.writer_share,
@@ -552,9 +566,11 @@ impl ExecutionRuntimePolicy {
             || self.workflow.max_concurrency == 0
             || self.workflow.max_concurrency > 1_024
             || self.workflow.max_wall_seconds == 0
+            || self.effecting_tool_admission.max_concurrency == 0
+            || self.effecting_tool_admission.max_concurrency > 1_024
             || self.decomposition.is_some_and(|policy| {
                 policy.max_output_tokens == 0
-                    || policy.thinking_tokens > policy.effort.thinking_budget()
+                    || policy.thinking_tokens > effort_policy.thinking_budget(policy.effort)
             })
             || self.fan_breadth == Some(0)
             || self.worker_min_turns == Some(0)
@@ -579,12 +595,15 @@ impl ExecutionRuntimePolicy {
     pub(crate) fn admit_child_effort(
         self,
         requested: Option<Effort>,
+        effort_policy: &super::effective_core::EffortRuntimePolicy,
     ) -> Result<Effort, &'static str> {
         let requested = match requested.unwrap_or(self.per_agent_effort) {
             Effort::Ultracode => Effort::Max,
             other => other,
         };
-        if requested.thinking_budget() > self.per_agent_effort.thinking_budget() {
+        if effort_policy.thinking_budget(requested)
+            > effort_policy.thinking_budget(self.per_agent_effort)
+        {
             return Err("requested child effort exceeds the pinned per-agent ceiling");
         }
         Ok(requested)

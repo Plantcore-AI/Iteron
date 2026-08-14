@@ -51,6 +51,7 @@ impl PureMemoCachePolicy {
 struct BoundedDigestWriter<'a> {
     digest: &'a mut Sha256,
     written: usize,
+    max_bytes: usize,
 }
 
 impl Write for BoundedDigestWriter<'_> {
@@ -58,7 +59,7 @@ impl Write for BoundedDigestWriter<'_> {
         let Some(total) = self.written.checked_add(bytes.len()) else {
             return Err(io::Error::other("memo input byte count overflow"));
         };
-        if total > iteron_tunables::param_integer("tools.memo.max_input_bytes", MAX_INPUT_BYTES) {
+        if total > self.max_bytes {
             return Err(io::Error::other("memo input exceeds byte ceiling"));
         }
         self.digest.update(bytes);
@@ -71,7 +72,12 @@ impl Write for BoundedDigestWriter<'_> {
     }
 }
 
-fn input_is_keyable(value: &Value, depth: usize, remaining_nodes: &mut usize) -> bool {
+fn input_is_keyable(
+    value: &Value,
+    depth: usize,
+    remaining_nodes: &mut usize,
+    max_key_bytes: usize,
+) -> bool {
     if depth > iteron_tunables::param_integer("tools.memo.max_input_depth", MAX_INPUT_DEPTH)
         || *remaining_nodes == 0
     {
@@ -87,7 +93,7 @@ fn input_is_keyable(value: &Value, depth: usize, remaining_nodes: &mut usize) ->
                 )
                 && values
                     .iter()
-                    .all(|value| input_is_keyable(value, depth + 1, remaining_nodes))
+                    .all(|value| input_is_keyable(value, depth + 1, remaining_nodes, max_key_bytes))
         }
         Value::Object(values) => {
             values.len()
@@ -96,18 +102,11 @@ fn input_is_keyable(value: &Value, depth: usize, remaining_nodes: &mut usize) ->
                     MAX_CONTAINER_ITEMS,
                 )
                 && values.iter().all(|(key, value)| {
-                    key.len()
-                        <= iteron_tunables::param_integer(
-                            "tools.memo.max_input_bytes",
-                            MAX_INPUT_BYTES,
-                        )
-                        && input_is_keyable(value, depth + 1, remaining_nodes)
+                    key.len() <= max_key_bytes
+                        && input_is_keyable(value, depth + 1, remaining_nodes, max_key_bytes)
                 })
         }
-        Value::String(value) => {
-            value.len()
-                <= iteron_tunables::param_integer("tools.memo.max_input_bytes", MAX_INPUT_BYTES)
-        }
+        Value::String(value) => value.len() <= max_key_bytes,
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
     }
 }
@@ -136,6 +135,10 @@ struct State {
     ttl: Duration,
     policy_installed: bool,
     activated: bool,
+    optimization_installed: bool,
+    capacity: usize,
+    max_key_bytes: usize,
+    generation_scoped: bool,
 }
 
 struct MemoEntry {
@@ -147,7 +150,7 @@ impl State {
     fn new(capacity: usize) -> Self {
         Self {
             generation: 0,
-            accepts_inserts: true,
+            accepts_inserts: capacity > 0,
             cache: HashMap::with_capacity(capacity),
             insertion_order: VecDeque::with_capacity(capacity),
             hits: 0,
@@ -161,24 +164,33 @@ impl State {
             )),
             policy_installed: false,
             activated: false,
+            optimization_installed: false,
+            capacity,
+            max_key_bytes: iteron_tunables::param_integer(
+                "tools.memo.max_input_bytes",
+                MAX_INPUT_BYTES,
+            ),
+            generation_scoped: true,
         }
     }
 }
 
 pub(crate) struct Memo {
     state: Mutex<State>,
-    capacity: usize,
 }
 
 impl Memo {
     pub(crate) fn policy(&self) -> PureMemoCachePolicy {
+        let state = self.state.lock().unwrap();
         PureMemoCachePolicy {
-            max_entries: self.capacity,
-            ..PureMemoCachePolicy::production_owner()
+            max_entries: state.capacity,
+            max_key_bytes: state.max_key_bytes,
+            generation_scoped: state.generation_scoped,
         }
     }
 
-    pub(crate) fn key(tool_name: &str, input: &Value) -> Option<MemoKey> {
+    pub(crate) fn key(&self, tool_name: &str, input: &Value) -> Option<MemoKey> {
+        let max_key_bytes = self.state.lock().unwrap().max_key_bytes;
         if tool_name.len()
             > iteron_tunables::param_integer("tools.memo.max_tool_name_bytes", MAX_TOOL_NAME_BYTES)
         {
@@ -186,7 +198,7 @@ impl Memo {
         }
         let mut remaining_nodes =
             iteron_tunables::param_integer("tools.memo.max_input_nodes", MAX_INPUT_NODES);
-        if !input_is_keyable(input, 0, &mut remaining_nodes) {
+        if !input_is_keyable(input, 0, &mut remaining_nodes, max_key_bytes) {
             return None;
         }
 
@@ -197,6 +209,7 @@ impl Memo {
         let mut writer = BoundedDigestWriter {
             digest: &mut digest,
             written: 0,
+            max_bytes: max_key_bytes,
         };
         serde_json::to_writer(&mut writer, input).ok()?;
         Some(MemoKey(digest.finalize().into()))
@@ -241,7 +254,7 @@ impl Memo {
         result: &ToolResult,
         now: Instant,
     ) -> bool {
-        if result.is_error || !pending.enabled || self.capacity == 0 {
+        if result.is_error || !pending.enabled {
             return false;
         }
         let mut state = self.state.lock().unwrap();
@@ -255,7 +268,7 @@ impl Memo {
             };
             return true;
         }
-        if state.cache.len() == self.capacity
+        if state.cache.len() == state.capacity
             && let Some(oldest) = state.insertion_order.pop_front()
         {
             state.cache.remove(&oldest);
@@ -287,6 +300,26 @@ impl Memo {
         Ok(())
     }
 
+    pub(crate) fn install_policy(&self, policy: PureMemoCachePolicy) -> Result<(), &'static str> {
+        let mut state = self.state.lock().unwrap();
+        if state.optimization_installed {
+            return Err("pure memo cache policy was already installed");
+        }
+        if state.activated {
+            return Err("pure memo cache policy must be installed before the first lookup");
+        }
+        state.capacity = policy.max_entries;
+        state.max_key_bytes = policy.max_key_bytes;
+        state.generation_scoped = policy.generation_scoped;
+        // Cross-generation memoization would turn a successful write into a stale read. A profile
+        // may disable generation scoping only by disabling inserts, never by weakening invalidation.
+        state.accepts_inserts = policy.generation_scoped && policy.max_entries > 0;
+        state.cache.shrink_to(policy.max_entries);
+        state.insertion_order.shrink_to(policy.max_entries);
+        state.optimization_installed = true;
+        Ok(())
+    }
+
     pub(crate) fn ttl_seconds(&self) -> u64 {
         self.state.lock().unwrap().ttl.as_secs()
     }
@@ -314,7 +347,6 @@ impl Memo {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             state: Mutex::new(State::new(capacity)),
-            capacity,
         }
     }
 
@@ -330,7 +362,6 @@ impl Default for Memo {
             iteron_tunables::param_usize("tools.memo.default_capacity", DEFAULT_CAPACITY);
         Self {
             state: Mutex::new(State::new(capacity)),
-            capacity,
         }
     }
 }

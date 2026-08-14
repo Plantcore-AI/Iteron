@@ -949,7 +949,7 @@ fn complete_success_input() -> ResolutionInput {
             profile_id: "fixture:complete".to_owned(),
             registry_revision: REGISTRY_REVISION,
             registry_digest: REGISTRY_DIGEST_SHA256.to_owned(),
-            values: ["max_turns", "max_wall_secs"]
+            values: ["max_turns", "retry_backoff_base"]
                 .into_iter()
                 .map(|id| {
                     let family = families().iter().find(|family| family.id == id).unwrap();

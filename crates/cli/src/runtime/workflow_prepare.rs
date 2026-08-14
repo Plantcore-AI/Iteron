@@ -270,7 +270,7 @@ impl Agent {
             };
             let fan_tokens = self
                 .remaining_provider_tokens()
-                .map(|remaining| remaining / 2)
+                .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
                 .map(|tokens| {
                     self.execution_policy
                         .workflow
@@ -321,7 +321,7 @@ impl Agent {
             // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
             cx.budget.max_tokens = self
                 .remaining_provider_tokens()
-                .map(|remaining| remaining / 2)
+                .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
                 .map(|tokens| {
                     self.execution_policy
                         .workflow

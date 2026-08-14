@@ -1615,13 +1615,13 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
 
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
-    // Revision 10 closes every formerly partial family with an immutable production owner and a
-    // real runtime consumer. `Missing` and `Partial` remain empty; fixed invariants stay hidden.
+    // Revision 18 closes every formerly partial family with an immutable production owner and a
+    // real runtime consumer. `Missing` and `Partial` remain empty; only genuine pins stay hidden.
     for (status, expected) in [
-        (ImplementationStatus::Full, 97),
+        (ImplementationStatus::Full, 137),
         (ImplementationStatus::Partial, 0),
         (ImplementationStatus::Missing, 0),
-        (ImplementationStatus::FixedHidden, 63),
+        (ImplementationStatus::FixedHidden, 23),
     ] {
         assert_eq!(
             families()

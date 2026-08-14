@@ -48,8 +48,57 @@ pub enum ParamType {
     Text,
     Enum,
     Array,
+    Map,
     Object,
     Duration,
+}
+
+/// Syntax-level declaration kind recorded by the authoritative source census.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamCandidateKind {
+    Const,
+    Static,
+    AssociatedConst,
+}
+
+/// Reviewed disposition of a production optimization candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamDisposition {
+    RuntimeSettable,
+    InvariantReadOnly,
+}
+
+/// Closed reason vocabulary for parameters which must remain read-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamInvariantReason {
+    Identity,
+    WireCompatibility,
+    CapabilityAuthority,
+    Security,
+    DurabilityReplay,
+    HardBudgetEffectLedger,
+    RuntimeStateNotAValue,
+}
+
+/// Exact production owner named by the generated census.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParamOwner {
+    pub krate: String,
+    pub path: String,
+    pub symbol: String,
+}
+
+/// One syntax-proven production read of a parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParamUseSite {
+    pub path: String,
+    pub line: usize,
+    pub evidence: String,
 }
 
 /// Unit used by an integral duration override. It is derived from the declaration constructor and
@@ -73,6 +122,7 @@ impl ParamType {
             Self::Text => "text",
             Self::Enum => "enum",
             Self::Array => "array",
+            Self::Map => "map",
             Self::Object => "object",
             Self::Duration => "duration",
         }
@@ -120,6 +170,14 @@ pub struct Param {
     /// every settable parameter to be applied, so a release cannot advertise an inert value.
     #[serde(default)]
     pub applied: bool,
+    pub candidate_kind: ParamCandidateKind,
+    pub disposition: ParamDisposition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invariant_reason: Option<ParamInvariantReason>,
+    pub owner: ParamOwner,
+    pub use_sites: Vec<ParamUseSite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior_oracle: Option<String>,
 }
 
 impl Param {
@@ -155,6 +213,7 @@ impl Param {
                 | (ParamType::Text, ResolutionValue::Text { .. })
                 | (ParamType::Enum, ResolutionValue::Enum { .. })
                 | (ParamType::Array, ResolutionValue::List { .. })
+                | (ParamType::Map, ResolutionValue::Map { .. })
                 | (ParamType::Object, ResolutionValue::Object { .. })
                 | (ParamType::Duration, ResolutionValue::Integer { .. })
         );
@@ -384,7 +443,7 @@ struct ParamCatalog {
 }
 
 /// Schema version of the tier-2 catalog document.
-pub const PARAM_SCHEMA_VERSION: u16 = 2;
+pub const PARAM_SCHEMA_VERSION: u16 = 3;
 /// Logical identity of the tier-2 registry, distinct from the family registry.
 pub const PARAM_REGISTRY_ID: &str = "iteron-params";
 

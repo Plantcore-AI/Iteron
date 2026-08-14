@@ -1,6 +1,7 @@
 use crate::benchmark_metadata::benchmark_relevance;
 use crate::metadata::{
-    OptimizationSeed, aliases, authority, optimization, requirements, risk, strategy_slots,
+    OptimizationSeed, aliases, authority, implementation_status, optimization, requirements, risk,
+    strategy_slots,
 };
 use crate::resolution_metadata::{activation_spec, default_spec, source_spec};
 use crate::semantic_keys::semantic_key;
@@ -25,7 +26,7 @@ macro_rules! family {
             source: source_spec($ordinal),
             value_schema: value_schema($ordinal),
             benchmark_relevance: benchmark_relevance($ordinal, $summary, Path::$tb, Path::$swe),
-            implementation_status: ImplementationStatus::$status,
+            implementation_status: implementation_status($ordinal, ImplementationStatus::$status),
             optimization: optimization(
                 $ordinal,
                 OptimizationSeed::$optimization_seed,
@@ -39,7 +40,7 @@ macro_rules! family {
             authority_class: authority($ordinal, OptimizationSeed::$optimization_seed),
             runtime_binding: crate::binding_metadata::runtime_binding(
                 $ordinal,
-                ImplementationStatus::$status,
+                implementation_status($ordinal, ImplementationStatus::$status),
                 authority($ordinal, OptimizationSeed::$optimization_seed),
             ),
         }

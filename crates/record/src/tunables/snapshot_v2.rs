@@ -14,6 +14,7 @@ use iteron_protocol::{
 use iteron_tunables::{
     EntryOutcome, EntryState, FixedAuthorityAttestation, FixedAuthorityId, ResolutionReport,
     ResolutionSource, ResolutionValue, RuntimeBindingSpec, fixed_authority_value_digest_sha256,
+    fixed_authority_value_digest_sha256_at_registry,
 };
 use serde::Serialize;
 
@@ -476,10 +477,17 @@ pub fn validate_tunables_snapshot_v2(
                     .ok_or(TunablesSnapshotError::Invalid {
                         reason: "an effective fixed V2 entry has no value",
                     })?;
-                let expected = fixed_authority_value_digest_sha256(family.id, authority, &value)
-                    .map_err(|_| TunablesSnapshotError::Invalid {
-                        reason: "a V2 fixed-authority digest could not be recomputed",
-                    })?;
+                let expected = fixed_authority_value_digest_sha256_at_registry(
+                    &snapshot.registry_id,
+                    snapshot.registry_revision,
+                    &snapshot.registry_digest_sha256,
+                    family.id,
+                    authority,
+                    &value,
+                )
+                .map_err(|_| TunablesSnapshotError::Invalid {
+                    reason: "a V2 fixed-authority digest could not be recomputed",
+                })?;
                 if binding.owner_value_digest_sha256 != expected {
                     return invalid("a V2 fixed-authority digest disagrees with its value");
                 }

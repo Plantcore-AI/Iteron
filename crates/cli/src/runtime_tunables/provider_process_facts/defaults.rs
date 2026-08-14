@@ -1044,11 +1044,11 @@ fn add_verification_defaults(
         ]),
     )?;
 
-    builder.attest_fixed_authority(
+    builder.attest_literal_owner(
         "recovery_escalation_policy",
-        FixedAuthorityId::StrategyInvariant,
         recovery_escalation_owner_value(),
     )?;
+    report.observed_defaults.push("recovery_escalation_policy");
 
     Ok(())
 }

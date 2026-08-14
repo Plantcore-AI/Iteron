@@ -128,6 +128,7 @@ pub struct ObservationToolPolicy {
     pub glob: GlobPolicy,
     pub repo_map: RepoMapPolicy,
     pub web_fetch: WebFetchPolicy,
+    pub web_search_max_results: usize,
     pub shell: ShellPolicy,
     pub grep: GrepPolicy,
     pub git: GitPolicy,
@@ -262,6 +263,10 @@ impl Default for ObservationToolPolicy {
                     ),
                 ),
             },
+            web_search_max_results: iteron_tunables::param_integer(
+                "tools.web.web_search_result_cap",
+                crate::WEB_SEARCH_RESULT_CAP,
+            ),
             shell: ShellPolicy {
                 timeout_seconds: iteron_sandbox::Confinement::UNCONFINED_TIMEOUT_SECS,
                 stdout_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
@@ -369,6 +374,9 @@ impl ObservationToolPolicy {
             || self.web_fetch.max_lines > 100_000
         {
             return Err("web_fetch policy is outside its bounded owner envelope");
+        }
+        if self.web_search_max_results == 0 || self.web_search_max_results > 1_000 {
+            return Err("web_search policy is outside its bounded owner envelope");
         }
         if self.shell.timeout_seconds == 0
             || self.shell.timeout_seconds > 86_400

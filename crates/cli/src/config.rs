@@ -237,11 +237,7 @@ impl PluginMcpBindingId {
             || version.is_empty()
             || version.len() > 128
             || server_name.is_empty()
-            || server_name.len()
-                > iteron_tunables::param_integer(
-                    "cli.config.max_server_bytes",
-                    Self::MAX_SERVER_BYTES,
-                )
+            || server_name.len() > Self::MAX_SERVER_BYTES
             || [plugin_id, version, server_name]
                 .into_iter()
                 .any(|value| value.chars().any(char::is_control))
@@ -279,11 +275,7 @@ impl PluginMcpBindingId {
             .split_once(':')
             .ok_or("plugin MCP identity is malformed")?;
         if server_hex.is_empty()
-            || server_hex.len()
-                > iteron_tunables::param_integer(
-                    "cli.config.max_server_bytes",
-                    Self::MAX_SERVER_BYTES,
-                ) * 2
+            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
             || server_hex.len() % 2 != 0
             || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
             || digest.len() != 64
@@ -332,11 +324,7 @@ impl McpServerBindingId {
 
     fn new(config: &McpServerConfig) -> Result<Self, &'static str> {
         if config.name.is_empty()
-            || config.name.len()
-                > iteron_tunables::param_integer(
-                    "cli.config.max_server_bytes",
-                    Self::MAX_SERVER_BYTES,
-                )
+            || config.name.len() > Self::MAX_SERVER_BYTES
             || config.name.chars().any(char::is_control)
         {
             return Err("MCP server binding namespace is outside its checkpoint domain");
@@ -374,11 +362,7 @@ impl McpServerBindingId {
             .split_once(':')
             .ok_or("MCP server binding is malformed")?;
         if server_hex.is_empty()
-            || server_hex.len()
-                > iteron_tunables::param_integer(
-                    "cli.config.max_server_bytes",
-                    Self::MAX_SERVER_BYTES,
-                ) * 2
+            || server_hex.len() > Self::MAX_SERVER_BYTES * 2
             || server_hex.len() % 2 != 0
             || !server_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
             || digest.len() != 64

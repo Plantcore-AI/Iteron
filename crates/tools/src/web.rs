@@ -142,6 +142,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     )?;
 
     let search_egress = r.egress_allow_policy_handle();
+    let search_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "web_search".into(),
@@ -168,23 +169,25 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, _root| {
             let egress = search_egress.clone();
+            let policy = search_policy.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let query = call.input.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();
+                let cap = policy.get().map_or_else(
+                    || {
+                        iteron_tunables::param_integer(
+                            "tools.web.web_search_result_cap",
+                            WEB_SEARCH_RESULT_CAP,
+                        )
+                    },
+                    |policy| policy.web_search_max_results,
+                );
                 let count = call
                     .input
                     .get("count")
                     .and_then(|x| x.as_u64())
-                    .map(|v| {
-                        (v as usize).clamp(
-                            1,
-                            iteron_tunables::param_usize(
-                                "tools.web.web_search_result_cap",
-                                iteron_tunables::param_integer("tools.web.web_search_result_cap", WEB_SEARCH_RESULT_CAP),
-                            ),
-                        )
-                    })
-                    .unwrap_or(DEFAULT_SEARCH_RESULT_COUNT);
+                    .map(|v| (v as usize).clamp(1, cap))
+                    .unwrap_or(DEFAULT_SEARCH_RESULT_COUNT.min(cap));
                 if query.is_empty() {
                     return err_result(id, "web_search: empty query".into());
                 }
