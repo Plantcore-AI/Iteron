@@ -537,6 +537,9 @@ exit 1
         self.assertIn(
             "AR_x86_64_unknown_linux_musl: x86_64-linux-musl-ar", workflow
         )
+        self.assertEqual(workflow.count("dgx-release-arm64"), 3)
+        self.assertEqual(workflow.count("dgx-release-x86"), 3)
+        self.assertEqual(workflow.count("max-parallel: 3"), 3)
         self.assertIn("command -v x86_64-linux-musl-ar", workflow)
         self.assertNotIn("evidence_commit=9bd92b", workflow)
         self.assertIn("head_sha=$candidate", workflow)
