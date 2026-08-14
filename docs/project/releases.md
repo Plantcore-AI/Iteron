@@ -16,7 +16,8 @@ assets attached to each tag.
 | `v0.0.3` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
 | `v0.0.4` | 2026-08-10 | local macOS build | `aarch64-apple-darwin` |
 | `v0.0.5` | 2026-08-14 | release workflow | release page is authoritative |
-| `v0.0.6` | 2026-08-15 | release workflow | release page is authoritative |
+| `v0.0.6` | not published | validation refusal | none |
+| `v0.0.7` | 2026-08-15 | release workflow | release page is authoritative |
 
 The first four were produced while hosted Actions capacity was unavailable. They carry
 content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
@@ -24,7 +25,11 @@ not GitHub OIDC attestations or the complete three-target matrix. They are usefu
 historical pre-alpha artifacts and do **not** satisfy the accepted workflow
 release contract below.
 
-`v0.0.6` is the current pre-alpha release. Its release manifest and GitHub asset
+`v0.0.6` remains an immutable tag, but the release workflow rejected it before
+creating a release because the public schema chronology had not advanced. It has
+no downloadable assets and is not a release fallback.
+
+`v0.0.7` is the current pre-alpha release. Its release manifest and GitHub asset
 list, rather than this summary table, are authoritative for its exact targets and
 attestations.
 
