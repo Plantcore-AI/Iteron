@@ -44,6 +44,7 @@
         { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
         { "kind": "file", "path": "CONTRIBUTING.md" },
         { "kind": "file", "path": "README.md" },
+        { "kind": "file", "path": "README.zh-CN.md" },
         { "kind": "file", "path": "SUPPORT.md" }
       ],
       "contracts": ["issue-to-boundary-to-pr", "human-accountability"],
@@ -1207,6 +1208,7 @@
         { "kind": "tree", "path": ".github/workflows" },
         { "kind": "file", "path": ".gitignore" },
         { "kind": "file", "path": "README.md" },
+        { "kind": "file", "path": "README.zh-CN.md" },
         { "kind": "file", "path": "crates/agents/Cargo.toml" },
         { "kind": "file", "path": "crates/cli/Cargo.toml" },
         { "kind": "file", "path": "crates/ctx/Cargo.toml" },
@@ -1248,6 +1250,7 @@
         { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
         { "kind": "file", "path": "CONTRIBUTING.md" },
         { "kind": "file", "path": "README.md" },
+        { "kind": "file", "path": "README.zh-CN.md" },
         { "kind": "file", "path": "GOVERNANCE.md" },
         { "kind": "file", "path": "LICENSE" },
         { "kind": "file", "path": "mkdocs.yml" },
