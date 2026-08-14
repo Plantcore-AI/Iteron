@@ -52,11 +52,49 @@ for (const [name, value] of Object.entries(review)) {
   if (name !== "change_class") assert.equal(value, false, `${name} must be false`);
 }
 
-const push = classify({event: "push"});
-assert.equal(push.change_class, "full");
-for (const [name, value] of Object.entries(push)) {
+const unknownPush = classify({event: "push", filesKnown: false});
+assert.equal(unknownPush.change_class, "full");
+for (const [name, value] of Object.entries(unknownPush)) {
   if (name === "change_class") continue;
   assert.equal(value, name === "dependency_check" ? false : true, `${name} route mismatch`);
 }
+
+const docsPush = classify({
+  event: "push",
+  files: ["README.md", "README.zh-CN.md"],
+});
+assert.equal(docsPush.change_class, "docs");
+assert.equal(docsPush.docs, true);
+assert.equal(docsPush.boundary, true);
+assert.equal(docsPush.rust, false);
+assert.equal(docsPush.perf, false);
+assert.equal(docsPush.release_build, false);
+
+const infrastructurePush = classify({
+  event: "push",
+  files: [".github/workflows/docs.yml"],
+});
+assert.equal(infrastructurePush.change_class, "infrastructure");
+assert.equal(infrastructurePush.supply, true);
+assert.equal(infrastructurePush.boundary, true);
+assert.equal(infrastructurePush.rust, false);
+assert.equal(infrastructurePush.perf, false);
+assert.equal(infrastructurePush.release_build, false);
+
+const runtimePush = classify({event: "push", files: ["crates/cli/src/main.rs"]});
+assert.equal(runtimePush.change_class, "runtime-full");
+assert.equal(runtimePush.rust, true);
+assert.equal(runtimePush.boundary, true);
+assert.equal(runtimePush.perf, true);
+assert.equal(runtimePush.release_build, true);
+assert.equal(runtimePush.docs, false);
+assert.equal(runtimePush.supply, false);
+assert.equal(runtimePush.audit, false);
+
+const evolutionPush = classify({
+  event: "push",
+  files: ["crates/evolve/src/lib.rs"],
+});
+assert.equal(evolutionPush.evolution, true);
 
 console.log("CI routing cases passed");
