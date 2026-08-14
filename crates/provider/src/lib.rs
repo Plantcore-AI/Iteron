@@ -1614,18 +1614,36 @@ pub(crate) fn model_matches_family(model_id: &str, family: &str) -> bool {
 pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
     // Deliberately explicit. The one sanctioned nonce (per-tenant cache_salt, ADR-009) is folded
     // at block 0 by the provider, not embedded in the system text, so it is not seen here.
-    const MARKERS: &[(&str, &str)] = &[
-        ("current time", "a clock in the prefix"),
-        ("timestamp:", "a timestamp in the prefix"),
-        ("today's date", "a date in the prefix"),
-        ("request-id", "a per-request id in the prefix"),
-        ("nonce", "a nonce in the prefix"),
-    ];
     let low = system.to_ascii_lowercase();
-    for (needle, why) in MARKERS {
-        if low.contains(needle) {
-            return Some(why);
-        }
+    if low.contains(iteron_tunables::param_str(
+        "provider.lib.cache_bomb_current_time_needle",
+        "current time",
+    )) {
+        return Some("a clock in the prefix");
+    }
+    if low.contains(iteron_tunables::param_str(
+        "provider.lib.cache_bomb_timestamp_needle",
+        "timestamp:",
+    )) {
+        return Some("a timestamp in the prefix");
+    }
+    if low.contains(iteron_tunables::param_str(
+        "provider.lib.cache_bomb_todays_date_needle",
+        "today's date",
+    )) {
+        return Some("a date in the prefix");
+    }
+    if low.contains(iteron_tunables::param_str(
+        "provider.lib.cache_bomb_request_id_needle",
+        "request-id",
+    )) {
+        return Some("a per-request id in the prefix");
+    }
+    if low.contains(iteron_tunables::param_str(
+        "provider.lib.cache_bomb_nonce_needle",
+        "nonce",
+    )) {
+        return Some("a nonce in the prefix");
     }
     None
 }

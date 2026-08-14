@@ -30,6 +30,14 @@ The returned command clears the ambient environment, fixes locale/time/color val
 only credential names the launcher may inherit directly. A harness must not resolve those values
 into JSON, logs, argv, or evidence.
 
+The research wrapper can represent the same implementation activation reference used by the
+ordinary Iteron adapter and would insert its two hidden arguments before `--`. However,
+Terminal-Bench 2.1's frozen external result has no field that proves each implementation was
+loaded, started, reached a terminal state, and stopped. The built-in adapter therefore advertises
+no `iteron-implementation/1` support and rejects implementation-bearing requests with a typed
+`unsupported_implementation_activation` error. It does not run a profile while silently ignoring
+the candidate implementation.
+
 After execution, the harness retains and hashes the emitted effective profile, Iteron JSON result,
 append-only run record, and optional external score evidence. The result envelope repeats the
 benchmark, task, profile, registries, and Iteron revision; parsing verifies those identities against

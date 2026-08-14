@@ -10,6 +10,7 @@ mod seams;
 mod spec_shapes;
 mod tunables;
 mod tunables_census;
+mod tunables_invariant_review;
 mod tunables_params;
 mod validate;
 
@@ -82,6 +83,22 @@ fn main() -> Result<()> {
         }
         [group, command] if group == "tunables" && command == "generate-optimization-census" => {
             tunables_census::run(&root, true)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "invariant-review-packet" => {
+            tunables_invariant_review::print_packet(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "check-invariant-reviews" => {
+            tunables_invariant_review::check(&root, None)?;
+            return Ok(());
+        }
+        [group, command, flag, reviews]
+            if group == "tunables"
+                && command == "check-invariant-reviews"
+                && flag == "--reviews" =>
+        {
+            tunables_invariant_review::check(&root, Some(Path::new(reviews)))?;
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "constants-audit" => {
@@ -206,7 +223,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|invariant-review-packet|check-invariant-reviews [--reviews FILE]|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

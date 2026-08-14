@@ -1,5 +1,10 @@
 //! Verified plugin composition at the CLI's trusted startup root.
 
+#[path = "plugin_runtime/candidate.rs"]
+mod candidate;
+#[path = "plugin_runtime/implementation.rs"]
+mod implementation;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +12,9 @@ use iteron_marketplace::{
     ActivePlugin, Binding, Contribution, PluginStore, RuntimeScope, Slot, Surface, Wiring,
     compose_governed,
 };
+
+pub(crate) use candidate::CandidateFile;
+pub(crate) use implementation::VerifiedImplementationActivation;
 
 /// Capability token for minting [`crate::config::McpServerOrigin`] plugin provenance. Its fields
 /// and constructor are private to this verified materialization module; config parsing and other
@@ -55,7 +63,7 @@ pub(crate) struct LspRoute {
     pub command: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub(crate) struct RuntimePlugins {
     pub mcp_servers: Vec<McpServerConfig>,
     pub hooks: BTreeMap<String, Vec<String>>,
@@ -63,21 +71,48 @@ pub(crate) struct RuntimePlugins {
     pub skills: Vec<SkillArtifact>,
     pub lsp_routes: Vec<LspRoute>,
     pub diagnostics: Vec<String>,
+    pub implementation: Option<VerifiedImplementationActivation>,
 }
 
 impl RuntimePlugins {
-    pub(crate) fn load(root: Option<&Path>, host_ceiling: CapabilitySet) -> Self {
+    /// Materialize an operator-supplied research activation without consulting ambient plugin
+    /// state. The explicit CLI path and digest are the operator-intent boundary for this mode;
+    /// marketplace verification still owns catalog, manifest, artifact, and capability checks.
+    pub(crate) fn research(
+        candidate: CandidateFile,
+        host_ceiling: CapabilitySet,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            implementation: Some(VerifiedImplementationActivation::from_candidate(
+                &candidate,
+                host_ceiling,
+            )?),
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn load(
+        root: Option<&Path>,
+        host_ceiling: CapabilitySet,
+        candidate: Option<CandidateFile>,
+    ) -> anyhow::Result<Self> {
         let Some(root) = root else {
-            return Self::default();
+            if candidate.is_some() {
+                anyhow::bail!("implementation candidate has no configured plugin store");
+            }
+            return Ok(Self::default());
         };
         let store = PluginStore::new(root);
         let packages = match store.runtime_packages() {
             Ok(packages) => packages,
             Err(error) => {
-                return Self {
+                if candidate.is_some() {
+                    anyhow::bail!("implementation candidate plugin store refused: {error}");
+                }
+                return Ok(Self {
                     diagnostics: vec![format!("plugin store refused: {error}")],
                     ..Self::default()
-                };
+                });
             }
         };
         let manifests = packages
@@ -106,11 +141,17 @@ impl RuntimePlugins {
                 contest.shadowed.join(", ")
             ));
         }
-        runtime.materialize(&composition.wiring, &roots);
-        runtime
+        runtime.materialize_non_implementations(&composition.wiring, &roots);
+        runtime.implementation =
+            implementation::materialize(&composition.wiring, &roots, host_ceiling, candidate)?;
+        Ok(runtime)
     }
 
-    fn materialize(&mut self, wiring: &Wiring, roots: &BTreeMap<&str, &ActivePlugin>) {
+    fn materialize_non_implementations(
+        &mut self,
+        wiring: &Wiring,
+        roots: &BTreeMap<&str, &ActivePlugin>,
+    ) {
         for slot in wiring.slots() {
             let Some(binding) = binding_for(wiring, slot) else {
                 continue;
@@ -127,6 +168,7 @@ impl RuntimePlugins {
                 Surface::Agent => self.agent(slot, binding, plugin),
                 Surface::McpServer => self.mcp(slot, binding, plugin),
                 Surface::LanguageServer => self.lsp(slot, binding),
+                Surface::Implementation => {}
                 Surface::Hook => unreachable!("hook slots are chains"),
             }
         }
@@ -282,6 +324,8 @@ fn binding_for<'a>(wiring: &'a Wiring, slot: &Slot) -> Option<&'a Binding> {
         Surface::Agent => wiring.agent(&slot.key),
         Surface::McpServer => wiring.mcp_server(&slot.key),
         Surface::LanguageServer => wiring.language_server(&slot.key),
+        Surface::Implementation => iteron_tunables::ModuleId::parse(&slot.key)
+            .and_then(|module| wiring.implementation(module)),
         Surface::Hook => None,
     }
 }
@@ -298,7 +342,8 @@ fn contribution_artifact(contribution: &Contribution, root: &Path) -> Option<Pat
         Contribution::Agent { name, .. } => Some(root.join("agents").join(format!("{name}.md"))),
         Contribution::Hook { .. }
         | Contribution::McpServer { .. }
-        | Contribution::LanguageServer { .. } => None,
+        | Contribution::LanguageServer { .. }
+        | Contribution::Implementation { .. } => None,
     }
 }
 
@@ -353,7 +398,7 @@ mod tests {
         };
         let roots = BTreeMap::from([("complete", &plugin)]);
         let mut runtime = RuntimePlugins::default();
-        runtime.materialize(&compose(&[manifest]).wiring, &roots);
+        runtime.materialize_non_implementations(&compose(&[manifest]).wiring, &roots);
         assert_eq!(runtime.skills.len(), 1);
         assert_eq!(runtime.agents.len(), 1);
         assert_eq!(runtime.hooks["PreToolUse"], ["check-tool"]);

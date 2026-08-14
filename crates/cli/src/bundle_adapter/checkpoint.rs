@@ -1,8 +1,10 @@
-use super::compiler::compile_operator_bundle;
+use super::compiler::{compile_operator_bundle, compile_operator_bundle_inner};
+use super::external::{snapshot_external_row, snapshot_has_external};
 use super::schema::{
     BundleCompilationReceipt, BundleCompileFailure, BundleCoverage, SlotReceiptStatus,
 };
 use super::strategies::CompiledSlots;
+use crate::plugin_runtime::VerifiedImplementationActivation;
 use crate::runtime::policy_evidence_recorder::FrozenSlotPolicyBinding;
 use iteron_protocol::{
     PolicyBundleCoverage as GenesisCoverage, PolicyRuntimeIdentity, PolicySlotApplicationStatus,
@@ -71,15 +73,56 @@ pub(crate) fn baseline_compiled_bundle() -> Arc<CompiledPolicyBundle> {
 pub(crate) fn compile_recorded_bundle(
     snapshot: &RunGenesisPolicyBundleSnapshot,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
+    compile_recorded_bundle_inner(snapshot, None, None, None)
+}
+
+pub(crate) fn compile_recorded_bundle_with_external(
+    snapshot: &RunGenesisPolicyBundleSnapshot,
+    external: Option<&VerifiedImplementationActivation>,
+    runs_dir: &std::path::Path,
+    cli_run_id: &str,
+) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
+    compile_recorded_bundle_inner(snapshot, external, Some(runs_dir), Some(cli_run_id))
+}
+
+fn compile_recorded_bundle_inner(
+    snapshot: &RunGenesisPolicyBundleSnapshot,
+    external: Option<&VerifiedImplementationActivation>,
+    runs_dir: Option<&std::path::Path>,
+    cli_run_id: Option<&str>,
+) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
     iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot)
         .map_err(|_| malformed_snapshot_failure())?;
+    let has_external = snapshot_has_external(snapshot);
+    if snapshot.slots.iter().any(|row| {
+        let manifest = row.policy.policy_id.starts_with("external-manifest:");
+        let artifact = row.policy.policy_version.starts_with("external-artifact:");
+        manifest != artifact
+    }) {
+        return Err(external_snapshot_failure(
+            super::schema::RejectionCode::ExternalIdentityMismatch,
+        ));
+    }
+    match (has_external, external.is_some()) {
+        (true, false) => {
+            return Err(external_snapshot_failure(
+                super::schema::RejectionCode::ExternalOperatorIntentRequired,
+            ));
+        }
+        (false, true) => {
+            return Err(external_snapshot_failure(
+                super::schema::RejectionCode::ExternalIdentityMismatch,
+            ));
+        }
+        _ => {}
+    }
     let compiled = match snapshot.coverage {
         GenesisCoverage::Baseline => compile_operator_bundle(None)?,
         GenesisCoverage::Partial | GenesisCoverage::Full => {
             let policies = snapshot
                 .slots
                 .iter()
-                .filter(|row| row.requested)
+                .filter(|row| row.requested && !snapshot_external_row(row))
                 .map(|row| {
                     Ok(iteron_evolve::PolicyRef {
                         slot: iteron_evolve::StrategySlot::new(row.slot.as_persisted_str())
@@ -90,12 +133,21 @@ pub(crate) fn compile_recorded_bundle(
                     })
                 })
                 .collect::<Result<Vec<_>, BundleCompileFailure>>()?;
-            compile_operator_bundle(Some(&iteron_evolve::PolicyBundle {
-                bundle_id: snapshot.bundle_id.clone(),
-                digest: snapshot.bundle_digest_sha256.clone(),
-                policies,
-                rollback_to: None,
-            }))?
+            if policies.is_empty() {
+                compile_operator_bundle_inner(None, external, runs_dir, cli_run_id)?
+            } else {
+                compile_operator_bundle_inner(
+                    Some(&iteron_evolve::PolicyBundle {
+                        bundle_id: snapshot.bundle_id.clone(),
+                        digest: snapshot.bundle_digest_sha256.clone(),
+                        policies,
+                        rollback_to: None,
+                    }),
+                    external,
+                    runs_dir,
+                    cli_run_id,
+                )?
+            }
         }
     };
     if compiled.genesis_snapshot() != snapshot {
@@ -235,4 +287,10 @@ fn malformed_snapshot_failure() -> BundleCompileFailure {
         code: super::schema::RejectionCode::MalformedBundle,
         receipt,
     }
+}
+
+fn external_snapshot_failure(code: super::schema::RejectionCode) -> BundleCompileFailure {
+    let mut receipt = super::compiler::baseline_receipt();
+    receipt.coverage = BundleCoverage::Rejected;
+    BundleCompileFailure { code, receipt }
 }

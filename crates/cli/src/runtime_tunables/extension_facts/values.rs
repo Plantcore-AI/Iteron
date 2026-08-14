@@ -305,7 +305,10 @@ pub(super) fn apply(
     builder.attest_literal_owner(
         "deferred_discovery_threshold",
         super::value::int(super::value::i64u(
-            iteron_tools::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT,
+            iteron_tunables::param_usize(
+                "tools.tool_search.default_deferred_tool_eager_limit",
+                iteron_tools::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT,
+            ),
             "deferred_discovery_threshold",
         )?),
     )?;

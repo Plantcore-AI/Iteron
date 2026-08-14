@@ -17,6 +17,7 @@
 mod benchmark_metadata;
 mod binding_metadata;
 mod canonical;
+mod capability_graph;
 pub mod export;
 mod families;
 mod metadata;
@@ -47,6 +48,12 @@ mod value_schemas;
 pub use canonical::{
     CanonicalArtifact, CanonicalDigest, CanonicalFamily, CanonicalPayload, canonical_artifact,
     canonical_artifact_json, canonical_payload_json, family_semantic_digest, registry_digest,
+};
+pub use capability_graph::{
+    CAPABILITY_SEAM_GRAPH_SCHEMA_VERSION, CapabilitySeamGraph, CapabilitySeamGraphError,
+    CapabilitySeamNode, ContractRef, HostInvariant, LifecycleContracts,
+    MAX_CAPABILITY_SEAM_GRAPH_BYTES, MAX_CAPABILITY_SEAMS, MAX_SEAM_DEPENDENCIES,
+    ProviderFailureSemantics, capability_seam_graph, validate_capability_seam_graph,
 };
 pub use export::{
     PROMPT_ARTIFACTS, PromptArtifact, SURFACE_SCHEMA_VERSION, SurfaceExport, surface, surface_json,

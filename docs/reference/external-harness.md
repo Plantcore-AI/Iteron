@@ -34,8 +34,42 @@ is not a Terminal-Bench campaign, qualification, leaderboard submission, or scor
 claims require the pinned upstream dataset, its prescribed trials/resources, external verifier
 evidence, and complete failed/timeout accounting.
 
-This adapter is also not a universal plugin or trainer protocol. It transports an already-built
-Iteron profile through one exact benchmark contract; it does not register arbitrary runtime module
-implementations, enumerate caller-injected defaults, define reward/trajectory/checkpoint exchange,
-or make the native tuner cover every profile artifact. The tracked completion gaps are documented
-in `docs/development/deepseek-harness-gap-audit.md`.
+## Research implementation activation
+
+The CLI also has a separate, operator-owned process-implementation path. It is intentionally
+hidden from ordinary help and requires both
+`--implementation-candidate <PATH> --implementation-candidate-digest <64-lowercase-hex>` with
+`--harness-profile research`. The file is read once as a bounded regular file without symlinks and
+is verified directly through the marketplace activation registry. This research path does not
+consult `HOME`, `ITERON_CONFIG_HOME`, the installed plugin store, or composition winners. Every
+source still has an absolute canonical catalog and artifact root, exact manifest and executable
+digests, a regular executable, and capabilities intersected with the explicit CLI host ceiling.
+Project configuration cannot name or activate an implementation.
+
+Activation is atomic and every source resolves through the marketplace's verified launch-plan API.
+For research, the paired hidden CLI arguments are the process-execution authorization; declared
+decision authority is still intersected with the explicit host and caller ceilings. The ordinary
+installed-plugin path remains separate: an implementation there must retain `code_executing`,
+equal a composition-winning binding, and remain inside the winning plugin's fixed catalog/artifact
+layout. Today only seven optimization modules have an unambiguous production strategy consumer:
+`context.assembly`, `memory.recall`, `tool.exposure`, `provider.routing`,
+`scheduler.parallelism`, `planner.fanout`, and `verification.quorum`. Any of the other 21 modules is
+rejected instead of being reported as covered.
+
+Each call launches a bounded direct child, loads it, starts one correlated run, consumes a terminal
+schema-checked decision, then stops and reaps it. The decision's authority is intersected with both
+the registry-minted plan and the caller ceiling. Any lifecycle, protocol, schema, deadline, receipt,
+or identity failure returns the slot's typed unknown/refusal decision; it never invokes the
+baseline implementation.
+
+Fresh genesis records the exact implementation, manifest, artifact, candidate, and activation
+identity in the immutable bundle receipt. Resume requires the same candidate and reconstructs the
+same receipt byte-for-byte; omission or drift is refused. Children inherit the same compiled slot
+objects. Actual process consumption is reported at
+`<runs_dir>/.iteron-implementation-<bare-activation-sha256>-consumption.json` with schema
+`iteron-implementation-consumption/1`, the prefixed candidate digest, bare activation digest, CLI
+run id, and ordered per-module `loaded/started/terminal/stopped` truth flags. Flags start false and
+change only after the corresponding operation succeeds.
+
+Neither path is a trainer or promotion protocol. They do not define reward, trajectory, checkpoint
+exchange, or authorize a candidate to select itself.

@@ -8,6 +8,13 @@ use std::collections::BTreeMap;
 /// budget. Must match the ceiling the execution-fact collectors clamp against.
 const ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING: u64 = 65_536;
 
+pub(super) fn absent_budget_decomposition_token_ceiling() -> u64 {
+    iteron_tunables::param_integer(
+        "cli.runtime_tunables.execution_policy.absent_budget_decomposition_token_ceiling",
+        ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteTopology {
     Direct,
@@ -473,7 +480,7 @@ impl ExecutionRuntimePolicy {
                 max_output_tokens: decomposition.max_output_tokens.min(
                     budget
                         .max_tokens
-                        .unwrap_or(iteron_tunables::param_integer("cli.runtime_tunables.execution_policy.absent_budget_decomposition_token_ceiling", ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING)),
+                        .unwrap_or(absent_budget_decomposition_token_ceiling()),
                 ),
                 effort: decomposition.effort,
                 thinking_tokens: decomposition.thinking_tokens,

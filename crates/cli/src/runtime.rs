@@ -144,8 +144,20 @@ pub(crate) type RuntimePolicyValue<T> = runtime_policy_overlay::RuntimePolicyVal
 pub(crate) type FailedActionCache = failed_action_cache::FailedActionCache;
 pub(crate) type GovernedProviderRoute = provider_governor_state::GovernedProviderRoute;
 pub(crate) type SessionSpawnLedger = session_spawn_ledger::SessionSpawnLedger;
-pub(crate) const FAILED_ACTION_CACHE_MAX_IDENTITIES: usize = failed_action_cache::MAX_IDENTITIES;
-pub(crate) const DEFAULT_SESSION_SPAWN_CAP: usize = session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP;
+
+pub(crate) fn failed_action_cache_max_identities() -> usize {
+    iteron_tunables::param_integer(
+        "cli.runtime.failed_action_cache.max_identities",
+        failed_action_cache::MAX_IDENTITIES,
+    )
+}
+
+pub(crate) fn default_session_spawn_cap() -> usize {
+    iteron_tunables::param_integer(
+        "cli.runtime.session_spawn_ledger.default_session_spawn_cap",
+        session_spawn_ledger::DEFAULT_SESSION_SPAWN_CAP,
+    )
+}
 
 pub(crate) fn ui_workflow_label(content: &str) -> String {
     frontend::ui_workflow_label(content)

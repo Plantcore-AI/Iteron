@@ -34,6 +34,14 @@ const URL_ARG_KEYS: [&str; 6] = [
     "documentation",
 ];
 
+fn path_arg_keys() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("cli.block.links.path_arg_keys", &PATH_ARG_KEYS)
+}
+
+fn url_arg_keys() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("cli.block.links.url_arg_keys", &URL_ARG_KEYS)
+}
+
 struct Candidate {
     label: String,
     target: String,
@@ -69,7 +77,11 @@ fn collect_typed_args(candidates: &mut Vec<Candidate>, args: &serde_json::Value,
     let Some(object) = args.as_object() else {
         return;
     };
-    for key in PATH_ARG_KEYS.into_iter().chain(URL_ARG_KEYS) {
+    for key in path_arg_keys()
+        .iter()
+        .copied()
+        .chain(url_arg_keys().iter().copied())
+    {
         if candidates.len()
             >= iteron_tunables::param_integer(
                 "cli.block.links.max_typed_links_per_block",

@@ -42,6 +42,8 @@ pub enum Surface {
     Hook,
     McpServer,
     LanguageServer,
+    /// One externally registered strategy/runtime implementation for a public module seam.
+    Implementation,
 }
 
 impl Surface {
@@ -53,6 +55,7 @@ impl Surface {
             Surface::Hook => "hook",
             Surface::McpServer => "mcp",
             Surface::LanguageServer => "lsp",
+            Surface::Implementation => "implementation",
         }
     }
 
@@ -102,11 +105,31 @@ impl fmt::Display for Slot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Contribution {
-    Skill { name: String, description: String },
-    Agent { name: String, description: String },
-    Hook { event: String, action: String },
-    McpServer { name: String, binding: String },
-    LanguageServer { language: String, command: String },
+    Skill {
+        name: String,
+        description: String,
+    },
+    Agent {
+        name: String,
+        description: String,
+    },
+    Hook {
+        event: String,
+        action: String,
+    },
+    McpServer {
+        name: String,
+        binding: String,
+    },
+    LanguageServer {
+        language: String,
+        command: String,
+    },
+    /// Composition selects a candidate; the host separately resolves, admits and activates it.
+    Implementation {
+        module: iteron_tunables::ModuleId,
+        implementation: String,
+    },
 }
 
 impl Contribution {
@@ -117,6 +140,7 @@ impl Contribution {
             Contribution::Hook { .. } => Surface::Hook,
             Contribution::McpServer { .. } => Surface::McpServer,
             Contribution::LanguageServer { .. } => Surface::LanguageServer,
+            Contribution::Implementation { .. } => Surface::Implementation,
         }
     }
 
@@ -127,6 +151,9 @@ impl Contribution {
             Contribution::Hook { event, .. } => event,
             Contribution::McpServer { name, .. } => name,
             Contribution::LanguageServer { language, .. } => language,
+            Contribution::Implementation { module, .. } => {
+                return Slot::new(self.surface(), module.as_str());
+            }
         };
         Slot::new(self.surface(), key.clone())
     }
@@ -140,6 +167,7 @@ impl Contribution {
             Contribution::Hook { action, .. } => action,
             Contribution::McpServer { binding, .. } => binding,
             Contribution::LanguageServer { command, .. } => command,
+            Contribution::Implementation { implementation, .. } => implementation,
         }
     }
 }
@@ -301,6 +329,11 @@ pub enum Defect {
     TooManyRequirements,
     #[error("requires invalid plugin id {plugin:?}")]
     InvalidRequirement { plugin: String },
+    #[error("contribution #{index} names invalid implementation id {implementation:?}")]
+    InvalidImplementationId {
+        index: usize,
+        implementation: String,
+    },
     #[error("requires {plugin}>={minimum}, which is not present in this runtime scope")]
     MissingDependency {
         plugin: String,
@@ -334,16 +367,18 @@ impl fmt::Display for Refusal {
 /// Stricter than [`crate::valid_name`], which admits `.` because a plugin id appears in paths.
 /// Slot keys are echoed into the model's prompt and used as tool arguments, so they follow the
 /// same rule the skill loader already enforces (`iteron-ctx` `skills.rs`: "not a plain slug").
-fn valid_slot_key(key: &str) -> bool {
+fn valid_slot_key(surface: Surface, key: &str) -> bool {
     !key.is_empty()
         && key.len()
             <= iteron_tunables::param_integer(
                 "marketplace.composition_model.max_slot_key_bytes",
                 MAX_SLOT_KEY_BYTES,
             )
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        && key.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'-' | b'_')
+                || (surface == Surface::Implementation && b == b'.')
+        })
 }
 
 /// Why a detail string is unusable, or `None` if it is fine.
@@ -415,11 +450,19 @@ pub(crate) fn inspect(manifest: &Manifest) -> Result<(), Defect> {
     let mut first_claim: Vec<(Slot, &str, usize)> = Vec::new();
     for (index, contribution) in manifest.contributions.iter().enumerate() {
         let slot = contribution.slot();
-        if !valid_slot_key(&slot.key) {
+        if !valid_slot_key(slot.surface, &slot.key) {
             return Err(Defect::InvalidSlotKey {
                 index,
                 surface: slot.surface,
                 key: slot.key,
+            });
+        }
+        if let Contribution::Implementation { implementation, .. } = contribution
+            && !crate::implementation::valid_id(implementation)
+        {
+            return Err(Defect::InvalidImplementationId {
+                index,
+                implementation: implementation.clone(),
             });
         }
         let detail = contribution.detail();

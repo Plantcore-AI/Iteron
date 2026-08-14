@@ -1,5 +1,6 @@
 use super::ActiveBundleResolver;
 use super::checkpoint::{CompiledPolicyBundle, assemble_compiled_bundle};
+use super::external::apply_external_activation;
 use super::registry::{BASELINE_BUNDLE_ID, ImplementationEntry, implementation_catalog, registry};
 use super::schema::{
     BundleCompilationReceipt, BundleCompileFailure, BundleCoverage, CoreSlot,
@@ -8,6 +9,7 @@ use super::schema::{
 };
 use super::strategies::{CompiledSlots, implementation_name};
 use crate::config::ConfigOrigin;
+use crate::plugin_runtime::VerifiedImplementationActivation;
 use iteron_protocol::bundle::PolicyBundleResolver;
 use std::sync::Arc;
 
@@ -37,15 +39,52 @@ pub(crate) fn compile_configured_bundle(
     compile_operator_bundle(active)
 }
 
+pub(crate) fn compile_configured_bundle_with_external(
+    active: Option<&iteron_evolve::PolicyBundle>,
+    origin: ConfigOrigin,
+    external: &VerifiedImplementationActivation,
+    runs_dir: &std::path::Path,
+    cli_run_id: &str,
+) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
+    if origin != ConfigOrigin::UserConfig {
+        let mut receipt = baseline_receipt();
+        receipt.coverage = BundleCoverage::Rejected;
+        return Err(BundleCompileFailure {
+            code: RejectionCode::ProjectSelectionForbidden,
+            receipt,
+        });
+    }
+    compile_operator_bundle_inner(active, Some(external), Some(runs_dir), Some(cli_run_id))
+}
+
 pub(crate) fn compile_operator_bundle(
     active: Option<&iteron_evolve::PolicyBundle>,
+) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
+    compile_operator_bundle_inner(active, None, None, None)
+}
+
+pub(super) fn compile_operator_bundle_inner(
+    active: Option<&iteron_evolve::PolicyBundle>,
+    external: Option<&VerifiedImplementationActivation>,
+    runs_dir: Option<&std::path::Path>,
+    cli_run_id: Option<&str>,
 ) -> Result<Arc<CompiledPolicyBundle>, BundleCompileFailure> {
     let implementation_registry = registry().map_err(registry_failure)?;
     let mut receipt = baseline_receipt_with_registry(implementation_registry);
     let Some(bundle) = active else {
+        let mut slots = CompiledSlots::baseline();
+        if let Some(external) = external {
+            apply_external_activation(
+                external,
+                runs_dir.expect("external compilation has a runtime-state root"),
+                cli_run_id.expect("external compilation has a CLI run identity"),
+                &mut slots,
+                &mut receipt,
+            )?;
+        }
         return assemble_compiled_bundle(
             Arc::new(iteron_agents::BootBundle::baseline()),
-            CompiledSlots::baseline(),
+            slots,
             receipt,
         );
     };
@@ -156,6 +195,15 @@ pub(crate) fn compile_operator_bundle(
     let resolver = ResolvedOnce(resolved);
     let boot_bundle = iteron_agents::BootBundle::resolve(&resolver)
         .map_err(|_| malformed_after_lookup(&receipt, bundle))?;
+    if let Some(external) = external {
+        apply_external_activation(
+            external,
+            runs_dir.expect("external compilation has a runtime-state root"),
+            cli_run_id.expect("external compilation has a CLI run identity"),
+            &mut slots,
+            &mut receipt,
+        )?;
+    }
     assemble_compiled_bundle(Arc::new(boot_bundle), slots, receipt)
 }
 

@@ -1,13 +1,16 @@
 //! Bounded, offline-only conditional TPE and successive-halving coordinator.
 
+use crate::trainer_bridge::TrainerBridgeSpec;
 use crate::types::{CostStatus, EvaluationManifest, EvaluationPurpose, Partition, RunStatus};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+mod activation;
 mod journal;
 mod state_ops;
+pub(crate) use activation::{MaterializedActivation, materialize_activation};
 use journal::TunerJournal;
 use state_ops::{apply_event, digest, initial_state, result_order, tpe_score, validate_spec};
 
@@ -18,15 +21,72 @@ const MAX_CANDIDATES: usize = 256;
 /// family count rather than pinning a literal means growing the registry cannot silently re-cap
 /// candidates at a number smaller than the space they are searching.
 const MAX_FAMILIES_PER_CANDIDATE: usize = iteron_tunables::EXPECTED_FAMILY_COUNT;
+/// Upper bound over families, Tier-2 parameters, text artifacts and implementation bindings. It is
+/// intentionally above the current registry total so registry growth cannot silently make a full
+/// candidate inexpressible before the bound is revised.
+pub const MAX_UNIVERSAL_CANDIDATE_DIMENSIONS: usize = 4_096;
+pub const UNIVERSAL_CANDIDATE_SCHEMA_VERSION: u16 = 2;
+pub const IMPLEMENTATION_PROTOCOL: &str = "iteron-implementation/1";
 const MAX_SPEC_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CandidateImplementation {
+    pub module: iteron_tunables::ModuleId,
+    pub implementation_id: String,
+    pub protocol: String,
+    /// Absolute path to the trusted marketplace catalog used to mint this implementation.
+    pub catalog_path: String,
+    /// Absolute root containing the catalog-addressed implementation artifact.
+    pub artifact_root: String,
+    pub manifest_sha256: String,
+    pub artifact_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TunerCandidate {
+    /// Universal candidate wire schema. Version 2 adds executable implementation source locators.
+    pub schema_version: u16,
     pub id: String,
-    /// Missing families are deliberately meaningful: TPE scores only the active conditional
-    /// branch instead of inventing values for inactive families.
+    /// Legacy schema-v1 family features. Schema v2 uses `profile` as its one canonical value
+    /// address space and requires this map to be empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, serde_json::Value>,
+    /// Exact externally runnable candidate: Tier-1 values, Tier-2 parameters and prompt/tool text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<iteron_tunables::ProfileDocument>,
+    /// Replaceable implementations selected for this candidate. Source paths and content digests
+    /// are bound here; admission, authority, loading, and lifecycle remain host responsibilities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<CandidateImplementation>,
+}
+
+impl TunerCandidate {
+    /// Validate the versioned universal candidate shape shared by native and external trainers.
+    pub fn validate_universal(&self) -> Result<(), TunerError> {
+        state_ops::validate_universal_candidate(self)
+    }
+
+    /// Canonical content identity over profile values and implementation bindings together.
+    pub fn digest_sha256(&self) -> Result<String, TunerError> {
+        digest(self)
+    }
+
+    /// Render the canonical profile consumed by ordinary Iteron CLI and external harnesses.
+    /// Implementation artifacts remain separate because loading code and installing values have
+    /// different admission authorities.
+    pub fn rendered_profile(&self) -> Result<(String, String), TunerError> {
+        let profile = self.profile.as_ref().ok_or_else(|| {
+            TunerError::InvalidSpec("candidate has no universal profile document".into())
+        })?;
+        iteron_tunables::validate_profile(profile)
+            .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
+        let rendered = iteron_tunables::render_profile(profile)
+            .map_err(|error| TunerError::Encode(error.to_string()))?;
+        let digest = iteron_tunables::document_digest(&rendered);
+        Ok((rendered, digest))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +96,12 @@ pub struct TunerSpec {
     pub experiment_id: String,
     pub train_dataset_digest: String,
     pub tunables_registry_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_registry_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_text_registry_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trainer_bridge: Option<TrainerBridgeSpec>,
     pub max_trials: u16,
     pub max_concurrency: u16,
     pub reduction_factor: u8,

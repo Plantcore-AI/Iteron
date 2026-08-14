@@ -34,7 +34,16 @@ use std::collections::BTreeMap;
 
 pub mod composition;
 pub mod composition_model;
+pub mod implementation;
+pub mod implementation_activation;
+pub mod implementation_protocol;
+pub mod implementation_runtime;
 pub mod package;
+
+#[cfg(test)]
+mod implementation_activation_tests;
+#[cfg(test)]
+mod implementation_runtime_tests;
 
 pub use composition::{
     Arbitration, Binding, Composition, Contest, Host, Report, Wiring, compose, compose_governed,
@@ -43,6 +52,35 @@ pub use composition_model::{
     Contribution, Defect, MAX_CONTRIBUTIONS_PER_PLUGIN, MAX_DETAIL_BYTES,
     MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_REQUIREMENTS, MAX_SLOT_KEY_BYTES, Manifest, PluginScope,
     Refusal, Requirement, RuntimeScope, Slot, Surface,
+};
+pub use implementation::{
+    AdmittedImplementation, EvidenceLimits, IMPLEMENTATION_CATALOG_SCHEMA_VERSION,
+    IMPLEMENTATION_PROCESS_PROTOCOL_VERSION, ImplementationCatalog, ImplementationDependency,
+    ImplementationError, ImplementationFailurePolicy, ImplementationManifest,
+    ImplementationRegistry, MAX_IMPLEMENTATION_ARG_BYTES, MAX_IMPLEMENTATION_ARGV,
+    MAX_IMPLEMENTATION_ARGV_BYTES, MAX_IMPLEMENTATION_CANCELLATION_MS,
+    MAX_IMPLEMENTATION_CATALOG_BYTES, MAX_IMPLEMENTATION_DEPENDENCIES,
+    MAX_IMPLEMENTATION_EVIDENCE_BYTES, MAX_IMPLEMENTATION_ID_BYTES,
+    MAX_IMPLEMENTATION_OBSERVATIONS, MAX_IMPLEMENTATION_PATH_BYTES, MAX_IMPLEMENTATION_RUNTIME_MS,
+    MAX_IMPLEMENTATIONS, ProcessLaunchPlan, VerifiedArtifactDigest,
+};
+pub use implementation_activation::{
+    ActivationInput, ActivationMismatch, ActivationPathField, ActivationPathProblem,
+    IMPLEMENTATION_ACTIVATION_SCHEMA_VERSION, ImplementationActivation,
+    ImplementationActivationDocument, ImplementationActivationError,
+    ImplementationActivationIdentity, ImplementationSource, MAX_IMPLEMENTATION_ACTIVATION_BYTES,
+    MAX_IMPLEMENTATION_ACTIVATION_SOURCES,
+};
+pub use implementation_protocol::{
+    IMPLEMENTATION_PROTOCOL, ImplementationObservationEnvelope, ImplementationProtocolError,
+    ImplementationRequest, ImplementationRequestEnvelope, ImplementationResponse,
+    ImplementationResponseEnvelope, MAX_IMPLEMENTATION_MESSAGE_BYTES,
+    MAX_IMPLEMENTATION_PAYLOAD_BYTES, parse_implementation_observation,
+    parse_implementation_request, parse_implementation_response, parse_implementation_response_for,
+};
+pub use implementation_runtime::{
+    ImplementationRuntime, ImplementationRuntimeError, MAX_IMPLEMENTATION_STDIN_BYTES,
+    RuntimeEvidence, RuntimeState,
 };
 pub use package::{
     ActivePlugin, ArtifactRef, InstalledPackage, PackageError, PluginStore, RuntimePackages,
@@ -498,3 +536,11 @@ mod tests {
         assert!(r.install(&entry("fmt", (1, 10, 0))).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "implementation_tests.rs"]
+mod implementation_tests;
+
+#[cfg(test)]
+#[path = "implementation_protocol_tests.rs"]
+mod implementation_protocol_tests;

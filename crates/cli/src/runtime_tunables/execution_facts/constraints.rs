@@ -50,7 +50,7 @@ fn add_tool_and_verifier_constraints(
         "max_identities",
         ExternalCeiling::ToolBudget,
         int(i64u(
-            crate::runtime::FAILED_ACTION_CACHE_MAX_IDENTITIES,
+            crate::runtime::failed_action_cache_max_identities(),
             "failed_action_dedup",
         )?),
     )?;
@@ -204,10 +204,9 @@ fn add_orchestration_constraints(
         "max_output_tokens",
         ExternalCeiling::ParentTokens,
         int(i64v(
-            input
-                .budget
-                .max_tokens
-                .unwrap_or(ABSENT_BUDGET_DECOMPOSITION_TOKEN_CEILING),
+            input.budget.max_tokens.unwrap_or(
+                super::super::execution_policy::absent_budget_decomposition_token_ceiling(),
+            ),
             "decomposition_profile",
         )?),
     )?;
