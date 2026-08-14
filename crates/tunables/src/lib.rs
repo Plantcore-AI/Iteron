@@ -39,6 +39,7 @@ mod runtime_requirements;
 mod schema_catalog;
 mod semantic_keys;
 mod strategy_slots;
+mod tool_text;
 mod types;
 mod validate;
 mod value_schemas;
@@ -53,16 +54,18 @@ pub use export::{
 pub use families::families;
 pub use modules::{ModuleId, ModuleKind, family_module};
 pub use param_runtime::{
-    ParamInstallError, PromptArtifactInstallError, install_param_overrides,
+    FamilyInstallError, ParamInstallError, PromptArtifactInstallError, family_bool, family_enum,
+    family_integer, family_value, install_family_overrides, install_param_overrides,
     install_prompt_artifact_overrides, installed_param_count, installed_prompt_artifact_count,
-    param_bool, param_bytes, param_char, param_duration, param_f32, param_f64, param_i128,
-    param_integer, param_is_overridden, param_str, param_str_list, param_u64, param_usize,
-    param_value, prompt_artifact,
+    param_bool, param_bytes, param_char, param_duration, param_enum, param_f32, param_f64,
+    param_i128, param_integer, param_is_overridden, param_list, param_map, param_object, param_str,
+    param_str_list, param_u64, param_usize, param_value, prompt_artifact, tool_description,
 };
 pub use params::{
-    PARAM_REGISTRY_ID, PARAM_SCHEMA_VERSION, Param, ParamClass, ParamDomain, ParamDomainViolation,
-    ParamType, ParamUnit, ParamValueViolation, param, param_count, param_registry_digest_sha256,
-    params,
+    PARAM_REGISTRY_ID, PARAM_SCHEMA_VERSION, Param, ParamCandidateKind, ParamClass,
+    ParamDisposition, ParamDomain, ParamDomainViolation, ParamInvariantReason, ParamOwner,
+    ParamType, ParamUnit, ParamUseSite, ParamValueViolation, param, param_count,
+    param_registry_digest_sha256, params,
 };
 pub use profile_io::{
     ArtifactOverride, MAX_ARTIFACT_TEXT_BYTES, MAX_PROFILE_BYTES, PROFILE_DOCUMENT_SCHEMA_VERSION,
@@ -85,7 +88,8 @@ pub use runtime_binding::with_synthetic_fixed_authority_attestations_for_test;
 pub use runtime_binding::{
     EffectiveValueError, RuntimeAuthoritySet, RuntimeOwnerReceipt, RuntimeProfile,
     RuntimeResolutionBuilder, RuntimeResolutionError, fixed_authority_value_digest_sha256,
-    runtime_catalog_snapshot, runtime_profile_digest,
+    fixed_authority_value_digest_sha256_at_registry, runtime_catalog_snapshot,
+    runtime_profile_digest,
 };
 pub use runtime_requirements::{
     RuntimeActivationRequirement, RuntimeConstraintRequirement, RuntimeDefaultObservation,
@@ -93,6 +97,10 @@ pub use runtime_requirements::{
     runtime_constraint_requirements, runtime_default_observations,
 };
 pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
+pub use tool_text::{
+    TOOL_TEXT_ARTIFACTS, TOOL_TEXT_REGISTRY_ID, TOOL_TEXT_SCHEMA_VERSION, ToolTextArtifact,
+    tool_text_artifact, tool_text_artifact_by_id, tool_text_registry_digest_sha256,
+};
 pub use types::{
     ActivationPredicate, ActivationSpec, AuthorityClass, BenchmarkCausalPath, BenchmarkRelevance,
     CapabilityRequirement, CausalPath, ConstraintProjection, ConstraintRelation,
@@ -113,10 +121,9 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v4. Revision 17 gives fifty-eight implemented
-/// families a `UserConfig` source binding: they were reachable by the runtime but by no operator,
-/// so the registry described a control nobody could exercise.
-pub const REGISTRY_REVISION: u16 = 17;
+/// Revision of the family set under schema v4. Revision 18 externalizes every non-Pin governed
+/// family through the universal profile seam while retaining immutable Pin admission rules.
+pub const REGISTRY_REVISION: u16 = 18;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -125,6 +132,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 17; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 18; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "fee22a629e6bb95f190c75ec25e63e198a2eb44a7dfb1bf839828e5c397d93db";
+    "06081579593ce43dce6b376ed8876f2a29c4e6cc89c350d6beeb52d3f5068d24";

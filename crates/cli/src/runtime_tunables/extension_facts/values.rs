@@ -22,12 +22,12 @@ pub(crate) fn live_fixed_authority_samples() -> Vec<FixedAuthoritySample> {
         },
         FixedAuthoritySample {
             family: "merge_conflict_arbitration",
-            authority: FixedAuthorityId::StrategyInvariant,
+            authority: FixedAuthorityId::RuntimeInvariant,
             value: merge_conflict_arbitration_value(writer),
         },
         FixedAuthoritySample {
             family: "inter_agent_messaging_topology",
-            authority: FixedAuthorityId::StrategyInvariant,
+            authority: FixedAuthorityId::GovernedArtifactBoundary,
             value: messaging_topology_owner_value(),
         },
         FixedAuthoritySample {
@@ -51,9 +51,8 @@ pub(super) fn apply(
     add_child_defaults(builder, input, report)?;
 
     let spawn_depth = iteron_workflow::SpawnDepthControl::owner();
-    builder.attest_fixed_authority(
+    builder.attest_literal_owner(
         "spawn_depth_control",
-        FixedAuthorityId::StrategyInvariant,
         super::value::int(i64::from(
             spawn_depth.max_depth().min(input.budget.max_turns.min(64)),
         )),
@@ -63,7 +62,7 @@ pub(super) fn apply(
     let priority = iteron_workflow::TaskPrioritySchedulingPolicy::owner();
     builder.attest_fixed_authority(
         "task_priority_scheduling",
-        FixedAuthorityId::StrategyInvariant,
+        FixedAuthorityId::RuntimeInvariant,
         object([
             (
                 "priority_levels",
@@ -164,7 +163,7 @@ pub(super) fn apply(
     )?;
     builder.attest_fixed_authority(
         "merge_conflict_arbitration",
-        FixedAuthorityId::StrategyInvariant,
+        FixedAuthorityId::RuntimeInvariant,
         merge_conflict_arbitration,
     )?;
     report.mark(144, "merge_conflict_arbitration", FactLayer::Default);
@@ -175,7 +174,7 @@ pub(super) fn apply(
     {
         builder.attest_fixed_authority(
             "inter_agent_messaging_topology",
-            FixedAuthorityId::StrategyInvariant,
+            FixedAuthorityId::GovernedArtifactBoundary,
             messaging_topology_owner_value(),
         )?;
         report.mark(145, "inter_agent_messaging_topology", FactLayer::Default);

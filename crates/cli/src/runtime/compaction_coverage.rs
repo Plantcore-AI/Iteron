@@ -49,8 +49,9 @@ impl Agent {
             tools: Vec::new(),
             max_tokens: self.compaction.summary_profile.max_output_tokens,
             cache_system: self.provider_cache_system_enabled(),
-            thinking_budget: self.compaction.summary_profile.effort.thinking_budget(),
-            reasoning_effort: self.compaction.summary_profile.effort.reasoning_effort(),
+            thinking_budget: self
+                .effort_thinking_budget(self.compaction.summary_profile.effort),
+            reasoning_effort: self.effort_reasoning(self.compaction.summary_profile.effort),
         };
         if let Some(reason) = self.inference_budget_exhaustion()? {
             return Err(KernelError::InferenceBudgetExhausted(reason));

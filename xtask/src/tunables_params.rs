@@ -36,6 +36,68 @@ pub(crate) struct ParamRow {
     pub krate: String,
     pub decl: String,
     pub applied: bool,
+    pub candidate_kind: CandidateKind,
+    pub disposition: Disposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invariant_reason: Option<InvariantReason>,
+    pub owner: OwnerRow,
+    pub use_sites: Vec<UseSiteRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behavior_oracle: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CandidateKind {
+    Const,
+    Static,
+    AssociatedConst,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Disposition {
+    RuntimeSettable,
+    InvariantReadOnly,
+}
+
+/// Closed vocabulary for values which must remain outside the learned/runtime-settable plane.
+/// There is deliberately no `structural` or `other` escape hatch.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InvariantReason {
+    Identity,
+    WireCompatibility,
+    CapabilityAuthority,
+    Security,
+    DurabilityReplay,
+    HardBudgetEffectLedger,
+    RuntimeStateNotAValue,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct OwnerRow {
+    pub krate: String,
+    pub path: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct UseSiteRow {
+    pub path: String,
+    pub line: usize,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone)]
+struct Declaration {
+    name: String,
+    ty: String,
+    value: String,
+    kind: CandidateKind,
+    owner_symbol: String,
+    line: usize,
+    cfg_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
@@ -62,10 +124,11 @@ struct Catalog {
 
 pub(crate) fn generate(root: &Path) -> Result<()> {
     let rows = scan(root)?;
+    validate_rows(&rows)?;
     let catalog = Catalog {
         schema_version: iteron_tunables::PARAM_SCHEMA_VERSION,
         registry_id: iteron_tunables::PARAM_REGISTRY_ID.to_owned(),
-        revision: 2,
+        revision: 3,
         params: rows,
     };
     let mut json = serde_json::to_string_pretty(&catalog)?;
@@ -81,6 +144,7 @@ pub(crate) fn generate(root: &Path) -> Result<()> {
 
 pub(crate) fn check(root: &Path) -> Result<()> {
     let rows = scan(root)?;
+    validate_rows(&rows)?;
     let path = root.join("governance/tunables-params.json");
     let committed =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -102,7 +166,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
     let regenerated = serde_json::to_value(&Catalog {
         schema_version: iteron_tunables::PARAM_SCHEMA_VERSION,
         registry_id: iteron_tunables::PARAM_REGISTRY_ID.to_owned(),
-        revision: 2,
+        revision: 3,
         params: rows,
     })?;
     if regenerated != committed {
@@ -112,6 +176,73 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         );
     }
     println!("tier-2 parameter catalog matches source ({committed_rows} parameters)");
+    Ok(())
+}
+
+pub(crate) fn validate_rows(rows: &[ParamRow]) -> Result<()> {
+    let inert = rows
+        .iter()
+        .filter(|row| matches!(row.disposition, Disposition::RuntimeSettable) && !row.applied)
+        .map(|row| row.id.as_str())
+        .collect::<Vec<_>>();
+    if !inert.is_empty() {
+        bail!(
+            "{} advertised runtime_settable parameters are not runtime applied:\n  {}",
+            inert.len(),
+            inert.join("\n  ")
+        );
+    }
+    let mut ids = BTreeSet::new();
+    for row in rows {
+        if !ids.insert(&row.id) {
+            bail!(
+                "optimization census contains duplicate stable id `{}`",
+                row.id
+            );
+        }
+        match row.disposition {
+            Disposition::RuntimeSettable => {
+                if matches!(row.class, ParamClass::Structural) {
+                    bail!(
+                        "{} is runtime_settable but has legacy structural class",
+                        row.id
+                    );
+                }
+                if row.use_sites.is_empty() {
+                    bail!(
+                        "{} is runtime_settable without a production use site",
+                        row.id
+                    );
+                }
+                if row.behavior_oracle.as_deref().is_none_or(str::is_empty) {
+                    bail!("{} is runtime_settable without a behavior oracle", row.id);
+                }
+                if row.invariant_reason.is_some() {
+                    bail!(
+                        "{} is runtime_settable but carries an invariant reason",
+                        row.id
+                    );
+                }
+            }
+            Disposition::InvariantReadOnly => {
+                if !matches!(row.class, ParamClass::Structural) {
+                    bail!(
+                        "{} is invariant_read_only without legacy structural class",
+                        row.id
+                    );
+                }
+                if row.invariant_reason.is_none() {
+                    bail!("{} is invariant_read_only without a closed reason", row.id);
+                }
+                if row.applied {
+                    bail!(
+                        "{} is invariant_read_only but is resolved by a runtime helper",
+                        row.id
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -150,13 +281,12 @@ pub(crate) fn census(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ids that some use site actually reads through the override table. Collected in a first pass so
-/// the catalog can report `applied` truthfully rather than implying every catalogued parameter
-/// moves.
-fn applied_ids(root: &Path) -> Result<std::collections::BTreeSet<String>> {
+/// Production calls which actually resolve an id through the installed override table. Parsed
+/// from the AST so comments, strings, and test-only code cannot make an inert setting look applied.
+fn applied_evidence(root: &Path) -> Result<BTreeMap<String, Vec<UseSiteRow>>> {
     let mut files = Vec::new();
     collect_rust_files(&root.join("crates"), &mut files)?;
-    let mut ids = std::collections::BTreeSet::new();
+    let mut evidence: BTreeMap<String, Vec<UseSiteRow>> = BTreeMap::new();
     for file in files {
         let relative = file
             .strip_prefix(root)
@@ -167,50 +297,147 @@ fn applied_ids(root: &Path) -> Result<std::collections::BTreeSet<String>> {
             continue;
         }
         let source = std::fs::read_to_string(&file).unwrap_or_default();
-        let source = strip_test_modules(&source);
-        for helper in [
-            "param_i128",
-            "param_integer",
-            "param_usize",
-            "param_u64",
-            "param_bool",
-            "param_f32",
-            "param_f64",
-            "param_duration",
-            "param_str",
-            "param_str_list",
-            "param_bytes",
-            "param_value",
-            "param_char",
-        ] {
-            let mut cursor = 0usize;
-            while let Some(found) = source[cursor..].find(helper) {
-                let mut start = cursor + found + helper.len();
-                let tail = &source[start..];
-                let whitespace = tail.len() - tail.trim_start().len();
-                start += whitespace;
-                if !source[start..].starts_with('(') {
-                    cursor = start;
-                    continue;
-                }
-                start += 1;
-                let tail = &source[start..];
-                let whitespace = tail.len() - tail.trim_start().len();
-                start += whitespace;
-                if !source[start..].starts_with('"') {
-                    cursor = start;
-                    continue;
-                }
-                start += 1;
-                let Some(end) = source[start..].find('"') else {
-                    break;
-                };
-                ids.insert(source[start..start + end].to_owned());
-                cursor = start + end;
+        let syntax = syn::parse_file(&source)
+            .with_context(|| format!("parsing {relative} for runtime parameter use sites"))?;
+        AppliedEvidenceCollector {
+            relative: &relative,
+            found: &mut evidence,
+        }
+        .visit_file(&syntax);
+    }
+    for sites in evidence.values_mut() {
+        sites.sort_by(|left, right| {
+            (&left.path, left.line, &left.evidence).cmp(&(&right.path, right.line, &right.evidence))
+        });
+        sites.dedup();
+    }
+    Ok(evidence)
+}
+
+const PARAM_HELPERS: &[&str] = &[
+    "param_i128",
+    "param_integer",
+    "param_usize",
+    "param_u64",
+    "param_bool",
+    "param_f32",
+    "param_f64",
+    "param_duration",
+    "param_str",
+    "param_str_list",
+    "param_bytes",
+    "param_value",
+    "param_char",
+    "param_enum",
+    "param_list",
+    "param_map",
+    "param_object",
+];
+
+struct AppliedEvidenceCollector<'a> {
+    relative: &'a str,
+    found: &'a mut BTreeMap<String, Vec<UseSiteRow>>,
+}
+
+impl AppliedEvidenceCollector<'_> {
+    fn collect_macro_tokens(&mut self, stream: proc_macro2::TokenStream) {
+        let tokens = stream.into_iter().collect::<Vec<_>>();
+        for (index, token) in tokens.iter().enumerate() {
+            if let proc_macro2::TokenTree::Group(group) = token {
+                self.collect_macro_tokens(group.stream());
             }
+            let proc_macro2::TokenTree::Ident(helper) = token else {
+                continue;
+            };
+            if !PARAM_HELPERS.contains(&helper.to_string().as_str()) {
+                continue;
+            }
+            let Some(proc_macro2::TokenTree::Group(arguments)) = tokens.get(index + 1) else {
+                continue;
+            };
+            let Some(proc_macro2::TokenTree::Literal(id)) = arguments.stream().into_iter().next()
+            else {
+                continue;
+            };
+            let Ok(id) = syn::parse_str::<syn::LitStr>(&id.to_string()) else {
+                continue;
+            };
+            self.found.entry(id.value()).or_default().push(UseSiteRow {
+                path: self.relative.to_owned(),
+                line: helper.span().start().line,
+                evidence: format!("{} runtime resolution in macro", helper),
+            });
         }
     }
-    Ok(ids)
+}
+
+impl<'ast> Visit<'ast> for AppliedEvidenceCollector<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_fn(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_impl(self, item);
+        }
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_const(self, item);
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_static(self, item);
+        }
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        let syn::Expr::Path(function) = node.func.as_ref() else {
+            visit::visit_expr_call(self, node);
+            return;
+        };
+        let Some(helper) = function
+            .path
+            .segments
+            .last()
+            .map(|part| part.ident.to_string())
+        else {
+            return;
+        };
+        if !PARAM_HELPERS.contains(&helper.as_str()) {
+            visit::visit_expr_call(self, node);
+            return;
+        }
+        let Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(id),
+            ..
+        })) = node.args.first()
+        else {
+            visit::visit_expr_call(self, node);
+            return;
+        };
+        self.found.entry(id.value()).or_default().push(UseSiteRow {
+            path: self.relative.to_owned(),
+            line: node.span().start().line,
+            evidence: format!("{helper} runtime resolution"),
+        });
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_macro(&mut self, invocation: &'ast syn::Macro) {
+        self.collect_macro_tokens(invocation.tokens.clone());
+    }
 }
 
 /// Mechanically wrap same-file runtime reads of every currently inert primitive integer.
@@ -821,8 +1048,8 @@ fn source_offset(source: &str, location: proc_macro2::LineColumn) -> usize {
     line_start + byte_column
 }
 
-fn scan(root: &Path) -> Result<Vec<ParamRow>> {
-    let applied = applied_ids(root)?;
+pub(crate) fn scan(root: &Path) -> Result<Vec<ParamRow>> {
+    let applied = applied_evidence(root)?;
     let mut files = Vec::new();
     collect_rust_files(&root.join("crates"), &mut files)?;
     files.sort();
@@ -844,8 +1071,29 @@ fn scan(root: &Path) -> Result<Vec<ParamRow>> {
         }
         let source = std::fs::read_to_string(&file)
             .with_context(|| format!("reading {}", file.display()))?;
-        let body = strip_test_modules(&source);
-        sources.push((krate.to_owned(), relative, declarations(&source, &body)?));
+        let declarations = declarations(&source)?;
+        sources.push((krate.to_owned(), relative, source, declarations));
+    }
+
+    // The Stage-1 address stays unchanged whenever it is unambiguous. Repeated associated/local
+    // names (for example one `VERSION` per port implementation) receive an owner-qualified id so
+    // the AST-complete inventory never silently deduplicates declarations.
+    let mut base_id_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut qualified_id_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (krate, relative, _, declarations) in &sources {
+        for declaration in declarations {
+            *base_id_counts
+                .entry(base_param_id(krate, relative, &declaration.name))
+                .or_default() += 1;
+            *qualified_id_counts
+                .entry(qualified_param_id(
+                    krate,
+                    relative,
+                    &declaration.owner_symbol,
+                    &declaration.name,
+                ))
+                .or_default() += 1;
+        }
     }
 
     // Resolve literal constants globally first, then same-file aliases to a fixed point. Rust
@@ -853,15 +1101,15 @@ fn scan(root: &Path) -> Result<Vec<ParamRow>> {
     // because the source chose a readable alias would accidentally turn a tighten-only safety
     // control into an unbounded one.
     let mut candidates: BTreeMap<String, Option<i128>> = BTreeMap::new();
-    for (_, _, declarations) in &sources {
-        for (name, _, value) in declarations {
-            let Some(value) = numeric_literal(value, &BTreeMap::new())
-                .or_else(|| literal_length(value, &BTreeMap::new()))
+    for (_, _, _, declarations) in &sources {
+        for declaration in declarations {
+            let Some(value) = numeric_literal(&declaration.value, &BTreeMap::new())
+                .or_else(|| literal_length(&declaration.value, &BTreeMap::new()))
             else {
                 continue;
             };
             candidates
-                .entry(name.clone())
+                .entry(declaration.name.clone())
                 .and_modify(|existing| {
                     if existing.is_some_and(|existing| existing != value) {
                         *existing = None;
@@ -875,31 +1123,104 @@ fn scan(root: &Path) -> Result<Vec<ParamRow>> {
         .filter_map(|(name, value)| value.map(|value| (name, value)))
         .collect();
 
+    let mut names_by_crate: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (krate, _, _, declarations) in &sources {
+        names_by_crate.entry(krate.clone()).or_default().extend(
+            declarations
+                .iter()
+                .map(|declaration| declaration.name.clone()),
+        );
+    }
+    let mut declaration_uses: BTreeMap<(String, String), Vec<UseSiteRow>> = BTreeMap::new();
+    for (krate, relative, source, _) in &sources {
+        let targets = names_by_crate
+            .get(krate)
+            .expect("each scanned crate has a declaration name set");
+        for (name, sites) in source_use_sites(source, relative, targets)? {
+            declaration_uses
+                .entry((krate.clone(), name))
+                .or_default()
+                .extend(sites);
+        }
+    }
+    for sites in declaration_uses.values_mut() {
+        sites.sort_by(|left, right| (&left.path, left.line).cmp(&(&right.path, right.line)));
+        sites.dedup();
+    }
+
     let mut rows = Vec::new();
-    for (krate, relative, declarations) in sources {
+    for (krate, relative, _, declarations) in sources {
         let mut symbols = global_symbols.clone();
         loop {
             let before = symbols.len();
-            for (name, _, value) in &declarations {
-                if let Some(value) =
-                    numeric_literal(value, &symbols).or_else(|| literal_length(value, &symbols))
+            for declaration in &declarations {
+                if let Some(value) = numeric_literal(&declaration.value, &symbols)
+                    .or_else(|| literal_length(&declaration.value, &symbols))
                 {
-                    symbols.insert(name.clone(), value);
+                    symbols.insert(declaration.name.clone(), value);
                 }
             }
             if symbols.len() == before {
                 break;
             }
         }
-        for (name, ty_text, value) in declarations {
-            let ceiling = numeric_literal(&value, &symbols);
-            let mut row = row_for(&krate, &relative, &name, &ty_text, &value, ceiling);
-            row.applied = applied.contains(&row.id);
+        for declaration in declarations {
+            let ceiling = numeric_literal(&declaration.value, &symbols);
+            let mut row = row_for(
+                &krate,
+                &relative,
+                &declaration.name,
+                &declaration.ty,
+                &declaration.value,
+                ceiling,
+                declaration.kind,
+                &declaration.owner_symbol,
+                declaration.line,
+            );
+            if base_id_counts.get(&row.id).copied().unwrap_or_default() > 1 {
+                row.id = qualified_param_id(
+                    &krate,
+                    &relative,
+                    &declaration.owner_symbol,
+                    &declaration.name,
+                );
+                if qualified_id_counts
+                    .get(&row.id)
+                    .copied()
+                    .unwrap_or_default()
+                    > 1
+                {
+                    let cfg = declaration.cfg_key.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "duplicate declaration {} has no cfg discriminator",
+                            declaration.owner_symbol
+                        )
+                    })?;
+                    row.id.push('.');
+                    row.id.push_str(&cfg_discriminator(cfg));
+                }
+            }
+            if matches!(row.disposition, Disposition::InvariantReadOnly)
+                && let Some(sites) =
+                    declaration_uses.get(&(krate.clone(), declaration.name.clone()))
+                && !sites.is_empty()
+            {
+                row.use_sites = sites.clone();
+            }
+            if let Some(sites) = applied.get(&row.id) {
+                row.use_sites = sites.clone();
+                row.applied = true;
+            }
+            if row.applied {
+                row.behavior_oracle = Some(format!(
+                    "installed profile id {} is resolved at every listed production helper call",
+                    row.id
+                ));
+            }
             rows.push(row);
         }
     }
     rows.sort_by(|left, right| left.id.cmp(&right.id));
-    rows.dedup_by(|left, right| left.id == right.id);
     Ok(rows)
 }
 
@@ -931,136 +1252,17 @@ fn crate_of(relative: &str) -> Option<&str> {
         .and_then(|rest| rest.split('/').next())
 }
 
-/// Mask test-only Rust items while preserving byte offsets and newlines.
-///
-/// `#[cfg(test)]` is also used on imports, constants, and individual functions. Treating every
-/// occurrence as a module and jumping to the next brace can erase unrelated production code; this
-/// AST walk removes exactly the attributed item instead.
-fn strip_test_modules(source: &str) -> String {
-    let Ok(syntax) = syn::parse_file(source) else {
-        return source.to_owned();
-    };
-    let mut collector = TestItemCollector {
-        source,
-        ranges: Vec::new(),
-    };
-    collector.visit_file(&syntax);
-    let mut masked = source.as_bytes().to_vec();
-    for (start, end) in collector.ranges {
-        for byte in &mut masked[start..end] {
-            if *byte != b'\n' && *byte != b'\r' {
-                *byte = b' ';
-            }
-        }
-    }
-    String::from_utf8(masked).expect("masking Rust source with ASCII spaces preserves UTF-8")
-}
-
-struct TestItemCollector<'a> {
-    source: &'a str,
-    ranges: Vec<(usize, usize)>,
-}
-
-impl TestItemCollector<'_> {
-    fn mask(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) -> bool {
-        if !has_cfg_test(attrs) {
-            return false;
-        }
-        let start = attrs.first().map_or_else(
-            || source_offset(self.source, span.start()),
-            |attribute| source_offset(self.source, attribute.span().start()),
-        );
-        let end = source_offset(self.source, span.end());
-        self.ranges.push((start, end));
-        true
-    }
-}
-
-impl<'ast> Visit<'ast> for TestItemCollector<'_> {
-    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_mod(self, item);
-        }
-    }
-
-    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_fn(self, item);
-        }
-    }
-
-    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_const(self, item);
-        }
-    }
-
-    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_static(self, item);
-        }
-    }
-
-    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_use(self, item);
-        }
-    }
-
-    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-        if !self.mask(&item.attrs, item.span()) {
-            visit::visit_item_impl(self, item);
-        }
-    }
-}
-
-/// Extract `const NAME: TYPE = VALUE;` and `static NAME: TYPE = VALUE;` at any indentation.
-fn declaration_names(body: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        let rest = trimmed
-            .strip_prefix("pub const ")
-            .or_else(|| trimmed.strip_prefix("const "))
-            .or_else(|| trimmed.strip_prefix("pub static "))
-            .or_else(|| trimmed.strip_prefix("static "))
-            .or_else(|| {
-                trimmed
-                    .strip_prefix("pub(crate) const ")
-                    .or_else(|| trimmed.strip_prefix("pub(super) const "))
-                    .or_else(|| trimmed.strip_prefix("pub(crate) static "))
-                    .or_else(|| trimmed.strip_prefix("pub(super) static "))
-            });
-        let Some(rest) = rest else { continue };
-        let Some((name, tail)) = rest.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        {
-            continue;
-        }
-        let Some((ty_text, _value)) = tail.split_once('=') else {
-            continue;
-        };
-        if !ty_text.trim().is_empty() {
-            found.insert(name.to_owned());
-        }
-    }
-    found
-}
-
-fn declarations(source: &str, production_body: &str) -> Result<Vec<(String, String, String)>> {
-    let candidates = declaration_names(production_body);
+/// Canonical const/static inventory. There is intentionally no line-oriented candidate prefilter:
+/// `syn` owns discovery, including multiline declarations, associated constants, and nested inline
+/// modules. Test-attributed items are pruned while walking the tree.
+fn declarations(source: &str) -> Result<Vec<Declaration>> {
     let syntax =
         syn::parse_file(source).context("parsing Rust declarations for the tunables catalog")?;
     let mut collector = DeclarationCollector {
         source,
-        candidates: &candidates,
         found: Vec::new(),
+        modules: Vec::new(),
+        owners: Vec::new(),
     };
     collector.visit_file(&syntax);
     Ok(collector.found)
@@ -1068,14 +1270,22 @@ fn declarations(source: &str, production_body: &str) -> Result<Vec<(String, Stri
 
 struct DeclarationCollector<'a> {
     source: &'a str,
-    candidates: &'a BTreeSet<String>,
-    found: Vec<(String, String, String)>,
+    found: Vec<Declaration>,
+    modules: Vec<String>,
+    owners: Vec<String>,
 }
 
 impl DeclarationCollector<'_> {
-    fn push(&mut self, name: &syn::Ident, ty: &syn::Type, value: &syn::Expr) {
+    fn push(
+        &mut self,
+        attrs: &[syn::Attribute],
+        name: &syn::Ident,
+        ty: &syn::Type,
+        value: &syn::Expr,
+        kind: CandidateKind,
+    ) {
         let name = name.to_string();
-        if !self.candidates.contains(&name) || name == "_" {
+        if name == "_" {
             return;
         }
         let Some(ty_text) = span_text(self.source, ty.span()) else {
@@ -1084,28 +1294,217 @@ impl DeclarationCollector<'_> {
         let Some(value_text) = span_text(self.source, value.span()) else {
             return;
         };
-        self.found
-            .push((name, ty_text.to_owned(), value_text.to_owned()));
+        let mut owner = self.modules.join("::");
+        for item_owner in &self.owners {
+            if !owner.is_empty() {
+                owner.push_str("::");
+            }
+            owner.push_str(item_owner);
+        }
+        if !owner.is_empty() {
+            owner.push_str("::");
+        }
+        owner.push_str(&name);
+        self.found.push(Declaration {
+            name,
+            ty: ty_text.to_owned(),
+            value: value_text.to_owned(),
+            kind,
+            owner_symbol: owner,
+            line: value.span().start().line,
+            cfg_key: attrs
+                .iter()
+                .filter(|attr| attr.path().is_ident("cfg"))
+                .map(|attr| quote::ToTokens::to_token_stream(&attr.meta).to_string())
+                .reduce(|left, right| format!("{left}_{right}")),
+        });
     }
 }
 
 impl<'ast> Visit<'ast> for DeclarationCollector<'_> {
     fn visit_item_const(&mut self, node: &'ast syn::ItemConst) {
         if !has_cfg_test(&node.attrs) {
-            self.push(&node.ident, &node.ty, &node.expr);
+            self.push(
+                &node.attrs,
+                &node.ident,
+                &node.ty,
+                &node.expr,
+                CandidateKind::Const,
+            );
         }
     }
 
     fn visit_item_static(&mut self, node: &'ast syn::ItemStatic) {
         if !has_cfg_test(&node.attrs) {
-            self.push(&node.ident, &node.ty, &node.expr);
+            self.push(
+                &node.attrs,
+                &node.ident,
+                &node.ty,
+                &node.expr,
+                CandidateKind::Static,
+            );
         }
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if !has_cfg_test(&node.attrs) {
-            visit::visit_item_mod(self, node);
+        if has_cfg_test(&node.attrs) {
+            return;
         }
+        self.modules.push(node.ident.to_string());
+        if let Some((_, items)) = &node.content {
+            for item in items {
+                self.visit_item(item);
+            }
+        }
+        self.modules.pop();
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        use quote::ToTokens as _;
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        self.owners
+            .push(node.self_ty.to_token_stream().to_string().replace(' ', ""));
+        visit::visit_item_impl(self, node);
+        self.owners.pop();
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        self.owners.push(node.ident.to_string());
+        visit::visit_item_trait(self, node);
+        self.owners.pop();
+    }
+
+    fn visit_impl_item_const(&mut self, node: &'ast syn::ImplItemConst) {
+        if !has_cfg_test(&node.attrs) {
+            self.push(
+                &node.attrs,
+                &node.ident,
+                &node.ty,
+                &node.expr,
+                CandidateKind::AssociatedConst,
+            );
+        }
+    }
+
+    fn visit_trait_item_const(&mut self, node: &'ast syn::TraitItemConst) {
+        if !has_cfg_test(&node.attrs)
+            && let Some((_, value)) = &node.default
+        {
+            self.push(
+                &node.attrs,
+                &node.ident,
+                &node.ty,
+                value,
+                CandidateKind::AssociatedConst,
+            );
+        }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        self.owners.push(node.sig.ident.to_string());
+        visit::visit_item_fn(self, node);
+        self.owners.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        self.owners.push(node.sig.ident.to_string());
+        visit::visit_impl_item_fn(self, node);
+        self.owners.pop();
+    }
+}
+
+fn source_use_sites(
+    source: &str,
+    relative: &str,
+    targets: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Vec<UseSiteRow>>> {
+    let syntax = syn::parse_file(source)
+        .with_context(|| format!("parsing {relative} for const/static use-site evidence"))?;
+    let mut collector = DeclarationUseCollector {
+        relative,
+        targets,
+        found: BTreeMap::new(),
+    };
+    collector.visit_file(&syntax);
+    Ok(collector.found)
+}
+
+struct DeclarationUseCollector<'a> {
+    relative: &'a str,
+    targets: &'a BTreeSet<String>,
+    found: BTreeMap<String, Vec<UseSiteRow>>,
+}
+
+impl DeclarationUseCollector<'_> {
+    fn push(&mut self, name: &str, span: proc_macro2::Span, evidence: &str) {
+        if self.targets.contains(name) {
+            self.found
+                .entry(name.to_owned())
+                .or_default()
+                .push(UseSiteRow {
+                    path: self.relative.to_owned(),
+                    line: span.start().line,
+                    evidence: evidence.to_owned(),
+                });
+        }
+    }
+
+    fn visit_tokens(&mut self, stream: proc_macro2::TokenStream) {
+        for token in stream {
+            match token {
+                proc_macro2::TokenTree::Group(group) => self.visit_tokens(group.stream()),
+                proc_macro2::TokenTree::Ident(ident) => {
+                    self.push(&ident.to_string(), ident.span(), "macro token reference")
+                }
+                proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => {}
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DeclarationUseCollector<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_fn(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_item_impl(self, item);
+        }
+    }
+
+    fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+        if let Some(name) = expression.path.segments.last() {
+            self.push(
+                &name.ident.to_string(),
+                expression.span(),
+                "Rust path reference",
+            );
+        }
+        visit::visit_expr_path(self, expression);
+    }
+
+    fn visit_macro(&mut self, invocation: &'ast syn::Macro) {
+        self.visit_tokens(invocation.tokens.clone());
     }
 }
 
@@ -1115,6 +1514,7 @@ fn span_text(source: &str, span: proc_macro2::Span) -> Option<&str> {
     (start < end && end <= source.len()).then(|| &source[start..end])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_for(
     krate: &str,
     relative: &str,
@@ -1122,6 +1522,9 @@ fn row_for(
     ty_text: &str,
     value: &str,
     numeric_ceiling: Option<i128>,
+    candidate_kind: CandidateKind,
+    owner_symbol: &str,
+    declaration_line: usize,
 ) -> ParamRow {
     let ty = param_type(ty_text, value);
     let cryptographic_shape = (krate == "record"
@@ -1201,13 +1604,28 @@ fn row_for(
             "cli",
             "crates/cli/src/output.rs",
             "MAX_PENDING_STREAM_TOKEN_BYTES"
+        ) | (
+            "protocol",
+            "crates/protocol/src/message.rs",
+            "ANTHROPIC_MESSAGES_CONTENT_BLOCKS_V1"
+                | "OPENAI_CHAT_REASONING_CONTENT_V1"
+                | "OPENAI_RESPONSES_OUTPUT_ITEMS_V1"
         )
-    );
+    ) || (krate == "cli"
+        && relative == "crates/cli/src/config.rs"
+        && name == "MAX_SERVER_BYTES"
+        && owner_symbol.contains("Mcp")
+        && owner_symbol.contains("BindingId"));
     let derived_object = ty_text.trim() == "Limits";
+    let platform_identity_invariant = name == "NULL_DEVICE";
+    let hard_budget_invariant = krate == "eval"
+        && relative == "crates/eval/src/terminal_bench.rs"
+        && name.starts_with("MAX_");
     let deliberate_runtime_control = match (krate, relative, name) {
         ("tools", "crates/tools/src/lsp/session.rs", "PROCESS_EXIT_TIMEOUT") => {
             Some(ParamClass::Bounded)
         }
+        ("tools", "crates/tools/src/shell.rs", "MAX_PER_STREAM_BYTES") => Some(ParamClass::Bounded),
         ("tools", "crates/tools/src/git_observe.rs", "DEFAULT_LOG_COUNT")
         | ("cli", "crates/cli/src/tui/status_line.rs", "SEPARATOR") => Some(ParamClass::Searchable),
         _ => None,
@@ -1225,6 +1643,8 @@ fn row_for(
         || exact_schema_cardinality
         || wire_compatibility_invariant
         || derived_object
+        || platform_identity_invariant
+        || hard_budget_invariant
     {
         // Cryptographic widths, capability-token framing, redaction buffering, and bounds embedded
         // in frozen manual serde support are invariants, not search parameters. Exposing them would
@@ -1244,6 +1664,23 @@ fn row_for(
         },
         ParamClass::Searchable | ParamClass::Structural => DomainRow::default(),
     };
+    let (disposition, invariant_reason) = if matches!(class, ParamClass::Structural) {
+        (
+            Disposition::InvariantReadOnly,
+            Some(invariant_reason_for(
+                krate,
+                relative,
+                name,
+                ty_text,
+                cryptographic_shape,
+                runtime_state,
+                wire_compatibility_invariant || exact_schema_cardinality,
+                hard_budget_invariant,
+            )),
+        )
+    } else {
+        (Disposition::RuntimeSettable, None)
+    };
     ParamRow {
         id: format!("{krate}.{}.{}", module_path(relative), name.to_lowercase()),
         module: module_for(krate, relative),
@@ -1256,7 +1693,99 @@ fn row_for(
         krate: krate.to_owned(),
         decl: relative.to_owned(),
         applied: false,
+        candidate_kind,
+        disposition,
+        invariant_reason,
+        owner: OwnerRow {
+            krate: krate.to_owned(),
+            path: relative.to_owned(),
+            symbol: owner_symbol.to_owned(),
+        },
+        use_sites: vec![UseSiteRow {
+            path: relative.to_owned(),
+            line: declaration_line,
+            evidence: "production declaration".to_owned(),
+        }],
+        behavior_oracle: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invariant_reason_for(
+    krate: &str,
+    relative: &str,
+    name: &str,
+    ty_text: &str,
+    cryptographic_shape: bool,
+    runtime_state: bool,
+    wire_compatibility: bool,
+    hard_budget: bool,
+) -> InvariantReason {
+    if cryptographic_shape
+        || name.contains("SIGNATURE")
+        || name.contains("HMAC")
+        || name.contains("BEARER_TOKEN")
+        || name.contains("SECRET")
+        || relative.contains("/crypto")
+        || relative.contains("/auth")
+    {
+        return InvariantReason::Security;
+    }
+    if wire_compatibility
+        || krate == "protocol"
+        || name.contains("WIRE")
+        || name.contains("ENCODING")
+        || name.contains("FORMAT")
+    {
+        return InvariantReason::WireCompatibility;
+    }
+    if krate == "sandbox" || name.contains("CAPABILITY") || name.contains("PERMISSION") {
+        return InvariantReason::CapabilityAuthority;
+    }
+    if matches!(krate, "record" | "obs")
+        || name.contains("REPLAY")
+        || name.contains("JOURNAL")
+        || name.contains("CHECKPOINT")
+    {
+        return InvariantReason::DurabilityReplay;
+    }
+    if hard_budget
+        || krate == "kernel"
+        || name.contains("EFFECT")
+        || name.contains("LEDGER")
+        || name.contains("HARD_BUDGET")
+    {
+        return InvariantReason::HardBudgetEffectLedger;
+    }
+    if runtime_state
+        || ["OnceLock", "LazyLock", "Atomic", "Mutex", "RwLock"]
+            .iter()
+            .any(|marker| ty_text.contains(marker))
+    {
+        return InvariantReason::RuntimeStateNotAValue;
+    }
+    if name == "NULL_DEVICE"
+        || name.contains("VERSION")
+        || name.contains("SCHEMA")
+        || name.contains("DIGEST")
+        || name.contains("MAGIC")
+        || name.contains("ID")
+        || name.contains("NAME")
+        || name.contains("KIND")
+        || name.contains("MIME")
+        || name.contains("PATH")
+        || name.contains("PREFIX")
+        || name.contains("SUFFIX")
+        || name.contains("TAG")
+        || name.contains("MARKER")
+        || name.contains("SENTINEL")
+    {
+        return InvariantReason::Identity;
+    }
+    // Structural objects, aliases, and compile-time tables are values describing runtime state or
+    // type shape rather than independently optimizable policy values. This is a closed, explicit
+    // disposition, not a catch-all reason emitted by the census schema.
+    InvariantReason::RuntimeStateNotAValue
 }
 
 fn module_path(relative: &str) -> String {
@@ -1268,6 +1797,49 @@ fn module_path(relative: &str) -> String {
         .replace('/', ".")
 }
 
+fn base_param_id(krate: &str, relative: &str, name: &str) -> String {
+    format!("{krate}.{}.{}", module_path(relative), name.to_lowercase())
+}
+
+fn qualified_param_id(krate: &str, relative: &str, owner: &str, name: &str) -> String {
+    let owner = owner
+        .strip_suffix(name)
+        .unwrap_or(owner)
+        .trim_end_matches("::")
+        .replace("::", ".")
+        .replace(
+            |character: char| !character.is_ascii_alphanumeric() && character != '.',
+            "_",
+        )
+        .to_ascii_lowercase();
+    if owner.is_empty() {
+        base_param_id(krate, relative, name)
+    } else {
+        format!(
+            "{krate}.{}.{owner}.{}",
+            module_path(relative),
+            name.to_lowercase()
+        )
+    }
+}
+
+fn cfg_discriminator(cfg: &str) -> String {
+    let mut rendered = String::from("cfg_");
+    let mut separator = false;
+    for character in cfg.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if separator && !rendered.ends_with('_') {
+                rendered.push('_');
+            }
+            rendered.push(character);
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    rendered.trim_end_matches('_').to_owned()
+}
+
 fn param_type(ty_text: &str, value: &str) -> ParamType {
     let ty = ty_text.trim();
     let compact: String = ty
@@ -1276,6 +1848,13 @@ fn param_type(ty_text: &str, value: &str) -> ParamType {
         .collect();
     if ty.starts_with('[') || ty.starts_with("&[") {
         return ParamType::Array;
+    }
+    if compact.contains("BTreeMap<")
+        || compact.contains("HashMap<")
+        || compact.starts_with("IndexMap<")
+        || compact.contains("::IndexMap<")
+    {
+        return ParamType::Map;
     }
     if compact.ends_with("Duration") {
         return ParamType::Duration;
@@ -1849,6 +2428,7 @@ pub(crate) fn artifacts_check(root: &Path) -> Result<()> {
         for artifact in iteron_tunables::PROMPT_ARTIFACTS {
             if compact.contains(&format!("artifact_override(document,\"{}\"", artifact.id))
                 || compact.contains(&format!("prompt_artifact(\"{}\"", artifact.id))
+                || compact.contains(&format!("installed_artifact(\"{}\"", artifact.id))
             {
                 wired.insert(artifact.id);
             }
@@ -1878,4 +2458,84 @@ pub(crate) fn artifacts_check(root: &Path) -> Result<()> {
         iteron_tunables::PROMPT_ARTIFACTS.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ast_inventory_finds_multiline_nested_and_associated_declarations() {
+        let source = r#"
+            pub const MULTILINE:
+                usize =
+                7;
+            mod nested {
+                pub static FLAG:
+                    bool = true;
+            }
+            struct Limits;
+            impl Limits {
+                const CAPACITY:
+                    usize = 8;
+            }
+            trait Versioned {
+                const VERSION:
+                    u32 = 1;
+            }
+            #[cfg(test)]
+            const TEST_ONLY: usize = 9;
+            #[cfg(test)]
+            mod tests { const ALSO_TEST_ONLY: usize = 10; }
+        "#;
+        let rows = declarations(source).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|row| row.name == "MULTILINE"));
+        assert!(rows.iter().any(|row| {
+            row.name == "FLAG"
+                && row.owner_symbol == "nested::FLAG"
+                && matches!(row.kind, CandidateKind::Static)
+        }));
+        assert!(rows.iter().any(|row| {
+            row.name == "VERSION"
+                && row.owner_symbol == "Versioned::VERSION"
+                && matches!(row.kind, CandidateKind::AssociatedConst)
+        }));
+        assert!(rows.iter().any(|row| {
+            row.name == "CAPACITY"
+                && row.owner_symbol == "Limits::CAPACITY"
+                && matches!(row.kind, CandidateKind::AssociatedConst)
+        }));
+        assert!(!rows.iter().any(|row| row.name.contains("TEST_ONLY")));
+    }
+
+    #[test]
+    fn map_types_are_not_collapsed_into_objects() {
+        assert!(matches!(
+            param_type("BTreeMap<String, usize>", "BTreeMap::new()"),
+            ParamType::Map
+        ));
+        assert!(matches!(
+            param_type("std::collections::HashMap<String, bool>", "HashMap::new()"),
+            ParamType::Map
+        ));
+    }
+
+    #[test]
+    fn applied_evidence_finds_a_real_multiline_helper_call() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives below the repository root");
+        let evidence = applied_evidence(root).unwrap();
+        let nearby = evidence
+            .keys()
+            .filter(|key| key.contains("brand_icon") || key.starts_with("cli.block"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            evidence.contains_key("cli.block.brand_icon_width"),
+            "AST helper census dropped a production multiline call; total={} nearby={nearby:?}",
+            evidence.len()
+        );
+    }
 }

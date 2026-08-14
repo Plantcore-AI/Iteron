@@ -5,6 +5,44 @@ use super::*;
 const COVERAGE_UNPROVEN: bool = false;
 
 impl Agent {
+    fn apply_automatic_compaction_failure(
+        &mut self,
+        turn: TurnId,
+        messages: &[Message],
+        plan: &iteron_ctx::CompactionPlan,
+        reason: &'static str,
+    ) {
+        self.lifecycle_event(
+            "context.compaction.failed",
+            Some(turn),
+            LifecyclePayload {
+                reason_code: Some(reason.into()),
+                ..LifecyclePayload::default()
+            },
+        );
+        match self.compaction_failure_policy {
+            crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal => {}
+            crate::runtime_tunables::effective_core::CompactionFailurePolicy::FailClosed => {
+                self.compaction_failed_closed = true;
+            }
+            crate::runtime_tunables::effective_core::CompactionFailurePolicy::TruncateBounded => {
+                let summary = format!(
+                    "[bounded compaction fallback: {} middle message(s) omitted after {reason}]",
+                    plan.to_summarize.len()
+                );
+                self.record_compaction(
+                    turn,
+                    messages,
+                    plan,
+                    &summary,
+                    "failure_truncate_bounded",
+                    false,
+                );
+                self.working_set = None;
+            }
+        }
+    }
+
     /// One-shot summarization turn for compaction. No tools; the model just writes the note.
     pub(super) async fn summarize(
         &mut self,
@@ -48,8 +86,8 @@ impl Agent {
             tools: vec![],
             max_tokens: self.compaction.summary_profile.max_output_tokens,
             cache_system: self.provider_cache_system_enabled(),
-            thinking_budget: self.compaction.summary_profile.effort.thinking_budget(),
-            reasoning_effort: self.compaction.summary_profile.effort.reasoning_effort(),
+            thinking_budget: self.effort_thinking_budget(self.compaction.summary_profile.effort),
+            reasoning_effort: self.effort_reasoning(self.compaction.summary_profile.effort),
         };
         // The hand-off note must not appear as assistant prose, but its provider stream is still
         // live work. Publish only cumulative decode counts through the internal-activity seam.
@@ -406,16 +444,14 @@ impl Agent {
                 let compaction_result_turn =
                     TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0));
                 if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
-                    self.lifecycle_event(
-                        "context.compaction.failed",
-                        Some(compaction_result_turn),
-                        LifecyclePayload {
-                            reason_code: Some(if covered {
-                                "hysteresis_exit_not_reached".into()
-                            } else {
-                                "summary_coverage_missing".into()
-                            }),
-                            ..LifecyclePayload::default()
+                    self.apply_automatic_compaction_failure(
+                        compaction_result_turn,
+                        &messages,
+                        &plan,
+                        if covered {
+                            "hysteresis_exit_not_reached"
+                        } else {
+                            "summary_coverage_missing"
                         },
                     );
                     return;
@@ -435,12 +471,11 @@ impl Agent {
                 // than one per turn.
                 self.working_set = None;
             }
-            Err(_) => self.lifecycle_event(
-                "context.compaction.failed",
-                Some(TurnId(
-                    self.seq_turn.saturating_sub(1).max(compaction_turn.0),
-                )),
-                LifecyclePayload::default(),
+            Err(_) => self.apply_automatic_compaction_failure(
+                TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
+                &messages,
+                &plan,
+                "summary_request_failed",
             ),
         }
     }

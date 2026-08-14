@@ -21,6 +21,7 @@ pub mod report;
 pub mod runner;
 mod statistics;
 mod strict_json;
+pub mod terminal_bench;
 pub mod trained;
 pub mod tuner;
 pub mod types;
@@ -65,6 +66,12 @@ pub use report::{
     aggregate, compare, selection_summaries,
 };
 pub use runner::{EvalOptions, ParallelEvalOptions, run_evaluation, run_evaluation_parallel};
+pub use terminal_bench::{
+    AdapterCommand, ArtifactReference, BenchmarkPin, ExternalHarnessResult, ProfileIdentity,
+    ResourceBounds, ResourceUsage, RunEvidence, TaskIdentity, TerminalBenchAdapterError,
+    TerminalBenchRequest, TerminalOutcome, TimingEvidence, parse_external_harness_result,
+    parse_terminal_bench_request,
+};
 pub use trained::{
     PortableFractionReport, TRAINED_REPORT_SCHEMA_VERSION, TrainedBundleDescriptor,
     TrainedEvaluationError, TrainedEvaluationReport, attach_cross_model_transfer,

@@ -291,7 +291,9 @@ fn activation_cause(family: &Family, prepared: &PreparedInput) -> Option<Inactiv
                 .any(|value| value.family == family.id && sources.contains(&value.source))
                 || prepared.input.profile.as_ref().is_some_and(|profile| {
                     profile.values.iter().any(|value| {
-                        value.family == family.id && sources.contains(&value.as_declared_source)
+                        value.family == family.id
+                            && (sources.contains(&value.as_declared_source)
+                                || family.profile_binding(value.as_declared_source).is_some())
                     })
                 });
             (!configured).then(|| InactiveCause::Activation {

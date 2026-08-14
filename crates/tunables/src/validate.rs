@@ -454,19 +454,13 @@ fn validate_requirements_and_slots(family: &crate::Family) -> Result<(), Registr
         family.default.resolver,
         DefaultResolver::ModelMetadata { .. } | DefaultResolver::ProviderCapability { .. }
     );
-    let externally_clamped = value::has_provider_ceiling(family.value_schema);
     // A provider-owned policy may remain active without a capable route when the schema requires
     // exact ProviderCapability ceiling evidence. That is how `prompt_cache=false` stays an
     // auditable runtime value on an incapable route. Dynamic provider/model lookup still needs a
-    // route. A Full provider-domain family with neither a route nor an external clamp is invalid;
-    // a FixedHidden family may instead be a local transport/runtime invariant whose physical
-    // owner is attested by the fixed-authority binding rather than by provider capability.
-    if family.requirements.provider == ProviderRequirement::None
-        && (provider_resolved
-            || (family.domain == crate::Domain::Provider
-                && family.implementation_status != ImplementationStatus::FixedHidden
-                && !externally_clamped))
-    {
+    // route. Provider-domain transport, retry, cache, and deadline policies can be locally owned
+    // and externally selected without requiring a live provider merely to exist; their outbound
+    // use remains clamped by the adapter at dispatch.
+    if family.requirements.provider == ProviderRequirement::None && provider_resolved {
         return Err(RegistryError::InvalidProviderRequirement(family.id));
     }
     Ok(())

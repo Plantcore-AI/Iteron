@@ -195,10 +195,8 @@ fn valid_provenance(
         } => {
             matches!(kind, SourceKind::UserConfig | SourceKind::ProjectConfig)
                 && report_profile_digest == Some(profile_digest_sha256)
-                && family.source.bindings.iter().any(|binding| {
-                    binding.kind == *kind
-                        && binding.trust == *trust
-                        && binding.locator == *declared_locator
+                && family.profile_binding(*kind).is_some_and(|binding| {
+                    binding.trust == *trust && binding.locator == *declared_locator
                 })
         }
         ResolutionSource::Default {

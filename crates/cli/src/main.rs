@@ -1221,6 +1221,16 @@ async fn run_cli() -> anyhow::Result<u8> {
                     })?;
                 eprintln!("tunables: installed {installed} tier-2 parameter override(s)");
             }
+            let family_overrides = document
+                .values
+                .iter()
+                .map(|assignment| (assignment.family.clone(), assignment.value.clone()))
+                .collect::<Vec<_>>();
+            if !family_overrides.is_empty() {
+                let installed = iteron_tunables::install_family_overrides(family_overrides)
+                    .map_err(|error| anyhow::anyhow!("Tier-1 family override refused: {error}"))?;
+                eprintln!("tunables: installed {installed} governed-family override(s)");
+            }
             let artifact_overrides = document
                 .artifacts
                 .iter()
@@ -3393,6 +3403,7 @@ fn build_workflow_spawner(
     cx.pin_tunables_checkpoint(tunables_checkpoint)?;
     cx.install_session_spawn_ledger(session_spawn_ledger);
     cx.default_effort = effective.effort;
+    cx.effort_policy = effective.effort_policy.clone();
     cx.execution_policy = effective.execution;
     cx.budget = effective.budget.clone();
     cx.install_pricing_authority(pricing_port)

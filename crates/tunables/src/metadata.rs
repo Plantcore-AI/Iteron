@@ -1,5 +1,6 @@
 use crate::{
-    AuthorityClass, Domain, OptimizationClass, OptimizationSpec, RiskClass, SearchPhase, ValueKind,
+    AuthorityClass, Domain, ImplementationStatus, OptimizationClass, OptimizationSpec, RiskClass,
+    SearchPhase, ValueKind,
 };
 
 pub(crate) use crate::requirements::requirements;
@@ -76,8 +77,15 @@ const fn optimization_class(ordinal: u16) -> OptimizationClass {
                 | 18
                 | 50
                 | 60
+                | 64
                 | 68
                 | 69
+                | 70
+                | 71
+                | 72
+                | 73
+                | 74
+                | 75
                 | 77
                 | 78
                 | 79
@@ -92,7 +100,10 @@ const fn optimization_class(ordinal: u16) -> OptimizationClass {
                 | 125
                 | 126
                 | 130
+                | 139
                 | 143
+                | 144
+                | 145
                 | 153
                 | 159
                 | 160
@@ -100,7 +111,7 @@ const fn optimization_class(ordinal: u16) -> OptimizationClass {
         OptimizationClass::Pin
     } else if matches!(ordinal, 1 | 2 | 26 | 86 | 93 | 108 | 118 | 119 | 133 | 147) {
         OptimizationClass::CComponent
-    } else if matches!(ordinal, 14 | 29 | 71 | 72 | 73 | 74 | 75 | 76 | 80 | 154) {
+    } else if matches!(ordinal, 14 | 29 | 76 | 80 | 154) {
         OptimizationClass::CArtifact
     } else if matches!(
         ordinal,
@@ -129,8 +140,6 @@ const fn optimization_class(ordinal: u16) -> OptimizationClass {
             | 129
             | 135
             | 136
-            | 144
-            | 145
     ) {
         OptimizationClass::CStructured
     } else if matches!(
@@ -176,6 +185,23 @@ const fn optimization_class(ordinal: u16) -> OptimizationClass {
         OptimizationClass::P2
     } else {
         OptimizationClass::P1
+    }
+}
+
+/// Canonical implementation truth for the universal external surface.
+///
+/// `Pin` is the only reason a published family may remain fixed-hidden. Every other family owns a
+/// concrete production value and must therefore be effective and addressable by the external
+/// profile, regardless of whether its historical declaration used `fixed!` while that seam was
+/// being built.
+pub(crate) const fn implementation_status(
+    ordinal: u16,
+    declared: ImplementationStatus,
+) -> ImplementationStatus {
+    if matches!(optimization_class(ordinal), OptimizationClass::Pin) {
+        declared
+    } else {
+        ImplementationStatus::Full
     }
 }
 

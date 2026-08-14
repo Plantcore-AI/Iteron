@@ -9,6 +9,7 @@ mod schema_compat;
 mod seams;
 mod spec_shapes;
 mod tunables;
+mod tunables_census;
 mod tunables_params;
 mod validate;
 
@@ -73,6 +74,14 @@ fn main() -> Result<()> {
         }
         [group, command] if group == "tunables" && command == "generate-census" => {
             tunables_params::census_check(&root, true)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "optimization-census" => {
+            tunables_census::run(&root, false)?;
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "generate-optimization-census" => {
+            tunables_census::run(&root, true)?;
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "constants-audit" => {
@@ -197,7 +206,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

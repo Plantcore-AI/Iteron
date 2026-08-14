@@ -69,7 +69,23 @@ pub(super) fn select_explicit(family: &Family, prepared: &PreparedInput) -> Expl
     let mut winner = None;
     let mut restrictions = Vec::new();
     let mut shadowed = Vec::new();
-    for binding in family.source.bindings {
+    let mut bindings = family.source.bindings.to_vec();
+    let carries_universal_profile_value = prepared.input.profile.as_ref().is_some_and(|profile| {
+        profile.values.iter().any(|value| {
+            value.family == family.id && value.as_declared_source == crate::SourceKind::UserConfig
+        })
+    });
+    if carries_universal_profile_value
+        && !bindings
+            .iter()
+            .any(|binding| binding.kind == crate::SourceKind::UserConfig)
+        && let Some(binding) = family.profile_binding(crate::SourceKind::UserConfig)
+    {
+        // Operator profile values outrank built-in/derived/catalog defaults but still remain
+        // beneath any immutable cross-field ceiling enforced after source selection.
+        bindings.insert(0, binding);
+    }
+    for binding in &bindings {
         let direct = prepared
             .input
             .declared_values

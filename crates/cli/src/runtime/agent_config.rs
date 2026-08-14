@@ -16,6 +16,11 @@ struct AppliedPinnedRuntime {
     app_server_queue: crate::app_server::AppServerQueuePolicy,
     binary_media: crate::image_input::BinaryMediaInspectionPolicy,
     multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
+    effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy,
+    compaction_failure: crate::runtime_tunables::effective_core::CompactionFailurePolicy,
+    pure_overlap: bool,
+    pure_concurrency: usize,
+    failed_action_dedup: super::failed_action_cache::FailedActionPolicy,
 }
 
 fn apply_pinned_tooling(
@@ -27,6 +32,9 @@ fn apply_pinned_tooling(
         crate::runtime_tunables::effective_runtime::decode_checkpoint(pin.checkpoint(), None)
             .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
     let tooling = effective.tooling;
+    let pure_overlap = tooling.pure_overlap;
+    let pure_concurrency = tooling.pure_concurrency;
+    let failed_action_dedup = tooling.failed_action_dedup;
     let core = effective.core;
     let token_estimator = core.token_estimator;
     let execution = core.execution;
@@ -35,6 +43,8 @@ fn apply_pinned_tooling(
     let app_server_queue = core.app_server_queue;
     let binary_media = core.binary_media;
     let multimodal_decode = core.multimodal_decode;
+    let effort_policy = core.effort_policy;
+    let compaction_failure = core.compaction_failure;
     let runs_dir = rollout.path().parent().ok_or(KernelError::ToolOutputSpill(
         "record store resolution failed",
     ))?;
@@ -59,6 +69,11 @@ fn apply_pinned_tooling(
         app_server_queue,
         binary_media,
         multimodal_decode,
+        effort_policy,
+        compaction_failure,
+        pure_overlap,
+        pure_concurrency,
+        failed_action_dedup,
     })
 }
 
@@ -140,6 +155,9 @@ impl Agent {
             environment_context: None,
             composition_environment_context: None,
             compaction: CompactionPolicy::default(),
+            compaction_failure_policy:
+                crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal,
+            compaction_failed_closed: false,
             compaction_summary_prompt: None,
             compacted_in_run: false,
             last_compaction_turn: None,
@@ -194,12 +212,18 @@ impl Agent {
                 "cli.runtime.default_max_tool_concurrency",
                 DEFAULT_MAX_TOOL_CONCURRENCY,
             ),
+            pure_overlap_enabled: iteron_tools::Registry::pure_overlap_owner(),
+            pure_tool_concurrency: iteron_tunables::param_integer(
+                "cli.runtime.default_max_tool_concurrency",
+                DEFAULT_MAX_TOOL_CONCURRENCY,
+            ),
             session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
             workflow_progress_tx: None,
             workflow_launcher: None,
             mcp_runtime: None,
             effort: iteron_protocol::Effort::default(),
+            effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy::compiled(),
             runtime_policy_provenance: runtime_policy_overlay::RuntimePolicyProvenance::default(),
             memory_workspace: None,
             memory_benchmark_scope: None,
@@ -303,6 +327,12 @@ impl Agent {
         agent.app_server_queue_policy = applied.app_server_queue;
         agent.binary_media_policy = applied.binary_media;
         agent.multimodal_decode_envelope = applied.multimodal_decode;
+        agent.effort_policy = applied.effort_policy;
+        agent.compaction_failure_policy = applied.compaction_failure;
+        agent.pure_overlap_enabled = applied.pure_overlap;
+        agent.pure_tool_concurrency = applied.pure_concurrency;
+        agent.failed_actions =
+            super::failed_action_cache::FailedActionCache::new(applied.failed_action_dedup);
         agent.tunables_pin = Some(pin);
         Ok(agent)
     }
@@ -347,6 +377,21 @@ impl Agent {
     /// rather than writing the compatibility field directly.
     pub fn effort(&self) -> Effort {
         self.effort
+    }
+
+    pub(super) fn effort_thinking_budget(&self, effort: Effort) -> u32 {
+        self.effort_policy.thinking_budget(effort)
+    }
+
+    pub(super) fn effort_reasoning(&self, effort: Effort) -> iteron_protocol::ReasoningEffort {
+        self.effort_policy.reasoning(effort)
+    }
+
+    pub(super) fn effort_orchestration(
+        &self,
+        effort: Effort,
+    ) -> iteron_protocol::OrchestrationMode {
+        self.effort_policy.orchestration(effort)
     }
 
     /// Effective permission mode. Runtime callers should use the durable transition APIs below.
@@ -422,6 +467,12 @@ impl Agent {
         self.app_server_queue_policy = applied.app_server_queue;
         self.binary_media_policy = applied.binary_media;
         self.multimodal_decode_envelope = applied.multimodal_decode;
+        self.effort_policy = applied.effort_policy;
+        self.compaction_failure_policy = applied.compaction_failure;
+        self.pure_overlap_enabled = applied.pure_overlap;
+        self.pure_tool_concurrency = applied.pure_concurrency;
+        self.failed_actions =
+            super::failed_action_cache::FailedActionCache::new(applied.failed_action_dedup);
         self.tunables_pin = Some(pin);
         Ok(())
     }

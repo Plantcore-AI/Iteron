@@ -34,8 +34,11 @@ pub struct PromptArtifact {
     pub overridable: bool,
 }
 
-/// The ten addressable text surfaces.
-pub const PROMPT_ARTIFACTS: [PromptArtifact; 10] = [
+/// The ten legacy aggregate addressable text surfaces.
+///
+/// This remains a slice so adding an artifact does not require a public fixed-array type change.
+/// Built-in tool descriptions are additionally published one-per-tool in `tool_descriptions`.
+pub const PROMPT_ARTIFACTS: &[PromptArtifact] = &[
     PromptArtifact {
         id: "prompt/system@v1",
         overridable: true,
@@ -155,6 +158,10 @@ pub struct SurfaceCounts {
     /// Artifacts a production use site actually consults. The exposure gate requires this to equal
     /// `prompt_artifacts` for the checked-in surface.
     pub prompt_artifacts_overridable: usize,
+    /// Independently addressable built-in `ToolSpec::description` rows. External/MCP tools are
+    /// intentionally not counted because their text is supplied by an untrusted runtime source.
+    pub tool_descriptions: usize,
+    pub tool_descriptions_overridable: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,24 +172,21 @@ pub struct SurfaceExport {
     pub registry_digest: &'static str,
     pub param_registry_id: &'static str,
     pub param_registry_digest: String,
+    pub tool_text_registry_id: &'static str,
+    pub tool_text_registry_digest: String,
     pub counts: SurfaceCounts,
     pub modules: Vec<ModuleEntry>,
     pub families: Vec<FamilyEntry>,
     pub params: &'static [crate::params::Param],
-    pub prompt_artifacts: &'static [PromptArtifact; 10],
+    pub prompt_artifacts: &'static [PromptArtifact],
+    pub tool_descriptions: &'static [crate::ToolTextArtifact],
 }
 
 /// Schema version of the export document.
-pub const SURFACE_SCHEMA_VERSION: u16 = 1;
+pub const SURFACE_SCHEMA_VERSION: u16 = 2;
 
 fn profile_addressable(family: &crate::Family) -> bool {
-    family.implementation_status != crate::ImplementationStatus::FixedHidden
-        && family.source.bindings.iter().any(|binding| {
-            matches!(
-                binding.kind,
-                crate::SourceKind::UserConfig | crate::SourceKind::ProjectConfig
-            )
-        })
+    family.is_profile_addressable()
 }
 
 /// Build the whole surface document.
@@ -201,12 +205,22 @@ pub fn surface() -> SurfaceExport {
             optimization_class: format!("{:?}", family.optimization.class),
             search_phase: format!("{:?}", family.optimization.search_phase),
             pin_reason: family.optimization.pin_reason,
-            source_kinds: family
-                .source
-                .bindings
-                .iter()
-                .map(|binding| format!("{:?}", binding.kind))
-                .collect(),
+            source_kinds: {
+                let mut kinds: Vec<_> = family
+                    .source
+                    .bindings
+                    .iter()
+                    .map(|binding| format!("{:?}", binding.kind))
+                    .collect();
+                if family
+                    .profile_binding(crate::SourceKind::UserConfig)
+                    .is_some()
+                    && !kinds.iter().any(|kind| kind == "UserConfig")
+                {
+                    kinds.push("UserConfig".to_owned());
+                }
+                kinds
+            },
             profile_addressable: profile_addressable(family),
             summary: family.summary,
         })
@@ -226,7 +240,11 @@ pub fn surface() -> SurfaceExport {
             artifacts: PROMPT_ARTIFACTS
                 .iter()
                 .filter(|artifact| artifact.module == module)
-                .count(),
+                .count()
+                + crate::TOOL_TEXT_ARTIFACTS
+                    .iter()
+                    .filter(|artifact| artifact.module == module)
+                    .count(),
         })
         .collect();
 
@@ -264,6 +282,11 @@ pub fn surface() -> SurfaceExport {
             .iter()
             .filter(|artifact| artifact.overridable)
             .count(),
+        tool_descriptions: crate::TOOL_TEXT_ARTIFACTS.len(),
+        tool_descriptions_overridable: crate::TOOL_TEXT_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.overridable)
+            .count(),
     };
 
     SurfaceExport {
@@ -273,11 +296,14 @@ pub fn surface() -> SurfaceExport {
         registry_digest: crate::REGISTRY_DIGEST_SHA256,
         param_registry_id: crate::params::PARAM_REGISTRY_ID,
         param_registry_digest: crate::params::param_registry_digest_sha256(),
+        tool_text_registry_id: crate::TOOL_TEXT_REGISTRY_ID,
+        tool_text_registry_digest: crate::tool_text_registry_digest_sha256(),
         counts,
         modules,
         families,
         params,
-        prompt_artifacts: &PROMPT_ARTIFACTS,
+        prompt_artifacts: PROMPT_ARTIFACTS,
+        tool_descriptions: crate::TOOL_TEXT_ARTIFACTS,
     }
 }
 

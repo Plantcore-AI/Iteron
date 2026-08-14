@@ -8,10 +8,10 @@
 use crate::{
     CatalogSnapshot, ConstraintEvidence, ConstraintRelation, ConstraintValue, CrossFieldRule,
     DeclaredValue, DefaultEvidence, DefaultResolver, EvidenceState, ExternalCeiling,
-    FixedAuthorityAttestation, FixedAuthorityId, ImplementationStatus, ProductionOwnerId,
-    ProductionOwnerSymbolId, ProfileValue, ResolutionFailureReport, ResolutionInput,
-    ResolutionProfile, ResolutionValue, ResolvedTunableSet, RouteCapabilities, RuntimeBindingSpec,
-    RuntimeContext, SourceKind, families, resolve,
+    FixedAuthorityAttestation, FixedAuthorityId, ImplementationStatus, OptimizationClass,
+    ProductionOwnerId, ProductionOwnerSymbolId, ProfileValue, ResolutionFailureReport,
+    ResolutionInput, ResolutionProfile, ResolutionValue, ResolvedTunableSet, RouteCapabilities,
+    RuntimeBindingSpec, RuntimeContext, SourceKind, families, resolve,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -342,6 +342,14 @@ impl RuntimeResolutionBuilder {
         }
         self.owner_observations
             .insert(family.id.to_owned(), observed);
+        // An owner operation is stronger evidence than enumerating a symbol after the fact: it
+        // proves the adapter actually sampled, declared, constrained, or activated this family.
+        // Record the registry-bound concrete symbol at that same seam so newly externalized
+        // families cannot become profile-addressable without a production owner receipt.
+        if let RuntimeBindingSpec::Effective { owner, .. } = family.runtime_binding {
+            self.owner_symbol_observations
+                .insert(family.id.to_owned(), owner);
+        }
         Ok(())
     }
 
@@ -469,11 +477,7 @@ impl RuntimeResolutionBuilder {
             ));
         }
         if !matches!(source, SourceKind::UserConfig | SourceKind::ProjectConfig)
-            || !family
-                .source
-                .bindings
-                .iter()
-                .any(|binding| binding.kind == source)
+            || family.profile_binding(source).is_none()
         {
             return Err(RuntimeResolutionError::UnauthorizedSource {
                 family: family.id.to_owned(),
@@ -608,6 +612,17 @@ impl RuntimeResolutionBuilder {
         observed: ResolutionValue,
     ) -> Result<&mut Self, RuntimeResolutionError> {
         let family = family(family_id)?;
+        // Historical adapters sampled these owners through the fixed-authority seam. Once a
+        // non-Pin family becomes externally settable the same sample is still valid owner
+        // evidence, but it is no longer authority to replace a selected profile value. Preserve
+        // the sampling operation while deliberately omitting a fixed receipt.
+        if matches!(family.runtime_binding, RuntimeBindingSpec::Effective { .. })
+            && family.optimization.class != OptimizationClass::Pin
+        {
+            let _ = (authority, observed);
+            self.observe_owner(family)?;
+            return Ok(self);
+        }
         let RuntimeBindingSpec::Fixed {
             authority: expected,
             ..
@@ -946,13 +961,34 @@ pub fn fixed_authority_value_digest_sha256(
             observed: authority,
         });
     }
-    let mut value = value.clone();
-    crate::resolution_value::normalize(&mut value);
-    let canonical = serde_json::to_vec(&(
+    fixed_authority_value_digest_sha256_at_registry(
         crate::REGISTRY_ID,
         crate::REGISTRY_REVISION,
         crate::REGISTRY_DIGEST_SHA256,
         family.id,
+        authority,
+        value,
+    )
+}
+
+/// Recompute a fixed-authority receipt against the registry identity embedded in a durable
+/// historical checkpoint. The checkpoint validator owns validation of that historical identity;
+/// new production receipts must use [`fixed_authority_value_digest_sha256`] instead.
+pub fn fixed_authority_value_digest_sha256_at_registry(
+    registry_id: &str,
+    registry_revision: u16,
+    registry_digest_sha256: &str,
+    family_id: &str,
+    authority: FixedAuthorityId,
+    value: &ResolutionValue,
+) -> Result<String, RuntimeResolutionError> {
+    let mut value = value.clone();
+    crate::resolution_value::normalize(&mut value);
+    let canonical = serde_json::to_vec(&(
+        registry_id,
+        registry_revision,
+        registry_digest_sha256,
+        family_id,
         authority,
         value,
     ))
@@ -1076,7 +1112,7 @@ mod tests {
 
     #[test]
     fn fixed_authority_attestation_rejects_wrong_authority_and_duplicates() {
-        let family = "provider_discovery_account_probe_cache_policy";
+        let family = "provider_model_capability_catalog";
         let value = ResolutionValue::Object {
             fields: BTreeMap::new(),
         };
@@ -1089,7 +1125,7 @@ mod tests {
             ),
             Err(RuntimeResolutionError::MismatchedFixedAuthority {
                 family: rejected,
-                expected: FixedAuthorityId::ProviderDiscoveryBootstrap,
+                expected: FixedAuthorityId::GovernedCatalogMaterialization,
                 observed: FixedAuthorityId::RuntimeInvariant,
             }) if rejected == family
         ));
@@ -1098,14 +1134,14 @@ mod tests {
         duplicate
             .attest_fixed_authority(
                 family,
-                FixedAuthorityId::ProviderDiscoveryBootstrap,
+                FixedAuthorityId::GovernedCatalogMaterialization,
                 value.clone(),
             )
             .expect("the exact authority may attest once");
         assert!(matches!(
             duplicate.attest_fixed_authority(
                 family,
-                FixedAuthorityId::ProviderDiscoveryBootstrap,
+                FixedAuthorityId::GovernedCatalogMaterialization,
                 value,
             ),
             Err(RuntimeResolutionError::DuplicateFixedAuthorityAttestation(rejected))
@@ -1115,7 +1151,7 @@ mod tests {
 
     #[test]
     fn fixed_authority_digest_is_bound_to_registry_family_authority_and_value() {
-        let family = "provider_discovery_account_probe_cache_policy";
+        let family = "provider_model_capability_catalog";
         let first = ResolutionValue::Object {
             fields: BTreeMap::new(),
         };
@@ -1129,13 +1165,13 @@ mod tests {
         };
         let first_digest = fixed_authority_value_digest_sha256(
             family,
-            FixedAuthorityId::ProviderDiscoveryBootstrap,
+            FixedAuthorityId::GovernedCatalogMaterialization,
             &first,
         )
         .expect("registered fixed authority hashes");
         let second_digest = fixed_authority_value_digest_sha256(
             family,
-            FixedAuthorityId::ProviderDiscoveryBootstrap,
+            FixedAuthorityId::GovernedCatalogMaterialization,
             &second,
         )
         .expect("registered fixed authority hashes");

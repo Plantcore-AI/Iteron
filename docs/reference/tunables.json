@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "fee22a629e6bb95f190c75ec25e63e198a2eb44a7dfb1bf839828e5c397d93db"
+    "value": "06081579593ce43dce6b376ed8876f2a29c4e6cc89c350d6beeb52d3f5068d24"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 17,
+    "registry_revision": 18,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -2262,7 +2262,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "48ea348edf1a50fd1232e20fa0e0ed651ee233a19790f353046f6bb6678dcbe3"
+          "value": "161611b4d30a2a2c67eb53b91b63d5c11ed2f61e51f2fd3cf9fc185873eec18e"
         },
         "schema_version": 3,
         "ordinal": 19,
@@ -2373,7 +2373,7 @@
           },
           "rationale": "Reserve and cap provider response tokens."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -2382,16 +2382,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "provider_instance",
+          "getter": "effective_core",
+          "strategy_slot": "core/model_router",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "28be5bcb1b3e0c88e6f4bf9932663853e477c46129070e2de0fefe6c97a5f67a"
+          "value": "55324eba5b69dcecfc8f4ddf9ba233c123f6526290092ff00110fd858687aff6"
         },
         "schema_version": 3,
         "ordinal": 20,
@@ -2487,7 +2489,7 @@
           },
           "rationale": "Map effort tiers onto provider reasoning controls."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -2496,16 +2498,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "effort_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a02235ea5084a1004371f97c0df6001b28c6630ebc0ba64d3ff063df1a950925"
+          "value": "075dd3cdc5638e90e5f3dbea6c15f3ddc1e701129e5a446ae02a24a1616f60ac"
         },
         "schema_version": 3,
         "ordinal": 21,
@@ -2612,7 +2616,7 @@
           },
           "rationale": "Map effort onto explicit thinking budgets."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -2621,16 +2625,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "effort_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c9f375f277a733deca7d66b7ed83af9bde804483c775e7879e98a2fdf576b3d3"
+          "value": "ed69f723447ae4e1d87ce57923a3d9b484994baf95087209387d8ff496a2575b"
         },
         "schema_version": 3,
         "ordinal": 22,
@@ -2728,7 +2734,7 @@
           },
           "rationale": "Map effort onto orchestration eligibility."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -2737,9 +2743,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "effort_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -2857,7 +2865,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f55d6909baaa579e612926f1542dc093ed7d18d1b0c78fe74948889187cceec4"
+          "value": "37babf002b59c0c6d54d701ccf8b8d46e685e5f0339d0dcdeaf2e120f91c5282"
         },
         "schema_version": 3,
         "ordinal": 24,
@@ -3006,7 +3014,7 @@
           },
           "rationale": "Adapt compaction to model and transcript state."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -3015,16 +3023,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "compaction_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4ed3ae41735caf1576d986bb480d62f0aa86e29de98d588eb7ad0257bd4cc609"
+          "value": "7a3a6f0ae1cf1e721b7163aea17bebe3079d91eb3027437fcc0b3b15c026d60e"
         },
         "schema_version": 3,
         "ordinal": 25,
@@ -3105,7 +3115,7 @@
           },
           "rationale": "Choose the verbatim recent-turn retention window."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -3114,16 +3124,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "compaction_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1e28da71c1d0face94b1bc40034187ec97fd2b1a541ae1890a622da10712d807"
+          "value": "7cbfe8d25777d6ac83257e4c653974617ab2d8675947711614629c549a5768ea"
         },
         "schema_version": 3,
         "ordinal": 26,
@@ -3220,7 +3232,7 @@
           },
           "rationale": "Estimate tokens for admission and compaction."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_component",
           "search_phase": "conditional",
@@ -3229,9 +3241,11 @@
         "risk_class": "low",
         "authority_class": "governed_artifact",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "governed_artifact_boundary",
+          "owner": "compaction_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -3392,7 +3406,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a61de55010beb04ec7f359f11ff448c894fbfa3d32fcc152fd11403207eb5a4f"
+          "value": "cbb175cc594b251a4a865693a851638d20a6531fddf006c8d9c5cd5531b8b9ad"
         },
         "schema_version": 3,
         "ordinal": 28,
@@ -3473,7 +3487,7 @@
           },
           "rationale": "Choose bounded behavior when compaction fails."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -3482,9 +3496,11 @@
         "risk_class": "critical",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "compaction_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -3934,7 +3950,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "42249160b5c179c2258af66054b4396da8c4ec3134a4d98202d96368dabb6c54"
+          "value": "2a764de8bcc8f1e0caae3e5de567b017ffb12bcf9e8d473c0c87fb2cfbded5ce"
         },
         "schema_version": 3,
         "ordinal": 32,
@@ -4074,7 +4090,7 @@
           },
           "rationale": "Tune lexical retrieval scoring."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -4083,16 +4099,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "memory_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/memory",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "565ace5a7f73c80106daf6088224130f5d4e8b6bcbb77c48b33580480fa80b16"
+          "value": "ba0cdcc85eb8ee8c8dc6fb220bf2b9a6e65e218b2c96d4543ab40dce100243de"
         },
         "schema_version": 3,
         "ordinal": 33,
@@ -4171,7 +4189,7 @@
           },
           "rationale": "Bound skill catalog text exposed to the model."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -4180,16 +4198,18 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "instruction_discovery_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "550a36fb36370da980e5276f439cebb309dbc85cbf9e400f801c8cd1b9367109"
+          "value": "f16a260a21ad0a845eb480d71d7a3b289cc514a9ea4089cb50b3980c94637ce4"
         },
         "schema_version": 3,
         "ordinal": 34,
@@ -4277,7 +4297,7 @@
           },
           "rationale": "Stop a run after repeated tool failures."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -4286,16 +4306,18 @@
         "risk_class": "high",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "core_facts",
-          "authority": "strategy_invariant",
+          "owner": "budget_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "50010cc224ed1f23fcc2a35f122548fbe7c4ef27b468c1db47dfb2f0fd8612dd"
+          "value": "af4ac6d0cc96036b4d6ee7eb70d71c84c8d6359d244d952cbd722c28113d08a0"
         },
         "schema_version": 3,
         "ordinal": 35,
@@ -4371,7 +4393,7 @@
           },
           "rationale": "Allow eligible pure tools to overlap inference."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -4380,16 +4402,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "observation_tool_policy",
+          "getter": "effective_tooling",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dcef3339140a600436448fa646e45268cef521fabe3f967cb41b7897d1e37f65"
+          "value": "1dea1f22065a98124c608e06fa6fe7a50d8d6c39579c66ad768077cedc50354a"
         },
         "schema_version": 3,
         "ordinal": 36,
@@ -4468,7 +4492,7 @@
           },
           "rationale": "Bound concurrent pure tool calls."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -4477,16 +4501,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "observation_tool_policy",
+          "getter": "effective_tooling",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f5cef144625fcc2813a8dcd6dabbafadb269408ae10b6c4d0e2c019d8cf1ceda"
+          "value": "019a2c8c083dd35d56a69567bb5cd4fe442d11b152d81841f4ffed007effeac8"
         },
         "schema_version": 3,
         "ordinal": 37,
@@ -4599,7 +4625,7 @@
           },
           "rationale": "Suppress repeated identical failed actions."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -4608,16 +4634,18 @@
         "risk_class": "high",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "observation_tool_policy",
+          "getter": "effective_tooling",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8beabc01d20488e1b8a22aa46e1aceb17fd98b7c63ef639ca6b1670530cc372f"
+          "value": "642028ba81359917ba62b885a80accf09863a7095e3085b18cfd5b421bca1873"
         },
         "schema_version": 3,
         "ordinal": 38,
@@ -4728,7 +4756,7 @@
           },
           "rationale": "Memoize deterministic pure tool results."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -4737,9 +4765,11 @@
         "risk_class": "high",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "observation_tool_policy",
+          "getter": "effective_tooling",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -5975,7 +6005,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8a49a3b955115e75c9b4ac64288964f077369c1659ad9beb60b2e78b31d5185d"
+          "value": "cfc2a40a20d6936e098be5e25cccf5bcd4415eb4a8bd117d051a354dec1e70de"
         },
         "schema_version": 3,
         "ordinal": 47,
@@ -6054,7 +6084,7 @@
           },
           "rationale": "Bound web-search results admitted to context."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -6063,16 +6093,18 @@
         "risk_class": "high",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "observation_tool_policy",
+          "getter": "effective_observation_tools",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "401ffdc07ca7fbabe4242a742c689a2a9088314c8d79505b754c132a379c215a"
+          "value": "a7b20a2ac26561b85f70abcdb4e6fbccd1e8896381f39b3582ba080f6fa10a1d"
         },
         "schema_version": 3,
         "ordinal": 48,
@@ -6151,7 +6183,7 @@
           },
           "rationale": "Bound verification repair attempts."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -6160,9 +6192,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "verification_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/verifier",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -6407,7 +6441,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a599c0ad72d80e2e8fdbf1848d81e4faa5cb40d7b34667810c8a69c758453087"
+          "value": "6c24e5bd59c8f7b368df267e8007fb7de7de2febc0115d5794bd8cd53baed287"
         },
         "schema_version": 3,
         "ordinal": 51,
@@ -6488,7 +6522,7 @@
           },
           "rationale": "Choose direct versus orchestrated run topology."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -6497,16 +6531,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/router",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "af1ef266a4d9a1c9057f191feb2da2de22ca4a57b753ed2c997e74359b3d386f"
+          "value": "76e45be70b903a563a1e6d9b8fb7998a73aab88b75ed0485a7840ea2849fa974"
         },
         "schema_version": 3,
         "ordinal": 52,
@@ -6637,7 +6673,7 @@
           },
           "rationale": "Choose task decomposition shape."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -6646,16 +6682,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1a11f335e51f7ba54b2d279716fbabadf2a850f1fd6c44c0ab93081f2cc2097a"
+          "value": "6a75d109ddadb639d238bbdcd28985da6f1303c416eab6393ce6228e1d005db2"
         },
         "schema_version": 3,
         "ordinal": 53,
@@ -6734,7 +6772,7 @@
           },
           "rationale": "Bound investigator fan-out breadth."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -6743,16 +6781,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "93df23928e4dae27136308400b6e2d063bc8cae92700cfe0c67f1e6edabbcb86"
+          "value": "cc219dffa661e8b3a4e909560bd99d1cb2cfd3603ec6d1502545099f9ed44bfc"
         },
         "schema_version": 3,
         "ordinal": 54,
@@ -6874,7 +6914,7 @@
           },
           "rationale": "Admit bounded child work under parent ceilings."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -6883,16 +6923,18 @@
         "risk_class": "critical",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9ea96d655a677cedc5767ab940acbf5f81c5f661de5d091c7a6908385717b245"
+          "value": "208ac448d68d86c9d1a4228c0a9fbd3dea0392d2ea4f6b903f9c63c76b23bd5b"
         },
         "schema_version": 3,
         "ordinal": 55,
@@ -7022,7 +7064,7 @@
           },
           "rationale": "Split turns between investigators and the writer."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -7031,16 +7073,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c618f33f08f3b593f9f3d7d9f7d35ac243d06367ed349b11fcdb64c62717db29"
+          "value": "0e3eab0a7ef4ea78d9d1d54b334b90490da4b780a35a5ddcc1a0351670e8c63e"
         },
         "schema_version": 3,
         "ordinal": 56,
@@ -7119,7 +7163,7 @@
           },
           "rationale": "Reserve a minimum useful child turn allocation."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -7128,16 +7172,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "88225e41a870834457a9957208ab8cbfb15a04e7a6f87dd743027755b0dcd929"
+          "value": "06f302e664f8dfd68638bfe70bbca9f8c4015e72196088285a108f2d86044541"
         },
         "schema_version": 3,
         "ordinal": 57,
@@ -7257,7 +7303,7 @@
           },
           "rationale": "Split remaining wall time across child work."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -7266,16 +7312,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "02c9066b6929b3808676ef44eb2525176775bb0550c9edeaba9141ec359b756e"
+          "value": "81e20ad5cb8649cef1b508f4b75751abbe36a023156c9ac2df2b6ca596876319"
         },
         "schema_version": 3,
         "ordinal": 58,
@@ -7361,7 +7409,7 @@
           },
           "rationale": "Split remaining tokens across child work."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -7370,16 +7418,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da64c7d49d71170db887937e248664a2111861f4fa73804ff0a94d32192566fa"
+          "value": "28ab5cbf5ca67a51ffa5b2fac6b2edb226567fd4d7c2406894ae24238306094a"
         },
         "schema_version": 3,
         "ordinal": 59,
@@ -7458,7 +7508,7 @@
           },
           "rationale": "Bound simultaneous investigator agents."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -7467,9 +7517,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_provider",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -7886,7 +7938,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c7096b1aabc7b3fa78fd422f70eac008c8122997ad99f1121ffbe9fb1b02c935"
+          "value": "a5f84957540ef9d915f01591deb856b2ee35a0fb8665ea824711e04950e27984"
         },
         "schema_version": 3,
         "ordinal": 62,
@@ -7974,7 +8026,7 @@
           },
           "rationale": "Choose bounded subagent reasoning effort."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -7983,16 +8035,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ef8cd8b74bdebed43e851c6bae8960a980f10d6f6a5ec9e38a4e537c2107d21a"
+          "value": "72c13a3a63b9fa6d97709768b19ad18866d757a5747f0214500b97ac1c79b05e"
         },
         "schema_version": 3,
         "ordinal": 63,
@@ -8071,7 +8125,7 @@
           },
           "rationale": "Bound child report size admitted to the writer."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -8080,16 +8134,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5be96fa1d6e26f34bdd69e16a41571d512ba3c8e72952ee4c2db49ccbb446577"
+          "value": "0d8f7eeb6f4113a48298e6f6c9c943381db52b85f90d30b829318103dcc9ee8d"
         },
         "schema_version": 3,
         "ordinal": 64,
@@ -8206,16 +8262,16 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_structured",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
-        "authority_class": "strategy",
+        "authority_class": "runtime_invariant",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "authority": "runtime_invariant",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -8542,7 +8598,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d67da2a0c8b954c156114d4479f78cc4b790f3c303b8ad56055a07e1bc38b768"
+          "value": "2ee53b34008411dde683acd414711a4bcfcea3c735546cf0e42a3cb1e3720ef2"
         },
         "schema_version": 3,
         "ordinal": 67,
@@ -8625,7 +8681,7 @@
           },
           "rationale": "Bound provider TCP and TLS connection establishment."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -8634,9 +8690,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "execution_facts",
-          "authority": "strategy_invariant",
+          "owner": "provider_governor",
+          "getter": "effective_provider",
+          "strategy_slot": "core/model_router",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -9066,7 +9124,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fbbf6c1a82be7896c5ca1a41a142e45e2b8b3be27901dc6b47a77899bffe730b"
+          "value": "442069582dab0f9c1cd70574b5e0f779dfe5fed724512c43e56f1cb3b92d75e0"
         },
         "schema_version": 3,
         "ordinal": 70,
@@ -9231,12 +9289,12 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "p2",
-          "search_phase": "p2",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
-        "authority_class": "strategy",
+        "authority_class": "runtime_invariant",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "execution_facts",
@@ -9247,7 +9305,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "554eb6822830d8033e3c2b2c29276323030e80bc805ce620b58bb77c9058bbe6"
+          "value": "adffd4917cabb6bb493a7886e2fdd56035e538f854d0b2a118e79694a750f07a"
         },
         "schema_version": 3,
         "ordinal": 71,
@@ -9364,12 +9422,12 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_artifact",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "low",
-        "authority_class": "governed_artifact",
+        "authority_class": "operator",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "execution_facts",
@@ -9380,7 +9438,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9cf555a99ba68cf13248d6570a4b8df5b5617e3393851c48d01eb88a2c199fbc"
+          "value": "a068884cab3259ccd855184fa6ca53753b6d35f93519a8cac0aee83df0d925de"
         },
         "schema_version": 3,
         "ordinal": 72,
@@ -9515,23 +9573,23 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_artifact",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "low",
-        "authority_class": "governed_artifact",
+        "authority_class": "runtime_invariant",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "execution_facts",
-          "authority": "governed_artifact_boundary",
+          "authority": "runtime_invariant",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1644a4ae469c2bba9f28e3fb34e994220e75683b8d48ef2a74f82c61750bbc85"
+          "value": "79aeeef6f136353b043cc813bcd359e5eeecfafdc6d796e7c295c57a3a44a2ac"
         },
         "schema_version": 3,
         "ordinal": 73,
@@ -9667,9 +9725,9 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_artifact",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "low",
         "authority_class": "governed_artifact",
@@ -9683,7 +9741,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2560c4d843dc0dc40b0acf0fba67756224abf5cf35c2c6bb55e66586cbf0f3df"
+          "value": "53b87e10a32cf588af39eeae42952a3594c4cb827246841eb8429f627456b0bd"
         },
         "schema_version": 3,
         "ordinal": 74,
@@ -9830,9 +9888,9 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_artifact",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "high",
         "authority_class": "governed_artifact",
@@ -9846,7 +9904,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7288c66c6fbac2af49d86aa9c0c2b970d53774797841e98d09602c35ab115f3d"
+          "value": "21b2653855109154684952220eb729aff42c68ec2e1139b907e7fc6078c4b4df"
         },
         "schema_version": 3,
         "ordinal": 75,
@@ -9984,9 +10042,9 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_artifact",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
         "authority_class": "governed_artifact",
@@ -12787,7 +12845,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "716095514e374653cc840f045ab23475b9a774f24f2bbc8a17a1cba8e280c7cd"
+          "value": "99d90ab0c843deaf11183894c016c89fc0cacf40f34136b6d4d844c704ec48f0"
         },
         "schema_version": 3,
         "ordinal": 94,
@@ -12870,7 +12928,7 @@
           },
           "rationale": "Bound the total duration of one provider request."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -12879,16 +12937,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "provider_governor",
+          "getter": "effective_provider",
+          "strategy_slot": "core/model_router",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bb7f3cb11393d66965cf335fb518a69df79fb5e2e5291a550062f38e77de50b4"
+          "value": "8edd42c6859ab1235be27437125b5102bfe8d48ff43e3449bd18e49f8718dbc0"
         },
         "schema_version": 3,
         "ordinal": 95,
@@ -12970,7 +13030,7 @@
           },
           "rationale": "Abort a provider stream that stops making progress."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -12979,9 +13039,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "provider_governor",
+          "getter": "effective_provider",
+          "strategy_slot": "core/model_router",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -13714,7 +13776,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "aacbbfec08b6375124c20cb8761be2f740833873106c2823ace06b575cf07aaf"
+          "value": "2fcf2cbd96131df72110094f7274f921fe2bf85af1af1f57e321c82910269e45"
         },
         "schema_version": 3,
         "ordinal": 101,
@@ -13791,7 +13853,7 @@
           },
           "rationale": "Enable automatic bounded context compaction."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -13800,9 +13862,11 @@
         "risk_class": "low",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "context_materialization_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/context",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -15504,7 +15568,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "db16fa2fb42404f69b24c282c179787e1f9fc81b0b60de5bd13c068a71487733"
+          "value": "b5a12107c87dd77d783b91cb3dc12753140b0cb0677f6a62bcac430cb2378f90"
         },
         "schema_version": 3,
         "ordinal": 115,
@@ -15597,7 +15661,7 @@
           },
           "rationale": "Bound concurrency among admitted effecting tools."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -15606,16 +15670,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a5e137854a9c2f899580d8af96405e8915296be96c4bf876bd6a61a265008948"
+          "value": "533a896638c710c79dd02a51fc941001d43c54622a7a1a077a00277f5dd730ba"
         },
         "schema_version": 3,
         "ordinal": 116,
@@ -15754,7 +15820,7 @@
           },
           "rationale": "Admit concurrent writes only when declared write sets do not overlap."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_structured",
           "search_phase": "conditional",
@@ -15763,9 +15829,11 @@
         "risk_class": "high",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -17262,7 +17330,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bc26e4628ea253c7e1e8bf6636dabe8f6e07be181ca1c844cf33fe42686d0e69"
+          "value": "adba508fb6fb20eb62867280306f99ffb4fbe5ef45b0ecd7bb8c306c9a8fa6c7"
         },
         "schema_version": 3,
         "ordinal": 127,
@@ -17392,7 +17460,7 @@
           },
           "rationale": "Retry only verification outcomes that are eligible."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -17401,9 +17469,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "verification_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/verifier",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -18007,7 +18077,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9aa236a9d2fdf9f7fe58e81796b97b52546a09b5749acb79a23f19025c2841bf"
+          "value": "e466178f770fa8a71e7016dfaf4ff5eb61aa4c5fd2eddb035524d57ae3c746d8"
         },
         "schema_version": 3,
         "ordinal": 132,
@@ -18091,7 +18161,7 @@
           },
           "rationale": "Escalate verification recovery from retry to replan to stop."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -18100,9 +18170,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "provider_process_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_core",
+          "strategy_slot": "core/planner",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -18615,7 +18687,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "781e82e207a9eadd81c32f4fe104f0c91f582ef04b1609dbad726c0ba66e88d8"
+          "value": "9b9a95543076dc57f604be62e6ed09a51b3f9ed3e12a36b42c95070e9a46e2f9"
         },
         "schema_version": 3,
         "ordinal": 137,
@@ -18698,7 +18770,7 @@
           },
           "rationale": "Bound recursive agent spawning."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -18707,9 +18779,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "owner": "workflow_execution_policy",
+          "getter": "effective_execution",
+          "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -18820,7 +18894,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6a2a23add1a02df24de96601776d3b1116dcf5b82773be0d6d908d8612370f52"
+          "value": "aef0c625acf98944eea548d37b5fb30e6d7be53445fcce2f11a06bb8f182fc8d"
         },
         "schema_version": 3,
         "ordinal": 139,
@@ -18959,16 +19033,16 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "p1",
-          "search_phase": "p1",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
-        "authority_class": "strategy",
+        "authority_class": "runtime_invariant",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "authority": "runtime_invariant",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -19509,7 +19583,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "10a96d1fff33faf2666c0de82027a52da277fbfb719caa42d73b233e587549ab"
+          "value": "325baff13b89f6e857a85d07ebe6bc4a08190641d7da1c5599594f834810858e"
         },
         "schema_version": 3,
         "ordinal": 144,
@@ -19638,23 +19712,23 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_structured",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
-        "authority_class": "strategy",
+        "authority_class": "runtime_invariant",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "authority": "runtime_invariant",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "41fd365728701103739b721ce9ef940002cdd8ad6338b643b87e5c98a9d5fe14"
+          "value": "251c32c4f74200c8ce139183f8eddffceed7bb3398ce8bcf51baa2d92e30cc8e"
         },
         "schema_version": 3,
         "ordinal": 145,
@@ -19749,16 +19823,16 @@
         },
         "implementation_status": "fixed_hidden",
         "optimization": {
-          "class": "c_structured",
-          "search_phase": "conditional",
-          "pin_reason": null
+          "class": "pin",
+          "search_phase": "pinned",
+          "pin_reason": "protocol, safety, durability, replay, benchmark, or authority pin"
         },
         "risk_class": "medium",
-        "authority_class": "strategy",
+        "authority_class": "governed_artifact",
         "runtime_binding": {
           "type": "fixed",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "authority": "governed_artifact_boundary",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -20277,7 +20351,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "815d868ddfb544c59fb86eca72cc4becf8c9d9a159f9e70667c00e833f23afe0"
+          "value": "a8c3d93f7a0d1e324354cc7d385232df5cdd22c7486e49533326fcf0b0a7fcdb"
         },
         "schema_version": 3,
         "ordinal": 150,
@@ -20390,7 +20464,7 @@
           },
           "rationale": "Bound MCP server startup and initialization."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -20399,16 +20473,18 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "owner": "mcp_runtime_policy",
+          "getter": "effective_mcp",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "287e84c8765467da6bd9c72af599cfe3d698d4fb9fb9cca727c62c6f1c97d955"
+          "value": "6b52ea7afccedcb9a05795af66219d7896dc71ee7c44be825b0de39d14197bdb"
         },
         "schema_version": 3,
         "ordinal": 151,
@@ -20521,7 +20597,7 @@
           },
           "rationale": "Bound one MCP tool exchange."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -20530,9 +20606,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "owner": "mcp_runtime_policy",
+          "getter": "effective_mcp",
+          "strategy_slot": "core/tool_policy",
           "evidence": "run_genesis_tunables_v2"
         }
       },
@@ -21344,7 +21422,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f2589e6ba10c53cc42bd80ee7a6b549c61b3b1da32b2e617f9f64f25640af54c"
+          "value": "01aba48a551cde798712245d72cfdf3c5c4eec6eb3918412518ea5ce8773e0e2"
         },
         "schema_version": 3,
         "ordinal": 156,
@@ -21479,7 +21557,7 @@
           },
           "rationale": "Bound HTTP pool idle and TCP keepalive behavior."
         },
-        "implementation_status": "fixed_hidden",
+        "implementation_status": "full",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -21488,9 +21566,11 @@
         "risk_class": "medium",
         "authority_class": "strategy",
         "runtime_binding": {
-          "type": "fixed",
+          "type": "effective",
           "adapter": "extension_facts",
-          "authority": "strategy_invariant",
+          "owner": "provider_governor",
+          "getter": "effective_provider",
+          "strategy_slot": "core/model_router",
           "evidence": "run_genesis_tunables_v2"
         }
       },

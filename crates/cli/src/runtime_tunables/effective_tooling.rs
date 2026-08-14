@@ -19,6 +19,10 @@ pub(crate) struct EffectiveToolingSettings {
     pub lsp: Option<LspRuntimePolicy>,
     pub tool_output_spill: crate::runtime::tool_output_spill::ToolOutputSpillPolicy,
     pub tool_result_cache_ttl_seconds: u64,
+    pub pure_overlap: bool,
+    pub pure_concurrency: usize,
+    pub failed_action_dedup: crate::runtime::FailedActionPolicy,
+    pub pure_memo_cache: iteron_tools::PureMemoCachePolicy,
 }
 
 impl EffectiveToolingSettings {
@@ -132,6 +136,29 @@ impl EffectiveToolingSettings {
             view.integer("tool_result_cache_ttl")?,
             "tool_result_cache_ttl",
         )?;
+        let failed_action_family = "failed_action_dedup";
+        let failed_action = view.object(failed_action_family)?;
+        let failed_action_dedup = crate::runtime::FailedActionPolicy {
+            max_identities: usizev(
+                object_i64(failed_action, failed_action_family, "max_identities")?,
+                failed_action_family,
+            )?,
+            turn_scoped: match object_enum(failed_action, failed_action_family, "scope")? {
+                "turn" => true,
+                "run" => false,
+                value => return Err(unknown(failed_action_family, value)),
+            },
+            // Successful effecting calls are never suppressed. `false` therefore disables the
+            // failed-only optimization instead of silently widening it to successful effects.
+            enabled: object_bool(failed_action, failed_action_family, "failed_only")?,
+        };
+        let memo_family = "pure_memo_cache";
+        let memo = view.object(memo_family)?;
+        let pure_memo_cache = iteron_tools::PureMemoCachePolicy {
+            max_entries: usizev(object_i64(memo, memo_family, "max_entries")?, memo_family)?,
+            max_key_bytes: usizev(object_i64(memo, memo_family, "max_key_bytes")?, memo_family)?,
+            generation_scoped: object_bool(memo, memo_family, "generation_scoped")?,
+        };
         Ok(Self {
             egress_allow,
             observation,
@@ -140,6 +167,10 @@ impl EffectiveToolingSettings {
             lsp,
             tool_output_spill,
             tool_result_cache_ttl_seconds,
+            pure_overlap: view.boolean("pure_overlap")?,
+            pure_concurrency: usizev(view.integer("pure_concurrency")?, "pure_concurrency")?,
+            failed_action_dedup,
+            pure_memo_cache,
         })
     }
 
@@ -168,6 +199,9 @@ impl EffectiveToolingSettings {
             (Some(_), None) => return Err(EffectiveToolingError::IncompleteLspPolicy),
             (None, _) => {}
         }
+        registry
+            .install_pure_memo_cache_policy(self.pure_memo_cache)
+            .map_err(|error| EffectiveToolingError::Install(error.to_string()))?;
         Ok(())
     }
 
@@ -180,6 +214,7 @@ impl EffectiveToolingSettings {
         if registry.installed_observation_tool_policy() != Some(self.observation)
             || registry.installed_egress_allow_policy() != Some(self.egress_allow.clone())
             || registry.tool_result_cache_ttl_seconds() != self.tool_result_cache_ttl_seconds
+            || registry.pure_memo_cache_policy() != self.pure_memo_cache
             || registry.installed_process_launch_policy() != Some(self.process_launch.clone())
             || registry
                 .process_control()

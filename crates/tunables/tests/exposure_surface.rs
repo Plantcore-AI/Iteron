@@ -63,13 +63,10 @@ fn the_export_does_not_claim_more_than_the_loader_accepts() {
             .iter()
             .find(|family| family.id == entry.id)
             .expect("exported family exists");
-        let source = family
-            .source
-            .bindings
-            .iter()
-            .map(|binding| binding.kind)
-            .find(|kind| matches!(kind, SourceKind::UserConfig | SourceKind::ProjectConfig))
-            .expect("addressable means it declares a profile-usable source");
+        let source = [SourceKind::UserConfig, SourceKind::ProjectConfig]
+            .into_iter()
+            .find(|kind| family.profile_binding(*kind).is_some())
+            .expect("addressable means it has a lawful profile source");
         let document = document(vec![iteron_tunables::ProfileValue {
             family: family.id.to_owned(),
             as_declared_source: source,
@@ -189,38 +186,20 @@ fn a_profile_is_pinned_to_the_bytes_it_was_computed_against() {
     ));
 }
 
-/// Six families are operator-settable and deliberately NOT reachable by a profile.
-///
-/// Two of them — `permission_mode` and `bypass_permissions` — decide what the agent is allowed to
-/// do at all. A tuner that could set them could widen its own authority as a side effect of
-/// searching for a better score, which is the exact failure `Principal.md` forbids. The other four
-/// are excluded for consistency: they are CLI/environment controls whose value belongs to the
-/// invocation, not to a stored candidate.
-///
-/// This test exists because that decision otherwise lives only in prose. Widening the profile
-/// surface to include any of them must be a deliberate act that fails here first.
 #[test]
-fn the_six_deliberately_unreachable_families_stay_unreachable() {
-    const EXCLUDED: [&str; 6] = [
-        "max_tokens",
-        "permission_mode",
-        "bypass_permissions",
-        "verify_command",
-        "memory_enable",
-        "max_consecutive_tool_errors",
-    ];
+fn every_non_pin_family_is_addressable_and_every_pin_is_rejected() {
     let surface = surface();
-    for id in EXCLUDED {
+    for family in families() {
         let entry = surface
             .families
             .iter()
-            .find(|entry| entry.id == id)
-            .unwrap_or_else(|| panic!("family `{id}` no longer exists; revisit this exclusion"));
-        assert!(
-            !entry.profile_addressable,
-            "`{id}` became profile-addressable. For `permission_mode` and `bypass_permissions` \
-             that is an authority widening and must never land; for the others, update this test \
-             in the same change that makes it deliberate."
+            .find(|entry| entry.id == family.id)
+            .expect("every family is exported");
+        let pinned = family.optimization.class == iteron_tunables::OptimizationClass::Pin;
+        assert_eq!(
+            entry.profile_addressable, !pinned,
+            "{} must be addressable exactly when it is not Pin",
+            family.id
         );
     }
 }

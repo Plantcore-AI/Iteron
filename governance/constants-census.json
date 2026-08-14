@@ -11,9 +11,9 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 200,
-      "searchable": 217,
-      "structural": 167
+      "bounded": 201,
+      "searchable": 219,
+      "structural": 173
     },
     "ctx": {
       "bounded": 42,
@@ -23,7 +23,7 @@
     "eval": {
       "bounded": 40,
       "searchable": 7,
-      "structural": 19
+      "structural": 32
     },
     "evolve": {
       "bounded": 58,
@@ -33,7 +33,7 @@
     "kernel": {
       "bounded": 8,
       "searchable": 0,
-      "structural": 13
+      "structural": 23
     },
     "lsp": {
       "bounded": 29,
@@ -48,7 +48,7 @@
     "mcp": {
       "bounded": 54,
       "searchable": 31,
-      "structural": 22
+      "structural": 23
     },
     "obs": {
       "bounded": 8,
@@ -58,7 +58,7 @@
     "protocol": {
       "bounded": 48,
       "searchable": 1,
-      "structural": 30
+      "structural": 37
     },
     "provider": {
       "bounded": 68,
@@ -67,13 +67,13 @@
     },
     "record": {
       "bounded": 25,
-      "searchable": 20,
-      "structural": 34
+      "searchable": 19,
+      "structural": 37
     },
     "sandbox": {
-      "bounded": 3,
-      "searchable": 16,
-      "structural": 17
+      "bounded": 5,
+      "searchable": 18,
+      "structural": 18
     },
     "sched": {
       "bounded": 0,
@@ -83,7 +83,7 @@
     "statusline": {
       "bounded": 3,
       "searchable": 5,
-      "structural": 0
+      "structural": 1
     },
     "support": {
       "bounded": 4,
@@ -91,19 +91,19 @@
       "structural": 1
     },
     "tools": {
-      "bounded": 97,
-      "searchable": 51,
-      "structural": 11
+      "bounded": 98,
+      "searchable": 50,
+      "structural": 13
     },
     "tunables": {
       "bounded": 18,
       "searchable": 4,
-      "structural": 94
+      "structural": 101
     },
     "verify": {
       "bounded": 6,
       "searchable": 2,
-      "structural": 2
+      "structural": 4
     },
     "workflow": {
       "bounded": 43,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1239,
-  "structural": 572,
-  "total": 1811
+  "settable": 1245,
+  "structural": 625,
+  "total": 1870
 }

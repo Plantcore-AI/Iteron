@@ -248,6 +248,19 @@ fn parse_param_value(param: &Param, raw: &str) -> Result<ResolutionValue> {
             }
             json_value_to_resolution(value)
         }
+        ParamType::Map => {
+            let value: serde_json::Value =
+                serde_json::from_str(raw).map_err(|_| invalid("a JSON map"))?;
+            let serde_json::Value::Object(fields) = value else {
+                return Err(invalid("a JSON map"));
+            };
+            Ok(ResolutionValue::Map {
+                entries: fields
+                    .into_iter()
+                    .map(|(key, value)| Ok((key, json_value_to_resolution(value)?)))
+                    .collect::<Result<_>>()?,
+            })
+        }
         ParamType::Object => {
             let value: serde_json::Value =
                 serde_json::from_str(raw).map_err(|_| invalid("a JSON object"))?;

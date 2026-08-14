@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 
 /// The installed overrides, or `None` when no profile supplied any.
 static OVERRIDES: OnceLock<BTreeMap<String, ResolutionValue>> = OnceLock::new();
+static FAMILY_OVERRIDES: OnceLock<BTreeMap<String, ResolutionValue>> = OnceLock::new();
 static STRING_LISTS: OnceLock<Mutex<BTreeMap<String, &'static [&'static str]>>> = OnceLock::new();
 static BYTE_LISTS: OnceLock<Mutex<BTreeMap<String, &'static [u8]>>> = OnceLock::new();
 static PROMPT_ARTIFACTS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
@@ -37,6 +38,98 @@ pub enum ParamInstallError {
         reason: String,
     },
     DuplicateParam(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FamilyInstallError {
+    AlreadyInstalled,
+    UnknownFamily(String),
+    SealedFamily(String),
+    DuplicateFamily(String),
+}
+
+impl std::fmt::Display for FamilyInstallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyInstalled => formatter
+                .write_str("governed-family overrides were already installed for this process"),
+            Self::UnknownFamily(id) => write!(formatter, "unknown tunable family `{id}`"),
+            Self::SealedFamily(id) => write!(formatter, "tunable family `{id}` is Pin/read-only"),
+            Self::DuplicateFamily(id) => {
+                write!(formatter, "tunable family `{id}` is assigned twice")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FamilyInstallError {}
+
+/// Install non-Pin Tier-1 candidates before any physical owner is constructed.
+///
+/// The pure resolver remains the type/domain/authority gate. This table exists so the owner it
+/// samples and the later production use sites consult the same immutable candidate rather than a
+/// compiled fallback while the resolver reports an override.
+pub fn install_family_overrides(
+    values: impl IntoIterator<Item = (String, ResolutionValue)>,
+) -> Result<usize, FamilyInstallError> {
+    let mut table = BTreeMap::new();
+    for (id, value) in values {
+        let family = crate::families()
+            .iter()
+            .find(|family| family.id == id || family.aliases.contains(&id.as_str()))
+            .ok_or_else(|| FamilyInstallError::UnknownFamily(id.clone()))?;
+        if !family.is_profile_addressable() {
+            return Err(FamilyInstallError::SealedFamily(family.id.to_owned()));
+        }
+        if table.insert(family.id.to_owned(), value).is_some() {
+            return Err(FamilyInstallError::DuplicateFamily(family.id.to_owned()));
+        }
+    }
+    let installed = table.len();
+    if installed > 0 {
+        FAMILY_OVERRIDES
+            .set(table)
+            .map_err(|_| FamilyInstallError::AlreadyInstalled)?;
+    }
+    Ok(installed)
+}
+
+#[must_use]
+pub fn family_value(id: &str) -> Option<&'static ResolutionValue> {
+    let canonical = crate::families()
+        .iter()
+        .find(|family| family.id == id || family.aliases.contains(&id))?
+        .id;
+    FAMILY_OVERRIDES
+        .get()
+        .and_then(|table| table.get(canonical))
+}
+
+#[must_use]
+pub fn family_bool(id: &str, compiled_default: bool) -> bool {
+    match family_value(id) {
+        Some(ResolutionValue::Boolean { value }) => *value,
+        _ => compiled_default,
+    }
+}
+
+#[must_use]
+pub fn family_integer<T>(id: &str, compiled_default: T) -> T
+where
+    T: Copy + TryFrom<i64>,
+{
+    match family_value(id) {
+        Some(ResolutionValue::Integer { value }) => T::try_from(*value).unwrap_or(compiled_default),
+        _ => compiled_default,
+    }
+}
+
+#[must_use]
+pub fn family_enum(id: &str, compiled_default: &'static str) -> &'static str {
+    match family_value(id) {
+        Some(ResolutionValue::Enum { value }) => value.as_str(),
+        _ => compiled_default,
+    }
 }
 
 impl std::fmt::Display for ParamInstallError {
@@ -105,11 +198,15 @@ pub fn install_prompt_artifact_overrides(
 ) -> Result<usize, PromptArtifactInstallError> {
     let mut table = BTreeMap::new();
     for (id, value) in values {
-        let artifact = crate::PROMPT_ARTIFACTS
+        let prompt_artifact = crate::PROMPT_ARTIFACTS
             .iter()
-            .find(|artifact| artifact.id == id)
+            .find(|artifact| artifact.id == id);
+        let tool_artifact = crate::tool_text_artifact_by_id(&id);
+        let overridable = prompt_artifact
+            .map(|artifact| artifact.overridable)
+            .or_else(|| tool_artifact.map(|artifact| artifact.overridable))
             .ok_or_else(|| PromptArtifactInstallError::UnknownArtifact(id.clone()))?;
-        if !artifact.overridable {
+        if !overridable {
             return Err(PromptArtifactInstallError::NotOverridable(id));
         }
         if value.trim().is_empty() {
@@ -136,10 +233,28 @@ pub fn install_prompt_artifact_overrides(
 /// are not reachable through this function.
 #[must_use]
 pub fn prompt_artifact<'a>(id: &str, compiled_default: &'a str) -> &'a str {
+    installed_artifact(id).unwrap_or(compiled_default)
+}
+
+fn installed_artifact(id: &str) -> Option<&'static str> {
     PROMPT_ARTIFACTS
         .get()
         .and_then(|table| table.get(id))
         .map(String::as_str)
+}
+
+/// Resolve one built-in tool's model-visible description.
+///
+/// An exact per-tool artifact wins over the legacy aggregate. Unknown names are external/dynamic
+/// by definition and receive neither override, so MCP-provided descriptions remain untrusted
+/// runtime input rather than silently entering Iteron's optimization namespace.
+#[must_use]
+pub fn tool_description<'a>(canonical_name: &str, compiled_default: &'a str) -> &'a str {
+    let Some(artifact) = crate::tool_text_artifact(canonical_name) else {
+        return compiled_default;
+    };
+    installed_artifact(artifact.id)
+        .or_else(|| installed_artifact("prompt/tool_description@v1"))
         .unwrap_or(compiled_default)
 }
 
@@ -294,6 +409,64 @@ pub fn param_str(id: &str, compiled_default: &'static str) -> &'static str {
         .and_then(|table| table.get(id))
         .and_then(|value| match value {
             ResolutionValue::Text { value } => Some(value.as_str()),
+            _ => None,
+        })
+        .unwrap_or(compiled_default)
+}
+
+/// Read an enum parameter as its exact published variant spelling.
+#[must_use]
+pub fn param_enum(id: &str, compiled_default: &'static str) -> &'static str {
+    OVERRIDES
+        .get()
+        .and_then(|table| table.get(id))
+        .and_then(|value| match value {
+            ResolutionValue::Enum { value } => Some(value.as_str()),
+            _ => None,
+        })
+        .unwrap_or(compiled_default)
+}
+
+/// Read a heterogeneous list in its admitted, immutable runtime representation.
+#[must_use]
+pub fn param_list<'a>(id: &str, compiled_default: &'a [ResolutionValue]) -> &'a [ResolutionValue] {
+    OVERRIDES
+        .get()
+        .and_then(|table| table.get(id))
+        .and_then(|value| match value {
+            ResolutionValue::List { items } => Some(items.as_slice()),
+            _ => None,
+        })
+        .unwrap_or(compiled_default)
+}
+
+/// Read a map in its admitted, immutable runtime representation.
+#[must_use]
+pub fn param_map<'a>(
+    id: &str,
+    compiled_default: &'a BTreeMap<String, ResolutionValue>,
+) -> &'a BTreeMap<String, ResolutionValue> {
+    OVERRIDES
+        .get()
+        .and_then(|table| table.get(id))
+        .and_then(|value| match value {
+            ResolutionValue::Map { entries } => Some(entries),
+            _ => None,
+        })
+        .unwrap_or(compiled_default)
+}
+
+/// Read an object in its admitted, immutable runtime representation.
+#[must_use]
+pub fn param_object<'a>(
+    id: &str,
+    compiled_default: &'a BTreeMap<String, ResolutionValue>,
+) -> &'a BTreeMap<String, ResolutionValue> {
+    OVERRIDES
+        .get()
+        .and_then(|table| table.get(id))
+        .and_then(|value| match value {
+            ResolutionValue::Object { fields } => Some(fields),
             _ => None,
         })
         .unwrap_or(compiled_default)
