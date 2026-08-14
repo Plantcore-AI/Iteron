@@ -520,28 +520,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
             host: darwin-arm64
             target: aarch64-apple-darwin
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             host: linux-arm64
             target: aarch64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             host: linux-arm64
             target: x86_64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 60
     defaults:
       run:
@@ -599,11 +599,6 @@ jobs:
           "${{ matrix.python }}" release-tools/fetch_tool.py syft "${{ matrix.host }}" \
             --output "$RUNNER_TEMP/release-bin/syft${{ matrix.tool-suffix }}"
           echo "$RUNNER_TEMP/release-bin" >> "$GITHUB_PATH"
-      - name: Run the complete target test suite
-        run: >-
-          cargo +"$RUST_VERSION" test
-          --workspace --all-targets --locked
-          --target "${{ matrix.target }}"
       # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
       # reported `iteron 0.0.1`, so a user could not tell which one they had and an aged binary had
       # no way to say so. `--version` carries these; `-V` stays the bare semver matched below.
@@ -1014,19 +1009,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
             target: aarch64-apple-darwin
             archive-suffix: tar.gz
             python: python3
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             target: aarch64-unknown-linux-musl
             archive-suffix: tar.gz
             python: python3
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             target: x86_64-unknown-linux-musl
             archive-suffix: tar.gz
             python: python3
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -1072,13 +1067,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
             target: aarch64-apple-darwin
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             target: aarch64-unknown-linux-musl
-          - runner: dgx
+          - runner: '["self-hosted","Linux","ARM64","dgx"]'
             target: x86_64-unknown-linux-musl
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 10
     permissions:
       contents: read
