@@ -136,11 +136,9 @@ fn validate_candidates(input: &ResolutionInput) -> Result<(), String> {
                     candidate.as_declared_source,
                     SourceKind::UserConfig | SourceKind::ProjectConfig
                 )
-                || !family
-                    .source
-                    .bindings
-                    .iter()
-                    .any(|binding| binding.kind == candidate.as_declared_source)
+                || family
+                    .profile_binding(candidate.as_declared_source)
+                    .is_none()
                 || !profile_values.insert((family.id, candidate.as_declared_source))
             {
                 return Err("profile source is unauthorized or duplicated".into());

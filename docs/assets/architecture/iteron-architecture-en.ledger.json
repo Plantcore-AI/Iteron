@@ -1,0 +1,87 @@
+{
+  "title": "ITERON · TARGET ARCHITECTURE",
+  "purpose": "Reproduce the existing Iteron target-architecture figure exactly, changing only the former product name Core Code to Iteron while preserving every group, node, label, connector, color, and spatial relationship.",
+  "caption": "THE HARNESS EVOLVES. AUTHORITY DOES NOT.",
+  "canvas": {
+    "aspect": "16:9 landscape",
+    "background": "clean near-white technical paper"
+  },
+  "style": {
+    "medium": "formal systems-paper architecture diagram with precise flat boxes, restrained color, condensed technical typography, and no decorative illustration",
+    "palette": "near-white ground; navy and cobalt runtime; green offline control; purple evolvable strategy; orange human promotion; red prohibition"
+  },
+  "zones": [
+    {"id": "offline", "label": "OFFLINE EVOLUTION CONTROL PLANE", "tone": "green"},
+    {"id": "runtime", "label": "ITERON HARNESS BOUNDARY", "tone": "blue"},
+    {"id": "strategy", "label": "EVOLVABLE HARNESS / STRATEGY SLOTS", "tone": "purple"},
+    {"id": "world", "label": "REPLACEABLE WORLD / EXECUTION MODULES", "tone": "blue"}
+  ],
+  "nodes": [
+    {"id": "evidence", "label": "EVIDENCE", "zone": "offline", "kind": "governed runtime evidence"},
+    {"id": "candidate_factory", "label": "CANDIDATE FACTORY", "zone": "offline", "kind": "container with Harness: Search · DSPy · Generated Code and Model: SFT · DPO · GRPO · RL"},
+    {"id": "held_out_eval", "label": "HELD-OUT EVAL", "zone": "offline", "kind": "independent held-out evaluation"},
+    {"id": "shadow", "label": "SHADOW", "zone": "offline", "kind": "shadow validation"},
+    {"id": "canary", "label": "CANARY", "zone": "offline", "kind": "guarded canary"},
+    {"id": "human_promotion", "label": "HUMAN PROMOTION", "zone": "offline", "kind": "human gate"},
+    {"id": "strategy_bundle", "label": "IMMUTABLE STRATEGY BUNDLE", "zone": "offline", "kind": "released immutable bundle"},
+    {"id": "microkernel", "label": "FIXED MICROKERNEL / TRUSTED COMPUTING BASE", "zone": "runtime", "kind": "Protocol · Reducer · Capability Admission · Budgets · Effect Broker · Record / Replay"},
+    {"id": "harness_slots", "label": "EVOLVABLE HARNESS / STRATEGY SLOTS", "zone": "strategy", "kind": "three-by-three grid: Router, Planner, Context, Memory, Scheduler, Tool Policy, Verifier, Model Router, Collaboration"},
+    {"id": "world_modules", "label": "REPLACEABLE WORLD / EXECUTION MODULES", "zone": "world", "kind": "single row: Providers, Filesystem, Shell + Git, Sandbox, MCP + LSP, Vertical Adapters"}
+  ],
+  "edges": [
+    {"id": "IT-01", "from": "evidence", "to": "candidate_factory", "label": "governed evidence", "tone": "green", "style": "dashed"},
+    {"id": "IT-02", "from": "candidate_factory", "to": "held_out_eval", "label": "candidate", "tone": "green", "style": "dashed"},
+    {"id": "IT-03", "from": "held_out_eval", "to": "shadow", "label": "pass", "tone": "green", "style": "dashed"},
+    {"id": "IT-04", "from": "shadow", "to": "canary", "label": "pass", "tone": "green", "style": "dashed"},
+    {"id": "IT-05", "from": "canary", "to": "human_promotion", "label": "pass", "tone": "green", "style": "dashed"},
+    {"id": "IT-06", "from": "human_promotion", "to": "strategy_bundle", "label": "approved promotion", "tone": "green", "style": "dashed"},
+    {"id": "IT-07", "from": "strategy_bundle", "to": "evidence", "label": "SLOW OFFLINE RELEASE LOOP", "tone": "green", "style": "dashed"},
+    {"id": "IT-08", "from": "strategy_bundle", "to": "microkernel", "label": "activate pinned bundle", "tone": "green", "style": "solid"},
+    {"id": "IT-09", "from": "microkernel", "to": "harness_slots", "label": "bounded strategy interface", "tone": "blue", "style": "solid"},
+    {"id": "IT-10", "from": "harness_slots", "to": "world_modules", "label": "capability-scoped execution proposal", "tone": "blue", "style": "solid"},
+    {"id": "IT-11", "from": "world_modules", "to": "harness_slots", "label": "FAST ONLINE TASK LOOP", "tone": "blue", "style": "solid"},
+    {"id": "IT-12", "from": "world_modules", "to": "evidence", "label": "runtime evidence", "tone": "blue", "style": "solid"}
+  ],
+  "forbidden_edges": [
+    {"from": "candidate_factory", "to": "microkernel", "reason": "NO SELF-GRANTED AUTHORITY"},
+    {"from": "candidate_factory", "to": "harness_slots", "reason": "Candidates cannot activate themselves."},
+    {"from": "held_out_eval", "to": "strategy_bundle", "reason": "Shadow, canary, and human promotion cannot be bypassed."},
+    {"from": "canary", "to": "microkernel", "reason": "Canary cannot activate a strategy without human promotion and an immutable bundle."},
+    {"from": "harness_slots", "to": "strategy_bundle", "reason": "The online harness cannot rewrite its own released strategy bundle."}
+  ],
+  "layout_notes": [
+    "Use the supplied original PNG as the authoritative composition: preserve its geometry, proportions, typography hierarchy, containment, colors, and routing.",
+    "The top header is ITERON on the left, TARGET ARCHITECTURE in the middle, and THE HARNESS EVOLVES. AUTHORITY DOES NOT. on the right.",
+    "The offline control plane is a full-width green band above the blue runtime boundary.",
+    "Inside the runtime boundary, stack the fixed microkernel, the purple three-by-three strategy grid, and the blue one-by-six execution-module row.",
+    "Render IT-07 as the long dashed green return loop and IT-11 as the large blue perimeter feedback loop.",
+    "Show a red dashed attempted path from the offline plane toward the runtime, terminate it with a red X, and label it NO SELF-GRANTED AUTHORITY; this is a prohibition marker, not an allowed edge.",
+    "Do not add a bottom caption; place the caption only in its existing top-right header position."
+  ],
+  "required_text": [
+    "ITERON",
+    "TARGET ARCHITECTURE",
+    "THE HARNESS EVOLVES. AUTHORITY DOES NOT.",
+    "Harness: Search · DSPy · Generated Code",
+    "Model: SFT · DPO · GRPO · RL",
+    "SLOW OFFLINE RELEASE LOOP",
+    "NO SELF-GRANTED AUTHORITY",
+    "Protocol · Reducer · Capability Admission · Budgets · Effect Broker · Record / Replay",
+    "ROUTER",
+    "PLANNER",
+    "CONTEXT",
+    "MEMORY",
+    "SCHEDULER",
+    "TOOL POLICY",
+    "VERIFIER",
+    "MODEL ROUTER",
+    "COLLABORATION",
+    "PROVIDERS",
+    "FILESYSTEM",
+    "SHELL + GIT",
+    "SANDBOX",
+    "MCP + LSP",
+    "VERTICAL ADAPTERS",
+    "FAST ONLINE TASK LOOP"
+  ]
+}

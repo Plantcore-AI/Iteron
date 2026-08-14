@@ -1208,7 +1208,8 @@ impl WorkflowSupervisor {
         Launched::Detached(DetachedRun {
             run_id,
             name,
-            ownership: Self::OWNERSHIP.to_string(),
+            ownership: iteron_tunables::param_str("cli.workflow.ownership", Self::OWNERSHIP)
+                .to_string(),
         })
     }
 

@@ -1,0 +1,87 @@
+{
+  "title": "ITERON · 目标架构",
+  "purpose": "与 Iteron 英文目标架构图完全同构：保持所有分区、节点、连线、颜色与空间关系，仅将技术标签翻译为简体中文。",
+  "caption": "HARNESS 可以进化，权威不可进化。",
+  "canvas": {
+    "aspect": "16:9 landscape",
+    "background": "干净的近白色技术文档底色"
+  },
+  "style": {
+    "medium": "正式系统论文架构图，精确扁平框体，克制配色，清晰中文技术字体，无装饰性插画",
+    "palette": "近白底色；深蓝与钴蓝表示运行时；绿色表示离线控制；紫色表示可进化策略；橙色表示人工晋升；红色表示禁止路径"
+  },
+  "zones": [
+    {"id": "offline", "label": "离线进化控制平面", "tone": "green"},
+    {"id": "runtime", "label": "ITERON HARNESS 边界", "tone": "blue"},
+    {"id": "strategy", "label": "可进化 HARNESS / 策略槽位", "tone": "purple"},
+    {"id": "world", "label": "可替换世界 / 执行模块", "tone": "blue"}
+  ],
+  "nodes": [
+    {"id": "evidence", "label": "证据", "zone": "offline", "kind": "受治理的运行时证据"},
+    {"id": "candidate_factory", "label": "候选工厂", "zone": "offline", "kind": "包含 Harness：搜索 · DSPy · 生成代码，以及模型：SFT · DPO · GRPO · RL"},
+    {"id": "held_out_eval", "label": "留出集评估", "zone": "offline", "kind": "独立留出集评估"},
+    {"id": "shadow", "label": "影子验证", "zone": "offline", "kind": "影子流量验证"},
+    {"id": "canary", "label": "金丝雀验证", "zone": "offline", "kind": "受控金丝雀验证"},
+    {"id": "human_promotion", "label": "人工晋升", "zone": "offline", "kind": "人工门禁"},
+    {"id": "strategy_bundle", "label": "不可变策略束", "zone": "offline", "kind": "已发布的不可变策略束"},
+    {"id": "microkernel", "label": "固定微内核 / 可信计算基", "zone": "runtime", "kind": "协议 · 归约器 · 能力准入 · 预算 · 效果代理 · 记录 / 重放"},
+    {"id": "harness_slots", "label": "可进化 HARNESS / 策略槽位", "zone": "strategy", "kind": "三乘三网格：路由器、规划器、上下文、记忆、调度器、工具策略、验证器、模型路由器、协作"},
+    {"id": "world_modules", "label": "可替换世界 / 执行模块", "zone": "world", "kind": "单行：模型提供商、文件系统、Shell + Git、沙箱、MCP + LSP、垂类适配器"}
+  ],
+  "edges": [
+    {"id": "IT-01", "from": "evidence", "to": "candidate_factory", "label": "受治理证据", "tone": "green", "style": "dashed"},
+    {"id": "IT-02", "from": "candidate_factory", "to": "held_out_eval", "label": "候选", "tone": "green", "style": "dashed"},
+    {"id": "IT-03", "from": "held_out_eval", "to": "shadow", "label": "通过", "tone": "green", "style": "dashed"},
+    {"id": "IT-04", "from": "shadow", "to": "canary", "label": "通过", "tone": "green", "style": "dashed"},
+    {"id": "IT-05", "from": "canary", "to": "human_promotion", "label": "通过", "tone": "green", "style": "dashed"},
+    {"id": "IT-06", "from": "human_promotion", "to": "strategy_bundle", "label": "批准晋升", "tone": "green", "style": "dashed"},
+    {"id": "IT-07", "from": "strategy_bundle", "to": "evidence", "label": "慢速离线发布闭环", "tone": "green", "style": "dashed"},
+    {"id": "IT-08", "from": "strategy_bundle", "to": "microkernel", "label": "激活已钉死策略束", "tone": "green", "style": "solid"},
+    {"id": "IT-09", "from": "microkernel", "to": "harness_slots", "label": "有界策略接口", "tone": "blue", "style": "solid"},
+    {"id": "IT-10", "from": "harness_slots", "to": "world_modules", "label": "能力受限的执行提议", "tone": "blue", "style": "solid"},
+    {"id": "IT-11", "from": "world_modules", "to": "harness_slots", "label": "快速在线任务闭环", "tone": "blue", "style": "solid"},
+    {"id": "IT-12", "from": "world_modules", "to": "evidence", "label": "运行时证据", "tone": "blue", "style": "solid"}
+  ],
+  "forbidden_edges": [
+    {"from": "candidate_factory", "to": "microkernel", "reason": "禁止自我授予权威"},
+    {"from": "candidate_factory", "to": "harness_slots", "reason": "候选不可自行激活。"},
+    {"from": "held_out_eval", "to": "strategy_bundle", "reason": "不得绕过影子验证、金丝雀验证和人工晋升。"},
+    {"from": "canary", "to": "microkernel", "reason": "未完成人工晋升并形成不可变策略束前，金丝雀不可激活策略。"},
+    {"from": "harness_slots", "to": "strategy_bundle", "reason": "在线 HARNESS 不可改写其已发布策略束。"}
+  ],
+  "layout_notes": [
+    "以提供的原始 PNG 为构图权威：保持其几何、比例、字号层级、包含关系、颜色和走线。",
+    "页眉从左到右依次为 ITERON、目标架构、HARNESS 可以进化，权威不可进化。",
+    "离线进化控制平面是运行时边界上方的通栏绿色区域。",
+    "运行时边界内自上而下为固定微内核、紫色三乘三策略网格、蓝色一乘六执行模块行。",
+    "IT-07 绘制为绿色长虚线返回闭环；IT-11 绘制为蓝色大外围反馈闭环。",
+    "从离线平面指向运行时绘制一条红色虚线尝试路径，以红色 X 终止，并标注禁止自我授予权威；这是禁止标记，不是允许边。",
+    "不要添加底部图注；caption 仅放在原图右上角页眉位置。"
+  ],
+  "required_text": [
+    "ITERON",
+    "目标架构",
+    "HARNESS 可以进化，权威不可进化。",
+    "Harness：搜索 · DSPy · 生成代码",
+    "模型：SFT · DPO · GRPO · RL",
+    "慢速离线发布闭环",
+    "禁止自我授予权威",
+    "协议 · 归约器 · 能力准入 · 预算 · 效果代理 · 记录 / 重放",
+    "路由器",
+    "规划器",
+    "上下文",
+    "记忆",
+    "调度器",
+    "工具策略",
+    "验证器",
+    "模型路由器",
+    "协作",
+    "模型提供商",
+    "文件系统",
+    "SHELL + GIT",
+    "沙箱",
+    "MCP + LSP",
+    "垂类适配器",
+    "快速在线任务闭环"
+  ]
+}

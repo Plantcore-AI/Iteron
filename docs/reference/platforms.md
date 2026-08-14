@@ -2,15 +2,15 @@
 
 Iteron is developed and tested on macOS and Linux. Those are the only supported
 source and release platforms. The current `v0.0.4` assets cover macOS arm64 only;
-the remaining macOS/Linux rows are the release workflow's required matrix, not a
+the remaining release rows are the release workflow's required matrix, not a
 claim that every historical tag contains every archive.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
 | macOS arm64 on `macos-15` | native release; PR CI paused | supported | system Seatbelt interface |
-| macOS x86-64 on `macos-15-intel` | native release | supported | system Seatbelt interface |
-| Linux x86-64 on `ubuntu-24.04` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
-| Linux arm64 on `ubuntu-24.04-arm` | native release | supported | usable bubblewrap/user-namespace boundary required |
+| macOS x86-64 | source/internal CI only | supported from source | system Seatbelt interface |
+| Linux x86-64 on `dgx` | release target and CI | supported | usable bubblewrap/user-namespace boundary required |
+| Linux arm64 on `dgx` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
 
 ## Windows
 

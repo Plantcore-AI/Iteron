@@ -177,6 +177,7 @@ pub struct KernelSpawnerContext {
     pub workflow_id: String,
     /// Effort default; `Ultracode` is mapped to `Max` for a leaf child (a leaf never orchestrates).
     pub default_effort: Effort,
+    pub(crate) effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy,
     /// Immutable child effort/memory and workflow controls inherited from the parent's checkpoint.
     pub(crate) execution_policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
     /// Per-child bounded-loop ceilings. The engine's Governor bounds CONCURRENCY; this bounds each
@@ -394,6 +395,7 @@ impl KernelSpawnerContext {
             parent_run_id,
             workflow_id,
             default_effort: Effort::default(),
+            effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy::compiled(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
             budget: iteron_agents::subagent_budget_ceiling(),
@@ -661,7 +663,8 @@ impl KernelSpawner {
                 .decomposition
                 .ok_or_else(|| safe_agent_refusal("pinned decomposition profile is inactive"))?;
             if budget.max_tokens != Some(decomposition.max_output_tokens)
-                || decomposition.thinking_tokens != decomposition.effort.thinking_budget()
+                || decomposition.thinking_tokens
+                    != cx.effort_policy.thinking_budget(decomposition.effort)
             {
                 return Err(safe_agent_refusal(
                     "pinned decomposition profile differs from the executable planner budget",
@@ -781,7 +784,7 @@ impl KernelSpawner {
         //     `Ultracode` collapses to `Max` (max thinking budget, no fan). ---
         let effort = cx
             .execution_policy
-            .admit_child_effort(call.effort)
+            .admit_child_effort(call.effort, &cx.effort_policy)
             .map_err(safe_agent_refusal)?;
         sub.configure_initial_runtime_policy(
             effort,

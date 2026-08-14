@@ -106,7 +106,6 @@ pub(crate) enum EffectiveRuntimeError {
 mod tests {
     use super::*;
     use iteron_tunables::ResolutionValue;
-    use std::collections::BTreeMap;
 
     const CONFIGURED_CONTENT_ARTIFACT_FAMILIES: &[&str] = &[
         "operator_prompt_stream",
@@ -224,7 +223,7 @@ mod tests {
         let _decoded = consume_registered_getters(&view).expect("all real decoders execute");
 
         let mut missing = FixedAuthorityReceipts::production().expect("typed live owners");
-        missing.remove("effort_reasoning_map");
+        missing.remove("writer_worktree_isolation_mode");
         assert_eq!(
             view.seal_runtime_binding_receipt(
                 None,
@@ -232,15 +231,15 @@ mod tests {
                 &missing,
             )
             .unwrap_err(),
-            EffectiveViewError::MissingFixedAuthorityRuntimeReceipt("effort_reasoning_map".into())
+            EffectiveViewError::MissingFixedAuthorityRuntimeReceipt(
+                "writer_worktree_isolation_mode".into()
+            )
         );
 
         let mut changed = FixedAuthorityReceipts::production().expect("typed live owners");
         changed.replace_for_test(
-            "effort_reasoning_map",
-            ResolutionValue::Object {
-                fields: BTreeMap::new(),
-            },
+            "writer_worktree_isolation_mode",
+            ResolutionValue::Boolean { value: false },
         );
         assert_eq!(
             view.seal_runtime_binding_receipt(
@@ -249,7 +248,9 @@ mod tests {
                 &changed,
             )
             .unwrap_err(),
-            EffectiveViewError::FixedAuthorityRuntimeMismatch("effort_reasoning_map".into())
+            EffectiveViewError::FixedAuthorityRuntimeMismatch(
+                "writer_worktree_isolation_mode".into()
+            )
         );
     }
 
@@ -258,7 +259,7 @@ mod tests {
         let checkpoint = fixture_checkpoint();
         let view = EffectiveTunablesView::from_checkpoint(&checkpoint).unwrap();
         let _decoded = consume_registered_getters(&view).expect("all real decoders execute");
-        view.remove_fixed_consumer_receipt("request_output_cap");
+        view.remove_fixed_consumer_receipt("verifier_timeout");
         assert_eq!(
             view.seal_runtime_binding_receipt(
                 None,
@@ -266,7 +267,7 @@ mod tests {
                 &FixedAuthorityReceipts::production().expect("typed live owners"),
             )
             .unwrap_err(),
-            EffectiveViewError::MissingFixedConsumerReceipt("request_output_cap".into())
+            EffectiveViewError::MissingFixedConsumerReceipt("verifier_timeout".into())
         );
     }
 

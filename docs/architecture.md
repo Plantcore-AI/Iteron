@@ -2,7 +2,7 @@
 
 ## Target boundary
 
-![Iteron target architecture: a fixed microkernel inside a modular harness boundary, with an offline evolution control plane outside](assets/architecture/iteron-self-evolving-harness.png)
+![Iteron target architecture: a fixed microkernel inside a modular harness boundary, with an offline evolution control plane outside](assets/architecture/iteron-architecture-en.png)
 
 The diagram is a target contract, not a shipped-conformance claim. Iteron
 aims to evolve versioned harness and world-module candidates while keeping

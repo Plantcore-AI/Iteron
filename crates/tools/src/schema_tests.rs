@@ -28,6 +28,47 @@ fn object_with_string_path(name: &str, purity: Purity, capability: Capability) -
     }
 }
 
+#[test]
+fn built_in_tool_description_catalog_is_total_at_the_registry_boundary() {
+    let registry = Registry::coding_agent(temp_root("tool-text-totality")).unwrap();
+    let registered: Vec<_> = registry.specs().into_iter().map(|spec| spec.name).collect();
+    let published: Vec<_> = iteron_tunables::TOOL_TEXT_ARTIFACTS
+        .iter()
+        .map(|artifact| artifact.tool.to_owned())
+        .collect();
+    assert_eq!(
+        registered, published,
+        "the stable tool-description surface must exactly enumerate production built-ins"
+    );
+}
+
+#[test]
+fn description_replacement_cannot_mutate_tool_structure_or_external_text() {
+    let root = temp_root("tool-text-noninterference");
+    let mut after = object_with_string_path("read_file", Purity::Pure, Capability::ReadOnly);
+    let before = after.clone();
+    replace_description_only(&mut after, "optimized read guidance");
+    assert_eq!(before.name, after.name);
+    assert_eq!(before.input_schema, after.input_schema);
+    assert_eq!(before.purity, after.purity);
+    assert_eq!(before.capability, after.capability);
+    assert_eq!(after.description, "optimized read guidance");
+
+    let mut registry = Registry::read_only(&root).unwrap();
+    registry
+        .register_external(
+            object_with_string_path("mcp__runtime", Purity::Pure, Capability::ReadOnly),
+            |call, _| boxfut::box_it(async move { ok_result(call.id, String::new()) }),
+        )
+        .unwrap();
+    let external = registry
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == "mcp__runtime")
+        .unwrap();
+    assert_eq!(external.description, "schema-validation probe");
+}
+
 #[tokio::test]
 async fn d3_13_g1_missing_edit_field_is_structured_before_executor() {
     let root = temp_root("missing-edit-field");

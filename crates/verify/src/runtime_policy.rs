@@ -75,18 +75,43 @@ impl VerificationRetryPolicy {
 /// replan/fix, and eventually stops at the immutable attempt ceiling. Ineligible failure classes
 /// stop immediately. Keeping this typed owner next to the retry policy lets composition attest the
 /// exact FixedHidden family instead of inventing resolver evidence disconnected from execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VerificationRecoveryEscalationPolicy;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationRecoveryEscalationPolicy {
+    RetryReplanStop,
+    RetryStop,
+    OperatorStop,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerificationRecoveryAction {
     RetryReplan,
+    RetryRepair,
+    StopOperator,
     StopIneligible,
     StopExhausted,
 }
 
 impl VerificationRecoveryEscalationPolicy {
     pub const ID: &'static str = "retry_replan_stop";
+    pub const ALL_IDS: [&'static str; 3] = ["retry_replan_stop", "retry_stop", "operator_stop"];
+
+    pub fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "retry_replan_stop" => Some(Self::RetryReplanStop),
+            "retry_stop" => Some(Self::RetryStop),
+            "operator_stop" => Some(Self::OperatorStop),
+            _ => None,
+        }
+    }
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::RetryReplanStop => "retry_replan_stop",
+            Self::RetryStop => "retry_stop",
+            Self::OperatorStop => "operator_stop",
+        }
+    }
 
     pub fn decide(
         self,
@@ -94,18 +119,24 @@ impl VerificationRecoveryEscalationPolicy {
         class: VerificationFailureClass,
         completed_attempts: u32,
     ) -> VerificationRecoveryAction {
-        if !retry.admits(class) {
+        if self == Self::OperatorStop {
+            VerificationRecoveryAction::StopOperator
+        } else if !retry.admits(class) {
             VerificationRecoveryAction::StopIneligible
         } else if completed_attempts.saturating_add(1) >= retry.max_attempts {
             VerificationRecoveryAction::StopExhausted
         } else {
-            VerificationRecoveryAction::RetryReplan
+            match self {
+                Self::RetryReplanStop => VerificationRecoveryAction::RetryReplan,
+                Self::RetryStop => VerificationRecoveryAction::RetryRepair,
+                Self::OperatorStop => unreachable!("operator stop returned above"),
+            }
         }
     }
 }
 
 pub const fn verification_recovery_escalation_policy() -> VerificationRecoveryEscalationPolicy {
-    VerificationRecoveryEscalationPolicy
+    VerificationRecoveryEscalationPolicy::RetryReplanStop
 }
 
 /// Immutable context-admission bounds for physical and aggregate verifier feedback.
@@ -233,6 +264,9 @@ pub struct VerificationRuntimePolicy {
     pub restore: VerificationRestorePolicy,
     pub feedback: VerificationFeedbackTailPolicy,
     pub retry: VerificationRetryPolicy,
+    pub recovery_escalation: VerificationRecoveryEscalationPolicy,
+    /// Maximum repeats a pluggable verifier strategy may request for one decision.
+    pub verifier_strategy_max_attempts: u32,
 }
 
 impl Default for VerificationRuntimePolicy {
@@ -251,6 +285,11 @@ impl Default for VerificationRuntimePolicy {
             restore: VerificationRestorePolicy::default(),
             feedback: VerificationFeedbackTailPolicy::default(),
             retry: VerificationRetryPolicy::default(),
+            recovery_escalation: verification_recovery_escalation_policy(),
+            verifier_strategy_max_attempts: iteron_tunables::param_integer(
+                "verify.strategy.max_verifier_attempts",
+                crate::strategy::MAX_VERIFIER_ATTEMPTS,
+            ),
         }
     }
 }
@@ -302,6 +341,9 @@ impl VerificationRuntimePolicy {
                 .windows(2)
                 .any(|classes| classes[0] >= classes[1])
         {
+            return Err(VerificationPolicyError::InvalidRetryPolicy);
+        }
+        if !(1..=64).contains(&self.verifier_strategy_max_attempts) {
             return Err(VerificationPolicyError::InvalidRetryPolicy);
         }
         let limit = usize::from(self.max_commands);
@@ -607,6 +649,22 @@ mod tests {
         assert_eq!(
             owner.decide(&retry, VerificationFailureClass::TimedOut, 0),
             VerificationRecoveryAction::StopIneligible
+        );
+        assert_eq!(
+            VerificationRecoveryEscalationPolicy::RetryStop.decide(
+                &retry,
+                VerificationFailureClass::TestFailure,
+                0,
+            ),
+            VerificationRecoveryAction::RetryRepair
+        );
+        assert_eq!(
+            VerificationRecoveryEscalationPolicy::OperatorStop.decide(
+                &retry,
+                VerificationFailureClass::TestFailure,
+                0,
+            ),
+            VerificationRecoveryAction::StopOperator
         );
     }
 }

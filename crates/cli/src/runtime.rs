@@ -38,6 +38,7 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+pub(crate) use failed_action_cache::FailedActionPolicy;
 mod file_submission;
 mod frontend;
 pub mod hooks;
@@ -80,6 +81,7 @@ mod workflow_prepare;
 mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
 use deferred_tools::{AutoApprovedCall, declared_write_paths};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
@@ -1352,13 +1354,19 @@ mod orchestration_allocation_tests {
         custom.per_agent_effort = iteron_protocol::Effort::Medium;
         assert_eq!(
             custom
-                .admit_child_effort(Some(iteron_protocol::Effort::Low))
+                .admit_child_effort(
+                    Some(iteron_protocol::Effort::Low),
+                    &crate::runtime_tunables::effective_core::EffortRuntimePolicy::compiled(),
+                )
                 .unwrap(),
             iteron_protocol::Effort::Low
         );
         assert!(
             custom
-                .admit_child_effort(Some(iteron_protocol::Effort::High))
+                .admit_child_effort(
+                    Some(iteron_protocol::Effort::High),
+                    &crate::runtime_tunables::effective_core::EffortRuntimePolicy::compiled(),
+                )
                 .is_err()
         );
         assert_eq!(
@@ -1891,6 +1899,8 @@ pub struct Agent {
     /// parents and every child can reproduce the same immutable environment identity.
     composition_environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
+    compaction_failure_policy: crate::runtime_tunables::effective_core::CompactionFailurePolicy,
+    compaction_failed_closed: bool,
     /// Operator replacement for the `prompt/compaction@v1` artifact — the instruction the
     /// summarizer runs under. `None` (the only state a run without a tunables profile can reach)
     /// leaves the compiled [`CompactionPolicy::summary_prompt`] in force, so the no-profile
@@ -2035,6 +2045,8 @@ pub struct Agent {
     /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow waits
     /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
+    pure_overlap_enabled: bool,
+    pure_tool_concurrency: usize,
     /// One non-refilling child-spawn ceiling for the resident session. Workflow-local RunLimits
     /// remain a second, narrower guard and never replace this owner.
     session_spawn_ledger: std::sync::Arc<SessionSpawnLedger>,
@@ -2076,6 +2088,9 @@ pub struct Agent {
     mcp_runtime: Option<crate::mcp::McpRuntimeControl>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
     effort: iteron_protocol::Effort,
+    /// Checkpoint-decoded physical mapping from the effort label to provider and orchestration
+    /// controls. Children install the same policy from the inherited tunables checkpoint.
+    effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy,
     /// Event-position provenance for the mutable policy overlay. Values remain owned by the
     /// ordinary runtime fields; this records only which successful WAL commit (or verified replay)
     /// made each value effective, so status surfaces cannot confuse genesis with live state.
@@ -2292,6 +2307,12 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
+        if self.compaction_failed_closed {
+            return Err(KernelError::ContextResolution(
+                "the pinned compaction failure policy closed the run after an unproven summary"
+                    .into(),
+            ));
+        }
         self.input_file_evidence = input_file_evidence;
         self.guard_unresolved_effects()?;
         self.ensure_policy_evidence()?;
@@ -2356,7 +2377,7 @@ impl Agent {
         })?;
         let input_images = staged_images.images();
         let orchestrate = allow_orchestration
-            && self.effort.profile().orchestration
+            && self.effort_orchestration(self.effort)
                 == iteron_protocol::OrchestrationMode::Orchestrated
             && !task.trim().is_empty()
             && !self.orchestrating;
@@ -2930,8 +2951,8 @@ impl Agent {
                 // deliberately treats `cache_system=true` + `breakpoint=None` as Rolling, so a
                 // hard-coded true here would silently re-enable a disabled cache on the wire.
                 cache_system: self.provider_cache_system_enabled(),
-                thinking_budget: self.effort.thinking_budget(),
-                reasoning_effort: self.effort.reasoning_effort(),
+                thinking_budget: self.effort_thinking_budget(self.effort),
+                reasoning_effort: self.effort_reasoning(self.effort),
                 controls: self.provider_controls,
             };
             let effort_application = self.provider.effort_application(&req);
@@ -3080,7 +3101,7 @@ impl Agent {
             // vetoes one — silently cost the whole session its concurrent read dispatch.
             let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty()
                 || !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
-            let pure_overlap_enabled = self.registry.pure_overlap_enabled();
+            let pure_overlap_enabled = self.pure_overlap_enabled;
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
             // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
             // inline list, so a thirty-read turn keeps the full concurrency for all thirty rather
@@ -3968,6 +3989,14 @@ impl Agent {
                                     )));
                                 }
                             };
+                            if verify_plan.attempts
+                                > self.verification_policy.verifier_strategy_max_attempts
+                            {
+                                return Err(KernelError::ContextResolution(
+                                    "verifier strategy exceeded the pinned verifier_attempts ceiling"
+                                        .into(),
+                                ));
+                            }
                             let verify_span = PhaseSpan::enter(Phase::Verify);
                             let verdict = self.run_verification_policy(&cmd, verify_plan).await?;
                             self.policy_verifier_outcome = match verdict.outcome {
@@ -4018,12 +4047,24 @@ impl Agent {
                                         )
                                         .class();
                                     let recovery =
-                                        iteron_verify::verification_recovery_escalation_policy()
-                                            .decide(
-                                                &self.verification_policy.retry,
-                                                failure_class,
-                                                self.verify_attempts,
-                                            );
+                                        self.verification_policy.recovery_escalation.decide(
+                                            &self.verification_policy.retry,
+                                            failure_class,
+                                            self.verify_attempts,
+                                        );
+                                    if recovery
+                                        == iteron_verify::VerificationRecoveryAction::StopOperator
+                                    {
+                                        self.emit(
+                                            turn_id,
+                                            EventKind::Notice {
+                                                text: format!(
+                                                    "verify gate: `{cmd}` failed; recovery policy returned control to the operator"
+                                                ),
+                                            },
+                                        );
+                                        return self.finish(turn_id, Outcome::HarnessError);
+                                    }
                                     if recovery
                                         == iteron_verify::VerificationRecoveryAction::StopIneligible
                                     {
@@ -4064,17 +4105,25 @@ impl Agent {
                                         );
                                     }
 
-                                    debug_assert_eq!(
+                                    debug_assert!(matches!(
                                         recovery,
                                         iteron_verify::VerificationRecoveryAction::RetryReplan
-                                    );
+                                            | iteron_verify::VerificationRecoveryAction::RetryRepair
+                                    ));
 
                                     self.verification_repair_started(turn_id);
 
+                                    let recovery_instruction = if recovery
+                                        == iteron_verify::VerificationRecoveryAction::RetryReplan
+                                    {
+                                        "Replan as needed, fix the remaining issues, and continue."
+                                    } else {
+                                        "Keep the current plan, fix the failing candidate, and retry."
+                                    };
                                     let msg = Message::user_text(format!(
                                         "Verification found a test failure: the harness ran `{cmd}` \
                                          successfully, but the candidate did not pass. Do not claim \
-                                         the task is done. Fix the remaining issues and continue.{}\n\n{detail}",
+                                         the task is done. {recovery_instruction}{}\n\n{detail}",
                                         if rolled_back {
                                             " The operator-authorised workspace rollback was applied before this repair turn."
                                         } else {
@@ -4316,11 +4365,16 @@ impl Agent {
             let batch =
                 self.select_concurrent_deferred_batch(&deferred, argument_trust, messages)?;
             if batch.len() > 1 {
+                let effecting_governor = iteron_sched::Governor::new(
+                    self.execution_policy
+                        .effecting_tool_admission
+                        .max_concurrency,
+                );
                 let execution = self
                     .run_concurrent_deferred_batch(
                         turn_id,
                         batch,
-                        &gov,
+                        &effecting_governor,
                         &mut results,
                         &mut any_error,
                     )
@@ -5054,7 +5108,12 @@ impl Agent {
             // remain in the ordered executor; a model emitting calls together is not independent
             // authority to widen physical side-effect concurrency.
             let declared = declared_write_paths(&call.input);
-            if effecting_tool_admission_policy().declared_set_required && declared.is_empty() {
+            if self
+                .execution_policy
+                .effecting_tool_admission
+                .declared_set_required
+                && declared.is_empty()
+            {
                 break;
             }
             if declared.iter().any(|path| claimed.contains(path)) {
@@ -5343,6 +5402,7 @@ impl Agent {
             .checked_add(1)
             .ok_or(KernelError::IdentityExhausted("turn"))?;
         self.refresh_session_cache_metered();
+        self.failed_actions.finish_turn();
         self.seq_turn = next;
         Ok(())
     }

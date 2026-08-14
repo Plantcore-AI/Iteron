@@ -16,7 +16,7 @@ fn result(content: &str, is_error: bool) -> ToolResult {
 }
 
 fn miss(memo: &Memo, tool: &str, input: serde_json::Value) -> crate::memo::PendingInsert {
-    let key = Memo::key(tool, &input).unwrap();
+    let key = memo.key(tool, &input).unwrap();
     match memo.lookup(key) {
         Lookup::Miss(pending) => pending,
         Lookup::Hit(_) => panic!("expected a memo miss"),
@@ -32,7 +32,7 @@ fn d2_16_authoritative_memo_has_bounded_keys_capacity_and_error_policy() {
     assert!(memo.complete(second, &result("b", false)));
     assert_eq!(memo.len(), 2);
 
-    let first_key = Memo::key("read", &serde_json::json!({"path":"a"})).unwrap();
+    let first_key = memo.key("read", &serde_json::json!({"path":"a"})).unwrap();
     assert!(matches!(memo.lookup(first_key), Lookup::Hit(_)));
     let third = miss(&memo, "read", serde_json::json!({"path":"c"}));
     assert!(memo.complete(third, &result("c", false)));
@@ -47,13 +47,16 @@ fn d2_16_authoritative_memo_has_bounded_keys_capacity_and_error_policy() {
     assert_eq!(memo.len(), 2, "error results are never cached");
 
     let oversized = "x".repeat(64 * 1024 + 1);
-    assert!(Memo::key("read", &serde_json::json!({"path":oversized})).is_none());
-    assert!(Memo::key(&"x".repeat(257), &serde_json::json!({})).is_none());
+    assert!(
+        memo.key("read", &serde_json::json!({"path":oversized}))
+            .is_none()
+    );
+    assert!(memo.key(&"x".repeat(257), &serde_json::json!({})).is_none());
     let mut too_deep = serde_json::Value::Null;
     for _ in 0..34 {
         too_deep = serde_json::json!([too_deep]);
     }
-    assert!(Memo::key("read", &too_deep).is_none());
+    assert!(memo.key("read", &too_deep).is_none());
 }
 
 #[test]
@@ -72,7 +75,7 @@ fn d2_16_generation_token_rejects_a_read_completed_after_invalidation() {
 fn pinned_ttl_changes_real_memo_reuse_and_zero_disables_it() {
     let memo = Memo::with_capacity(2);
     memo.install_ttl_seconds(2).unwrap();
-    let key = Memo::key("read", &serde_json::json!({"path":"a"})).unwrap();
+    let key = memo.key("read", &serde_json::json!({"path":"a"})).unwrap();
     let base = std::time::Instant::now();
     let pending = match memo.lookup_at(key, base) {
         Lookup::Miss(pending) => pending,

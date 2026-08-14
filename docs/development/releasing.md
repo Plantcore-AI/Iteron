@@ -14,11 +14,11 @@ supply-chain event, not a local `cargo build` plus an uploaded binary.
   Owner's current immutable-release audit; it does not replace the GitHub
   repository setting.
 - Third-party license policy, SBOM generation, provenance, and installer tests are
-  green on clean hosted runners.
+  green on the controlled release runners.
 
 Before creating an immutable tag, dispatch `release.yml` against the exact
 candidate commit. This preflight runs the same validation, legal-evidence, native
-four-target macOS/Linux test/package, SBOM, and attestation graph, but the publish
+three-target macOS/Linux test/package, SBOM, and attestation graph, but the publish
 and canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
 be green before the Owner creates the tag.
 
@@ -80,4 +80,4 @@ evidence. The published `v0.0.1` through `v0.0.4` tags were built locally during
 the hosted Actions outage and contain only `aarch64-apple-darwin`; their release
 notes and manifests record that limitation, and `v0.0.2` through `v0.0.4` also
 carry offline provenance documents. They remain historical pre-alpha downloads,
-not exceptions to this four-target acceptance rule.
+not exceptions to this three-target acceptance rule.

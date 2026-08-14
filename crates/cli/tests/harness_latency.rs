@@ -38,17 +38,18 @@ use std::time::Duration;
 const PROVIDER_ID: &str = "latency";
 const MODEL_ID: &str = "latency-model";
 const TEST_KEY_ENV: &str = "ITERON_LATENCY_TEST_KEY";
+const FIXTURE_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Turns in the fixed script. Enough that per-turn amortization is meaningful and the record has
-/// several fsyncs to pay for; small enough that the job stays under a minute.
+/// several fsyncs to pay for; small enough that the DGX job stays under two minutes.
 const SCRIPT_TURNS: u32 = 6;
 /// How many times the script is replayed. The minimum across these is the measurement.
 const REPLAYS: usize = 5;
-/// The floor observed while calibrating this job: min-of-`REPLAYS` on a debug build measured
-/// 58.7 / 60.2 / 61.6 ms per turn across three sittings. Under 5% spread is exactly the property
-/// that makes a budget of this shape usable at all.
-const CALIBRATED_FLOOR_US_PER_TURN: u64 = 60_000;
+/// The floor observed on the Linux ARM64 DGX runner that owns this lane: min-of-`REPLAYS` on the
+/// debug build measured 1.163 s per turn. Round up to 1.2 s so ordinary runner noise stays below
+/// the headroom while a 2x regression still cannot pass.
+const CALIBRATED_FLOOR_US_PER_TURN: u64 = 1_200_000;
 /// Headroom over the calibrated floor, in percent. Below 200 by construction, checked at compile
 /// time: at or above a doubling, the regression this job exists to catch would pass.
 const BUDGET_HEADROOM_PERCENT: u64 = 175;
@@ -90,7 +91,12 @@ impl Scratch {
                 "key_env": TEST_KEY_ENV,
                 "enabled": true,
                 "catalog": false,
-                "models": [MODEL_ID]
+                "models": [MODEL_ID],
+                "model_capabilities": {
+                    (MODEL_ID): {
+                        "context_window_tokens": FIXTURE_CONTEXT_WINDOW_TOKENS
+                    }
+                }
             }]
         });
         std::fs::write(

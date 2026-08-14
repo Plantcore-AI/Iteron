@@ -212,7 +212,7 @@
       "native": true,
       "workflow": {
         "kind": "workflow",
-        "path": ".github/workflows/release.yml",
+        "path": ".github/workflows/runtime-receipt.yml",
         "selector": "x86_64-apple-darwin"
       }
     },

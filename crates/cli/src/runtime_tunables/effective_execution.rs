@@ -11,14 +11,28 @@ use iteron_protocol::{Capability, Effort, capability_set::CapabilitySet};
 use iteron_tunables::{ResolutionValue, RuntimeGetterId};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 pub(crate) fn decode(
     view: &EffectiveTunablesView,
 ) -> Result<ExecutionRuntimePolicy, EffectiveExecutionError> {
-    view.with_getter(RuntimeGetterId::EffectiveExecution, || decode_inner(view))
+    decode_with_effort_policy(
+        view,
+        &super::effective_core::EffortRuntimePolicy::compiled(),
+    )
+}
+
+pub(crate) fn decode_with_effort_policy(
+    view: &EffectiveTunablesView,
+    effort_policy: &super::effective_core::EffortRuntimePolicy,
+) -> Result<ExecutionRuntimePolicy, EffectiveExecutionError> {
+    view.with_getter(RuntimeGetterId::EffectiveExecution, || {
+        decode_inner(view, effort_policy)
+    })
 }
 
 fn decode_inner(
     view: &EffectiveTunablesView,
+    effort_policy: &super::effective_core::EffortRuntimePolicy,
 ) -> Result<ExecutionRuntimePolicy, EffectiveExecutionError> {
     let route_topology = match view.enumeration("route_topology")? {
         "direct" => RouteTopology::Direct,
@@ -33,14 +47,17 @@ fn decode_inner(
     let admission = view.object("admission")?;
     let turn = view.object("writer_fan_turn_split")?;
     let wall = view.object("wall_split")?;
+    let fan_token_share = decimal_ratio(view, "token_split")?;
     let direct = view.object("direct_child_allocation")?;
     let workflow = view.object("workflow_aggregate")?;
     let schema_retry = view.object("schema_retry_jitter")?;
     let sibling_cancellation = view.object("speculative_sibling_cancellation")?;
     let quorum = view.object("early_stop_quorum_policy")?;
     let task_retry = view.object("task_retry_reassignment_policy")?;
+    let write_set = view.object("write_set_conflict_admission")?;
+    decode_join_reduce_invariant(view)?;
     let decomposition = optional_object(view, "decomposition_profile")?
-        .map(decode_decomposition)
+        .map(|fields| decode_decomposition(fields, effort_policy))
         .transpose()?;
     let fan_breadth = optional_integer(view, "fan_breadth")?
         .map(|value| usize::try_from(value).map_err(|_| range("fan_breadth", "$")))
@@ -131,6 +148,37 @@ fn decode_inner(
             fan_share: ratio(wall, "wall_split", "fan")?,
             minimum_fan_seconds: u64_field(wall, "wall_split", "minimum_fan_seconds")?,
         },
+        fan_token_share,
+        effecting_tool_admission: crate::runtime::EffectingToolAdmissionPolicy {
+            max_concurrency: usize::try_from(view.integer("effecting_tool_concurrency")?)
+                .map_err(|_| range("effecting_tool_concurrency", "$"))?,
+            declared_set_required: bool_field(
+                write_set,
+                "write_set_conflict_admission",
+                "declared_set_required",
+            )?,
+            overlap: match enum_field(write_set, "write_set_conflict_admission", "overlap")? {
+                "reject" => "reject",
+                "serialize" => "serialize",
+                value => {
+                    return Err(EffectiveExecutionError::UnknownEnum(
+                        "write_set_conflict_admission",
+                        value.into(),
+                    ));
+                }
+            },
+            unknown_set: match enum_field(write_set, "write_set_conflict_admission", "unknown_set")?
+            {
+                "reject" => "reject",
+                "serialize" => "serialize",
+                value => {
+                    return Err(EffectiveExecutionError::UnknownEnum(
+                        "write_set_conflict_admission",
+                        value.into(),
+                    ));
+                }
+            },
+        },
         direct_child_allocation: DirectChildAllocationPolicy {
             writer_share: ratio(direct, "direct_child_allocation", "writer_turn")?,
             strictly_dominant_writer: bool_field(
@@ -207,12 +255,44 @@ fn decode_inner(
         .map_err(EffectiveExecutionError::InvalidOwner)?,
     };
     policy
-        .validate()
+        .validate_with_effort_policy(effort_policy)
         .map_err(EffectiveExecutionError::InvalidOwner)
+}
+
+fn decimal_ratio(
+    view: &EffectiveTunablesView,
+    family: &'static str,
+) -> Result<ExactRatio, EffectiveExecutionError> {
+    let ResolutionValue::Decimal { value } = view.value(family)? else {
+        return Err(EffectiveExecutionError::WrongType(family, "$".into()));
+    };
+    let numerator = u32::try_from(value.coefficient)
+        .map_err(|_| EffectiveExecutionError::Range(family, "$".into()))?;
+    let denominator = 10_u32
+        .checked_pow(u32::from(value.scale))
+        .ok_or_else(|| EffectiveExecutionError::Range(family, "$".into()))?;
+    ExactRatio::new(numerator, denominator).map_err(EffectiveExecutionError::InvalidOwner)
+}
+
+fn decode_join_reduce_invariant(
+    view: &EffectiveTunablesView,
+) -> Result<(), EffectiveExecutionError> {
+    let family = "join_reduce";
+    let fields = view.object(family)?;
+    if enum_field(fields, family, "join")? != "wait_all"
+        || enum_field(fields, family, "order")? != "declaration"
+        || bool_field(fields, family, "include_failed_evidence")?
+    {
+        return Err(EffectiveExecutionError::InvalidOwner(
+            "join/reduce is pinned to complete declaration coverage, deterministic order, and non-evidence failure diagnostics",
+        ));
+    }
+    Ok(())
 }
 
 fn decode_decomposition(
     fields: &BTreeMap<String, ResolutionValue>,
+    effort_policy: &super::effective_core::EffortRuntimePolicy,
 ) -> Result<DecompositionRuntimePolicy, EffectiveExecutionError> {
     let family = "decomposition_profile";
     let effort = enum_field(fields, family, "effort")?;
@@ -223,7 +303,9 @@ fn decode_decomposition(
         effort,
         thinking_tokens: u32_field(fields, family, "thinking_tokens")?,
     };
-    if policy.max_output_tokens == 0 || policy.thinking_tokens > policy.effort.thinking_budget() {
+    if policy.max_output_tokens == 0
+        || policy.thinking_tokens > effort_policy.thinking_budget(policy.effort)
+    {
         return Err(EffectiveExecutionError::InvalidOwner(
             "decomposition profile exceeds its physical effort envelope",
         ));

@@ -725,15 +725,3 @@ fn field_path_exists(fields: &[SchemaField], path: &str) -> bool {
         matches!(field.domain, FieldDomain::Object { fields, .. } if field_path_exists(fields, tail))
     })
 }
-
-pub(super) fn has_provider_ceiling(schema: ValueSchema) -> bool {
-    schema.rules.iter().any(|rule| {
-        matches!(
-            rule,
-            CrossFieldRule::ExternalCeiling {
-                ceiling: ExternalCeiling::ProviderCapability,
-                ..
-            }
-        )
-    })
-}

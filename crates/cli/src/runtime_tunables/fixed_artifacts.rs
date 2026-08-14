@@ -45,6 +45,7 @@ const CHECKPOINT_RECONSTRUCTED_FIXED_FAMILIES: &[&str] = &[
     "subagent_effort_inheritance",
     "child_ceiling",
     "report_budget",
+    "join_reduce",
     "environment_snapshot",
     "provider_connect_tls_timeout",
     "provider_request_total_deadline",
@@ -163,6 +164,12 @@ impl FixedAuthorityReceipts {
         else {
             return Err(FixedArtifactError::UnexpectedAuthoritySample(sample.family));
         };
+        // Adapters retain their exact live sample while a formerly fixed non-Pin family migrates
+        // to the external profile plane. Effective families are validated by owner/getter
+        // receipts instead, so the fixed receipt set intentionally ignores that legacy sample.
+        if matches!(family.runtime_binding, RuntimeBindingSpec::Effective { .. }) {
+            return Ok(());
+        }
         let RuntimeBindingSpec::Fixed { authority, .. } = family.runtime_binding else {
             return Err(FixedArtifactError::UnexpectedAuthoritySample(sample.family));
         };
@@ -230,6 +237,7 @@ pub(crate) fn checkpoint_fixed_consumer(family: &str) -> Option<RuntimeGetterId>
         | "subagent_effort_inheritance"
         | "child_ceiling"
         | "report_budget"
+        | "join_reduce"
         | "spawn_depth_control"
         | "task_priority_scheduling" => Some(RuntimeGetterId::EffectiveExecution),
         "fan_concurrency"
@@ -300,7 +308,7 @@ mod tests {
             .iter()
             .filter(|family| matches!(family.runtime_binding, RuntimeBindingSpec::Fixed { .. }))
             .collect::<Vec<_>>();
-        assert_eq!(fixed.len(), 63, "the closed FixedHidden inventory drifted");
+        assert_eq!(fixed.len(), 23, "the closed FixedHidden inventory drifted");
         for family in fixed {
             let checkpoint = CHECKPOINT_RECONSTRUCTED_FIXED_FAMILIES.contains(&family.id);
             let content = requires_live_receipt(family.id);
@@ -354,13 +362,11 @@ mod tests {
         ));
         assert!(matches!(
             wrong.observe(FixedAuthoritySample {
-                family: "request_output_cap",
-                authority: FixedAuthorityId::StrategyInvariant,
+                family: "join_reduce",
+                authority: FixedAuthorityId::RuntimeInvariant,
                 value: ResolutionValue::Integer { value: 1 },
             }),
-            Err(FixedArtifactError::UnexpectedAuthoritySample(
-                "request_output_cap"
-            ))
+            Err(FixedArtifactError::UnexpectedAuthoritySample("join_reduce"))
         ));
     }
 }

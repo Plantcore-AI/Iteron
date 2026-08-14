@@ -36,7 +36,10 @@ pub(super) async fn dispatch_slash_command<B: ratatui::backend::Backend>(
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     cmd: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     app.push(bold(app.theme.accent), format!("/{cmd}"));
     let routed = match commands::dispatch(cmd) {
         Ok(routed) => routed,

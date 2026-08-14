@@ -200,6 +200,12 @@ enum ToolOutputOwner {
     Mcp,
 }
 
+#[derive(Clone, Copy)]
+enum ToolOrigin {
+    BuiltIn,
+    External,
+}
+
 /// The tool registry. Enforces the purity/capability coupling at registration and memoizes PURE
 /// tool results in a fixed-bounded generation cache. Every completed EFFECTING attempt advances
 /// the generation, so a registry-mediated write invalidates prior reads and raced old-generation
@@ -247,6 +253,13 @@ impl Registry {
         self.memo.policy()
     }
 
+    pub fn install_pure_memo_cache_policy(
+        &self,
+        policy: PureMemoCachePolicy,
+    ) -> Result<(), &'static str> {
+        self.memo.install_policy(policy)
+    }
+
     /// Build the default coding-agent tool set rooted at `root` (the repo the agent works in).
     pub fn coding_agent(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
         Self::coding_agent_with_lsp_routes(root, Vec::new())
@@ -282,6 +295,10 @@ impl Registry {
         shell::register(&mut r)?;
         r.process_control = Some(process::register(&mut r)?);
         r.lsp_control = lsp::register(&mut r, lsp_routes)?;
+        // `lsp_query` uses the outcome-aware external-executor adapter because a third-party
+        // language server may leave an uncertain effect. Its ToolSpec is nevertheless compiled
+        // into Iteron, so classify just that description as built-in before catalog publication.
+        r.resolve_registered_builtin_description("lsp_query");
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;
@@ -353,11 +370,41 @@ impl Registry {
         Ok(r)
     }
 
-    /// Register a tool, checking the type rules (ADR-007 R16).
-    pub fn register(&mut self, mut tool: Tool) -> Result<(), ToolError> {
-        tool.spec.description =
-            iteron_tunables::prompt_artifact("prompt/tool_description@v1", &tool.spec.description)
-                .to_owned();
+    /// Register an externally supplied tool, checking the type rules (ADR-007 R16).
+    ///
+    /// External and MCP descriptions are untrusted provider input. They deliberately bypass the
+    /// built-in description tunables namespace even if their spelling resembles an internal tool.
+    pub fn register(&mut self, tool: Tool) -> Result<(), ToolError> {
+        self.register_with_origin(tool, ToolOrigin::External)
+    }
+
+    fn resolve_registered_builtin_description(&mut self, canonical_name: &str) {
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| tool.spec.name == canonical_name)
+        {
+            let description =
+                iteron_tunables::tool_description(canonical_name, &tool.spec.description)
+                    .to_owned();
+            replace_description_only(&mut tool.spec, &description);
+        }
+    }
+
+    /// The one registration boundary. Description resolution is the only mutation performed for
+    /// built-ins; name, schema, purity, capability and all downstream permission/trust handling
+    /// remain the values supplied by the concrete tool declaration.
+    fn register_with_origin(
+        &mut self,
+        mut tool: Tool,
+        origin: ToolOrigin,
+    ) -> Result<(), ToolError> {
+        if matches!(origin, ToolOrigin::BuiltIn) {
+            let description =
+                iteron_tunables::tool_description(&tool.spec.name, &tool.spec.description)
+                    .to_owned();
+            replace_description_only(&mut tool.spec, &description);
+        }
         let s = &tool.spec;
         // The load-bearing invariant: purity licenses early dispatch, so a Pure tool that can
         // egress or execute code is a contradiction we refuse at registration.
@@ -796,7 +843,7 @@ impl Registry {
         // during exploration is served from cache instead of hitting the filesystem again.
         // Every registry-mediated effect bumps the generation; ambient changes are not inferred.
         if is_pure {
-            let pending = match Memo::key(&call.name, &call.input) {
+            let pending = match self.memo.key(&call.name, &call.input) {
                 Some(key) => match self.memo.lookup(key) {
                     Lookup::Hit(mut hit) => {
                         hit.tool_use_id = call.id.clone(); // this call's id, cached content
@@ -849,6 +896,23 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
+        self.push_tool_with_origin(spec, run, ToolOrigin::BuiltIn)
+    }
+
+    fn push_external_tool(
+        &mut self,
+        spec: ToolSpec,
+        run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        self.push_tool_with_origin(spec, run, ToolOrigin::External)
+    }
+
+    fn push_tool_with_origin(
+        &mut self,
+        spec: ToolSpec,
+        run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
+        origin: ToolOrigin,
+    ) -> Result<(), ToolError> {
         let adapted = move |call, root| {
             let future = run(call, root);
             registeredfut::box_it(async move {
@@ -858,11 +922,14 @@ impl Registry {
                 }
             })
         };
-        self.register(Tool {
-            spec,
-            run: Box::new(adapted),
-            output_owner: ToolOutputOwner::Runtime,
-        })
+        self.register_with_origin(
+            Tool {
+                spec,
+                run: Box::new(adapted),
+                output_owner: ToolOutputOwner::Runtime,
+            },
+            origin,
+        )
     }
 
     /// Public registration hook for an externally-sourced tool (e.g. an MCP tool wired by the
@@ -873,7 +940,7 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
-        self.push_tool(spec, run)
+        self.push_external_tool(spec, run)
     }
 
     /// Register an effect executor that can conservatively report an externally unknown outcome.
@@ -949,6 +1016,10 @@ impl Registry {
             output_owner: ToolOutputOwner::Mcp,
         })
     }
+}
+
+fn replace_description_only(spec: &mut ToolSpec, description: &str) {
+    spec.description = description.to_owned();
 }
 
 /// The name the kernel intercepts to spawn a read-only subagent (ADR-001 fan-out). Registered

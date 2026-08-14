@@ -19,11 +19,12 @@ pub const MAX_PROFILE_BYTES: usize = 1024 * 1024;
 /// Document schema version. Bumping it is a published-surface change.
 pub const PROFILE_DOCUMENT_SCHEMA_VERSION: u16 = 1;
 
-/// Replacement text for one addressable prompt artifact.
+/// Replacement text for one addressable model-visible artifact.
 ///
-/// A prompt artifact is model-visible text and nothing else. It carries no capability, changes no
-/// tool schema and renames nothing — that separation is the whole reason a prompt can be optimized
-/// by an untrusted process at all, and it is enforced at the point of use rather than assumed here.
+/// A prompt or built-in tool-description artifact is model-visible text and nothing else. It
+/// carries no capability, changes no tool schema and renames nothing — that separation is the whole
+/// reason it can be optimized by an untrusted process at all, and it is enforced at the point of
+/// use rather than assumed here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactOverride {
@@ -67,7 +68,7 @@ pub struct ProfileDocument {
     pub values: Vec<ProfileValue>,
     #[serde(default)]
     pub params: Vec<ParamAssignment>,
-    /// Prompt-artifact replacements. Empty for a purely numeric candidate.
+    /// Prompt and built-in tool-description replacements. Empty for a purely numeric candidate.
     #[serde(default)]
     pub artifacts: Vec<ArtifactOverride>,
 }
@@ -288,18 +289,10 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
             .iter()
             .find(|family| family.id == value.family)
             .ok_or_else(|| ProfileLoadError::UnknownFamily(value.family.clone()))?;
-        if family.implementation_status == crate::ImplementationStatus::FixedHidden {
+        if !family.is_profile_addressable() {
             return Err(ProfileLoadError::SealedFamily(family.id.to_owned()));
         }
-        if !matches!(
-            value.as_declared_source,
-            SourceKind::UserConfig | SourceKind::ProjectConfig
-        ) || !family
-            .source
-            .bindings
-            .iter()
-            .any(|binding| binding.kind == value.as_declared_source)
-        {
+        if family.profile_binding(value.as_declared_source).is_none() {
             return Err(ProfileLoadError::UnauthorizedSource {
                 family: family.id.to_owned(),
                 source: value.as_declared_source,
@@ -358,12 +351,16 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
     }
     let mut seen_artifacts = std::collections::BTreeSet::new();
     for override_entry in &document.artifacts {
-        let artifact = crate::export::PROMPT_ARTIFACTS
+        let prompt_artifact = crate::export::PROMPT_ARTIFACTS
             .iter()
-            .find(|artifact| artifact.id == override_entry.artifact)
+            .find(|artifact| artifact.id == override_entry.artifact);
+        let tool_artifact = crate::tool_text_artifact_by_id(&override_entry.artifact);
+        let (artifact_id, artifact_module) = prompt_artifact
+            .map(|artifact| (artifact.id, artifact.module))
+            .or_else(|| tool_artifact.map(|artifact| (artifact.id, artifact.module)))
             .ok_or_else(|| ProfileLoadError::UnknownArtifact(override_entry.artifact.clone()))?;
         if override_entry.text.trim().is_empty() {
-            return Err(ProfileLoadError::EmptyArtifact(artifact.id.to_owned()));
+            return Err(ProfileLoadError::EmptyArtifact(artifact_id.to_owned()));
         }
         if override_entry.text.len()
             > crate::param_integer(
@@ -372,7 +369,7 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
             )
         {
             return Err(ProfileLoadError::ArtifactTooLarge {
-                artifact: artifact.id.to_owned(),
+                artifact: artifact_id.to_owned(),
                 bytes: override_entry.text.len(),
                 max: crate::param_integer(
                     "tunables.profile_io.max_artifact_text_bytes",
@@ -380,16 +377,16 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
                 ),
             });
         }
-        if !seen_artifacts.insert(artifact.id) {
-            return Err(ProfileLoadError::DuplicateArtifact(artifact.id.to_owned()));
+        if !seen_artifacts.insert(artifact_id) {
+            return Err(ProfileLoadError::DuplicateArtifact(artifact_id.to_owned()));
         }
         if let Some(scope) = document.module_scope
-            && artifact.module != scope
+            && artifact_module != scope
         {
             return Err(ProfileLoadError::OutsideModuleScope {
-                id: artifact.id.to_owned(),
+                id: artifact_id.to_owned(),
                 scope,
-                actual: artifact.module,
+                actual: artifact_module,
             });
         }
     }

@@ -78,7 +78,7 @@ impl Agent {
         };
         let fan_tokens = self
             .remaining_provider_tokens()
-            .map(|remaining| remaining / 2);
+            .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining));
         if fan_tokens == Some(0) {
             self.emit(
                 TurnId(self.seq_turn),

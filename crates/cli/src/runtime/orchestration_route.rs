@@ -294,10 +294,10 @@ impl Agent {
     /// Malformed/refusing replacements fail closed to one permit; no slot can exceed the runtime's
     /// existing product ceiling.
     pub(super) fn scheduled_tool_concurrency(&mut self) -> Result<usize, KernelError> {
-        let physical_ceiling = super::effecting_tool_admission_policy().max_concurrency;
-        let max_concurrency = u32::try_from(self.max_tool_concurrency.min(physical_ceiling))
-            .unwrap_or(u32::MAX)
-            .max(1);
+        let max_concurrency =
+            u32::try_from(self.max_tool_concurrency.min(self.pure_tool_concurrency))
+                .unwrap_or(u32::MAX)
+                .max(1);
         let opportunity = self
             .begin_policy_decision(policy_evidence::SCHEDULER_SLOT, Some(TurnId(self.seq_turn)))?;
         let observation = match iteron_sched::SchedulerSlotObservation::baseline(

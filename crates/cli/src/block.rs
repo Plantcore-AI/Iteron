@@ -534,12 +534,18 @@ pub(crate) fn render_assistant_doc(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     const GUTTER: u16 = 2;
-    if width < iteron_tunables::param_integer("cli.block.gutter", GUTTER).saturating_add(1) {
+    if width
+        < iteron_tunables::param_integer("cli.block.render_assistant_doc.gutter", GUTTER)
+            .saturating_add(1)
+    {
         return render_doc(doc, width, theme);
     }
     render_doc(
         doc,
-        width.saturating_sub(iteron_tunables::param_integer("cli.block.gutter", GUTTER)),
+        width.saturating_sub(iteron_tunables::param_integer(
+            "cli.block.render_assistant_doc.gutter",
+            GUTTER,
+        )),
         theme,
     )
     .into_iter()
@@ -566,16 +572,28 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
     hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
     const GUTTER: u16 = 2;
-    if width < iteron_tunables::param_integer("cli.block.gutter", GUTTER).saturating_add(1) {
+    if width
+        < iteron_tunables::param_integer(
+            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
+            GUTTER,
+        )
+        .saturating_add(1)
+    {
         return render_doc_with_hyperlinks(doc, width, theme, hyperlinks);
     }
     let mut rendered = render_doc_with_hyperlinks(
         doc,
-        width.saturating_sub(iteron_tunables::param_integer("cli.block.gutter", GUTTER)),
+        width.saturating_sub(iteron_tunables::param_integer(
+            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
+            GUTTER,
+        )),
         theme,
         hyperlinks,
     );
-    rendered.shift_columns(iteron_tunables::param_integer("cli.block.gutter", GUTTER));
+    rendered.shift_columns(iteron_tunables::param_integer(
+        "cli.block.render_assistant_doc_with_hyperlinks.gutter",
+        GUTTER,
+    ));
     for (index, row) in rendered.lines.iter_mut().enumerate() {
         let mut spans = vec![Span::styled(
             if index == 0 { "● " } else { "  " },

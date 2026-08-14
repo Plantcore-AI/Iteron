@@ -51,11 +51,6 @@ pub(crate) fn live_fixed_authority_samples() -> Result<Vec<FixedAuthoritySample>
                 value: token_split()?,
             },
         },
-        FixedAuthoritySample {
-            family: "join_reduce",
-            authority: FixedAuthorityId::StrategyInvariant,
-            value: join_reduce_owner_value(),
-        },
     ])
 }
 
@@ -950,7 +945,7 @@ pub(super) fn apply(
         builder,
         report,
         "join_reduce",
-        FixedAuthorityId::StrategyInvariant,
+        FixedAuthorityId::RuntimeInvariant,
         join_reduce.clone(),
         join_reduce,
     )?;
