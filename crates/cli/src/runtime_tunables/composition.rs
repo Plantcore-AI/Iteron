@@ -429,8 +429,15 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
     );
     active_gap_ids.extend(extension.blocking_gaps().map(|gap| gap.family_id));
     if !active_gap_ids.is_empty() {
+        // Name this as a local precondition. It reads as a credential or provider failure
+        // otherwise, because it is raised on the same path and at the same moment as one, and an
+        // operator staring at it reasonably concludes their key was never sent. It was not sent,
+        // and neither was anything else: this binding is resolved before any request is built.
         anyhow::bail!(
-            "runtime tunables owner facts are incomplete for active families: {}",
+            "runtime tunables owner facts are incomplete for active families: {}. \
+             No provider was contacted and no credential was used: this run was refused locally, \
+             before any request was built. Supply the missing fact for each family listed, or \
+             select a model whose context window is already known.",
             active_gap_ids.into_iter().collect::<Vec<_>>().join(", ")
         );
     }

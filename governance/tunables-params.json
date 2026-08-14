@@ -5292,17 +5292,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 587,
+          "line": 603,
           "evidence": "param_str runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1488,
+          "line": 1517,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1500,
+          "line": 1529,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5328,22 +5328,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 588,
+          "line": 604,
           "evidence": "param_str runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 632,
+          "line": 648,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1489,
+          "line": 1518,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1501,
+          "line": 1530,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5369,7 +5369,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 619,
+          "line": 635,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5395,17 +5395,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1853,
+          "line": 1882,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3536,
+          "line": 3582,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3749,
+          "line": 3795,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5432,22 +5432,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1891,
+          "line": 1920,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1909,
+          "line": 1938,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2195,
+          "line": 2241,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2480,
+          "line": 2526,
           "evidence": "Rust path reference"
         }
       ]
@@ -5472,7 +5472,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3408,
+          "line": 3454,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5499,7 +5499,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 939,
+          "line": 955,
           "evidence": "Rust path reference"
         }
       ]
@@ -5525,7 +5525,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 583,
+          "line": 599,
           "evidence": "Rust path reference"
         }
       ]
@@ -5554,7 +5554,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3397,
+          "line": 3443,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5581,7 +5581,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2367,
+          "line": 2413,
           "evidence": "Rust path reference"
         }
       ]
@@ -5606,7 +5606,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 406,
+          "line": 422,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5632,7 +5632,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3410,
+          "line": 3456,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5658,7 +5658,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 988,
+          "line": 1004,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5684,7 +5684,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3655,
+          "line": 3701,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5710,17 +5710,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2325,
+          "line": 2371,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3797,
+          "line": 3843,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4201,
+          "line": 4247,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5946,7 +5946,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1153,
+          "line": 1169,
           "evidence": "Rust path reference"
         },
         {
@@ -5956,7 +5956,7 @@
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 202,
+          "line": 293,
           "evidence": "Rust path reference"
         },
         {
@@ -6084,102 +6084,102 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1010,
+          "line": 1026,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1074,
+          "line": 1090,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1143,
+          "line": 1159,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1234,
+          "line": 1250,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1297,
+          "line": 1313,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1366,
+          "line": 1382,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1458,
+          "line": 1487,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1526,
+          "line": 1555,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1538,
+          "line": 1567,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1551,
+          "line": 1580,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1579,
+          "line": 1608,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1592,
+          "line": 1621,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1601,
+          "line": 1630,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1633,
+          "line": 1662,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1660,
+          "line": 1689,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3078,
+          "line": 3124,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3107,
+          "line": 3153,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3569,
+          "line": 3615,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3599,
+          "line": 3645,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3635,
+          "line": 3681,
           "evidence": "Rust path reference"
         },
         {
@@ -6194,27 +6194,27 @@
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 235,
+          "line": 326,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 289,
+          "line": 380,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 338,
+          "line": 429,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 366,
+          "line": 457,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 373,
+          "line": 464,
           "evidence": "Rust path reference"
         },
         {
@@ -6378,12 +6378,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1203,
+          "line": 1219,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1362,
+          "line": 1378,
           "evidence": "macro token reference"
         },
         {
@@ -6509,12 +6509,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1204,
+          "line": 1220,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1361,
+          "line": 1377,
           "evidence": "macro token reference"
         },
         {
@@ -7168,17 +7168,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3010,
+          "line": 3051,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3300,
+          "line": 3341,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3320,
+          "line": 3361,
           "evidence": "Rust path reference"
         }
       ]
@@ -7559,12 +7559,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2976,
+          "line": 3017,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3221,
+          "line": 3262,
           "evidence": "Rust path reference"
         }
       ]
@@ -7617,7 +7617,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2667,
+          "line": 2708,
           "evidence": "Rust path reference"
         }
       ]
@@ -7643,7 +7643,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2666,
+          "line": 2707,
           "evidence": "Rust path reference"
         }
       ]
@@ -8067,12 +8067,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2990,
+          "line": 3031,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3238,
+          "line": 3279,
           "evidence": "Rust path reference"
         }
       ]
@@ -8098,12 +8098,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2969,
+          "line": 3010,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3240,
+          "line": 3281,
           "evidence": "Rust path reference"
         }
       ]
@@ -8129,17 +8129,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2680,
+          "line": 2721,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2687,
+          "line": 2728,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2694,
+          "line": 2735,
           "evidence": "Rust path reference"
         }
       ]
@@ -8165,17 +8165,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2679,
+          "line": 2720,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2686,
+          "line": 2727,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2693,
+          "line": 2734,
           "evidence": "Rust path reference"
         }
       ]

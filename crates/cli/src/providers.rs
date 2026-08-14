@@ -2236,6 +2236,29 @@ impl ProviderDirectory {
         self.entries.iter().find(|entry| entry.id() == provider_id)
     }
 
+    /// Whether this provider has a credential available right now, from any source.
+    pub fn has_credential(&self, provider_id: &str) -> bool {
+        self.entry(provider_id)
+            .is_some_and(|entry| entry.instance.has_credential())
+    }
+
+    /// The first provider holding a credential, in built-ins-then-configured order.
+    ///
+    /// A build-time default cannot know which account the operator actually has, so on a fresh
+    /// machine it names a provider they may never have signed up for and the first run dies on a
+    /// missing variable. This answers the question the constant was standing in for: of the routes
+    /// this machine can actually authenticate, which comes first.
+    ///
+    /// Deliberately credential presence only. It reads no catalog and makes no request, so it is
+    /// safe to call before discovery, and a present-but-rejected key still resolves here and then
+    /// fails loudly on its own terms rather than being silently skipped.
+    pub fn first_credentialed_provider(&self) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.instance.has_credential())
+            .map(|entry| entry.id())
+    }
+
     pub fn health(&self, provider_id: &str) -> ProviderHealth {
         self.health.get(provider_id)
     }
@@ -2436,6 +2459,24 @@ impl ProviderDirectory {
         match self.blocked_reason(entry) {
             Some(reason) => {
                 let remedy = match self.health(entry.id()).availability {
+                    // Nothing on this machine can authenticate anywhere: that is a setup state,
+                    // not a fault of whichever provider the fallback happened to name. Reporting
+                    // it as one provider's problem sends a first-time operator to sign up with a
+                    // vendor chosen at build time, so say what is actually true and list every
+                    // variable this configuration would honour.
+                    AccountAvailability::MissingCredential
+                        if self.first_credentialed_provider().is_none() =>
+                    {
+                        format!(
+                            ". No provider on this machine has a credential yet, so this is a \
+                             setup step rather than a problem with `{provider_id}`.\n\
+                             Any one of these will do:\n  {}\n\
+                             For `{provider_id}`: run `iteron setup --byok {provider_id}`, or \
+                             without a terminal: printenv <VAR> | iteron setup --byok \
+                             {provider_id} --stdin",
+                            self.credential_env_names().join(", ")
+                        )
+                    }
                     AccountAvailability::MissingCredential => format!(
                         "; run `iteron setup --byok {provider_id}`, or set it in the environment"
                     ),
@@ -3672,6 +3713,47 @@ mod tests {
                 source: metadata.glm_catalog_source().into(),
             },
         }
+    }
+
+    /// A build-time default cannot know which account the machine has. `first_credentialed_provider`
+    /// answers the question that constant was standing in for, using local credential presence
+    /// only, so it is safe to call before any discovery and cannot depend on the network.
+    #[tokio::test]
+    async fn the_first_credentialed_provider_is_the_one_that_can_authenticate() {
+        let none = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
+            .await
+            .unwrap();
+        assert_eq!(none.first_credentialed_provider(), None);
+        assert!(!none.has_credential("glm"));
+        assert!(
+            !none.has_credential("a-provider-that-does-not-exist"),
+            "an unknown id has no credential rather than panicking"
+        );
+
+        let some =
+            ProviderDirectory::discover_entries(vec![glm_static_entry(Some("sk-1".into()))], None)
+                .await
+                .unwrap();
+        assert_eq!(some.first_credentialed_provider(), Some("glm"));
+        assert!(some.has_credential("glm"));
+    }
+
+    /// With nothing credentialed anywhere, the failure is a setup step, not a fault of whichever
+    /// provider the build-time fallback happened to name. It still has to name that provider's own
+    /// remedy, because that is the one the operator is looking at.
+    #[tokio::test]
+    async fn an_uncredentialed_machine_is_told_it_is_a_setup_step() {
+        let directory = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
+            .await
+            .unwrap();
+        let message = directory.resolution_error("glm");
+        assert!(message.contains("setup step"), "{message}");
+        assert!(message.contains("GLM_API_KEY"), "{message}");
+        assert!(message.contains("iteron setup --byok glm"), "{message}");
+        assert!(
+            message.contains("--stdin"),
+            "the terminal-free form must be reachable from the error: {message}"
+        );
     }
 
     #[test]

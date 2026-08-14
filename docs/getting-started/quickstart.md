@@ -16,9 +16,11 @@ The examples below use `/path/to/Iteron/target/release/iteron`. Replace it with
 
 ## 2. Set up a provider credential
 
-The built-in default provider is `glm`. Its credential environment variable is
-`GLM_API_KEY`. The supported BYOK wizard validates a key before writing it to a
-private operator-owned file:
+With no provider selected, Iteron routes to the first built-in provider that has
+a credential, so exporting one variable is enough to start. `glm` and its
+`GLM_API_KEY` are the last-resort fallback, used only when nothing on the machine
+can authenticate. The supported BYOK wizard validates a key before writing it to
+a private operator-owned file:
 
 ```sh
 iteron setup --byok glm
