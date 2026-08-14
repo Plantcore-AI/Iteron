@@ -116,6 +116,8 @@ nav:
       - Provider matrix: reference/providers.md
       - Static provider metadata: reference/provider-metadata.md
       - Tunable-family registry: reference/tunables.md
+      - External research harness: reference/external-harness.md
+      - Terminal-Bench 2.1 adapter: reference/terminal-bench-2.1.md
       - Language-server tools: reference/language-server-tools.md
       - Output formats: reference/output-formats.md
       - Agent definitions: reference/agent-definitions.md
@@ -143,6 +145,7 @@ nav:
           - Control, benchmark, tunables, and trainable harness plan: development/control-benchmark-harness-implementation-plan.md
           - Hooks, OpenTelemetry, memory, and context observability plan: development/observability-memory-context-implementation-plan.md
           - Trainable harness runtime acceptance: development/trainable-harness-runtime-acceptance.md
+          - DeepSeek Harness gap audit: development/deepseek-harness-gap-audit.md
           - Public history audit: development/public-history-audit.md
           - Releasing: development/releasing.md
       - License: project/license.md
