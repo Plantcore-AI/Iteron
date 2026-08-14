@@ -20,6 +20,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  GH_CLI_LINUX_ARM64_SHA256: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+  GH_CLI_VERSION: 2.97.0
   RUST_VERSION: 1.90.0
   # cargo-about invokes Cargo as a child process, so pin the ambient rustup
   # selection in addition to explicit `cargo +VERSION` workflow commands.
@@ -46,6 +48,23 @@ jobs:
           --profile minimal
           --component clippy
           --component rustfmt
+      - name: Install the pinned GitHub CLI with release verification support
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root=$(mktemp -d "$RUNNER_TEMP/iteron-gh-cli.XXXXXX")
+          archive=$tool_root/gh.tar.gz
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_arm64.tar.gz"
+          printf '%s  %s\n' "$GH_CLI_LINUX_ARM64_SHA256" "$archive" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$archive" --directory "$tool_root"
+          gh_root=$tool_root/gh_${GH_CLI_VERSION}_linux_arm64
+          test -x "$gh_root/bin/gh"
+          "$gh_root/bin/gh" release verify --help >/dev/null
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
       - name: Validate version and release source commit
         id: metadata
         shell: bash
