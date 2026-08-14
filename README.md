@@ -8,6 +8,10 @@
 </p>
 
 <p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md"><strong>简体中文</strong></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Plantcore-AI/Iteron/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/Iteron/ci.yml?branch=main&amp;label=CI&amp;style=flat-square"></a>
   <a href="https://github.com/Plantcore-AI/Iteron/actions/workflows/docs.yml"><img alt="Documentation" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/Iteron/docs.yml?branch=main&amp;label=docs&amp;style=flat-square"></a>
   <a href="https://github.com/Plantcore-AI/Iteron/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Plantcore-AI/Iteron?display_name=tag&amp;sort=semver&amp;style=flat-square"></a>
@@ -106,13 +110,7 @@ reach the runtime only through held-out evaluation, shadow, canary, and explicit
 human promotion. See the [architecture guide](docs/architecture.md) for the
 current implementation boundary and extraction path.
 
-### English
-
 ![Iteron target architecture in English](docs/assets/architecture/iteron-architecture-en.png)
-
-### 中文
-
-![Iteron 目标架构中文版](docs/assets/architecture/iteron-architecture-zh.png)
 
 ## What ships today
 
