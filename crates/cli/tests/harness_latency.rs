@@ -38,6 +38,7 @@ use std::time::Duration;
 const PROVIDER_ID: &str = "latency";
 const MODEL_ID: &str = "latency-model";
 const TEST_KEY_ENV: &str = "ITERON_LATENCY_TEST_KEY";
+const FIXTURE_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Turns in the fixed script. Enough that per-turn amortization is meaningful and the record has
@@ -90,7 +91,12 @@ impl Scratch {
                 "key_env": TEST_KEY_ENV,
                 "enabled": true,
                 "catalog": false,
-                "models": [MODEL_ID]
+                "models": [MODEL_ID],
+                "model_capabilities": {
+                    (MODEL_ID): {
+                        "context_window_tokens": FIXTURE_CONTEXT_WINDOW_TOKENS
+                    }
+                }
             }]
         });
         std::fs::write(
