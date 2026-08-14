@@ -27,6 +27,11 @@ class CiTopologyTest(unittest.TestCase):
         self.assertGreaterEqual(
             ci.count("runs-on: [self-hosted, Linux, ARM64, dgx]"), 10
         )
+        self.assertEqual(
+            ci.count("CARGO_TARGET_DIR=/var/tmp/iteron-ci-target/%s"),
+            5,
+        )
+        self.assertEqual(ci.count('"$RUNNER_NAME" >> "$GITHUB_ENV"'), 5)
         self.assertIn("External fork code is not permitted", ci)
         self.assertIn("External fork pull requests require", review)
         self.assertEqual(ci.count("git worktree prune --expire now"), 1)
