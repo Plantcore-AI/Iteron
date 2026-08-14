@@ -531,6 +531,15 @@ exit 1
             "x86_64-unknown-linux-musl",
         ):
             self.assertIn(f"--target {target}", workflow)
+        self.assertIn(
+            "CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc", workflow
+        )
+        self.assertIn(
+            "AR_x86_64_unknown_linux_musl: x86_64-linux-musl-ar", workflow
+        )
+        self.assertIn("command -v x86_64-linux-musl-ar", workflow)
+        self.assertNotIn("evidence_commit=9bd92b", workflow)
+        self.assertIn("head_sha=$candidate", workflow)
         self.assertIn("content-canary:", workflow)
         self.assertIn("release-manifest.receipt.json", workflow)
         self.assertIn("verify_release.py artifact", workflow)

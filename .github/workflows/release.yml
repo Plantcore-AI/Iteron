@@ -207,30 +207,11 @@ jobs:
           set -euo pipefail
           candidate=${{ steps.metadata.outputs.commit }}
           evidence_commit=$candidate
-          evidence_run=""
-
-          if [[ "$GITHUB_REF_NAME" == v0.0.5 ]]; then
-            # One-time bridge: the last protected main CI passed before the only
-            # subsequent changes, which are release policy/schema metadata and
-            # the PTY test's wait-for-completion fix. No production source moved.
-            evidence_commit=9bd92b636eb83ecf0d7da607c152f51a7eacebe0
-            evidence_run=31764791310
-            git merge-base --is-ancestor "$evidence_commit" "$candidate"
-            changed=$RUNNER_TEMP/core-ci-evidence-changed
-            git diff --name-only "$evidence_commit" "$candidate" \
-              | LC_ALL=C sort > "$changed"
-            diff -u <(printf '%s\n' \
-              .github/workflows/release.yml \
-              crates/cli/tests/tui_pty.rs \
-              governance/schema-compatibility.json \
-              | LC_ALL=C sort) "$changed"
-          else
-            evidence_run=$(gh api \
-              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$candidate&per_page=10" \
-              | jq -er --arg candidate "$candidate" \
-                '[.workflow_runs[] | select(.head_sha == $candidate)] | first | .id')
-            [[ "$evidence_run" =~ ^[1-9][0-9]*$ ]]
-          fi
+          evidence_run=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$candidate&per_page=10" \
+            | jq -er --arg candidate "$candidate" \
+              '[.workflow_runs[] | select(.head_sha == $candidate)] | first | .id')
+          [[ "$evidence_run" =~ ^[1-9][0-9]*$ ]]
 
           run_json=$RUNNER_TEMP/core-ci-evidence-run.json
           jobs_json=$RUNNER_TEMP/core-ci-evidence-jobs.json
@@ -644,6 +625,8 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-build
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-x86_64
+      CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
+      AR_x86_64_unknown_linux_musl: x86_64-linux-musl-ar
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/workspace -C strip=symbols
       SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source-date-epoch }}
     steps:
@@ -671,6 +654,7 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           command -v x86_64-linux-musl-gcc >/dev/null
+          command -v x86_64-linux-musl-ar >/dev/null
           command -v qemu-x86_64 >/dev/null
       - name: Install the pinned Rust target
         shell: bash
