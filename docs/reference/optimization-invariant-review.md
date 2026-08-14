@@ -42,7 +42,7 @@ array. Empty means pending, not approved.
 Fetch review evidence from GitHub in CI or another authenticated environment, then run:
 
 ```sh
-gh api --paginate --slurp repos/Plantcore-AI/core/pulls/PR_NUMBER/reviews > /tmp/invariant-reviews.json
+gh api --paginate --slurp repos/Plantcore-AI/Iteron/pulls/PR_NUMBER/reviews > /tmp/invariant-reviews.json
 cargo run --locked -p iteron-xtask -- tunables check-invariant-reviews \
   --reviews /tmp/invariant-reviews.json
 ```
@@ -52,3 +52,20 @@ evidence, wrong boundaries or overlays, non-owner actors, ledger-only/self-attes
 non-`APPROVED` or superseded GitHub reviews, wrong commits, and missing approval tokens. It reports
 every candidate still lacking a valid owning-human approval. The gate succeeds only when all
 current invariant candidates have external owner attestations.
+
+## Freeze manifest
+
+`governance/optimization-invariant-review-freeze.json` records the exact packet the owner is
+attesting to: the census digest, the boundary-registry digest, the candidate count, and one
+`approval_token` per ownership boundary. Each `batch_sha256` already commits to that boundary's
+exact candidate-id/evidence-digest pairs, so the manifest is complete evidence without restating
+every row.
+
+Regenerate it from the source-current packet and confirm it is unchanged before approving:
+
+```sh
+cargo run --locked -p iteron-xtask -- tunables invariant-review-packet > /tmp/packet.json
+```
+
+If the manifest and the regenerated packet disagree on any digest, the census moved and every
+prior approval token is void.
