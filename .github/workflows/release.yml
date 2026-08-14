@@ -4,8 +4,8 @@ on:
   push:
     tags:
       - "v*"
-  # Run the complete validation/legal/native-build/package graph on any selected
-  # commit without creating a release. Publish and curl canaries remain tag-only.
+  # Run the complete validation/legal/native-build/package graph on any selected ref.
+  # Branch dispatches never publish; an immutable v* tag dispatch may publish and canary.
   workflow_dispatch:
 
 permissions:
@@ -799,7 +799,7 @@ jobs:
 
   publish:
     name: release / publish immutable assets
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [validate, legal, build]
     runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
@@ -1022,7 +1022,7 @@ jobs:
 
   content-canary:
     name: release / content canary / ${{ matrix.target }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [validate, publish]
     strategy:
       fail-fast: false
@@ -1080,7 +1080,7 @@ jobs:
             --report "$canary/live-machine-contract.json"
   curl-canary:
     name: release / curl canary / ${{ matrix.target }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [validate, publish]
     strategy:
       fail-fast: false
