@@ -409,19 +409,43 @@ jobs:
           gh release verify "$previous" --repo "$GITHUB_REPOSITORY"
 
           policy_root=$RUNNER_TEMP/core-schema-policy-base
-          policy_target=$RUNNER_TEMP/core-schema-policy-target
           git worktree add --detach "$policy_root" "$previous_commit"
           trusted_previous=$(python3 \
             "$policy_root/release-tools/schema_release.py" \
             --input "$releases" \
             --candidate "$GITHUB_REF_NAME")
           test "$trusted_previous" = "$previous"
+          validator_root=$policy_root
+          if [[ "$previous" == v0.0.4 ]]; then
+            # The v0.0.4 validator predates the source-complete ABI inventory and
+            # rejects it at its old 128-surface parser ceiling. Use the exact,
+            # already-merged compatibility policy that introduced the 160-surface
+            # bound and the current parser, only for the v0.0.4 -> v0.0.5 bridge.
+            test "$GITHUB_REF_NAME" = v0.0.5
+            compatibility_commit=a9130edbb65aa2d37f3d7946926700b2c6b0ca6c
+            compatibility_schema_blob=6fb84965d37123263ae847c1d56bb536b25341f3
+            test "$(git cat-file -t "$compatibility_commit")" = commit
+            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
+            git merge-base --is-ancestor \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}"
+            test "$(git rev-parse \
+              "$compatibility_commit:governance/schema-compatibility.json")" = \
+              "$compatibility_schema_blob"
+            git diff --quiet \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}" \
+              -- 'xtask/src/schema_compat*'
+            validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
+            git worktree add --detach "$validator_root" "$compatibility_commit"
+          fi
+          validator_target=$RUNNER_TEMP/core-schema-validator-target
           (
-            cd "$policy_root"
-            CARGO_TARGET_DIR="$policy_target" \
+            cd "$validator_root"
+            CARGO_TARGET_DIR="$validator_target" \
               cargo +"$RUST_VERSION" build --locked -p iteron-xtask
           )
-          "$policy_target/debug/iteron-xtask" \
+          "$validator_target/debug/iteron-xtask" \
             --repo "$candidate_root" \
             schema-compat check-release --base "$previous_commit"
           validate_cargo_workspace_versions

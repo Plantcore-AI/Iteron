@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 1,
+  "release_ordinal": 2,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {
@@ -1284,11 +1284,11 @@
       "fields": [
         {
           "name": "decision",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -1311,11 +1311,11 @@
       "fields": [
         {
           "name": "evidence",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -1338,11 +1338,11 @@
       "fields": [
         {
           "name": "evidence",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -1565,7 +1565,7 @@
         },
         {
           "name": "provider_route_attempt",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "tool",
@@ -1613,7 +1613,7 @@
         },
         {
           "name": "provider_route_attempt",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "reason",
@@ -1759,7 +1759,7 @@
         },
         {
           "name": "provider_route_attempt",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "tool",
@@ -1808,7 +1808,7 @@
         },
         {
           "name": "provider_route_attempt",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "reason",
@@ -2102,20 +2102,20 @@
       "fields": [
         {
           "name": "inherited_from",
-          "introduced_release": 1,
+          "introduced_release": 2,
           "optional": true
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "snapshot",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "version",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -2138,20 +2138,20 @@
       "fields": [
         {
           "name": "inherited_from",
-          "introduced_release": 1,
+          "introduced_release": 2,
           "optional": true
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "snapshot",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "version",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -2302,19 +2302,19 @@
       "fields": [
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "max_turns",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "source",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "version",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -2684,15 +2684,15 @@
       "fields": [
         {
           "name": "event",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "kind",
-          "introduced_release": 1
+          "introduced_release": 2
         },
         {
           "name": "version",
-          "introduced_release": 1
+          "introduced_release": 2
         }
       ],
       "compatibility_shims": []
@@ -3006,23 +3006,23 @@
         }
       ],
       "fields": [
-        { "name": "decided_at_us", "introduced_release": 1 },
-        { "name": "decision_ordinal", "introduced_release": 1 },
-        { "name": "disposition", "introduced_release": 1 },
-        { "name": "eligible_actions", "introduced_release": 1 },
-        { "name": "feature_digest_sha256", "introduced_release": 1 },
-        { "name": "feature_schema_id", "introduced_release": 1 },
-        { "name": "fixed_invariants_digest_sha256", "introduced_release": 1 },
-        { "name": "opportunity_id", "introduced_release": 1 },
-        { "name": "policy", "introduced_release": 1 },
-        { "name": "propensity_ppm", "introduced_release": 1 },
-        { "name": "run_id", "introduced_release": 1 },
-        { "name": "schema_version", "introduced_release": 1 },
-        { "name": "selected_action", "introduced_release": 1 },
-        { "name": "selected_score_micros", "introduced_release": 1 },
-        { "name": "slot", "introduced_release": 1 },
-        { "name": "tunables_digest_sha256", "introduced_release": 1 },
-        { "name": "turn_id", "introduced_release": 1 }
+        { "name": "decided_at_us", "introduced_release": 2 },
+        { "name": "decision_ordinal", "introduced_release": 2 },
+        { "name": "disposition", "introduced_release": 2 },
+        { "name": "eligible_actions", "introduced_release": 2 },
+        { "name": "feature_digest_sha256", "introduced_release": 2 },
+        { "name": "feature_schema_id", "introduced_release": 2 },
+        { "name": "fixed_invariants_digest_sha256", "introduced_release": 2 },
+        { "name": "opportunity_id", "introduced_release": 2 },
+        { "name": "policy", "introduced_release": 2 },
+        { "name": "propensity_ppm", "introduced_release": 2 },
+        { "name": "run_id", "introduced_release": 2 },
+        { "name": "schema_version", "introduced_release": 2 },
+        { "name": "selected_action", "introduced_release": 2 },
+        { "name": "selected_score_micros", "introduced_release": 2 },
+        { "name": "slot", "introduced_release": 2 },
+        { "name": "tunables_digest_sha256", "introduced_release": 2 },
+        { "name": "turn_id", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3038,21 +3038,21 @@
         }
       ],
       "fields": [
-        { "name": "cost_microusd", "introduced_release": 1 },
-        { "name": "harness_error_code", "introduced_release": 1 },
-        { "name": "input_tokens", "introduced_release": 1 },
-        { "name": "latency_us", "introduced_release": 1 },
-        { "name": "opportunities_digest_sha256", "introduced_release": 1 },
-        { "name": "opportunity_count", "introduced_release": 1 },
-        { "name": "outcome_ordinal", "introduced_release": 1 },
-        { "name": "output_tokens", "introduced_release": 1 },
-        { "name": "quality_micros", "introduced_release": 1 },
-        { "name": "run_id", "introduced_release": 1 },
-        { "name": "schema_version", "introduced_release": 1 },
-        { "name": "scope", "introduced_release": 1 },
-        { "name": "terminal", "introduced_release": 1 },
-        { "name": "turn_id", "introduced_release": 1 },
-        { "name": "verifier", "introduced_release": 1 }
+        { "name": "cost_microusd", "introduced_release": 2 },
+        { "name": "harness_error_code", "introduced_release": 2 },
+        { "name": "input_tokens", "introduced_release": 2 },
+        { "name": "latency_us", "introduced_release": 2 },
+        { "name": "opportunities_digest_sha256", "introduced_release": 2 },
+        { "name": "opportunity_count", "introduced_release": 2 },
+        { "name": "outcome_ordinal", "introduced_release": 2 },
+        { "name": "output_tokens", "introduced_release": 2 },
+        { "name": "quality_micros", "introduced_release": 2 },
+        { "name": "run_id", "introduced_release": 2 },
+        { "name": "schema_version", "introduced_release": 2 },
+        { "name": "scope", "introduced_release": 2 },
+        { "name": "terminal", "introduced_release": 2 },
+        { "name": "turn_id", "introduced_release": 2 },
+        { "name": "verifier", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3068,11 +3068,11 @@
         }
       ],
       "fields": [
-        { "name": "bundle_digest_sha256", "introduced_release": 1 },
-        { "name": "bundle_id", "introduced_release": 1 },
-        { "name": "policy_digest_sha256", "introduced_release": 1 },
-        { "name": "policy_id", "introduced_release": 1 },
-        { "name": "policy_version", "introduced_release": 1 }
+        { "name": "bundle_digest_sha256", "introduced_release": 2 },
+        { "name": "bundle_id", "introduced_release": 2 },
+        { "name": "policy_digest_sha256", "introduced_release": 2 },
+        { "name": "policy_id", "introduced_release": 2 },
+        { "name": "policy_version", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3088,8 +3088,8 @@
         }
       ],
       "fields": [
-        { "name": "parent_receipt_digest_sha256", "introduced_release": 1 },
-        { "name": "parent_run", "introduced_release": 1 }
+        { "name": "parent_receipt_digest_sha256", "introduced_release": 2 },
+        { "name": "parent_run", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3105,13 +3105,13 @@
         }
       ],
       "fields": [
-        { "name": "bundle_digest_sha256", "introduced_release": 1 },
-        { "name": "bundle_id", "introduced_release": 1 },
-        { "name": "canonicalization", "introduced_release": 1 },
-        { "name": "coverage", "introduced_release": 1 },
-        { "name": "receipt_digest_sha256", "introduced_release": 1 },
-        { "name": "slots", "introduced_release": 1 },
-        { "name": "version", "introduced_release": 1 }
+        { "name": "bundle_digest_sha256", "introduced_release": 2 },
+        { "name": "bundle_id", "introduced_release": 2 },
+        { "name": "canonicalization", "introduced_release": 2 },
+        { "name": "coverage", "introduced_release": 2 },
+        { "name": "receipt_digest_sha256", "introduced_release": 2 },
+        { "name": "slots", "introduced_release": 2 },
+        { "name": "version", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3127,12 +3127,12 @@
         }
       ],
       "fields": [
-        { "name": "implementation", "introduced_release": 1 },
-        { "name": "ordinal", "introduced_release": 1 },
-        { "name": "policy", "introduced_release": 1 },
-        { "name": "requested", "introduced_release": 1 },
-        { "name": "slot", "introduced_release": 1 },
-        { "name": "status", "introduced_release": 1 }
+        { "name": "implementation", "introduced_release": 2 },
+        { "name": "ordinal", "introduced_release": 2 },
+        { "name": "policy", "introduced_release": 2 },
+        { "name": "requested", "introduced_release": 2 },
+        { "name": "slot", "introduced_release": 2 },
+        { "name": "status", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3179,8 +3179,8 @@
         }
       ],
       "fields": [
-        { "name": "authority", "introduced_release": 1 },
-        { "name": "owner_value_digest_sha256", "introduced_release": 1 }
+        { "name": "authority", "introduced_release": 2 },
+        { "name": "owner_value_digest_sha256", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3196,16 +3196,16 @@
         }
       ],
       "fields": [
-        { "name": "ceiling_adjustments", "introduced_release": 1 },
-        { "name": "effective_value", "introduced_release": 1, "optional": true },
-        { "name": "family_id", "introduced_release": 1 },
-        { "name": "fixed_authority_binding", "introduced_release": 1, "optional": true },
-        { "name": "inactive_reason", "introduced_release": 1, "optional": true },
-        { "name": "ordinal", "introduced_release": 1 },
-        { "name": "profile_applied", "introduced_release": 1 },
-        { "name": "provenance", "introduced_release": 1, "optional": true },
-        { "name": "semantic_key", "introduced_release": 1 },
-        { "name": "state", "introduced_release": 1 }
+        { "name": "ceiling_adjustments", "introduced_release": 2 },
+        { "name": "effective_value", "introduced_release": 2, "optional": true },
+        { "name": "family_id", "introduced_release": 2 },
+        { "name": "fixed_authority_binding", "introduced_release": 2, "optional": true },
+        { "name": "inactive_reason", "introduced_release": 2, "optional": true },
+        { "name": "ordinal", "introduced_release": 2 },
+        { "name": "profile_applied", "introduced_release": 2 },
+        { "name": "provenance", "introduced_release": 2, "optional": true },
+        { "name": "semantic_key", "introduced_release": 2 },
+        { "name": "state", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3316,20 +3316,20 @@
         }
       ],
       "fields": [
-        { "name": "canonicalization", "introduced_release": 1 },
-        { "name": "effective_digest_sha256", "introduced_release": 1 },
-        { "name": "entries", "introduced_release": 1 },
-        { "name": "family_schema_version", "introduced_release": 1 },
-        { "name": "input_digest_sha256", "introduced_release": 1 },
-        { "name": "profile_digest_sha256", "introduced_release": 1, "optional": true },
-        { "name": "registry_digest_sha256", "introduced_release": 1 },
-        { "name": "registry_id", "introduced_release": 1 },
-        { "name": "registry_revision", "introduced_release": 1 },
-        { "name": "registry_schema_version", "introduced_release": 1 },
-        { "name": "resolution_digest_sha256", "introduced_release": 1 },
-        { "name": "resolution_schema_version", "introduced_release": 1 },
-        { "name": "snapshot_digest_sha256", "introduced_release": 1 },
-        { "name": "version", "introduced_release": 1 }
+        { "name": "canonicalization", "introduced_release": 2 },
+        { "name": "effective_digest_sha256", "introduced_release": 2 },
+        { "name": "entries", "introduced_release": 2 },
+        { "name": "family_schema_version", "introduced_release": 2 },
+        { "name": "input_digest_sha256", "introduced_release": 2 },
+        { "name": "profile_digest_sha256", "introduced_release": 2, "optional": true },
+        { "name": "registry_digest_sha256", "introduced_release": 2 },
+        { "name": "registry_id", "introduced_release": 2 },
+        { "name": "registry_revision", "introduced_release": 2 },
+        { "name": "registry_schema_version", "introduced_release": 2 },
+        { "name": "resolution_digest_sha256", "introduced_release": 2 },
+        { "name": "resolution_schema_version", "introduced_release": 2 },
+        { "name": "snapshot_digest_sha256", "introduced_release": 2 },
+        { "name": "version", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3480,10 +3480,10 @@
       "version_field": null,
       "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-provider-route-attempt-identity-v1.json", "format": "json", "schema_version": 1 }],
       "fields": [
-        { "name": "max_cost_reservation_microusd", "introduced_release": 1, "optional": true },
-        { "name": "physical_attempt", "introduced_release": 1 },
-        { "name": "route_id", "introduced_release": 1 },
-        { "name": "version", "introduced_release": 1 }
+        { "name": "max_cost_reservation_microusd", "introduced_release": 2, "optional": true },
+        { "name": "physical_attempt", "introduced_release": 2 },
+        { "name": "route_id", "introduced_release": 2 },
+        { "name": "version", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3493,12 +3493,12 @@
       "version_field": null,
       "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-provider-route-attempt-accounting-v1.json", "format": "json", "schema_version": 1 }],
       "fields": [
-        { "name": "cost", "introduced_release": 1 },
-        { "name": "max_cost_reservation_microusd", "introduced_release": 1, "optional": true },
-        { "name": "physical_attempt", "introduced_release": 1 },
-        { "name": "route_id", "introduced_release": 1 },
-        { "name": "usage", "introduced_release": 1 },
-        { "name": "version", "introduced_release": 1 }
+        { "name": "cost", "introduced_release": 2 },
+        { "name": "max_cost_reservation_microusd", "introduced_release": 2, "optional": true },
+        { "name": "physical_attempt", "introduced_release": 2 },
+        { "name": "route_id", "introduced_release": 2 },
+        { "name": "usage", "introduced_release": 2 },
+        { "name": "version", "introduced_release": 2 }
       ],
       "compatibility_shims": []
     },
@@ -3712,7 +3712,7 @@
         { "name": "admitted", "introduced_release": 1 },
         { "name": "arguments", "introduced_release": 1 },
         { "name": "id", "introduced_release": 1 },
-        { "name": "provider_route_attempt", "introduced_release": 1, "optional": true },
+        { "name": "provider_route_attempt", "introduced_release": 2, "optional": true },
         { "name": "tool", "introduced_release": 1 },
         { "name": "tool_use_id", "introduced_release": 1 },
         { "name": "workspace", "introduced_release": 1 }
