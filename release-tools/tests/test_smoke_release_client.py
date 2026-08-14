@@ -232,6 +232,20 @@ class ReleaseClientSmokeTest(unittest.TestCase):
             smoke.load_result_authority().current_version,
         )
 
+    def test_smoke_config_declares_required_model_owner_facts(self) -> None:
+        home = self.root / "home"
+        smoke._write_config(home, "http://127.0.0.1:1/v1")
+        config = json.loads(
+            (home / ".iteron" / "config.json").read_text(encoding="utf-8")
+        )
+        provider = config["providers"][0]
+        self.assertEqual(
+            provider["model_capabilities"][smoke.MODEL_ID][
+                "context_window_tokens"
+            ],
+            smoke.MODEL_CONTEXT_WINDOW_TOKENS,
+        )
+
     def test_release_workflow_runs_smoke_on_every_native_matrix_entry(self) -> None:
         workflow = (TOOLS.parent / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
