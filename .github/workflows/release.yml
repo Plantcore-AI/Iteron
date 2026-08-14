@@ -783,6 +783,11 @@ jobs:
         shell: bash
         env:
           CARGO_TERM_COLOR: never
+          # This target's test binary — and the server child it spawns — run under
+          # qemu-x86_64-static on an aarch64 host. The test's waits are ceilings, not sleeps, so
+          # widening them costs a passing run nothing and keeps emulation latency from being
+          # reported as a protocol failure.
+          ITERON_TEST_TIMEOUT_SCALE: 10
         run: |
           set -euo pipefail
           target=${{ matrix.target }}
