@@ -1,11 +1,14 @@
 use iteron_eval::{
     AdapterOperation, AdapterPin, ArtifactReference, BenchmarkAdapterRegistry, BenchmarkPin,
-    CandidateImplementation, CliRunSpec, DryRunState, ExternalHarnessResult, ITERON_CLI_ID,
-    ITERON_CLI_VERSION, ProfileIdentity, RESEARCH_PROTOCOL, ResearchProtocolError, ResearchRequest,
-    ResearchRequestEnvelope, ResearchResponse, ResearchResponseEnvelope, ResearchRunState,
-    ResearchSession, ResourceBounds, ResourceUsage, RunEvidence, RunSpec, TaskIdentity,
-    TerminalBenchRequest, TerminalOutcome, TimingEvidence, TunerCandidate, parse_research_request,
-    parse_research_response,
+    CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,
+    CandidateAddressKind, CandidateDimension, CandidateExperiment, CandidateGraph,
+    CandidateImplementation, CandidateLineage, CandidateOwnerKind, CandidateSelectorKind,
+    CliRunSpec, DryRunState, EXTERNAL_NATIVE_ID, EXTERNAL_NATIVE_VERSION, ExternalHarnessResult,
+    ExternalNativeRunSpec, ITERON_CLI_ID, ITERON_CLI_VERSION, ProfileIdentity, RESEARCH_PROTOCOL,
+    ResearchProtocolError, ResearchRequest, ResearchRequestEnvelope, ResearchResponse,
+    ResearchResponseEnvelope, ResearchRunState, ResearchSession, ResourceBounds, ResourceUsage,
+    RunEvidence, RunSpec, TaskIdentity, TerminalBenchRequest, TerminalOutcome, TimingEvidence,
+    TunerCandidate, parse_research_request, parse_research_response,
 };
 use iteron_tunables::ProfileDocument;
 use std::collections::BTreeMap;
@@ -50,11 +53,12 @@ fn candidate() -> TunerCandidate {
         text: "research fixture".into(),
     });
     TunerCandidate {
-        schema_version: iteron_eval::UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+        schema_version: iteron_eval::LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
         id: "research/candidate-1".into(),
         values: BTreeMap::new(),
         profile: Some(document),
         implementations: Vec::new(),
+        graph: None,
     }
 }
 
@@ -62,6 +66,93 @@ fn candidate_digests(candidate: &TunerCandidate) -> (String, String) {
     let candidate_sha256 = candidate.digest_sha256().unwrap();
     let (_, profile_sha256) = candidate.rendered_profile().unwrap();
     (candidate_sha256, profile_sha256)
+}
+
+fn graph_candidate() -> TunerCandidate {
+    let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    let param = "eval.tuner.max_candidates";
+    TunerCandidate {
+        schema_version: CANDIDATE_GRAPH_SCHEMA_VERSION,
+        id: "research/candidate-v3".into(),
+        values: BTreeMap::new(),
+        profile: None,
+        implementations: Vec::new(),
+        graph: Some(CandidateGraph {
+            schema_id: CANDIDATE_GRAPH_SCHEMA_ID.into(),
+            dimensions: vec![CandidateDimension::Param {
+                address: CandidateAddress {
+                    kind: CandidateAddressKind::UnifiedProfile,
+                    selector_kind: CandidateSelectorKind::Key,
+                    selector: param.into(),
+                    owner_kind: CandidateOwnerKind::Schema,
+                    owner: "iteron_tunables::Param/ResolutionValue".into(),
+                },
+                param: param.into(),
+                value: iteron_tunables::ResolutionValue::Integer { value: 64 },
+            }],
+            lineage: CandidateLineage {
+                parent_sha256: None,
+                generation: 0,
+                sparse_delta: Vec::new(),
+            },
+            experiment: CandidateExperiment {
+                dataset_sha256: digest('a'),
+                evaluator_sha256: digest('b'),
+                environment_sha256: digest('c'),
+                resource_sha256: digest('d'),
+                fidelity_sha256: digest('e'),
+                seed: 7,
+            },
+            topology: Vec::new(),
+            implementations: Vec::new(),
+        }),
+    }
+}
+
+fn native_graph_candidate() -> TunerCandidate {
+    let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    TunerCandidate {
+        schema_version: CANDIDATE_GRAPH_SCHEMA_VERSION,
+        id: "research/native-candidate-v3".into(),
+        values: BTreeMap::new(),
+        profile: None,
+        implementations: Vec::new(),
+        graph: Some(CandidateGraph {
+            schema_id: CANDIDATE_GRAPH_SCHEMA_ID.into(),
+            dimensions: vec![CandidateDimension::NativeValue {
+                address: CandidateAddress {
+                    kind: CandidateAddressKind::DirectConfig,
+                    selector_kind: CandidateSelectorKind::Path,
+                    selector: "/provider/temperature".into(),
+                    owner_kind: CandidateOwnerKind::Schema,
+                    owner: "iteron-provider-config/1".into(),
+                },
+                value: iteron_tunables::ResolutionValue::Integer { value: 17 },
+            }],
+            lineage: CandidateLineage {
+                parent_sha256: None,
+                generation: 0,
+                sparse_delta: Vec::new(),
+            },
+            experiment: CandidateExperiment {
+                dataset_sha256: digest('1'),
+                evaluator_sha256: digest('2'),
+                environment_sha256: digest('3'),
+                resource_sha256: digest('4'),
+                fidelity_sha256: digest('5'),
+                seed: 19,
+            },
+            topology: Vec::new(),
+            implementations: Vec::new(),
+        }),
+    }
+}
+
+fn native_pin() -> AdapterPin {
+    AdapterPin {
+        benchmark_id: EXTERNAL_NATIVE_ID.into(),
+        benchmark_version: EXTERNAL_NATIVE_VERSION.into(),
+    }
 }
 
 fn envelope(request_id: &str, payload: ResearchRequest) -> ResearchRequestEnvelope {
@@ -200,6 +291,7 @@ fn duplicate_keys_unknown_fields_and_bounds_fail_closed() {
             candidate_sha256: "a".repeat(64),
             candidate: candidate(),
             implementation_candidate_path: None,
+            native_materialization_path: None,
         },
     );
     assert!(bare_candidate_digest.validate().is_err());
@@ -225,6 +317,8 @@ fn request_response_correlation_is_exact() {
         payload: ResearchResponse::Surface {
             registry_digest_sha256: "a".repeat(64),
             adapters: Vec::new(),
+            candidate_schemas: Vec::new(),
+            candidate_capabilities: Vec::new(),
             surface: serde_json::json!({}),
         },
     })
@@ -258,12 +352,17 @@ fn stale_registry_identity_and_response_operation_fail_closed() {
 
     response.payload = ResearchResponse::CandidateValidate {
         candidate_id: "research/candidate-1".into(),
+        candidate_schema_id: "iteron-candidate/2".into(),
         candidate_sha256: format!("sha256:{}", "a".repeat(64)),
         profile_sha256: "a".repeat(64),
         rendered_bytes: 1,
         implementation_count: 1,
         implementation_activation_sha256: Some("b".repeat(64)),
+        candidate_graph_identity: None,
         implementation_activation_bytes: 1,
+        native_patch_count: 0,
+        native_materialization_sha256: None,
+        native_materialization_bytes: 0,
     };
     assert_eq!(
         response.validate_against(&request),
@@ -282,6 +381,7 @@ fn candidate_validation_uses_the_canonical_profile_digest() {
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted_candidate,
             implementation_candidate_path: None,
+            native_materialization_path: None,
         },
     );
     let response = ResearchSession::new().handle(request.clone());
@@ -349,6 +449,7 @@ fn persistent_state_machine_covers_run_result_evidence_and_cancel_without_execut
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted_candidate,
             implementation_candidate_path: None,
+            native_materialization_path: None,
         },
     ));
     assert!(matches!(
@@ -365,6 +466,7 @@ fn persistent_state_machine_covers_run_result_evidence_and_cancel_without_execut
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
             run: Box::new(RunSpec::IteronCli { spec }),
         },
@@ -384,6 +486,7 @@ fn persistent_state_machine_covers_run_result_evidence_and_cancel_without_execut
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
         },
         ResearchRequest::Evidence {
@@ -392,6 +495,7 @@ fn persistent_state_machine_covers_run_result_evidence_and_cancel_without_execut
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
         },
     ] {
@@ -420,6 +524,7 @@ fn persistent_state_machine_covers_run_result_evidence_and_cancel_without_execut
             candidate_sha256,
             profile_sha256,
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
         },
     ));
@@ -447,6 +552,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
             run: Box::new(RunSpec::IteronCli { spec: spec.clone() }),
         },
@@ -464,6 +570,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted_candidate,
             implementation_candidate_path: None,
+            native_materialization_path: None,
         },
     ));
 
@@ -489,6 +596,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
                 candidate_sha256: replacement_digest.clone(),
                 candidate: replacement,
                 implementation_candidate_path: Some("/tmp/unused-activation.json".into()),
+                native_materialization_path: None,
             },
         )),
         "replace-candidate",
@@ -503,6 +611,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "run-1".into(),
             run: Box::new(RunSpec::IteronCli { spec }),
         },
@@ -527,6 +636,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
                 candidate_sha256: replacement_digest,
                 profile_sha256: profile_sha256.clone(),
                 implementation_activation_sha256: None,
+                candidate_graph_identity: None,
                 run_id: "run-1".into(),
             },
         )),
@@ -542,6 +652,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
                 candidate_sha256: candidate_sha256.clone(),
                 profile_sha256: "0".repeat(64),
                 implementation_activation_sha256: None,
+                candidate_graph_identity: None,
                 run_id: "run-1".into(),
             },
         )),
@@ -557,6 +668,7 @@ fn stale_candidate_and_run_identities_are_refused_with_exact_correlation() {
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256: None,
+                candidate_graph_identity: None,
                 run_id: "run-missing".into(),
             },
         )),
@@ -780,6 +892,7 @@ fn validate_for_execute(harness: &mut ExecuteHarness, pin: AdapterPin) -> (Strin
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted,
             implementation_candidate_path: None,
+            native_materialization_path: None,
         },
     ));
     assert!(matches!(
@@ -805,6 +918,7 @@ fn execute_run_request(
             candidate_sha256: candidate_sha256.into(),
             profile_sha256: profile_sha256.into(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: run_id.into(),
             run: Box::new(run),
         },
@@ -831,6 +945,7 @@ fn wait_for_result(
                 candidate_sha256: candidate_sha256.into(),
                 profile_sha256: profile_sha256.into(),
                 implementation_activation_sha256: None,
+                candidate_graph_identity: None,
                 run_id: run_id.into(),
             },
         ));
@@ -920,7 +1035,7 @@ fn implementation_candidate_fixture(layout: &ExecuteLayout) -> (TunerCandidate, 
     let catalog_path = layout.root.join("implementation-catalog.json");
     fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let candidate = TunerCandidate {
-        schema_version: iteron_eval::UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+        schema_version: iteron_eval::LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
         id: "research/candidate-1".into(),
         values: BTreeMap::new(),
         profile: Some(profile()),
@@ -933,6 +1048,7 @@ fn implementation_candidate_fixture(layout: &ExecuteLayout) -> (TunerCandidate, 
             manifest_sha256: format!("sha256:{manifest_sha256}"),
             artifact_sha256: format!("sha256:{artifact_sha256}"),
         }],
+        graph: None,
     };
     (
         candidate,
@@ -955,11 +1071,13 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted.clone(),
             implementation_candidate_path: Some(activation_path.to_string_lossy().into_owned()),
+            native_materialization_path: None,
         },
     ));
     let activation_sha256 = match validated.payload {
         ResearchResponse::CandidateValidate {
             implementation_activation_sha256: Some(digest),
+            candidate_graph_identity: None,
             implementation_activation_bytes,
             implementation_count: 1,
             ..
@@ -978,6 +1096,7 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "implementation-missing".into(),
             run: Box::new(RunSpec::IteronCli { spec: missing_spec }),
         },
@@ -1000,6 +1119,7 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: Some(stale_digest),
+            candidate_graph_identity: None,
             run_id: "implementation-stale".into(),
             run: Box::new(RunSpec::IteronCli { spec: stale_spec }),
         },
@@ -1027,6 +1147,7 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
                     .to_string_lossy()
                     .into_owned(),
             ),
+            native_materialization_path: None,
         },
     ));
     assert_correlated_error(
@@ -1048,11 +1169,13 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
             candidate_sha256: candidate_sha256.clone(),
             candidate: accepted,
             implementation_candidate_path: Some(terminal_activation.to_string_lossy().into_owned()),
+            native_materialization_path: None,
         },
     ));
     let terminal_digest = match terminal_validated.payload {
         ResearchResponse::CandidateValidate {
             implementation_activation_sha256: Some(digest),
+            candidate_graph_identity: None,
             ..
         } => digest,
         other => panic!("unexpected terminal activation response: {other:?}"),
@@ -1069,6 +1192,7 @@ fn implementation_activation_is_verified_and_forged_consumption_cannot_complete(
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: Some(terminal_digest),
+            candidate_graph_identity: None,
             run_id: "terminal-implementation".into(),
             run: Box::new(RunSpec::IteronCli {
                 spec: terminal_spec,
@@ -1133,6 +1257,7 @@ printf '%s' '{}'"#,
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: Some(activation_sha256.clone()),
+            candidate_graph_identity: None,
             run_id: "implementation-run".into(),
             run: Box::new(RunSpec::IteronCli { spec }),
         },
@@ -1212,6 +1337,7 @@ printf '%s' '{}'"#,
             candidate_sha256: candidate_sha256.clone(),
             profile_sha256: profile_sha256.clone(),
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "execute-success".into(),
         },
     ));
@@ -1236,6 +1362,7 @@ printf '%s' '{}'"#,
             candidate_sha256: format!("sha256:{}", "f".repeat(64)),
             profile_sha256,
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "execute-success".into(),
         },
     ));
@@ -1279,6 +1406,7 @@ fn execute_cancel_and_server_drop_kill_and_reap_the_child() {
                     candidate_sha256,
                     profile_sha256,
                     implementation_activation_sha256: None,
+                    candidate_graph_identity: None,
                     run_id: "cancel-or-drop".into(),
                 },
             ));
@@ -1562,6 +1690,7 @@ fn execute_terminal_bench_parses_external_result_and_verifies_real_artifacts() {
             candidate_sha256,
             profile_sha256,
             implementation_activation_sha256: None,
+            candidate_graph_identity: None,
             run_id: "tb-execute".into(),
         },
     ));
@@ -1573,4 +1702,296 @@ fn execute_terminal_bench_parses_external_result_and_verifies_real_artifacts() {
             ..
         } if artifacts.len() == 3
     ));
+}
+
+#[test]
+fn candidate_graph_identity_is_bound_across_validation_and_run_queries() {
+    let candidate = graph_candidate();
+    let (candidate_sha256, profile_sha256) = candidate_digests(&candidate);
+    let expected_graph_identity = candidate.graph_identity().unwrap().unwrap();
+    let mut session = ResearchSession::new();
+    let validated = session.handle(envelope(
+        "validate-v3",
+        ResearchRequest::CandidateValidate {
+            adapter: cli_pin(),
+            candidate_sha256: candidate_sha256.clone(),
+            candidate,
+            implementation_candidate_path: None,
+            native_materialization_path: None,
+        },
+    ));
+    assert!(matches!(
+        validated.payload,
+        ResearchResponse::CandidateValidate {
+            ref candidate_schema_id,
+            candidate_graph_identity: Some(ref identity),
+            ..
+        } if candidate_schema_id == CANDIDATE_GRAPH_SCHEMA_ID && identity == &expected_graph_identity
+    ));
+
+    let mut spec = run_spec();
+    spec.profile_sha256 = profile_sha256.clone();
+    let run = session.handle(envelope(
+        "run-v3",
+        ResearchRequest::Run {
+            adapter: cli_pin(),
+            candidate_id: "research/candidate-v3".into(),
+            candidate_sha256: candidate_sha256.clone(),
+            profile_sha256: profile_sha256.clone(),
+            implementation_activation_sha256: None,
+            candidate_graph_identity: Some(expected_graph_identity.clone()),
+            run_id: "run-v3".into(),
+            run: Box::new(RunSpec::IteronCli { spec }),
+        },
+    ));
+    assert!(matches!(
+        run.payload,
+        ResearchResponse::Run {
+            candidate_graph_identity: Some(ref identity),
+            state: ResearchRunState::Planned,
+            ..
+        } if identity == &expected_graph_identity
+    ));
+
+    let mut stale = expected_graph_identity;
+    stale.topology_sha256 = format!("sha256:{}", "f".repeat(64));
+    let stale_response = session.handle(envelope(
+        "stale-v3",
+        ResearchRequest::Result {
+            adapter: cli_pin(),
+            candidate_id: "research/candidate-v3".into(),
+            candidate_sha256,
+            profile_sha256,
+            implementation_activation_sha256: None,
+            candidate_graph_identity: Some(stale),
+            run_id: "run-v3".into(),
+        },
+    ));
+    assert_correlated_error(stale_response, "stale-v3", "run_identity_mismatch");
+}
+
+#[cfg(unix)]
+#[test]
+fn native_patch_adapter_requires_pinned_execution_and_exact_consumption_receipt() {
+    let layout = ExecuteLayout::new("native-materialization");
+    layout.write_script(
+        r#"exec /usr/bin/python3 - "$@" <<'PY'
+import hashlib, json, sys
+args = sys.argv[1:]
+flags = {}
+i = 0
+while i < len(args) and args[i] != "--":
+    flags[args[i]] = args[i + 1]
+    i += 2
+task = args[i + 1:] if i < len(args) else []
+with open(flags["--native-materialization"], "rb") as source:
+    materialization = json.load(source)
+with open(flags["--candidate-profile"], "rb") as source:
+    profile = source.read()
+with open(flags["--effective-profile"], "xb") as output:
+    output.write(profile)
+patches = []
+for patch in materialization["direct_config_patches"] + materialization["caller_input_patches"]:
+    encoded = json.dumps(patch["value"], separators=(",", ":")).encode()
+    digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    observed = "sha256:" + ("0" * 64) if "forge" in task else digest
+    patches.append({
+        "address": patch["address"],
+        "input_value_sha256": digest,
+        "observed_value_sha256": observed,
+        "loaded": True,
+        "applied": True,
+        "observed": True,
+    })
+receipt = {
+    "schema_id": "iteron-candidate-materialization-consumption/1",
+    "candidate_sha256": flags["--candidate-sha256"],
+    "materialization_sha256": flags["--materialization-sha256"],
+    "experiment_sha256": flags["--experiment-sha256"],
+    "topology_sha256": flags["--topology-sha256"],
+    "native_materialization_sha256": flags["--native-materialization-sha256"],
+    "run_id": flags["--run-id"],
+    "patches": patches,
+}
+with open(flags["--consumption-receipt"], "x") as output:
+    json.dump(receipt, output, separators=(",", ":"))
+result = {
+    "schema_id": "iteron-native-adapter-result/1",
+    "run_id": flags["--run-id"],
+    "outcome": "completed",
+    "success": True,
+    "exit_code": 0,
+    "score_micros": 900000,
+}
+with open(flags["--result"], "x") as output:
+    json.dump(result, output, separators=(",", ":"))
+PY"#,
+    );
+    let candidate = native_graph_candidate();
+    let (candidate_sha256, profile_sha256) = candidate_digests(&candidate);
+    let graph_identity = candidate.graph_identity().unwrap().unwrap();
+    let sidecar = layout.root.join("native-materialization.json");
+
+    let mut unsupported = ResearchSession::new();
+    assert_correlated_error(
+        unsupported.handle(envelope(
+            "native-cli-reject",
+            ResearchRequest::CandidateValidate {
+                adapter: cli_pin(),
+                candidate_sha256: candidate_sha256.clone(),
+                candidate: candidate.clone(),
+                implementation_candidate_path: None,
+                native_materialization_path: Some(sidecar.to_string_lossy().into_owned()),
+            },
+        )),
+        "native-cli-reject",
+        "unsupported_candidate_materialization",
+    );
+    assert!(!sidecar.exists());
+
+    let mut session = ResearchSession::with_pinned_native_adapter(&layout.script).unwrap();
+    let validated = session.handle(envelope(
+        "native-validate",
+        ResearchRequest::CandidateValidate {
+            adapter: native_pin(),
+            candidate_sha256: candidate_sha256.clone(),
+            candidate,
+            implementation_candidate_path: None,
+            native_materialization_path: Some(sidecar.to_string_lossy().into_owned()),
+        },
+    ));
+    let native_digest = match validated.payload {
+        ResearchResponse::CandidateValidate {
+            native_patch_count: 1,
+            native_materialization_sha256: Some(digest),
+            native_materialization_bytes,
+            ..
+        } if native_materialization_bytes > 0 => digest,
+        other => panic!("unexpected native candidate response: {other:?}"),
+    };
+
+    let spec_for = |suffix: &str, task_arguments: Vec<String>| ExternalNativeRunSpec {
+        binary_path: layout.script.to_string_lossy().into_owned(),
+        workspace_path: layout.workspace.to_string_lossy().into_owned(),
+        profile_path: layout.profile.to_string_lossy().into_owned(),
+        effective_profile_path: layout
+            .root
+            .join(format!("effective-{suffix}.json"))
+            .to_string_lossy()
+            .into_owned(),
+        native_materialization_path: sidecar.to_string_lossy().into_owned(),
+        native_materialization_sha256: native_digest.clone(),
+        consumption_receipt_path: layout
+            .root
+            .join(format!("receipt-{suffix}.json"))
+            .to_string_lossy()
+            .into_owned(),
+        result_path: layout
+            .root
+            .join(format!("result-{suffix}.json"))
+            .to_string_lossy()
+            .into_owned(),
+        stdout_path: layout
+            .root
+            .join(format!("stdout-{suffix}.txt"))
+            .to_string_lossy()
+            .into_owned(),
+        runs_dir: layout.runs.to_string_lossy().into_owned(),
+        profile_sha256: profile_sha256.clone(),
+        candidate_sha256: candidate_sha256.clone(),
+        candidate_graph_identity: graph_identity.clone(),
+        run_id: format!("native-{suffix}"),
+        task_arguments,
+        credential_env_names: Vec::new(),
+        max_wall_secs: 10,
+        max_stdout_bytes: 1024 * 1024,
+        max_stderr_bytes: 1024 * 1024,
+        max_evidence_bytes: 1024 * 1024,
+        max_memory_bytes: 64 * 1024 * 1024 * 1024,
+    };
+    let mut stale = spec_for("stale", Vec::new());
+    stale.candidate_graph_identity.topology_sha256 = format!("sha256:{}", "f".repeat(64));
+    assert_correlated_error(
+        session.handle(envelope(
+            "native-stale",
+            ResearchRequest::Run {
+                adapter: native_pin(),
+                candidate_id: "research/native-candidate-v3".into(),
+                candidate_sha256: candidate_sha256.clone(),
+                profile_sha256: profile_sha256.clone(),
+                implementation_activation_sha256: None,
+                candidate_graph_identity: Some(graph_identity.clone()),
+                run_id: "native-stale".into(),
+                run: Box::new(RunSpec::ExternalNative { spec: stale }),
+            },
+        )),
+        "native-stale",
+        "invalid_field",
+    );
+    for (suffix, task_arguments, expected) in [
+        ("success", Vec::new(), ResearchRunState::Completed),
+        ("forged", vec!["forge".into()], ResearchRunState::Failed),
+    ] {
+        let spec = spec_for(suffix, task_arguments);
+        let run_id = spec.run_id.clone();
+        let planned = session.handle(envelope(
+            &format!("start-{suffix}"),
+            ResearchRequest::Run {
+                adapter: native_pin(),
+                candidate_id: "research/native-candidate-v3".into(),
+                candidate_sha256: candidate_sha256.clone(),
+                profile_sha256: profile_sha256.clone(),
+                implementation_activation_sha256: None,
+                candidate_graph_identity: Some(graph_identity.clone()),
+                run_id: run_id.clone(),
+                run: Box::new(RunSpec::ExternalNative { spec }),
+            },
+        ));
+        assert!(matches!(planned.payload, ResearchResponse::Run { .. }));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let result = session.handle(envelope(
+                &format!("poll-{suffix}"),
+                ResearchRequest::Result {
+                    adapter: native_pin(),
+                    candidate_id: "research/native-candidate-v3".into(),
+                    candidate_sha256: candidate_sha256.clone(),
+                    profile_sha256: profile_sha256.clone(),
+                    implementation_activation_sha256: None,
+                    candidate_graph_identity: Some(graph_identity.clone()),
+                    run_id: run_id.clone(),
+                },
+            ));
+            if matches!(
+                result.payload,
+                ResearchResponse::Result { state, .. } if state == expected
+            ) {
+                if expected == ResearchRunState::Completed {
+                    let evidence = session.handle(envelope(
+                        "native-evidence",
+                        ResearchRequest::Evidence {
+                            adapter: native_pin(),
+                            candidate_id: "research/native-candidate-v3".into(),
+                            candidate_sha256: candidate_sha256.clone(),
+                            profile_sha256: profile_sha256.clone(),
+                            implementation_activation_sha256: None,
+                            candidate_graph_identity: Some(graph_identity.clone()),
+                            run_id: run_id.clone(),
+                        },
+                    ));
+                    assert!(matches!(
+                        evidence.payload,
+                        ResearchResponse::Evidence {
+                            evidence_available: true,
+                            ref artifacts,
+                            ..
+                        } if artifacts.iter().any(|artifact| artifact.path.ends_with("receipt-success.json"))
+                    ));
+                }
+                break;
+            }
+            assert!(Instant::now() < deadline, "native adapter did not finish");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }

@@ -1,15 +1,17 @@
 # Replaceable implementation protocol
 
-`iteron-implementation/1` is the language-neutral JSON contract between Iteron's host and an
+`iteron-implementation/2` is the language-neutral JSON contract between Iteron's host and an
 admitted process implementation. It complements the content-addressed marketplace manifest: the
 manifest decides what bytes and capability ceiling may be considered, while this protocol carries
-only bounded lifecycle requests, correlated responses, and schema-identified observations.
+only bounded lifecycle and state-transfer requests, correlated responses, and schema-identified
+observations. Protocol v1 remains accepted for stateless load/start/cancel/stop providers; it is
+never treated as state-migration capable.
 
 Every one of the 28 optimization modules has an entry in the versioned capability seam graph. Each
-entry names distinct definition, provider, consumer, load/start/cancel/stop, and observation
-contracts, plus its dependency order, failure semantics, and the seven host invariants that a
-provider cannot replace. A request is rejected unless all contract references exactly match the
-selected module's graph entry.
+entry names distinct definition, provider, consumer, load/start/cancel/stop,
+snapshot/restore/migrate/readiness, and observation contracts, plus its dependency order, failure
+semantics, and the seven host invariants that a provider cannot replace. A request is rejected
+unless all contract references exactly match the selected module's graph entry.
 
 The closed request operations are:
 
@@ -18,13 +20,20 @@ The closed request operations are:
 - `start`: binds a run and candidate digest to the module's consumer schema, a bounded JSON input,
   and a nonzero deadline;
 - `cancel`: addresses one run through the module's cancellation contract;
-- `stop`: asks the provider process to stop through the module's stop contract.
+- `stop`: asks the provider process to stop through the module's stop contract;
+- `snapshot`: exports at most 512 KiB of content-addressed state from a loaded, quiesced v2
+  provider and binds run, generation, module, implementation, schema, and digest;
+- `migrate`: converts that exact state to the consecutive target generation;
+- `restore`: imports the correlated migrated state into a loaded shadow provider;
+- `readiness`: proves that the shadow provider is ready for the exact restored state before the
+  host may switch the active generation.
 
 Responses repeat `protocol`, request, implementation, and module identity. The only successful
-results are `loaded`, `started`, `cancelled`, and `stopped`; a bounded `failed` result carries no
-fallback, quarantine, activation, or promotion authority. Observation envelopes repeat the run and
-must use the module's exact observation schema. The host process owner separately enforces sequence
-monotonicity, deadlines, output limits, cancellation escalation, evidence durability, and reaping.
+results include the four stateless results plus `snapshotted`, `migrated`, `restored`, and `ready`;
+a bounded `failed` result carries no fallback, quarantine, activation, or promotion authority.
+Observation envelopes repeat the run and must use the module's exact observation schema. The host
+process owner separately enforces sequence monotonicity, deadlines, output limits, cancellation
+escalation, evidence durability, and reaping.
 
 The marketplace registry verifies actual artifact bytes before it can emit a shell-free launch
 plan. That plan clears ambient environment and carries only the host-intersected capability set.
@@ -83,3 +92,13 @@ The runtime returns typed responses and observations only. It deliberately expos
 activate or promote an implementation, widen admitted capabilities, approve permissions, allocate
 budget, choose fallback or quarantine policy, or make evidence durable; those decisions remain in
 their host-owned composition and policy boundaries.
+
+## Transactional replacement
+
+State operations are provider capabilities, not activation authority. The host-owned hot-swap
+coordinator validates the old/new generation chain, shadow-loads the new v2 provider, snapshots and
+migrates bounded state, requires readiness, performs one atomic generation switch, drains the old
+process, and appends every phase to a bounded hash-chained durable ledger. Any pre-switch failure
+reaps the shadow and leaves the old generation active. Ledger replay rejects missing, duplicated,
+reordered, modified, or identity-rebound events. See
+[Transactional research hot swap](transactional-hot-swap.md).

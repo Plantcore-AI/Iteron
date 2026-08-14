@@ -3,10 +3,16 @@
 use crate::adapter_registry::{AdapterOperation, AdapterPin, AdapterRegistryEntry};
 use crate::strict_json::parse_json_no_duplicates;
 use crate::terminal_bench::{AdapterCommand, ArtifactReference, TerminalBenchRequest};
-use crate::tuner::TunerCandidate;
+use crate::tuner::{CandidateAddress, CandidateGraphIdentity, CandidatePatch, TunerCandidate};
 use serde::{Deserialize, Serialize};
 
 pub const RESEARCH_PROTOCOL: &str = "iteron-research/1";
+pub const EXTERNAL_NATIVE_ADAPTER_PROTOCOL: &str = "iteron-native-adapter/1";
+pub const NATIVE_MATERIALIZATION_SCHEMA: &str = "iteron-candidate-materialization/1";
+pub const NATIVE_CONSUMPTION_SCHEMA: &str = "iteron-candidate-materialization-consumption/1";
+pub const EXTERNAL_NATIVE_RESULT_SCHEMA: &str = "iteron-native-adapter-result/1";
+pub const MAX_NATIVE_MATERIALIZATION_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_NATIVE_RECEIPT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_PROTOCOL_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PROTOCOL_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const MAX_ID_BYTES: usize = 256;
@@ -36,6 +42,9 @@ pub struct ResearchRequestEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+// CandidateValidate owns the bounded candidate so deserialization remains a single closed object;
+// boxing it would force broad source-level churn without changing the bounded wire contract.
+#[allow(clippy::large_enum_variant)]
 pub enum ResearchRequest {
     Surface {
         adapter: AdapterPin,
@@ -47,6 +56,9 @@ pub enum ResearchRequest {
         /// Required, absolute create-new destination when the candidate carries implementations.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_candidate_path: Option<String>,
+        /// Required create-new destination for a v3 graph carrying native patches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native_materialization_path: Option<String>,
     },
     Run {
         adapter: AdapterPin,
@@ -55,6 +67,8 @@ pub enum ResearchRequest {
         profile_sha256: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         run_id: String,
         run: Box<RunSpec>,
     },
@@ -65,6 +79,8 @@ pub enum ResearchRequest {
         profile_sha256: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         run_id: String,
     },
     Result {
@@ -74,6 +90,8 @@ pub enum ResearchRequest {
         profile_sha256: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         run_id: String,
     },
     Evidence {
@@ -83,6 +101,8 @@ pub enum ResearchRequest {
         profile_sha256: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         run_id: String,
     },
 }
@@ -98,6 +118,83 @@ pub enum RunSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         implementation_candidate: Option<ImplementationCandidateRef>,
     },
+    ExternalNative {
+        spec: ExternalNativeRunSpec,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMaterializationDocument {
+    pub schema_id: String,
+    pub candidate_sha256: String,
+    pub candidate_graph_identity: CandidateGraphIdentity,
+    pub direct_config_patches: Vec<CandidatePatch>,
+    pub caller_input_patches: Vec<CandidatePatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePatchConsumption {
+    pub address: CandidateAddress,
+    pub input_value_sha256: String,
+    pub observed_value_sha256: String,
+    pub loaded: bool,
+    pub applied: bool,
+    pub observed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeConsumptionReceipt {
+    pub schema_id: String,
+    pub candidate_sha256: String,
+    pub materialization_sha256: String,
+    pub experiment_sha256: String,
+    pub topology_sha256: String,
+    pub native_materialization_sha256: String,
+    pub run_id: String,
+    pub patches: Vec<NativePatchConsumption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalNativeResult {
+    pub schema_id: String,
+    pub run_id: String,
+    pub outcome: String,
+    pub success: bool,
+    pub exit_code: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_micros: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalNativeRunSpec {
+    pub binary_path: String,
+    pub workspace_path: String,
+    pub profile_path: String,
+    pub effective_profile_path: String,
+    pub native_materialization_path: String,
+    pub native_materialization_sha256: String,
+    pub consumption_receipt_path: String,
+    pub result_path: String,
+    pub stdout_path: String,
+    pub runs_dir: String,
+    pub profile_sha256: String,
+    pub candidate_sha256: String,
+    pub candidate_graph_identity: CandidateGraphIdentity,
+    pub run_id: String,
+    #[serde(default)]
+    pub task_arguments: Vec<String>,
+    #[serde(default)]
+    pub credential_env_names: Vec<String>,
+    pub max_wall_secs: u64,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+    pub max_evidence_bytes: u64,
+    pub max_memory_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,17 +281,26 @@ pub enum ResearchResponse {
     Surface {
         registry_digest_sha256: String,
         adapters: Vec<AdapterRegistryEntry>,
+        candidate_schemas: Vec<String>,
+        candidate_capabilities: Vec<String>,
         surface: serde_json::Value,
     },
     CandidateValidate {
         candidate_id: String,
+        candidate_schema_id: String,
         candidate_sha256: String,
         profile_sha256: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         rendered_bytes: u64,
         implementation_count: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
         implementation_activation_bytes: u64,
+        native_patch_count: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_materialization_sha256: Option<String>,
+        native_materialization_bytes: u64,
     },
     Run {
         execution_mode: String,
@@ -203,6 +309,8 @@ pub enum ResearchResponse {
         profile_sha256: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         implementation_count: u64,
         run_id: String,
         state: ResearchRunState,
@@ -217,6 +325,8 @@ pub enum ResearchResponse {
         profile_sha256: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         implementation_count: u64,
         run_id: String,
         state: ResearchRunState,
@@ -228,6 +338,8 @@ pub enum ResearchResponse {
         profile_sha256: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         implementation_count: u64,
         run_id: String,
         state: ResearchRunState,
@@ -244,6 +356,8 @@ pub enum ResearchResponse {
         profile_sha256: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         implementation_activation_sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        candidate_graph_identity: Option<CandidateGraphIdentity>,
         implementation_count: u64,
         run_id: String,
         state: ResearchRunState,
@@ -273,7 +387,7 @@ pub enum ResearchProtocolError {
     UnsupportedOperation,
     #[error("run spec does not match the pinned adapter")]
     RunSpecAdapterMismatch,
-    #[error("adapter does not support iteron-implementation/1 activation")]
+    #[error("adapter does not support the candidate implementation activation protocol")]
     UnsupportedImplementationActivation,
     #[error("request/response correlation mismatch")]
     Correlation,
@@ -287,10 +401,12 @@ pub enum ResearchProtocolError {
     UnknownRun,
     #[error("run adapter identity mismatch")]
     RunIdentity,
-    #[error("execute mode has no operator-pinned Iteron CLI executable")]
+    #[error("execute mode has no operator-pinned executable for this adapter")]
     UnpinnedExecutable,
-    #[error("Iteron CLI executable does not match the registry-owned identity")]
+    #[error("adapter executable does not match the registry-owned identity")]
     ExecutableIdentity,
+    #[error("adapter cannot consume direct-config or caller-input candidate patches")]
+    UnsupportedCandidateMaterialization,
 }
 
 pub fn parse_research_request(

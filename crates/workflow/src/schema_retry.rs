@@ -9,6 +9,8 @@ use iteron_sched::BackoffPolicy;
 /// Registry/schema ceiling.  It is intentionally independent of the provider retry ceiling.
 pub const MAX_SCHEMA_RETRY_ATTEMPTS: u32 = 64;
 pub const MAX_SCHEMA_RETRY_DELAY_MS: u64 = 60_000;
+const DEFAULT_SCHEMA_RETRY_BASE_MS: u64 = 2;
+const DEFAULT_SCHEMA_RETRY_CAP_MS: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SchemaRetryPolicy {
@@ -72,15 +74,29 @@ impl SchemaRetryPolicy {
 
 impl Default for SchemaRetryPolicy {
     fn default() -> Self {
-        Self {
-            max_attempts: u32::try_from(iteron_tunables::param_u64(
-                "workflow.schema.retry_max",
-                u64::from(crate::schema::RETRY_MAX),
-            ))
-            .unwrap_or(crate::schema::RETRY_MAX),
-            base_ms: 2,
-            cap_ms: 20,
-        }
+        let max_attempts = u32::try_from(iteron_tunables::param_u64(
+            "workflow.schema.retry_max",
+            u64::from(crate::schema::RETRY_MAX),
+        ))
+        .unwrap_or(crate::schema::RETRY_MAX);
+        let cap_ms = iteron_tunables::param_u64(
+            "workflow.schema_retry.default_schema_retry_cap_ms",
+            iteron_tunables::param_integer(
+                "workflow.schema_retry.default_schema_retry_cap_ms",
+                DEFAULT_SCHEMA_RETRY_CAP_MS,
+            ),
+        )
+        .min(MAX_SCHEMA_RETRY_DELAY_MS);
+        let base_ms = iteron_tunables::param_u64(
+            "workflow.schema_retry.default_schema_retry_base_ms",
+            iteron_tunables::param_integer(
+                "workflow.schema_retry.default_schema_retry_base_ms",
+                DEFAULT_SCHEMA_RETRY_BASE_MS,
+            ),
+        )
+        .min(cap_ms);
+        Self::new(max_attempts, base_ms, cap_ms)
+            .expect("the resolved schema retry policy satisfies its hard ceiling")
     }
 }
 

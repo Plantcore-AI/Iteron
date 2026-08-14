@@ -8,11 +8,15 @@ import unittest
 
 from iteron_research_client import (
     AdapterPin,
+    CANDIDATE_GRAPH_SCHEMA,
     PROTOCOL,
     ResearchClient,
     ResearchSessionClient,
+    TRAINER_CAPABILITIES,
     encode_query,
     encode_run,
+    negotiate_trainer_capabilities,
+    require_trainer_capabilities,
 )
 
 
@@ -30,8 +34,11 @@ if sys.argv[1] == "surface" and operation == "surface":
 elif sys.argv[1] == "candidate-validate" and operation == "candidate_validate":
     candidate = request["payload"]["candidate"]
     candidate_sha256 = "sha256:" + "f"*64 if request["request_id"] == "wrong-candidate" else request["payload"]["candidate_sha256"]
-    count = len(candidate.get("implementations", []))
-    payload = {"operation":"candidate_validate","candidate_id":candidate["id"],"candidate_sha256":candidate_sha256,"profile_sha256":"c"*64,"rendered_bytes":1,"implementation_count":count,"implementation_activation_bytes":1 if count else 0}
+    implementations = candidate.get("graph", {}).get("implementations", []) if candidate.get("schema_version") == 3 else candidate.get("implementations", [])
+    count = len(implementations)
+    payload = {"operation":"candidate_validate","candidate_id":candidate["id"],"candidate_schema_id":"iteron-candidate/"+str(candidate["schema_version"]),"candidate_sha256":candidate_sha256,"profile_sha256":"c"*64,"rendered_bytes":1,"implementation_count":count,"implementation_activation_bytes":1 if count else 0}
+    if candidate.get("schema_version") == 3:
+        payload["candidate_graph_identity"] = {"schema_id":"iteron-candidate/3","materialization_sha256":"sha256:"+"1"*64,"experiment_sha256":"sha256:"+"2"*64,"topology_sha256":"sha256:"+"3"*64}
     if count:
         payload["implementation_activation_sha256"] = "e"*64
 else:
@@ -51,18 +58,23 @@ for line in sys.stdin:
     operation = payload["operation"]
     if operation == "candidate_validate":
         candidate = payload["candidate"]
-        count = len(candidate.get("implementations", []))
-        response_payload = {"operation":operation,"candidate_id":candidate["id"],"candidate_sha256":payload["candidate_sha256"],"profile_sha256":"c"*64,"rendered_bytes":1,"implementation_count":count,"implementation_activation_bytes":1 if count else 0}
+        implementations = candidate.get("graph", {}).get("implementations", []) if candidate.get("schema_version") == 3 else candidate.get("implementations", [])
+        count = len(implementations)
+        response_payload = {"operation":operation,"candidate_id":candidate["id"],"candidate_schema_id":"iteron-candidate/"+str(candidate["schema_version"]),"candidate_sha256":payload["candidate_sha256"],"profile_sha256":"c"*64,"rendered_bytes":1,"implementation_count":count,"implementation_activation_bytes":1 if count else 0}
     elif operation == "run":
         activation = payload.get("implementation_activation_sha256")
         response_payload = {"operation":operation,"execution_mode":mode,"candidate_id":payload["candidate_id"],"candidate_sha256":payload["candidate_sha256"],"profile_sha256":payload["profile_sha256"],"run_id":payload["run_id"],"state":"running","command":{},"implementation_count":1 if activation else 0}
         if activation:
             response_payload["implementation_activation_sha256"] = activation
+        if payload.get("candidate_graph_identity"):
+            response_payload["candidate_graph_identity"] = payload["candidate_graph_identity"]
     else:
         activation = payload.get("implementation_activation_sha256")
         response_payload = {"operation":operation,"execution_mode":mode,"candidate_id":payload["candidate_id"],"candidate_sha256":payload["candidate_sha256"],"profile_sha256":payload["profile_sha256"],"run_id":payload["run_id"],"state":"completed","terminal_result_available":False,"implementation_count":1 if activation else 0}
         if activation:
             response_payload["implementation_activation_sha256"] = activation
+        if payload.get("candidate_graph_identity"):
+            response_payload["candidate_graph_identity"] = payload["candidate_graph_identity"]
     print(json.dumps({"protocol":"iteron-research/1","request_id":request["request_id"],"payload":response_payload}, separators=(",",":")), flush=True)
 '''
 
@@ -77,6 +89,42 @@ class ResearchClientTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    @staticmethod
+    def candidate_v3():
+        digest = lambda character: "sha256:" + character * 64
+        return {
+            "schema_version": 3,
+            "id": "python/candidate-v3",
+            "graph": {
+                "schema_id": CANDIDATE_GRAPH_SCHEMA,
+                "dimensions": [
+                    {
+                        "dimension_kind": "param",
+                        "address": {
+                            "kind": "unified_profile",
+                            "selector_kind": "key",
+                            "selector": "eval.tuner.max_candidates",
+                            "owner_kind": "schema",
+                            "owner": "iteron_tunables::Param/ResolutionValue",
+                        },
+                        "param": "eval.tuner.max_candidates",
+                        "value": {"type": "integer", "value": 64},
+                    }
+                ],
+                "lineage": {"generation": 0, "sparse_delta": []},
+                "experiment": {
+                    "dataset_sha256": digest("a"),
+                    "evaluator_sha256": digest("b"),
+                    "environment_sha256": digest("c"),
+                    "resource_sha256": digest("d"),
+                    "fidelity_sha256": digest("e"),
+                    "seed": 7,
+                },
+                "topology": [],
+                "implementations": [],
+            },
+        }
 
     def test_installed_like_cli_surface_and_candidate_validation(self):
         surface = self.client.surface("surface-1", self.pin)
@@ -159,6 +207,57 @@ class ResearchClientTest(unittest.TestCase):
             self.assertEqual(encoded["protocol"], PROTOCOL)
             self.assertEqual(encoded["payload"]["operation"], operation)
             self.assertEqual(encoded["payload"]["run_id"], "run-1")
+
+    def test_v3_graph_and_materialization_identity_roundtrip(self):
+        candidate = self.candidate_v3()
+        encoded = json.dumps(candidate, separators=(",", ":"), ensure_ascii=False)
+        candidate_digest = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+        validated = self.client.candidate_validate(
+            "candidate-v3", self.pin, candidate_digest, candidate
+        )
+        identity = validated["payload"]["candidate_graph_identity"]
+        run = encode_run(
+            "run-v3",
+            self.pin,
+            candidate["id"],
+            candidate_digest,
+            "c" * 64,
+            "run-v3",
+            {"kind": "iteron_cli", "spec": {"bounded": True}},
+            candidate_graph_identity=identity,
+        )
+        self.assertEqual(run["payload"]["candidate_graph_identity"], identity)
+
+        mixed = self.candidate_v3()
+        mixed["profile"] = {}
+        with self.assertRaisesRegex(ValueError, "one canonical graph"):
+            self.client.candidate_validate(
+                "candidate-v3-mixed", self.pin, candidate_digest, mixed
+            )
+
+    def test_optimizer_profiles_negotiate_by_intersection_and_reject_missing(self):
+        host = TRAINER_CAPABILITIES
+        profiles = {
+            "tpe-bayesian": ("asynchronous", "multi_objective", "checkpoint_resume"),
+            "population-evolution": ("batch", "population", "trajectory"),
+            "bandit-halving": ("asynchronous", "bandit"),
+            "llm-optimizer": ("trajectory", "opaque_artifact"),
+            "episode-rl": ("asynchronous", "trajectory", "checkpoint_resume"),
+        }
+        for optimizer_id, capabilities in profiles.items():
+            with self.subTest(optimizer_id=optimizer_id):
+                negotiated = negotiate_trainer_capabilities(
+                    "experiment-1", optimizer_id, host, capabilities
+                )
+                self.assertEqual(tuple(negotiated["capabilities"]), capabilities)
+                require_trainer_capabilities(negotiated, capabilities)
+                missing = next(
+                    capability
+                    for capability in TRAINER_CAPABILITIES
+                    if capability not in capabilities
+                )
+                with self.assertRaisesRegex(ValueError, "unsupported"):
+                    require_trainer_capabilities(negotiated, (missing,))
 
     def test_client_process_environment_contains_no_credential_material(self):
         previous = os.environ.get("OPENAI_API_KEY")

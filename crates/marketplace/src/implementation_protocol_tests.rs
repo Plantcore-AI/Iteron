@@ -1,7 +1,7 @@
 use crate::{
-    IMPLEMENTATION_PROTOCOL, ImplementationObservationEnvelope, ImplementationProtocolError,
-    ImplementationRequest, ImplementationRequestEnvelope, ImplementationResponse,
-    ImplementationResponseEnvelope,
+    IMPLEMENTATION_PROTOCOL, IMPLEMENTATION_PROTOCOL_V1, ImplementationObservationEnvelope,
+    ImplementationProtocolError, ImplementationRequest, ImplementationRequestEnvelope,
+    ImplementationResponse, ImplementationResponseEnvelope, ImplementationState,
 };
 use iteron_protocol::{Capability, capability_set::CapabilitySet};
 use iteron_tunables::{ModuleId, capability_seam_graph};
@@ -114,4 +114,105 @@ fn protocol_parser_is_closed_and_size_bounded() {
         crate::parse_implementation_request(&oversized),
         Err(ImplementationProtocolError::TooLarge { .. })
     ));
+}
+
+#[test]
+fn v1_remains_compatible_only_for_stateless_operations() {
+    let mut request = load_request();
+    request.protocol = IMPLEMENTATION_PROTOCOL_V1.into();
+    request.validate().expect("v1 load remains compatible");
+
+    let node = capability_seam_graph()
+        .nodes
+        .into_iter()
+        .find(|node| node.module == request.module)
+        .unwrap();
+    request.payload = ImplementationRequest::Snapshot {
+        lifecycle_contract: node.lifecycle.snapshot.clone(),
+        run_id: "run-1".into(),
+        generation: 1,
+        state_schema: node.lifecycle.snapshot,
+        deadline_ms: 100,
+    };
+    assert_eq!(
+        request.validate(),
+        Err(ImplementationProtocolError::Operation)
+    );
+}
+
+#[test]
+fn v2_state_is_bounded_content_addressed_and_correlated() {
+    let node = capability_seam_graph()
+        .nodes
+        .into_iter()
+        .find(|node| node.module == ModuleId::ProviderRouting)
+        .unwrap();
+    let state = ImplementationState::new(
+        ModuleId::ProviderRouting,
+        "provider.route.fast",
+        "run-1",
+        7,
+        node.lifecycle.snapshot.clone(),
+        serde_json::json!({"counter": 42}),
+    )
+    .unwrap();
+    let request = ImplementationRequestEnvelope {
+        protocol: IMPLEMENTATION_PROTOCOL.into(),
+        request_id: "request-state".into(),
+        implementation_id: "provider.route.fast".into(),
+        module: node.module,
+        payload: ImplementationRequest::Snapshot {
+            lifecycle_contract: node.lifecycle.snapshot.clone(),
+            run_id: state.run_id.clone(),
+            generation: state.generation,
+            state_schema: state.state_schema.clone(),
+            deadline_ms: 100,
+        },
+    };
+    let response = ImplementationResponseEnvelope {
+        protocol: IMPLEMENTATION_PROTOCOL.into(),
+        request_id: request.request_id.clone(),
+        implementation_id: request.implementation_id.clone(),
+        module: request.module,
+        payload: ImplementationResponse::Snapshotted {
+            state: state.clone(),
+        },
+    };
+    response.validate_for(&request).unwrap();
+
+    let mut rebound = response;
+    let ImplementationResponse::Snapshotted { state } = &mut rebound.payload else {
+        unreachable!()
+    };
+    state.state = serde_json::json!({"counter": 43});
+    assert_eq!(
+        rebound.validate_for(&request),
+        Err(ImplementationProtocolError::Field("state_sha256"))
+    );
+
+    let oversized = serde_json::Value::String("x".repeat(crate::MAX_IMPLEMENTATION_STATE_BYTES));
+    assert!(matches!(
+        ImplementationState::new(
+            ModuleId::ProviderRouting,
+            "provider.route.fast",
+            "run-1",
+            1,
+            node.lifecycle.snapshot,
+            oversized,
+        ),
+        Err(ImplementationProtocolError::TooLarge { .. })
+    ));
+}
+
+#[test]
+fn duplicate_json_keys_are_rejected_before_deserialization() {
+    let serialized = serde_json::to_string(&load_request()).unwrap();
+    let duplicate = format!(
+        "{{\"protocol\":\"{IMPLEMENTATION_PROTOCOL}\",{}",
+        &serialized[1..]
+    );
+    assert_eq!(
+        crate::parse_implementation_request(duplicate.as_bytes()),
+        Err(ImplementationProtocolError::DuplicateJsonKey)
+    );
 }

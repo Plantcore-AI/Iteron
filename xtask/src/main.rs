@@ -89,6 +89,10 @@ fn main() -> Result<()> {
             tunables_invariant_review::print_packet(&root)?;
             return Ok(());
         }
+        [group, command] if group == "tunables" && command == "invariant-review-body" => {
+            tunables_invariant_review::print_review_body(&root)?;
+            return Ok(());
+        }
         [group, command] if group == "tunables" && command == "check-invariant-reviews" => {
             tunables_invariant_review::check(&root, None)?;
             return Ok(());
@@ -223,7 +227,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|invariant-review-packet|check-invariant-reviews [--reviews FILE]|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|invariant-review-packet|invariant-review-body|check-invariant-reviews [--reviews FILE]|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

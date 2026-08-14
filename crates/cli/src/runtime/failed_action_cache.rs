@@ -22,8 +22,14 @@ impl Default for FailedActionPolicy {
     fn default() -> Self {
         Self {
             max_identities: super::failed_action_cache_max_identities(),
-            turn_scoped: false,
-            enabled: true,
+            turn_scoped: iteron_tunables::param_bool(
+                "cli.runtime.failed_action_cache.default_turn_scoped",
+                false,
+            ),
+            enabled: iteron_tunables::param_bool(
+                "cli.runtime.failed_action_cache.default_enabled",
+                true,
+            ),
         }
     }
 }

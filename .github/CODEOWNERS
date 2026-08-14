@@ -66,6 +66,8 @@
 /docs/maintainer-onboarding.md @fr0m-scratch
 /docs/repository-enforcement.md @fr0m-scratch
 /docs/roadmap.md @fr0m-scratch
+/scripts/cross_harness_qualification.py @fr0m-scratch
+/scripts/test_cross_harness_qualification.py @fr0m-scratch
 /xtask/Cargo.toml @fr0m-scratch
 /crates/agents/tests/** @fr0m-scratch
 /crates/cli/tests/** @fr0m-scratch

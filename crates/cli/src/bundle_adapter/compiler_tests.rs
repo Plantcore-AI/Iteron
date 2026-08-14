@@ -564,6 +564,137 @@ printf '%s\n' '{"protocol":"iteron-implementation/1","request_id":"host-3","impl
 
 #[cfg(unix)]
 #[test]
+fn all_twenty_eight_module_ports_execute_and_emit_consumption_evidence() {
+    use iteron_marketplace::{
+        EvidenceLimits, ImplementationActivationDocument, ImplementationCatalog,
+        ImplementationFailurePolicy, ImplementationManifest, ImplementationSource, Version,
+    };
+    use sha2::Digest as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = std::env::temp_dir().join(format!(
+        "iteron-cli-all-module-port-ablation-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let host =
+        CapabilitySet::from_iter_capabilities([Capability::ReadOnly, Capability::CodeExecuting]);
+    let inherit = json!({
+        "admitted": CapabilitySet::none(),
+        "inherit": true
+    });
+    let mut manifests = Vec::new();
+    for (index, module) in iteron_tunables::ModuleId::ALL.into_iter().enumerate() {
+        let implementation_id = format!("fixture.ablation-{index:02}");
+        let executable_name = format!("module-{index:02}.sh");
+        let body = external_fixture_body(&implementation_id, module, &inherit, false);
+        let executable = root.join(&executable_name);
+        std::fs::write(&executable, body.as_bytes()).unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        manifests.push(ImplementationManifest {
+            implementation_id,
+            implementation_version: Version(1, 0, 0),
+            module,
+            artifact_sha256: hex::encode(sha2::Sha256::digest(body.as_bytes())),
+            executable: executable_name,
+            argv: Vec::new(),
+            protocol_version: 1,
+            requested_capabilities: host,
+            dependencies: Vec::new(),
+            runtime_deadline_ms: 30_000,
+            cancellation_deadline_ms: 2_000,
+            evidence_limits: EvidenceLimits {
+                stdout_bytes: 16 * 1024,
+                stderr_bytes: 4 * 1024,
+                observations: 4,
+            },
+            failure_policy: ImplementationFailurePolicy::FailClosed,
+        });
+    }
+    let catalog_path = root.join("catalog.json");
+    std::fs::write(
+        &catalog_path,
+        serde_json::to_vec(&ImplementationCatalog {
+            schema_version: 1,
+            implementations: manifests.clone(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let sources = manifests
+        .iter()
+        .map(|manifest| ImplementationSource {
+            module: manifest.module,
+            implementation_id: manifest.implementation_id.clone(),
+            catalog_path: catalog_path.display().to_string(),
+            artifact_root: root.display().to_string(),
+            manifest_sha256: format!(
+                "sha256:{}",
+                hex::encode(sha2::Sha256::digest(serde_json::to_vec(manifest).unwrap()))
+            ),
+            artifact_sha256: format!("sha256:{}", manifest.artifact_sha256),
+        })
+        .collect();
+    let activation_bytes = serde_json::to_vec(&ImplementationActivationDocument {
+        schema_version: 1,
+        candidate_sha256: format!("sha256:{}", "8".repeat(64)),
+        sources,
+    })
+    .unwrap();
+    let activation_digest = hex::encode(sha2::Sha256::digest(&activation_bytes));
+    let activation_path = root.join("all-modules-activation.json");
+    std::fs::write(&activation_path, &activation_bytes).unwrap();
+    let candidate =
+        crate::plugin_runtime::CandidateFile::read(&activation_path, &activation_digest).unwrap();
+    let research = crate::plugin_runtime::RuntimePlugins::research(candidate, host).unwrap();
+    let compiled = compile_configured_bundle_with_external(
+        None,
+        ConfigOrigin::UserConfig,
+        research.implementation.as_ref().unwrap(),
+        &root,
+        "all-module-port-run",
+    )
+    .unwrap();
+    let slots = compiled.slots();
+    for implementation in [
+        &slots.context,
+        &slots.tool_policy,
+        &slots.memory,
+        &slots.router,
+        &slots.planner,
+        &slots.collaboration,
+        &slots.scheduler,
+        &slots.verifier,
+        &slots.model_router,
+    ] {
+        let outcome = implementation.decide(&SlotObservation {
+            slot: implementation.slot().clone(),
+            ceiling: CapabilitySet::none(),
+            payload: json!({}),
+        });
+        assert!(outcome.admitted.is_empty());
+    }
+    let sidecar = root.join(format!(
+        ".iteron-implementation-{activation_digest}-consumption.json"
+    ));
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sidecar).unwrap()).unwrap();
+    let rows = evidence["implementations"].as_array().unwrap();
+    assert_eq!(rows.len(), iteron_tunables::ModuleId::ALL.len());
+    for (row, module) in rows.iter().zip(iteron_tunables::ModuleId::ALL) {
+        assert_eq!(row["module"], serde_json::to_value(module).unwrap());
+        for phase in ["loaded", "started", "terminal", "stopped"] {
+            assert_eq!(row[phase], true, "{module:?} missing {phase}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn same_slot_provider_chain_runs_every_module_and_threads_the_prior_outcome() {
     use iteron_marketplace::{
         EvidenceLimits, ImplementationActivationDocument, ImplementationCatalog,
@@ -724,9 +855,11 @@ fn same_slot_provider_chain_runs_every_module_and_threads_the_prior_outcome() {
         serde_json::from_slice(&std::fs::read(root.join("provider-sampling-start.json")).unwrap())
             .unwrap();
     let chained = &start["payload"]["input"];
-    assert_eq!(chained["schema_id"], "iteron-module-observation/1");
+    assert_eq!(chained["schema_id"], "iteron-module-observation/2");
     assert_eq!(chained["module"], "provider_sampling");
     assert_eq!(chained["core_slot"], "model_router");
+    assert_eq!(chained["production_port"], "model_router");
+    assert_eq!(chained["stage"], 1);
     assert_eq!(chained["prior"]["decision"]["model"], "provider/prior");
 
     let sidecar = root.join(format!(

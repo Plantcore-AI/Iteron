@@ -51,16 +51,17 @@ For research, the paired hidden CLI arguments are the process-execution authoriz
 decision authority is still intersected with the explicit host and caller ceilings. The ordinary
 installed-plugin path remains separate: an implementation there must retain `code_executing`,
 equal a composition-winning binding, and remain inside the winning plugin's fixed catalog/artifact
-layout. Today only seven optimization modules have an unambiguous production strategy consumer:
-`context.assembly`, `memory.recall`, `tool.exposure`, `provider.routing`,
-`scheduler.parallelism`, `planner.fanout`, and `verification.quorum`. Any of the other 21 modules is
-rejected instead of being reported as covered.
+layout. All 28 optimization modules have an independent public module identity, lifecycle, and
+consumption-evidence row. Nine typed production consumers execute these as deterministic ordered
+module-stage chains; sharing a consumer does not merge implementation identity or permit one
+implementation to stand in for a sibling module.
 
-Each call launches a bounded direct child, loads it, starts one correlated run, consumes a terminal
-schema-checked decision, then stops and reaps it. The decision's authority is intersected with both
-the registry-minted plan and the caller ceiling. Any lifecycle, protocol, schema, deadline, receipt,
-or identity failure returns the slot's typed unknown/refusal decision; it never invokes the
-baseline implementation.
+Each module stage launches a bounded direct child, loads it, starts one correlated run, consumes a
+terminal schema-checked decision, then stops and reaps it. A stage can return a typed decision or
+explicitly inherit the prior stage (the compiled baseline for the first stage). The decision's
+authority is intersected with the registry-minted plan, every prior stage, and the caller ceiling.
+Any lifecycle, protocol, schema, deadline, receipt, or identity failure returns the port's typed
+unknown/refusal decision; it never silently skips the failed stage.
 
 Fresh genesis records the exact implementation, manifest, artifact, candidate, and activation
 identity in the immutable bundle receipt. Resume requires the same candidate and reconstructs the

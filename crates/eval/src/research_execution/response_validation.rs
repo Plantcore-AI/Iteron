@@ -26,6 +26,8 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
         ResearchResponse::Surface {
             registry_digest_sha256,
             adapters,
+            candidate_schemas,
+            candidate_capabilities,
             ..
         } => {
             digest(registry_digest_sha256, "registry_digest_sha256")?;
@@ -44,6 +46,15 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
                 {
                     return invalid("implementation_protocol");
                 }
+                if adapter
+                    .materialization_protocol
+                    .as_deref()
+                    .is_some_and(|protocol| {
+                        protocol != crate::research_protocol::EXTERNAL_NATIVE_ADAPTER_PROTOCOL
+                    })
+                {
+                    return invalid("materialization_protocol");
+                }
                 digest(&adapter.adapter_digest_sha256, "adapter_digest_sha256")?;
                 if adapter.supported_operations.len() > 6 {
                     return invalid("supported_operations");
@@ -52,23 +63,51 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             let registry = BenchmarkAdapterRegistry::builtin();
             if registry_digest_sha256 != &registry.digest_sha256()
                 || adapters != &registry.entries()
+                || candidate_schemas
+                    != &[
+                        "iteron-candidate/1",
+                        "iteron-candidate/2",
+                        "iteron-candidate/3",
+                    ]
+                || candidate_capabilities
+                    != &[
+                        "unified_profile",
+                        "direct_config",
+                        "caller_input",
+                        "implementations",
+                        "topology",
+                        "lineage",
+                        "experiment",
+                    ]
             {
                 return invalid("adapter registry identity");
             }
         }
         ResearchResponse::CandidateValidate {
             candidate_id,
+            candidate_schema_id,
             candidate_sha256,
             profile_sha256,
+            candidate_graph_identity,
             rendered_bytes,
             implementation_count,
             implementation_activation_sha256,
             implementation_activation_bytes,
+            native_patch_count,
+            native_materialization_sha256,
+            native_materialization_bytes,
         } => {
             validate_candidate_id(candidate_id)?;
+            text(candidate_schema_id, 64, "candidate_schema_id")?;
             candidate_digest(candidate_sha256)?;
             digest(profile_sha256, "profile_sha256")?;
-            if *rendered_bytes == 0
+            graph_identity(candidate_graph_identity.as_ref())?;
+            if !matches!(
+                candidate_schema_id.as_str(),
+                "iteron-candidate/2" | "iteron-candidate/3"
+            ) || (candidate_schema_id == "iteron-candidate/3")
+                != candidate_graph_identity.is_some()
+                || *rendered_bytes == 0
                 || *rendered_bytes > iteron_tunables::MAX_PROFILE_BYTES as u64
                 || *implementation_count > iteron_tunables::ModuleId::ALL.len() as u64
                 || (*implementation_count == 0
@@ -79,11 +118,22 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
                         || *implementation_activation_bytes == 0
                         || *implementation_activation_bytes
                             > iteron_marketplace::MAX_IMPLEMENTATION_ACTIVATION_BYTES as u64))
+                || (*native_patch_count == 0
+                    && (native_materialization_sha256.is_some()
+                        || *native_materialization_bytes != 0))
+                || (*native_patch_count > 0
+                    && (native_materialization_sha256.is_none()
+                        || *native_materialization_bytes == 0
+                        || *native_materialization_bytes
+                            > crate::research_protocol::MAX_NATIVE_MATERIALIZATION_BYTES as u64))
             {
                 return invalid("candidate validation response");
             }
             if let Some(digest_value) = implementation_activation_sha256 {
                 digest(digest_value, "implementation_activation_sha256")?;
+            }
+            if let Some(digest_value) = native_materialization_sha256 {
+                digest(digest_value, "native_materialization_sha256")?;
             }
         }
         ResearchResponse::Run {
@@ -96,6 +146,7 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             command,
             adapter_result_path,
             implementation_activation_sha256,
+            candidate_graph_identity,
             implementation_count,
         } => {
             let execute = mode(execution_mode, run_id)?;
@@ -107,6 +158,7 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             }
             command_valid(command)?;
             activation(implementation_activation_sha256, *implementation_count)?;
+            graph_identity(candidate_graph_identity.as_ref())?;
             if let Some(result_path) = adapter_result_path {
                 path(result_path)?;
             }
@@ -119,11 +171,13 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             run_id,
             state,
             implementation_activation_sha256,
+            candidate_graph_identity,
             implementation_count,
         } => {
             let execute = mode(execution_mode, run_id)?;
             candidate(candidate_id, candidate_sha256, profile_sha256)?;
             activation(implementation_activation_sha256, *implementation_count)?;
+            graph_identity(candidate_graph_identity.as_ref())?;
             if (!execute && *state != ResearchRunState::Cancelled)
                 || (execute
                     && matches!(
@@ -147,11 +201,13 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             terminal_result,
             detail,
             implementation_activation_sha256,
+            candidate_graph_identity,
             implementation_count,
         } => {
             let execute = mode(execution_mode, run_id)?;
             candidate(candidate_id, candidate_sha256, profile_sha256)?;
             activation(implementation_activation_sha256, *implementation_count)?;
+            graph_identity(candidate_graph_identity.as_ref())?;
             if *terminal_result_available != terminal_result.is_some()
                 || (!execute
                     && (*terminal_result_available
@@ -184,12 +240,14 @@ pub(crate) fn validate_response(response: &ResearchResponse) -> Result<(), Resea
             evidence_available,
             artifacts,
             implementation_activation_sha256,
+            candidate_graph_identity,
             implementation_count,
             ..
         } => {
             let execute = mode(execution_mode, run_id)?;
             candidate(candidate_id, candidate_sha256, profile_sha256)?;
             activation(implementation_activation_sha256, *implementation_count)?;
+            graph_identity(candidate_graph_identity.as_ref())?;
             if *evidence_available == artifacts.is_empty()
                 || (!execute && (*evidence_available || !artifacts.is_empty()))
                 || artifacts.len() > 1024
@@ -233,20 +291,44 @@ pub(crate) fn validate_envelope(
             },
             ResearchResponse::CandidateValidate {
                 candidate_id: response_id,
+                candidate_schema_id: response_schema_id,
                 candidate_sha256: response_candidate_digest,
                 profile_sha256: response_profile_digest,
+                candidate_graph_identity: response_graph_identity,
                 rendered_bytes,
                 implementation_count,
                 implementation_activation_sha256,
                 implementation_activation_bytes,
+                native_patch_count,
+                native_materialization_sha256,
+                native_materialization_bytes,
             },
         ) if candidate.id.as_str() != response_id.as_str()
+            || candidate.candidate_schema_id() != response_schema_id
             || candidate_sha256 != response_candidate_digest
-            || *implementation_count != candidate.implementations.len() as u64
-            || (candidate.implementations.is_empty()
+            || candidate
+                .graph_identity()
+                .ok()
+                .as_ref()
+                .and_then(|item| item.as_ref())
+                != response_graph_identity.as_ref()
+            || *implementation_count != candidate.implementation_bindings().len() as u64
+            || (candidate.implementation_bindings().is_empty()
                 != implementation_activation_sha256.is_none())
-            || (candidate.implementations.is_empty()
+            || (candidate.implementation_bindings().is_empty()
                 != (*implementation_activation_bytes == 0))
+            || candidate
+                .materialize()
+                .ok()
+                .map(|item| {
+                    item.direct_config_patches
+                        .len()
+                        .saturating_add(item.caller_input_patches.len()) as u64
+                })
+                .unwrap_or(0)
+                != *native_patch_count
+            || (*native_patch_count == 0) != native_materialization_sha256.is_none()
+            || (*native_patch_count == 0) != (*native_materialization_bytes == 0)
             || candidate
                 .rendered_profile()
                 .map(|(rendered, digest)| {
@@ -263,6 +345,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256,
+                candidate_graph_identity,
                 run_id,
                 run,
                 ..
@@ -272,6 +355,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256: response_candidate_digest,
                 profile_sha256: response_profile_digest,
                 implementation_activation_sha256: response_activation_digest,
+                candidate_graph_identity: response_graph_identity,
                 run_id: response_id,
                 ..
             },
@@ -280,6 +364,7 @@ pub(crate) fn validate_envelope(
             || profile_sha256 != response_profile_digest
             || run.profile_sha256() != response_profile_digest
             || implementation_activation_sha256 != response_activation_digest
+            || candidate_graph_identity != response_graph_identity
             || run.implementation_candidate_digest() != response_activation_digest.as_deref()
             || run_id != response_id =>
         {
@@ -291,6 +376,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256,
+                candidate_graph_identity,
                 run_id,
                 ..
             }
@@ -299,6 +385,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256,
+                candidate_graph_identity,
                 run_id,
                 ..
             }
@@ -307,6 +394,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256,
                 profile_sha256,
                 implementation_activation_sha256,
+                candidate_graph_identity,
                 run_id,
                 ..
             },
@@ -315,6 +403,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256: response_candidate_digest,
                 profile_sha256: response_profile_digest,
                 implementation_activation_sha256: response_activation_digest,
+                candidate_graph_identity: response_graph_identity,
                 run_id: response_id,
                 ..
             }
@@ -323,6 +412,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256: response_candidate_digest,
                 profile_sha256: response_profile_digest,
                 implementation_activation_sha256: response_activation_digest,
+                candidate_graph_identity: response_graph_identity,
                 run_id: response_id,
                 ..
             }
@@ -331,6 +421,7 @@ pub(crate) fn validate_envelope(
                 candidate_sha256: response_candidate_digest,
                 profile_sha256: response_profile_digest,
                 implementation_activation_sha256: response_activation_digest,
+                candidate_graph_identity: response_graph_identity,
                 run_id: response_id,
                 ..
             },
@@ -338,6 +429,7 @@ pub(crate) fn validate_envelope(
             || candidate_sha256 != response_candidate_digest
             || profile_sha256 != response_profile_digest
             || implementation_activation_sha256 != response_activation_digest
+            || candidate_graph_identity != response_graph_identity
             || run_id != response_id =>
         {
             Err(ResearchProtocolError::Correlation)
@@ -366,5 +458,8 @@ pub(crate) fn error_code(error: &ResearchProtocolError) -> &'static str {
         ResearchProtocolError::RunIdentity => "run_identity_mismatch",
         ResearchProtocolError::UnpinnedExecutable => "unpinned_executable",
         ResearchProtocolError::ExecutableIdentity => "executable_identity_mismatch",
+        ResearchProtocolError::UnsupportedCandidateMaterialization => {
+            "unsupported_candidate_materialization"
+        }
     }
 }

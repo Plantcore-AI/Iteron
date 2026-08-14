@@ -39,6 +39,7 @@ mod runtime_binding;
 mod runtime_requirements;
 mod schema_catalog;
 mod semantic_keys;
+mod service_graph;
 mod strategy_slots;
 mod tool_text;
 mod types;
@@ -104,6 +105,13 @@ pub use runtime_requirements::{
     runtime_constraint_requirements, runtime_default_observations,
 };
 pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
+pub use service_graph::{
+    MAX_RUNTIME_SERVICE_GRAPH_BYTES, ProductionPortId, RUNTIME_CRATE_IDS,
+    RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION, RUNTIME_SERVICE_NODE_COUNT, RuntimeServiceDisposition,
+    RuntimeServiceGraph, RuntimeServiceGraphError, RuntimeServiceImplementationStatus,
+    RuntimeServiceLayer, RuntimeServiceNode, module_port, runtime_service_graph,
+    validate_runtime_service_graph,
+};
 pub use tool_text::{
     TOOL_TEXT_ARTIFACTS, TOOL_TEXT_REGISTRY_ID, TOOL_TEXT_SCHEMA_VERSION, ToolTextArtifact,
     tool_text_artifact, tool_text_artifact_by_id, tool_text_registry_digest_sha256,

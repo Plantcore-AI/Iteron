@@ -20,11 +20,12 @@ pub struct ReconnectPolicy {
 
 impl Default for ReconnectPolicy {
     fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_ms: 250,
-            cap_ms: 10_000,
-        }
+        Self::new(
+            iteron_tunables::param_integer("mcp.reconnect.default_max_attempts", 3),
+            iteron_tunables::param_integer("mcp.reconnect.default_base_ms", 250),
+            iteron_tunables::param_integer("mcp.reconnect.default_cap_ms", 10_000),
+        )
+        .expect("admitted default MCP reconnect policy")
     }
 }
 

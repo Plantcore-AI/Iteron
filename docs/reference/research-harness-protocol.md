@@ -29,11 +29,14 @@ oversized documents, unbounded paths/budgets, and mismatched response correlatio
 
 - `surface` returns `iteron_tunables::surface_json()`, the adapter registry, and its digest.
 - `candidate_validate` accepts `candidate_sha256` plus one complete `TunerCandidate` containing
-  its profile and schema-v2 implementation source locators. For a non-empty implementation set,
+  its schema-v3 graph. For a non-empty implementation set,
   `implementation_candidate_path` is a required absolute create-new output. Validation calls the
   marketplace activation parser, which re-reads each canonical catalog, hashes its canonical
   manifest and executable artifact, and mints registry plans before the harness writes the bounded,
-  no-follow activation JSON. The response returns its bare digest and byte count.
+  no-follow activation JSON. For non-empty direct-config or caller-input patch sets,
+  `native_materialization_path` is likewise a required absolute create-new destination under the
+  native adapter. The response returns graph, activation, native-materialization, byte, and patch
+  identities.
 - `run` requires a candidate previously accepted by the same persistent session, verifies its
   adapter, candidate digest, and profile digest, then validates one `iteron_cli` or exact
   `terminal_bench_2_1` run request and constructs a deterministic shell-free `AdapterCommand`.
@@ -45,17 +48,20 @@ oversized documents, unbounded paths/budgets, and mismatched response correlatio
 `candidate_sha256` is the exact native tuner content identity (`sha256:` followed by 64 lowercase
 hex characters) over the complete candidate. `profile_sha256` is the bare 64-character SHA-256
 of its canonical rendered profile. The two are intentionally distinct.
-Candidate implementation schema v2 binds the exact protocol `iteron-implementation/1`, module,
-implementation id, absolute canonical catalog/artifact paths, and prefixed manifest/artifact
-digests into `candidate_sha256`. A run must repeat the materialized activation path and bare digest
+Candidate implementation bindings accept stateless `iteron-implementation/1` and current
+`iteron-implementation/2`; state migration requires v2. They bind module, implementation id,
+absolute canonical catalog/artifact paths, and prefixed manifest/artifact digests into
+`candidate_sha256`. A run must repeat the materialized activation path and bare digest
 inside its adapter request. The Iteron adapter appends the exact argv pair
 `--implementation-candidate PATH --implementation-candidate-digest DIGEST`; it never reconstructs
 or substitutes an implementation source. Implementation runs also pin `--harness-profile
 research`, as required by the CLI admission boundary.
 
-The built-in registry has two exact entries:
+The built-in registry has three exact entries:
 
 - `iteron-cli` / `1`, the generic ordinary Iteron profile CLI adapter;
+- `iteron-native-adapter` / `1`, an operator-pinned external process that consumes v3
+  direct-config/caller-input patch materialization and emits per-address consumption evidence;
 - `terminal-bench` / `2.1`, a registry wrapper around the separate exact Terminal-Bench 2.1
   contract. The registry does not loosen that contract or supply a default version.
 
@@ -82,6 +88,20 @@ untrusted run request:
 ```sh
 iteron-harness serve --execute --iteron-cli /absolute/path/to/iteron
 ```
+
+Native patches use a separately pinned adapter executable:
+
+```sh
+iteron-harness serve --execute --native-adapter /absolute/path/to/adapter
+```
+
+The harness writes a bounded create-new `iteron-candidate-materialization/1` document and invokes
+the adapter directly with exact profile, candidate, materialization, experiment, topology, run,
+result, and receipt arguments. Completion requires an
+`iteron-candidate-materialization-consumption/1` receipt in the predeclared path. It must contain
+one ordered row per patch and repeat the exact address and input/observed value digest with
+`loaded`, `applied`, and `observed` all true. Missing, stale, reordered, partial, duplicate-key, or
+digest-rebound evidence converts an apparent process success into a failed run.
 
 Execute mode materializes the previously validated candidate profile only when the requested
 profile path is absent or already byte-identical. The process-level CLI path is canonicalized and

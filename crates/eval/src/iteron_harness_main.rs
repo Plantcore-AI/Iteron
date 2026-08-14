@@ -9,6 +9,18 @@ use std::path::Path;
 
 fn main() -> std::process::ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|operation| operation == "campaign")
+    {
+        return iteron_eval::qualification_campaign::run_campaign_cli(&args[1..]);
+    }
+    if args
+        .first()
+        .is_some_and(|operation| operation == "qualification-provider")
+    {
+        return iteron_eval::qualification_campaign::run_provider_cli(&args[1..]);
+    }
     let result = match args.as_slice() {
         [operation] if operation == "surface" => one_shot(AdapterOperation::Surface),
         [operation] if operation == "candidate-validate" => {
@@ -21,9 +33,16 @@ fn main() -> std::process::ExitCode {
         {
             serve(ResearchExecutionMode::Execute, Some(Path::new(binary)))
         }
+        [operation, flag, binary_flag, binary]
+            if operation == "serve"
+                && flag == "--execute"
+                && binary_flag == "--native-adapter" =>
+        {
+            serve_native(Path::new(binary))
+        }
         [operation] if operation == "serve" => serve(ResearchExecutionMode::DryRun, None),
         _ => Err(
-            "usage: iteron-harness <surface|candidate-validate|serve|serve --execute --iteron-cli PATH>; serve defaults to dry-run"
+            "usage: iteron-harness <surface|candidate-validate|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
                 .into(),
         ),
     };
@@ -34,6 +53,12 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(2)
         }
     }
+}
+
+fn serve_native(path: &Path) -> Result<(), String> {
+    serve_session(
+        ResearchSession::with_pinned_native_adapter(path).map_err(|error| error.to_string())?,
+    )
 }
 
 fn one_shot(expected: AdapterOperation) -> Result<(), String> {
@@ -54,15 +79,19 @@ fn one_shot(expected: AdapterOperation) -> Result<(), String> {
 }
 
 fn serve(execution_mode: ResearchExecutionMode, iteron_cli: Option<&Path>) -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let mut session = match (execution_mode, iteron_cli) {
+    let session = match (execution_mode, iteron_cli) {
         (ResearchExecutionMode::DryRun, None) => ResearchSession::new(),
         (ResearchExecutionMode::Execute, Some(path)) => {
             ResearchSession::with_pinned_iteron_cli(path).map_err(|error| error.to_string())?
         }
         _ => return Err("execute mode requires one operator-pinned Iteron CLI path".into()),
     };
+    serve_session(session)
+}
+
+fn serve_session(mut session: ResearchSession) -> Result<(), String> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
     loop {
         let Some(line) = read_bounded_line(&mut input)? else {
             return Ok(());

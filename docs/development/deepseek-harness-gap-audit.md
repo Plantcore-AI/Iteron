@@ -7,20 +7,18 @@ DeepSeek reference: `deepseek-ai/deepseek-harness` commit
 
 ## Verdict
 
-Iteron has not yet completed the full universal-harness goal.
+Iteron now has the broader *declared optimization and research contract*: Candidate Graph v3,
+1,895 externally addressed runtime values, 28 independently identified optimization modules, a
+66-node runtime service graph, a language-neutral research protocol, content-pinned external
+implementations, and transactional stateful hot swap. Those are stronger optimization-specific
+contracts than the audited DeepSeek Harness revision exposes.
 
-The current branch closes a large parameter-addressability milestone: every declared searchable or
-bounded Tier-2 parameter is applied, every lawful non-Pin Tier-1 family is profile-addressable, and
-all built-in prompt and tool-description text has a stable override identity. It does not prove
-that every optimizable production value was discovered, does not let an external researcher load
-an arbitrary implementation for every runtime module, and does not train the whole exposed space
-through one native or external trainer protocol.
-
-DeepSeek Harness is ahead on runtime composition. Iteron is ahead on governed, digest-pinned
-experiment inputs, immutable effective-profile evidence, authority ceilings, historical replay,
-and bounded benchmark evidence. Neither system currently demonstrates end-to-end training of every
-module. There is therefore no honest basis for saying Iteron is simply “better” overall or for
-claiming benchmark-performance superiority.
+The source-form gap is now closed: the census reports zero unresolved bindings and zero unaddressed
+runtime values. The universal-harness goal is nevertheless not complete. All 825 mechanically
+classified invariants still require owning-human approval, and the official installed
+Terminal-Bench 2.1 campaign has not been executed. Thus Iteron may claim a larger governed
+*declared* surface, but not a mathematical inventory of every possible generated value or
+benchmark-performance superiority.
 
 ## Three different completion tests
 
@@ -41,37 +39,40 @@ replaceable without providing a trainable state or reward protocol.
 Generated registry revision 18 reports:
 
 - 160 Tier-1 families: 137 `Full`, 23 `FixedHidden`, and 119 profile-addressable;
-- 1,870 Tier-2 entries: 454 searchable, 791 bounded, 625 structural, and all 1,245 searchable or
+- 2,001 Tier-2 entries: 486 searchable, 795 bounded, 720 structural, and all 1,281 searchable or
   bounded entries applied;
 - 10/10 prompt artifacts and 26/26 built-in tool descriptions overridable;
-- 28 optimization modules, each with at least one item in the unified profile surface;
-- 1,400 unified profile-addressable items in total: 119 families + 1,245 Tier-2 parameters + 10
-  prompt artifacts + 26 tool descriptions.
+- 28 optimization modules, each with a stable external provider/consumer identity;
+- 66 runtime-service nodes: 28 optimization modules, nine production consumer ports, 22 platform
+  services, and seven immutable host-invariant classes.
 
-The broader optimization census reports 2,548 candidates: 1,923 `runtime_settable`/applied and 625
-read-only invariants. Schema v2 makes clear that the larger number is not the unified external
-profile size: 1,245 are `unified_profile`, 251 are `direct_config`, and 427 are
-`caller_injected`. The latter 678 include serde defaults, Clap defaults, default constructors, and
-fallback calls that an explicit configuration or Rust caller may replace but that are not
-necessarily enumerated by `ProfileDocument`. Until those paths are unified or separately given a
-stable external contract, 1,923 must not be presented as “any harness can pass all of these.”
+Optimization census schema v4 reports 2,720 independent candidate rows. Of these, 1,895 are applied
+and have concrete external addresses: 1,281 `unified_profile`, 296 `direct_config`, and 318
+`caller_input`.
+Candidate Graph v3 materializes these address classes, and the generic native adapter accepts only
+after a correlated consumption receipt proves every patch was loaded, applied, and observed.
 
-The 625 read-only classifications also require adversarial review. Automatic syntax and structural
-rules can identify candidates, but cannot decide whether a routing marker, tool-policy set, or
-quality-affecting default is truly a non-learnable invariant.
+The same fail-closed census reports zero `binding_required` rows and 825 read-only invariant rows.
+Every runtime row is advertised, applied, and uniquely externally addressed. The invariant rows
+are only mechanically classified and all 825 still require owning-human approval across 32 owner ×
+boundary batches. The census states its limit explicitly: it is complete for the currently declared
+production source forms, not a mathematical universe of every possible generated or dynamic value.
 
 ## Module and plugin reality
 
-Iteron has a useful object-safe `StrategySlot` seam for nine policy directions: context,
-tool-policy, memory, router, planner, collaboration, scheduler, verifier, and model-router. The
-current CLI composition root, however, uses a private registry of 19 compiled descriptors and a
-hard-coded Rust constructor match. An external researcher cannot register a new strategy
-implementation without changing and rebuilding Iteron.
+Iteron no longer treats the nine internal `CoreSlot` consumers as the public module inventory. All
+28 `ModuleId` values have independent definition/provider/consumer/lifecycle/observation contracts,
+external process implementations, capability intersection, digest verification, deterministic
+composition, and production consumption evidence. Modules that share one internal consumer execute
+as a deterministic chain rather than erasing one another's identity.
 
-Iteron's signed marketplace is real but narrower: its public contribution vocabulary is skill,
-agent, hook, MCP server, and language server. It does not make provider, storage, session log,
-agent loop, context engine, scheduler, verifier, or every other runtime capability an externally
-replaceable implementation seam.
+Implementation protocol v2 adds snapshot, restore, migration, readiness, cancellation, and typed
+failure contracts. The runtime hot-swap coordinator shadow-loads a verified generation, migrates
+bounded state, checks readiness, atomically switches, drains, records a durable hash-chain ledger,
+and relaunches/restores the old generation on post-switch failure. Platform service nodes marked
+`replaceable_only` now require a real external protocol. Six platform services meet that rule; the
+other 16 are explicitly `host_fixed_non_optimization` and name their delegated trainable modules or
+closed host invariants. The graph contains no `replaceable_only + compiled_interface` claim.
 
 DeepSeek Harness explicitly builds a Cordis plugin tree from layered profiles and patches. Its
 architecture states that model adapters, tool registry, session log, and agent loop are plugins;
@@ -84,14 +85,19 @@ compatibility-breaking changes will occur.
 
 ## Training reality
 
-Iteron's offline TPE/successive-halving tuner is bounded and replayable, but `TunerCandidate.values`
-is validated against the Tier-1 family registry. It does not yet represent Tier-2 parameters,
-prompt/tool-text artifacts, external component implementations, per-module trainable state, or a
-generic reward/trajectory/checkpoint protocol.
+Candidate Graph v3 represents profile values, direct-config paths, caller-input arguments,
+implementation artifacts, topology, lineage, and experiment identity. The research protocol
+supports capability-negotiated batch, asynchronous, population, bandit, multi-objective,
+trajectory, checkpoint/resume, and opaque-artifact optimizer families. A pinned non-Rust adapter
+can execute native materializations; an exact per-address receipt prevents an accepted-but-inert
+dimension from being reported as complete.
 
-The evolve plane has strong dataset, assessment, evidence, and promotion contracts, and correctly
-refuses adaptive activation that would violate authority. Those governance properties do not by
-themselves make the entire runtime trainable.
+The local qualification command executes 28 swaps plus 28 ablations as real external provider
+process lifecycles, negotiates five optimizer families, and exercises state migration, all nine
+hot-swap fault phases, rollback, and deterministic ledger replay. It deliberately emits a refusal,
+not a proof manifest, because the installed Harbor/Terminal-Bench campaign and credentialed model
+execution are absent. The 825 pending human invariant decisions and that missing external campaign
+still prevent the final universal and performance claims.
 
 The audited DeepSeek Harness tree contains session/runtime checkpoints, but no general trainer,
 optimizer, backpropagation, reinforcement-learning, or reward-model implementation for harness
@@ -102,51 +108,39 @@ universal module training.
 
 | Dimension | Iteron now | DeepSeek Harness reference | Lead |
 |---|---|---|---|
-| Typed, digest-pinned candidate values | Unified family/parameter/text profile with strict rejection | Layered typed plugin configuration and patches | Iteron on experiment identity |
-| Whole-runtime module replacement | Nine internal strategy traits; private compiled registry; five marketplace contribution kinds | Plugin tree; model adapter, tools, log, loop, and capability providers replaceable | DeepSeek |
-| Dependency lifecycle / hot replacement | Bounded install-time composition; no universal service lifecycle | Dependency-aware Cordis effects, unload/reload, isolation, HMR | DeepSeek |
+| Typed, digest-pinned candidate values | Candidate Graph v3 across profile/config/caller/artifact/topology, with consumption proof | Layered typed plugin configuration and patches | Iteron on optimization identity/evidence |
+| Optimization-module replacement | 28 independent external module identities and production chains | 56 generated service rows across seam/core/bundle categories | Not numerically comparable; Iteron has the explicit optimization-module contract |
+| Dependency lifecycle / hot replacement | Protocol v2 state migration plus transactional switch, drain, durable ledger, rollback | Dependency-aware Cordis effects, unload/reload, isolation, HMR | Mixed; Iteron is stronger on transaction evidence |
 | Replay and effective-run evidence | Immutable effective profile, registry digests, durable/historical replay contracts | Durable session event log and configuration dump | Iteron on optimization evidence |
 | Safety and authority envelope | Capabilities, tighten-only ceilings, Pins, effect/durability/replay invariants | Policy services and guarded events, less optimization-specific governance | Iteron |
-| External harness interoperability | Stable profile files/APIs and exact Terminal-Bench 2.1 Rust adapter; no neutral CLI/RPC | Headless/npm composition; no trainer protocol | Mixed |
-| Native optimization | Offline TPE/halving plus evolve governance, currently Tier-1-centric | No general component trainer found | Iteron, but incomplete |
+| External harness interoperability | Language-neutral research protocol, Python client, native adapter, exact Terminal-Bench 2.1 pin, local 56-cell lifecycle qualification | Headless/npm composition; no general trainer protocol found | Iteron on research protocol; official installed campaign pending |
+| Native optimization | TPE/halving plus optimizer capability negotiation and v3 candidate materialization | No general component trainer found | Iteron, but incomplete |
 | Universal trainability | Not complete | Not complete | Neither |
 
 ## Gaps and required order
 
-### P0 — make the parameter claim truthful
+### P0 — close the remaining evidence, not the already-addressed surface
 
-1. Separate `profile_addressable`, `direct_config`, `caller_injected`, and
-   `invariant_read_only` in generated evidence.
-2. Externalize or give a stable equivalent input to the 678 additional caller-settable defaults.
-3. Human-review all 625 invariant dispositions; require a concrete invariant owner and behavioral
-   counterexample for disputed entries.
-4. Expand discovery beyond selected AST shapes to builders, runtime registries, bundled assets,
-   configuration schemas, model-visible renderers, and dynamic plugin contributions.
-5. Only then run installed black-box acceptance and claim the universal parameter surface A.
+1. Obtain owning-human GitHub approval for all 825 invariant rows across the 32 owner × boundary
+   batches. Agent-authored or ledger-only assertions do not count.
+2. Run the installed black-box campaign and retain its evidence bundle before publishing the
+   universal-surface A or superiority claim.
 
-### P1 — make every legitimate module replaceable
+### P1 — finish service-level dynamic replacement evidence
 
-1. Publish a complete capability graph. Every seam needs a versioned definition, provider,
-   consumer, lifecycle, cancellation, error, observation, and compatibility contract.
-2. Keep safety, authority, durability, replay, hard budgets, and the effect ledger in the host; an
-   optimizer may narrow but never widen those ceilings.
-3. Replace the private compiled strategy registry with an external, content-addressed process or
-   WASM loader. Avoid a stable Rust dynamic-library ABI claim.
-4. Extend marketplace contributions to strategy and capability providers, with deterministic
-   dependency order, isolation, rollback, resource bounds, and quarantine.
-5. Prove a single-module replacement and ablation for every seam from an out-of-tree package.
+1. Preserve safety, authority, durability, replay, hard budgets, and the effect ledger as host
+   ceilings that candidates may narrow but never widen.
+2. Exercise every one of the 28 external module identities through the installed 28-swap plus
+   28-ablation matrix, including shared-slot chains and stateful rollback.
 
-### P2 — make the surface trainable by any research harness
+### P2 — qualify the implemented research substrate
 
-1. Define a benchmark-neutral, language-neutral protocol for surface enumeration, candidate
-   validation, run/cancel, effective profile, result, trajectory, and evidence retrieval.
-2. Add a benchmark-adapter registry; retain exact `terminal-bench/2.1` + schema-v1 pinning as one
-   adapter rather than the universal protocol.
-3. Generalize candidate identity across Tier-1, Tier-2, prompt/tool text, and module artifacts.
-4. Define reward and multi-objective metrics, train/held-out partitions, checkpoint/resume,
-   deterministic seeds where supported, resource budgets, and distributed trial ownership.
-5. Qualify at least one non-Rust external optimizer and one independent agent harness against an
-   installed binary.
+1. Run at least one non-Rust external optimizer and one independent agent harness against the
+   installed binary, not just library fixtures.
+2. Demonstrate multiple optimizer families, held-out isolation, checkpoint/resume, state migration,
+   fault injection, rollback, and deterministic replay under the published protocol.
+3. Publish performance comparisons only from that retained campaign; contract breadth alone is not
+   benchmark superiority.
 
 ## Acceptance sentence
 

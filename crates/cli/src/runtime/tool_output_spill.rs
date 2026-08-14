@@ -91,6 +91,15 @@ impl ToolOutputSpillPolicy {
 
 impl Default for ToolOutputSpillPolicy {
     fn default() -> Self {
+        let cleanup = match iteron_tunables::param_enum(
+            "cli.runtime.tool_output_spill.default_cleanup",
+            "run_end",
+        ) {
+            "tool_end" => ToolOutputSpillCleanup::ToolEnd,
+            "turn_end" => ToolOutputSpillCleanup::TurnEnd,
+            "run_end" => ToolOutputSpillCleanup::RunEnd,
+            value => panic!("unadmitted tool-output spill cleanup `{value}`"),
+        };
         Self::new(
             iteron_tunables::param_integer(
                 "cli.runtime.tool_output_spill.default_tool_output_memory_threshold_bytes",
@@ -100,7 +109,7 @@ impl Default for ToolOutputSpillPolicy {
                 "cli.runtime.tool_output_spill.default_tool_output_spill_max_bytes",
                 DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES,
             ),
-            ToolOutputSpillCleanup::RunEnd,
+            cleanup,
         )
         .expect("the built-in ordinary tool-output spill policy is valid")
     }

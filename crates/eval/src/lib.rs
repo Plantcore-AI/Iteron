@@ -16,6 +16,7 @@ pub mod measurement;
 pub mod pareto;
 pub mod process;
 pub mod provisioner;
+pub mod qualification_campaign;
 pub mod record_projection;
 pub mod reference_harness;
 pub mod report;
@@ -33,8 +34,9 @@ pub mod types;
 use research_execution::response_validation as research_validation;
 
 pub use adapter_registry::{
-    AdapterOperation, AdapterPin, AdapterRegistryEntry, BenchmarkAdapterRegistry, ITERON_CLI_ID,
-    ITERON_CLI_VERSION, ResearchExecutionMode, ResearchSession,
+    AdapterOperation, AdapterPin, AdapterRegistryEntry, BenchmarkAdapterRegistry,
+    EXTERNAL_NATIVE_ID, EXTERNAL_NATIVE_VERSION, ITERON_CLI_ID, ITERON_CLI_VERSION,
+    ResearchExecutionMode, ResearchSession,
 };
 pub use attempts::{
     AttemptEvent, AttemptKey, AttemptLedger, AttemptLedgerError, MAX_PHYSICAL_ATTEMPTS,
@@ -76,10 +78,14 @@ pub use report::{
     aggregate, compare, selection_summaries,
 };
 pub use research_protocol::{
-    CliRunSpec, DryRunState, ImplementationCandidateRef, MAX_PROTOCOL_REQUEST_BYTES,
-    MAX_PROTOCOL_RESPONSE_BYTES, RESEARCH_PROTOCOL, ResearchProtocolError, ResearchRequest,
-    ResearchRequestEnvelope, ResearchResponse, ResearchResponseEnvelope, ResearchRunState,
-    ResearchTerminalResult, RunSpec, parse_research_request, parse_research_response,
+    CliRunSpec, DryRunState, EXTERNAL_NATIVE_ADAPTER_PROTOCOL, EXTERNAL_NATIVE_RESULT_SCHEMA,
+    ExternalNativeResult, ExternalNativeRunSpec, ImplementationCandidateRef,
+    MAX_NATIVE_MATERIALIZATION_BYTES, MAX_NATIVE_RECEIPT_BYTES, MAX_PROTOCOL_REQUEST_BYTES,
+    MAX_PROTOCOL_RESPONSE_BYTES, NATIVE_CONSUMPTION_SCHEMA, NATIVE_MATERIALIZATION_SCHEMA,
+    NativeConsumptionReceipt, NativeMaterializationDocument, NativePatchConsumption,
+    RESEARCH_PROTOCOL, ResearchProtocolError, ResearchRequest, ResearchRequestEnvelope,
+    ResearchResponse, ResearchResponseEnvelope, ResearchRunState, ResearchTerminalResult, RunSpec,
+    parse_research_request, parse_research_response,
 };
 pub use runner::{EvalOptions, ParallelEvalOptions, run_evaluation, run_evaluation_parallel};
 pub use terminal_bench::{
@@ -94,16 +100,24 @@ pub use trained::{
     measure_kernel_tax, trained_vs_untrained_report,
 };
 pub use trainer_bridge::{
-    CheckpointContract, DatasetPartition, DistributedTrials, MAX_DISTRIBUTED_WORKERS,
-    MAX_REWARD_OBJECTIVES, MAX_TRAINER_BRIDGE_MESSAGE_BYTES, RewardContract, RewardDirection,
-    RewardObjective, TRAINER_BRIDGE_SCHEMA_VERSION, TrainerBridgeError, TrainerBridgeSpec,
+    ALL_TRAINER_CAPABILITIES, CheckpointContract, DatasetPartition, DistributedTrials,
+    LEGACY_TRAINER_BRIDGE_SCHEMA_VERSION, MAX_BATCH_SUGGESTIONS, MAX_DISTRIBUTED_WORKERS,
+    MAX_REWARD_OBJECTIVES, MAX_TRAINER_BRIDGE_MESSAGE_BYTES, OptimizerCapabilityOffer,
+    RewardContract, RewardDirection, RewardObjective, TRAINER_BRIDGE_SCHEMA_VERSION,
+    TrainerBridgeError, TrainerBridgeSpec, TrainerCapability, TrainerCapabilityNegotiation,
     TrainerDataset, TrainerExchange, TrainerOperation, TrainerResources, TrajectoryContract,
-    parse_trainer_bridge_spec, parse_trainer_exchange,
+    parse_negotiated_trainer_exchange, parse_trainer_bridge_spec, parse_trainer_exchange,
 };
 pub use tuner::{
-    CandidateImplementation, IMPLEMENTATION_PROTOCOL, MAX_TUNER_CONCURRENCY, MAX_TUNER_TRIALS,
-    MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialRequest, TrialResult, TunerCandidate,
-    TunerError, TunerSnapshot, TunerSpec, TunerStatus, UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+    CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,
+    CandidateAddressKind, CandidateCondition, CandidateDimension, CandidateExperiment,
+    CandidateGraph, CandidateGraphIdentity, CandidateImplementation, CandidateLineage,
+    CandidateMaterialization, CandidateOwnerKind, CandidatePatch, CandidateSelectorKind,
+    CandidateTopologyEdge, IMPLEMENTATION_PROTOCOL, LEGACY_IMPLEMENTATION_PROTOCOL,
+    LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION, MAX_CANDIDATE_TOPOLOGY_EDGES, MAX_TUNER_CONCURRENCY,
+    MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialRequest, TrialResult,
+    TunerCandidate, TunerError, TunerSnapshot, TunerSpec, TunerStatus,
+    UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
 };
 pub use types::{
     BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus, EvaluationManifest,

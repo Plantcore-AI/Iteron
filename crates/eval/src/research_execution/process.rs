@@ -42,7 +42,10 @@ pub(super) fn execute_command(
                 "Iteron CLI executable identity changed before spawn",
             );
         }
-        let stdout_file = match open_output_file(&adapter.stdout_path) {
+        let stdout_file = match open_output_file(
+            &adapter.stdout_path,
+            matches!(run, RunSpec::ExternalNative { .. }),
+        ) {
             Ok(file) => file,
             Err(_) => {
                 return terminal_snapshot(
@@ -300,7 +303,7 @@ fn join_capture(worker: JoinHandle<CaptureSummary>) -> CaptureSummary {
     })
 }
 
-fn open_output_file(path: &str) -> std::io::Result<File> {
+fn open_output_file(path: &str, create_new: bool) -> std::io::Result<File> {
     let path = Path::new(path);
     if let Ok(metadata) = fs::symlink_metadata(path)
         && (metadata.file_type().is_symlink() || !metadata.is_file())
@@ -308,7 +311,12 @@ fn open_output_file(path: &str) -> std::io::Result<File> {
         return Err(std::io::Error::other("unsafe output target"));
     }
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

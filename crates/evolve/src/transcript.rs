@@ -24,6 +24,8 @@ const MAX_TRANSCRIPT_RECORDS: usize = 256;
 const MAX_TRANSCRIPT_LINE_BYTES: usize = 256 * 1024;
 const MAX_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const DEMO_TRANSCRIPT_KEY: &[u8] = b"iteron-evolve-public-demo-key-v1";
+const DEFAULT_PRIMARY_PRODUCER: &str = "rule";
+const DEFAULT_SECONDARY_PRODUCER: &str = "prompt";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -132,6 +134,14 @@ impl TranscriptProducerKind {
             Self::PromptPreference => "prompt",
         }
     }
+
+    fn from_profile(value: &str, fallback: Self) -> Self {
+        match value {
+            "rule" => Self::RuleSearch,
+            "prompt" => Self::PromptPreference,
+            _ => fallback,
+        }
+    }
 }
 
 /// Frozen models and producer order for one deterministic transcript run.
@@ -192,11 +202,33 @@ impl OfflineTranscriptConfig {
 
 impl Default for OfflineTranscriptConfig {
     fn default() -> Self {
+        let primary = TranscriptProducerKind::from_profile(
+            iteron_tunables::param_str(
+                "evolve.transcript.default_primary_producer",
+                DEFAULT_PRIMARY_PRODUCER,
+            ),
+            TranscriptProducerKind::RuleSearch,
+        );
+        let secondary = TranscriptProducerKind::from_profile(
+            iteron_tunables::param_str(
+                "evolve.transcript.default_secondary_producer",
+                DEFAULT_SECONDARY_PRODUCER,
+            ),
+            TranscriptProducerKind::PromptPreference,
+        );
+        let (primary, secondary) = if primary == secondary {
+            (
+                TranscriptProducerKind::RuleSearch,
+                TranscriptProducerKind::PromptPreference,
+            )
+        } else {
+            (primary, secondary)
+        };
         Self::new(
             crate::transcript_demo_support::model_a(),
             crate::transcript_demo_support::model_b(),
-            TranscriptProducerKind::RuleSearch,
-            TranscriptProducerKind::PromptPreference,
+            primary,
+            secondary,
         )
         .expect("the fixed transcript configuration is valid")
     }

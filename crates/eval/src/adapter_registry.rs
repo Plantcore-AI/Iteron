@@ -1,6 +1,9 @@
 //! Closed benchmark-adapter registry and shell-free command construction.
 
-use crate::research_protocol::{CliRunSpec, ResearchProtocolError, RunSpec};
+use crate::research_protocol::{
+    CliRunSpec, EXTERNAL_NATIVE_ADAPTER_PROTOCOL, ExternalNativeRunSpec, ResearchProtocolError,
+    RunSpec,
+};
 use crate::terminal_bench::{AdapterCommand, TERMINAL_BENCH_ID, TERMINAL_BENCH_VERSION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +14,8 @@ use std::path::{Path, PathBuf};
 
 pub const ITERON_CLI_ID: &str = "iteron-cli";
 pub const ITERON_CLI_VERSION: &str = "1";
+pub const EXTERNAL_NATIVE_ID: &str = "iteron-native-adapter";
+pub const EXTERNAL_NATIVE_VERSION: &str = "1";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +44,8 @@ pub struct AdapterRegistryEntry {
     pub result_schema_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implementation_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub materialization_protocol: Option<String>,
     pub supported_operations: Vec<AdapterOperation>,
     pub adapter_digest_sha256: String,
 }
@@ -47,6 +54,7 @@ pub struct AdapterRegistryEntry {
 pub struct BenchmarkAdapterRegistry {
     entries: BTreeMap<(String, String), AdapterRegistryEntry>,
     iteron_cli_executable: Option<ExecutableIdentity>,
+    external_native_executable: Option<ExecutableIdentity>,
 }
 
 const MAX_EXECUTABLE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -162,6 +170,7 @@ impl BenchmarkAdapterRegistry {
                 "iteron-research/1#iteron-cli-run-request",
                 "iteron-research/1#run-response",
                 Some(crate::tuner::IMPLEMENTATION_PROTOCOL),
+                None,
                 operations.clone(),
             ),
             entry(
@@ -170,6 +179,16 @@ impl BenchmarkAdapterRegistry {
                 "iteron-eval/terminal-bench-request/1",
                 "iteron-eval/terminal-bench-result/1",
                 None,
+                None,
+                operations.clone(),
+            ),
+            entry(
+                EXTERNAL_NATIVE_ID,
+                EXTERNAL_NATIVE_VERSION,
+                "iteron-research/1#external-native-run-request",
+                "iteron-native-adapter-result/1",
+                None,
+                Some(EXTERNAL_NATIVE_ADAPTER_PROTOCOL),
                 operations,
             ),
         ];
@@ -184,12 +203,21 @@ impl BenchmarkAdapterRegistry {
                 })
                 .collect(),
             iteron_cli_executable: None,
+            external_native_executable: None,
         }
     }
 
     pub(crate) fn with_iteron_cli_executable(path: &Path) -> Result<Self, ResearchProtocolError> {
         let mut registry = Self::builtin();
         registry.iteron_cli_executable = Some(ExecutableIdentity::observe(path)?);
+        Ok(registry)
+    }
+
+    pub(crate) fn with_external_native_executable(
+        path: &Path,
+    ) -> Result<Self, ResearchProtocolError> {
+        let mut registry = Self::builtin();
+        registry.external_native_executable = Some(ExecutableIdentity::observe(path)?);
         Ok(registry)
     }
 
@@ -230,6 +258,11 @@ impl BenchmarkAdapterRegistry {
         {
             return Err(ResearchProtocolError::UnsupportedImplementationActivation);
         }
+        if run.native_materialization_digest().is_some()
+            && entry.materialization_protocol.as_deref() != Some(EXTERNAL_NATIVE_ADAPTER_PROTOCOL)
+        {
+            return Err(ResearchProtocolError::UnsupportedCandidateMaterialization);
+        }
         match (
             pin.benchmark_id.as_str(),
             pin.benchmark_version.as_str(),
@@ -254,6 +287,9 @@ impl BenchmarkAdapterRegistry {
                 }
                 Ok(command)
             }
+            (EXTERNAL_NATIVE_ID, EXTERNAL_NATIVE_VERSION, RunSpec::ExternalNative { spec }) => {
+                external_native_command(spec)
+            }
             _ => Err(ResearchProtocolError::RunSpecAdapterMismatch),
         }
     }
@@ -272,6 +308,14 @@ impl BenchmarkAdapterRegistry {
             command.program = executable.command_path(&command.program)?;
             return Ok((command, Some(executable.clone())));
         }
+        if matches!(run, RunSpec::ExternalNative { .. }) {
+            let executable = self
+                .external_native_executable
+                .as_ref()
+                .ok_or(ResearchProtocolError::UnpinnedExecutable)?;
+            command.program = executable.command_path(&command.program)?;
+            return Ok((command, Some(executable.clone())));
+        }
         Ok((command, None))
     }
 }
@@ -283,6 +327,7 @@ fn entry(
     request_schema_id: &str,
     result_schema_id: &str,
     implementation_protocol: Option<&str>,
+    materialization_protocol: Option<&str>,
     supported_operations: Vec<AdapterOperation>,
 ) -> AdapterRegistryEntry {
     #[derive(Serialize)]
@@ -292,6 +337,7 @@ fn entry(
         request_schema_id: &'a str,
         result_schema_id: &'a str,
         implementation_protocol: Option<&'a str>,
+        materialization_protocol: Option<&'a str>,
         supported_operations: &'a [AdapterOperation],
     }
     let identity = Identity {
@@ -300,6 +346,7 @@ fn entry(
         request_schema_id,
         result_schema_id,
         implementation_protocol,
+        materialization_protocol,
         supported_operations: &supported_operations,
     };
     let digest = hex::encode(Sha256::digest(
@@ -311,9 +358,64 @@ fn entry(
         request_schema_id: request_schema_id.into(),
         result_schema_id: result_schema_id.into(),
         implementation_protocol: implementation_protocol.map(str::to_owned),
+        materialization_protocol: materialization_protocol.map(str::to_owned),
         supported_operations,
         adapter_digest_sha256: digest,
     }
+}
+
+fn external_native_command(
+    spec: &ExternalNativeRunSpec,
+) -> Result<AdapterCommand, ResearchProtocolError> {
+    spec.validate()?;
+    let mut argv = vec![
+        "--protocol".into(),
+        EXTERNAL_NATIVE_ADAPTER_PROTOCOL.into(),
+        "--candidate-profile".into(),
+        spec.profile_path.clone(),
+        "--candidate-profile-sha256".into(),
+        spec.profile_sha256.clone(),
+        "--effective-profile".into(),
+        spec.effective_profile_path.clone(),
+        "--native-materialization".into(),
+        spec.native_materialization_path.clone(),
+        "--native-materialization-sha256".into(),
+        spec.native_materialization_sha256.clone(),
+        "--consumption-receipt".into(),
+        spec.consumption_receipt_path.clone(),
+        "--result".into(),
+        spec.result_path.clone(),
+        "--run-id".into(),
+        spec.run_id.clone(),
+        "--candidate-sha256".into(),
+        spec.candidate_sha256.clone(),
+        "--materialization-sha256".into(),
+        spec.candidate_graph_identity.materialization_sha256.clone(),
+        "--experiment-sha256".into(),
+        spec.candidate_graph_identity.experiment_sha256.clone(),
+        "--topology-sha256".into(),
+        spec.candidate_graph_identity.topology_sha256.clone(),
+    ];
+    if !spec.task_arguments.is_empty() {
+        argv.push("--".into());
+        argv.extend(spec.task_arguments.clone());
+    }
+    Ok(AdapterCommand {
+        program: spec.binary_path.clone(),
+        argv,
+        environment: BTreeMap::from([
+            ("LANG".into(), "C.UTF-8".into()),
+            ("LC_ALL".into(), "C.UTF-8".into()),
+            ("NO_COLOR".into(), "1".into()),
+            ("TZ".into(), "UTC".into()),
+        ]),
+        inherit_environment: spec.credential_env_names.clone(),
+        clear_environment: true,
+        cwd: spec.workspace_path.clone(),
+        stdout_path: spec.stdout_path.clone(),
+        stdout_limit_bytes: spec.max_stdout_bytes,
+        stderr_limit_bytes: spec.max_stderr_bytes,
+    })
 }
 
 fn validate_pin(pin: &AdapterPin) -> Result<(), ResearchProtocolError> {

@@ -137,7 +137,10 @@ pub fn provider_transport_timeout_policy() -> ProviderTransportTimeoutPolicy {
                 TRANSPORT_TCP_KEEPALIVE_SECS,
             ),
         )),
-        connection_reuse: true,
+        connection_reuse: iteron_tunables::param_bool(
+            "provider.lib.transport_connection_reuse",
+            true,
+        ),
     }
 }
 

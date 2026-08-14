@@ -1,10 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "registry_id": "iteron-tunables",
   "registry_revision": 18,
   "registry_digest": "06081579593ce43dce6b376ed8876f2a29c4e6cc89c350d6beeb52d3f5068d24",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "9dc8420905e332deec5061f73d7af93ea451b54c3e88751e235f26dc9eb1bdc2",
+  "param_registry_digest": "def26b031e17a68df5654f4225c9ae9719a2cf1cffa792a4dd9f268869f03aba",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -12,16 +12,19 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 1935,
-    "params_searchable": 463,
-    "params_bounded": 793,
-    "params_structural": 679,
-    "params_applied": 1256,
+    "params": 2001,
+    "params_searchable": 486,
+    "params_bounded": 795,
+    "params_structural": 720,
+    "params_applied": 1281,
     "modules": 28,
     "prompt_artifacts": 10,
     "prompt_artifacts_overridable": 10,
     "tool_descriptions": 26,
-    "tool_descriptions_overridable": 26
+    "tool_descriptions_overridable": 26,
+    "runtime_service_nodes": 66,
+    "runtime_service_external": 34,
+    "runtime_service_compiled_interfaces": 0
   },
   "modules": [
     {
@@ -119,14 +122,14 @@
       "id": "tool.exposure",
       "kind": "structured",
       "families": 31,
-      "params": 188,
+      "params": 202,
       "artifacts": 0
     },
     {
       "id": "tool.arguments",
       "kind": "structured",
       "families": 0,
-      "params": 136,
+      "params": 137,
       "artifacts": 0
     },
     {
@@ -182,21 +185,21 @@
       "id": "planner.fanout",
       "kind": "structured",
       "families": 29,
-      "params": 147,
+      "params": 153,
       "artifacts": 0
     },
     {
       "id": "verification.quorum",
       "kind": "structured",
       "families": 13,
-      "params": 124,
+      "params": 160,
       "artifacts": 0
     },
     {
       "id": "budget.allocation",
       "kind": "structured",
       "families": 11,
-      "params": 242,
+      "params": 249,
       "artifacts": 0
     },
     {
@@ -210,7 +213,7 @@
       "id": "session.checkpoint",
       "kind": "structured",
       "families": 4,
-      "params": 235,
+      "params": 237,
       "artifacts": 0
     },
     {
@@ -221,6 +224,1438 @@
       "artifacts": 0
     }
   ],
+  "runtime_services": {
+    "schema_version": 2,
+    "nodes": [
+      {
+        "id": "port/context",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/context/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/context/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "context"
+      },
+      {
+        "id": "port/tool_policy",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/tool_policy/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/tool_policy/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "port/memory",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/memory/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/memory/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "memory"
+      },
+      {
+        "id": "port/router",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/router/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/router/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "router"
+      },
+      {
+        "id": "port/planner",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/planner/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/planner/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "planner"
+      },
+      {
+        "id": "port/collaboration",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/collaboration/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/collaboration/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "collaboration"
+      },
+      {
+        "id": "port/scheduler",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/scheduler/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/scheduler/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "scheduler"
+      },
+      {
+        "id": "port/verifier",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/verifier/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/verifier/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "verifier"
+      },
+      {
+        "id": "port/model_router",
+        "layer": "production_port",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "provider_contract": {
+          "id": "iteron/runtime/port/model_router/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/port/model_router/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [],
+        "production_port": "model_router"
+      },
+      {
+        "id": "module/prompt.system",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.system/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.system/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/context"
+        ],
+        "module": "prompt_system",
+        "production_port": "context"
+      },
+      {
+        "id": "module/prompt.tool_description",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.tool_description/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.tool_description/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/tool_policy"
+        ],
+        "module": "prompt_tool_description",
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "module/prompt.subagent",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.subagent/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.subagent/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/router"
+        ],
+        "module": "prompt_subagent",
+        "production_port": "router"
+      },
+      {
+        "id": "module/prompt.skill",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.skill/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.skill/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/context"
+        ],
+        "module": "prompt_skill",
+        "production_port": "context"
+      },
+      {
+        "id": "module/prompt.compaction",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.compaction/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.compaction/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/context"
+        ],
+        "module": "prompt_compaction",
+        "production_port": "context"
+      },
+      {
+        "id": "module/prompt.verification",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.verification/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.verification/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/verifier"
+        ],
+        "module": "prompt_verification",
+        "production_port": "verifier"
+      },
+      {
+        "id": "module/prompt.planner",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.planner/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.planner/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/planner"
+        ],
+        "module": "prompt_planner",
+        "production_port": "planner"
+      },
+      {
+        "id": "module/prompt.reduce",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.reduce/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.reduce/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/collaboration"
+        ],
+        "module": "prompt_reduce",
+        "production_port": "collaboration"
+      },
+      {
+        "id": "module/prompt.memory_write",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.memory_write/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.memory_write/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/memory"
+        ],
+        "module": "prompt_memory_write",
+        "production_port": "memory"
+      },
+      {
+        "id": "module/prompt.recovery",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/prompt.recovery/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/prompt.recovery/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/verifier"
+        ],
+        "module": "prompt_recovery",
+        "production_port": "verifier"
+      },
+      {
+        "id": "module/context.assembly",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/context.assembly/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/context.assembly/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/context"
+        ],
+        "module": "context_assembly",
+        "production_port": "context"
+      },
+      {
+        "id": "module/context.compaction",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/context.compaction/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/context.compaction/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/context"
+        ],
+        "module": "context_compaction",
+        "production_port": "context"
+      },
+      {
+        "id": "module/memory.recall",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/memory.recall/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/memory.recall/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/memory"
+        ],
+        "module": "memory_recall",
+        "production_port": "memory"
+      },
+      {
+        "id": "module/tool.exposure",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/tool.exposure/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/tool.exposure/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/tool_policy"
+        ],
+        "module": "tool_exposure",
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "module/tool.arguments",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/tool.arguments/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/tool.arguments/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/tool_policy"
+        ],
+        "module": "tool_arguments",
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "module/tool.edit_strategy",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/tool.edit_strategy/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/tool.edit_strategy/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/tool_policy"
+        ],
+        "module": "tool_edit_strategy",
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "module/tool.search_strategy",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/tool.search_strategy/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/tool.search_strategy/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/tool_policy"
+        ],
+        "module": "tool_search_strategy",
+        "production_port": "tool_policy"
+      },
+      {
+        "id": "module/provider.routing",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/provider.routing/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/provider.routing/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/model_router"
+        ],
+        "module": "provider_routing",
+        "production_port": "model_router"
+      },
+      {
+        "id": "module/provider.sampling",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/provider.sampling/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/provider.sampling/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/model_router"
+        ],
+        "module": "provider_sampling",
+        "production_port": "model_router"
+      },
+      {
+        "id": "module/provider.retry",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/provider.retry/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/provider.retry/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/model_router"
+        ],
+        "module": "provider_retry",
+        "production_port": "model_router"
+      },
+      {
+        "id": "module/provider.prompt_cache",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/provider.prompt_cache/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/provider.prompt_cache/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/model_router"
+        ],
+        "module": "provider_prompt_cache",
+        "production_port": "model_router"
+      },
+      {
+        "id": "module/scheduler.parallelism",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/scheduler.parallelism/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/scheduler.parallelism/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/scheduler"
+        ],
+        "module": "scheduler_parallelism",
+        "production_port": "scheduler"
+      },
+      {
+        "id": "module/planner.fanout",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/planner.fanout/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/planner.fanout/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/planner"
+        ],
+        "module": "planner_fanout",
+        "production_port": "planner"
+      },
+      {
+        "id": "module/verification.quorum",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/verification.quorum/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/verification.quorum/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/verifier"
+        ],
+        "module": "verification_quorum",
+        "production_port": "verifier"
+      },
+      {
+        "id": "module/budget.allocation",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/budget.allocation/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/budget.allocation/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/router"
+        ],
+        "module": "budget_allocation",
+        "production_port": "router"
+      },
+      {
+        "id": "module/session.stop",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/session.stop/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/session.stop/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/router"
+        ],
+        "module": "session_stop",
+        "production_port": "router"
+      },
+      {
+        "id": "module/session.checkpoint",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/session.checkpoint/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/session.checkpoint/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/collaboration"
+        ],
+        "module": "session_checkpoint",
+        "production_port": "collaboration"
+      },
+      {
+        "id": "module/session.fork",
+        "layer": "optimization_module",
+        "disposition": "trainable",
+        "implementation_status": "external_process",
+        "owner": "tunability-registry",
+        "provider_contract": {
+          "id": "iteron/runtime/module/session.fork/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/module/session.fork/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "port/collaboration"
+        ],
+        "module": "session_fork",
+        "production_port": "collaboration"
+      },
+      {
+        "id": "service/agent.orchestration",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "agent-runtime",
+        "source_crate": "agents",
+        "provider_contract": {
+          "id": "iteron/runtime/service/agent.orchestration/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/agent.orchestration/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.subagent",
+          "module/prompt.planner",
+          "module/prompt.reduce",
+          "module/provider.routing",
+          "module/provider.sampling",
+          "module/provider.retry",
+          "module/provider.prompt_cache",
+          "module/budget.allocation",
+          "module/session.stop",
+          "module/session.checkpoint",
+          "module/session.fork",
+          "invariant/cancellationandprocessreaping"
+        ],
+        "non_optimization_reason": "The host executes bounded orchestration; prompts, planning, provider policy, session routing, and collaboration quality are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_subagent",
+          "prompt_planner",
+          "prompt_reduce",
+          "provider_routing",
+          "provider_sampling",
+          "provider_retry",
+          "provider_prompt_cache",
+          "budget_allocation",
+          "session_stop",
+          "session_checkpoint",
+          "session_fork"
+        ],
+        "closed_host_invariants": [
+          "cancellation_and_process_reaping"
+        ]
+      },
+      {
+        "id": "service/changeset.store",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "changeset-lifecycle",
+        "source_crate": "changeset",
+        "provider_contract": {
+          "id": "iteron/runtime/service/changeset.store/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/changeset.store/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/evidencedurability",
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "Atomic changeset persistence and recovery are evidence and replay guarantees, not quality choices.",
+        "closed_host_invariants": [
+          "evidence_durability",
+          "replay_and_identity"
+        ]
+      },
+      {
+        "id": "service/cli.frontend",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "cli-host",
+        "source_crate": "cli",
+        "provider_contract": {
+          "id": "iteron/runtime/service/cli.frontend/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/cli.frontend/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.system",
+          "module/prompt.skill",
+          "module/prompt.compaction",
+          "invariant/capabilityandpermission"
+        ],
+        "non_optimization_reason": "Command admission and terminal I/O stay deterministic while prompt composition quality is delegated to named modules.",
+        "delegated_modules": [
+          "prompt_system",
+          "prompt_skill",
+          "prompt_compaction"
+        ],
+        "closed_host_invariants": [
+          "capability_and_permission"
+        ]
+      },
+      {
+        "id": "service/context.engine",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "context-runtime",
+        "source_crate": "ctx",
+        "provider_contract": {
+          "id": "iteron/runtime/service/context.engine/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/context.engine/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/context.assembly",
+          "module/context.compaction",
+          "invariant/budgetanddeadline"
+        ],
+        "non_optimization_reason": "The host enforces context bounds and provenance; assembly and compaction quality are delegated to named modules.",
+        "delegated_modules": [
+          "context_assembly",
+          "context_compaction"
+        ],
+        "closed_host_invariants": [
+          "budget_and_deadline"
+        ]
+      },
+      {
+        "id": "service/evaluation.runner",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "evaluation",
+        "source_crate": "eval",
+        "provider_contract": {
+          "id": "iteron/runtime/service/evaluation.runner/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/evaluation.runner/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.verification",
+          "module/prompt.recovery",
+          "module/verification.quorum",
+          "invariant/evidencedurability"
+        ],
+        "non_optimization_reason": "The runner executes a fixed evaluation protocol; verification prompts, recovery, and quorum policy are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_verification",
+          "prompt_recovery",
+          "verification_quorum"
+        ],
+        "closed_host_invariants": [
+          "evidence_durability"
+        ]
+      },
+      {
+        "id": "service/optimizer.runtime",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "evolution-runtime",
+        "source_crate": "evolve",
+        "provider_contract": {
+          "id": "iteron/runtime/service/optimizer.runtime/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/optimizer.runtime/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/kernel.controller",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "source_crate": "kernel",
+        "provider_contract": {
+          "id": "iteron/runtime/service/kernel.controller/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/kernel.controller/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/activationandpromotion",
+          "invariant/capabilityandpermission",
+          "invariant/budgetanddeadline",
+          "invariant/cancellationandprocessreaping",
+          "invariant/evidencedurability",
+          "invariant/replayandidentity",
+          "invariant/trustandsecrethandling"
+        ],
+        "non_optimization_reason": "The kernel owns the closed authority, lifecycle, budget, evidence, replay, and secret envelope and therefore cannot be an optimization candidate.",
+        "closed_host_invariants": [
+          "activation_and_promotion",
+          "capability_and_permission",
+          "budget_and_deadline",
+          "cancellation_and_process_reaping",
+          "evidence_durability",
+          "replay_and_identity",
+          "trust_and_secret_handling"
+        ]
+      },
+      {
+        "id": "service/lsp.transport",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "language-server-lifecycle",
+        "source_crate": "lsp",
+        "provider_contract": {
+          "id": "iteron/runtime/service/lsp.transport/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/lsp.transport/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/marketplace.registry",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "plugin-marketplace",
+        "source_crate": "marketplace",
+        "provider_contract": {
+          "id": "iteron/runtime/service/marketplace.registry/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/marketplace.registry/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/tool.exposure",
+          "invariant/capabilityandpermission",
+          "invariant/trustandsecrethandling"
+        ],
+        "non_optimization_reason": "Package identity and trust checks are fixed; which admitted tools are exposed is delegated to the tool-exposure module.",
+        "delegated_modules": [
+          "tool_exposure"
+        ],
+        "closed_host_invariants": [
+          "capability_and_permission",
+          "trust_and_secret_handling"
+        ]
+      },
+      {
+        "id": "service/mcp.transport",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "mcp-interop",
+        "source_crate": "mcp",
+        "provider_contract": {
+          "id": "iteron/runtime/service/mcp.transport/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/mcp.transport/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/observation.export",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "telemetry-export",
+        "source_crate": "obs",
+        "provider_contract": {
+          "id": "iteron/runtime/service/observation.export/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/observation.export/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/protocol.envelopes",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "protocol-contracts",
+        "source_crate": "protocol",
+        "provider_contract": {
+          "id": "iteron/runtime/service/protocol.envelopes/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/protocol.envelopes/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/capabilityandpermission",
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "Wire decoding, schema validation, and identity binding are closed interoperability and replay guarantees.",
+        "closed_host_invariants": [
+          "capability_and_permission",
+          "replay_and_identity"
+        ]
+      },
+      {
+        "id": "service/provider.adapters",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "provider-adapters",
+        "source_crate": "provider",
+        "provider_contract": {
+          "id": "iteron/runtime/service/provider.adapters/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/provider.adapters/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/record.store",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "record-core",
+        "source_crate": "record",
+        "provider_contract": {
+          "id": "iteron/runtime/service/record.store/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/record.store/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.memory_write",
+          "module/memory.recall",
+          "module/session.checkpoint",
+          "invariant/evidencedurability",
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "Record integrity and durability stay fixed while memory content, recall, and checkpoint policy are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_memory_write",
+          "memory_recall",
+          "session_checkpoint"
+        ],
+        "closed_host_invariants": [
+          "evidence_durability",
+          "replay_and_identity"
+        ]
+      },
+      {
+        "id": "service/sandbox.backend",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "sandbox",
+        "source_crate": "sandbox",
+        "provider_contract": {
+          "id": "iteron/runtime/service/sandbox.backend/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/sandbox.backend/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/tool.arguments",
+          "module/tool.edit_strategy",
+          "invariant/capabilityandpermission"
+        ],
+        "non_optimization_reason": "Isolation and effect enforcement are fixed; argument construction and edit strategy are delegated to named modules.",
+        "delegated_modules": [
+          "tool_arguments",
+          "tool_edit_strategy"
+        ],
+        "closed_host_invariants": [
+          "capability_and_permission"
+        ]
+      },
+      {
+        "id": "service/scheduler.engine",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "scheduler-runtime",
+        "source_crate": "sched",
+        "provider_contract": {
+          "id": "iteron/runtime/service/scheduler.engine/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/scheduler.engine/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/scheduler.parallelism",
+          "module/planner.fanout",
+          "module/budget.allocation",
+          "module/session.stop",
+          "invariant/budgetanddeadline",
+          "invariant/cancellationandprocessreaping"
+        ],
+        "non_optimization_reason": "Queue, deadline, and cancellation enforcement are fixed while parallelism, fanout, budget allocation, and stopping policy are delegated to named modules.",
+        "delegated_modules": [
+          "scheduler_parallelism",
+          "planner_fanout",
+          "budget_allocation",
+          "session_stop"
+        ],
+        "closed_host_invariants": [
+          "budget_and_deadline",
+          "cancellation_and_process_reaping"
+        ]
+      },
+      {
+        "id": "service/statusline.frontend",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "statusline",
+        "source_crate": "statusline",
+        "provider_contract": {
+          "id": "iteron/runtime/service/statusline.frontend/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/statusline.frontend/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "The statusline is a deterministic read-only projection of authenticated runtime state and has no decision authority or adaptable quality surface.",
+        "closed_host_invariants": [
+          "replay_and_identity"
+        ]
+      },
+      {
+        "id": "service/support.io",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "support-runtime",
+        "source_crate": "support",
+        "provider_contract": {
+          "id": "iteron/runtime/service/support.io/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/support.io/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/capabilityandpermission",
+          "invariant/cancellationandprocessreaping"
+        ],
+        "non_optimization_reason": "Bounded process and stream I/O implement capability and cancellation guarantees rather than agent strategy.",
+        "closed_host_invariants": [
+          "capability_and_permission",
+          "cancellation_and_process_reaping"
+        ]
+      },
+      {
+        "id": "service/tools.registry",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "tools-core",
+        "source_crate": "tools",
+        "provider_contract": {
+          "id": "iteron/runtime/service/tools.registry/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/tools.registry/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.tool_description",
+          "module/tool.exposure",
+          "module/tool.arguments",
+          "module/tool.edit_strategy",
+          "module/tool.search_strategy",
+          "invariant/capabilityandpermission"
+        ],
+        "non_optimization_reason": "Tool identity and capability enforcement are fixed while descriptions, exposure, arguments, edits, and search strategy are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_tool_description",
+          "tool_exposure",
+          "tool_arguments",
+          "tool_edit_strategy",
+          "tool_search_strategy"
+        ],
+        "closed_host_invariants": [
+          "capability_and_permission"
+        ]
+      },
+      {
+        "id": "service/tunables.registry",
+        "layer": "platform_service",
+        "disposition": "replaceable_only",
+        "implementation_status": "external_protocol",
+        "owner": "tunability-registry",
+        "source_crate": "tunables",
+        "provider_contract": {
+          "id": "iteron/runtime/service/tunables.registry/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/tunables.registry/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "service/verification.engine",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "verification-runtime",
+        "source_crate": "verify",
+        "provider_contract": {
+          "id": "iteron/runtime/service/verification.engine/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/verification.engine/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.verification",
+          "module/prompt.recovery",
+          "module/verification.quorum",
+          "invariant/evidencedurability"
+        ],
+        "non_optimization_reason": "Evidence admission remains fixed while verification prompts, recovery, and quorum quality are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_verification",
+          "prompt_recovery",
+          "verification_quorum"
+        ],
+        "closed_host_invariants": [
+          "evidence_durability"
+        ]
+      },
+      {
+        "id": "service/workflow.engine",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "workflow-engine",
+        "source_crate": "workflow",
+        "provider_contract": {
+          "id": "iteron/runtime/service/workflow.engine/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/workflow.engine/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "module/prompt.planner",
+          "module/prompt.reduce",
+          "module/planner.fanout",
+          "module/scheduler.parallelism",
+          "module/session.checkpoint",
+          "module/session.fork",
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "Workflow state transitions and replay are fixed while planning, reduction, fanout, parallelism, checkpoint, and fork policy are delegated to named modules.",
+        "delegated_modules": [
+          "prompt_planner",
+          "prompt_reduce",
+          "planner_fanout",
+          "scheduler_parallelism",
+          "session_checkpoint",
+          "session_fork"
+        ],
+        "closed_host_invariants": [
+          "replay_and_identity"
+        ]
+      },
+      {
+        "id": "invariant/activationandpromotion",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/activationandpromotion/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/activationandpromotion/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/capabilityandpermission",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/capabilityandpermission/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/capabilityandpermission/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/budgetanddeadline",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/budgetanddeadline/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/budgetanddeadline/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/cancellationandprocessreaping",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/cancellationandprocessreaping/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/cancellationandprocessreaping/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/evidencedurability",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/evidencedurability/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/evidencedurability/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/replayandidentity",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/replayandidentity/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/replayandidentity/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      },
+      {
+        "id": "invariant/trustandsecrethandling",
+        "layer": "host_invariant",
+        "disposition": "immutable_host_invariant",
+        "implementation_status": "host_fixed",
+        "owner": "kernel-runtime",
+        "provider_contract": {
+          "id": "iteron/runtime/invariant/trustandsecrethandling/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/invariant/trustandsecrethandling/consumer@v1",
+          "version": 1
+        },
+        "dependencies": []
+      }
+    ]
+  },
   "families": [
     {
       "ordinal": 1,
@@ -5696,7 +7131,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/bundle_adapter/external.rs",
-          "line": 301,
+          "line": 311,
           "evidence": "macro token reference"
         }
       ]
@@ -5943,12 +7378,17 @@
         },
         {
           "path": "crates/cli/src/bundle_adapter/external.rs",
-          "line": 121,
+          "line": 127,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/bundle_adapter/external.rs",
-          "line": 248,
+          "line": 254,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/bundle_adapter/external_mapping.rs",
+          "line": 36,
           "evidence": "Rust path reference"
         },
         {
@@ -7138,7 +8578,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 302,
+          "line": 308,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7168,7 +8608,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 284,
+          "line": 290,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7198,12 +8638,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 223,
+          "line": 229,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 230,
+          "line": 236,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -7233,7 +8673,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 327,
+          "line": 333,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7263,7 +8703,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config/verification.rs",
-          "line": 246,
+          "line": 252,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12902,7 +14342,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 138,
+          "line": 144,
           "evidence": "Rust path reference"
         },
         {
@@ -12971,7 +14411,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 71,
+          "line": 77,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15322,7 +16762,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/tool_output_spill.rs",
-          "line": 95,
+          "line": 104,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15352,7 +16792,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/tool_output_spill.rs",
-          "line": 99,
+          "line": 108,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22887,7 +24327,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/failed_action_cache.rs",
-          "line": 138,
+          "line": 144,
           "evidence": "Rust path reference"
         },
         {
@@ -24401,7 +25841,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 623,
+          "line": 630,
           "evidence": "Rust path reference"
         }
       ]
@@ -24428,7 +25868,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 622,
+          "line": 629,
           "evidence": "Rust path reference"
         }
       ]
@@ -25749,7 +27189,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 98,
+          "line": 101,
           "evidence": "param_u64 runtime resolution"
         }
       ],
@@ -25776,17 +27216,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 136,
+          "line": 139,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 138,
+          "line": 141,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 143,
+          "line": 146,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25813,17 +27253,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 122,
+          "line": 125,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 124,
+          "line": 127,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 129,
+          "line": 132,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25853,17 +27293,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 150,
+          "line": 153,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 152,
+          "line": 155,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 157,
+          "line": 160,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25893,7 +27333,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 99,
+          "line": 102,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25925,47 +27365,47 @@
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 49,
+          "line": 52,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 53,
+          "line": 56,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 70,
+          "line": 73,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 75,
+          "line": 78,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 80,
+          "line": 83,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 82,
+          "line": 85,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 103,
+          "line": 106,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 109,
+          "line": 112,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 114,
+          "line": 117,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26846,6 +28286,60 @@
       ]
     },
     {
+      "id": "eval.adapter_registry.external_native_id",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-native-adapter\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/adapter_registry.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/adapter_registry.rs",
+        "symbol": "EXTERNAL_NATIVE_ID"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 186,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.adapter_registry.external_native_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/adapter_registry.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/adapter_registry.rs",
+        "symbol": "EXTERNAL_NATIVE_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 187,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.adapter_registry.iteron_cli_id",
       "module": "verification_quorum",
       "class": "structural",
@@ -26867,7 +28361,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 160,
+          "line": 168,
           "evidence": "Rust path reference"
         }
       ]
@@ -26894,7 +28388,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 161,
+          "line": 169,
           "evidence": "Rust path reference"
         }
       ]
@@ -26921,12 +28415,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 73,
+          "line": 81,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 122,
+          "line": 130,
           "evidence": "Rust path reference"
         }
       ]
@@ -28241,7 +29735,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/process.rs",
-          "line": 207,
+          "line": 210,
           "evidence": "Rust path reference"
         }
       ]
@@ -28268,7 +29762,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/process.rs",
-          "line": 211,
+          "line": 214,
           "evidence": "Rust path reference"
         }
       ]
@@ -28408,12 +29902,86 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 441,
+          "line": 606,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 445,
+          "line": 610,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.external_native_adapter_protocol",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-native-adapter/1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "EXTERNAL_NATIVE_ADAPTER_PROTOCOL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 191,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 262,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/adapter_registry.rs",
+          "line": 373,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation.rs",
+          "line": 53,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/session.rs",
+          "line": 216,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.external_native_result_schema",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-native-adapter-result/1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "EXTERNAL_NATIVE_RESULT_SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution.rs",
+          "line": 295,
           "evidence": "Rust path reference"
         }
       ]
@@ -28440,7 +30008,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 301,
+          "line": 388,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 450,
           "evidence": "Rust path reference"
         },
         {
@@ -28472,17 +30045,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 340,
+          "line": 489,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 352,
+          "line": 501,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 332,
+          "line": 606,
           "evidence": "Rust path reference"
         }
       ]
@@ -28509,12 +30082,91 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 302,
+          "line": 389,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 451,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 301,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_native_materialization_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "2 * 1024 * 1024",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_NATIVE_MATERIALIZATION_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 33,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 37,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 73,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 134,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation.rs",
+          "line": 128,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.max_native_receipt_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4 * 1024 * 1024",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "MAX_NATIVE_RECEIPT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 146,
           "evidence": "Rust path reference"
         }
       ]
@@ -28541,12 +30193,22 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 299,
+          "line": 386,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 300,
+          "line": 387,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 448,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 449,
           "evidence": "Rust path reference"
         },
         {
@@ -28583,7 +30245,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 425,
+          "line": 590,
           "evidence": "Rust path reference"
         }
       ]
@@ -28610,7 +30272,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 295,
+          "line": 383,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 444,
           "evidence": "Rust path reference"
         }
       ]
@@ -28637,27 +30304,32 @@
       "use_sites": [
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 42,
+          "line": 67,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 45,
+          "line": 70,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 117,
+          "line": 146,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 119,
+          "line": 148,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/qualification_campaign.rs",
+          "line": 272,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_protocol.rs",
-          "line": 299,
+          "line": 415,
           "evidence": "Rust path reference"
         }
       ]
@@ -28684,12 +30356,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 87,
+          "line": 116,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_protocol.rs",
-          "line": 314,
+          "line": 430,
           "evidence": "Rust path reference"
         }
       ]
@@ -28716,7 +30388,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 298,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
@@ -28748,12 +30420,81 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 297,
+          "line": 385,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 446,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 296,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.native_consumption_schema",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-candidate-materialization-consumption/1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "NATIVE_CONSUMPTION_SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 166,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.research_protocol.native_materialization_schema",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-candidate-materialization/1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/research_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/research_protocol.rs",
+        "symbol": "NATIVE_MATERIALIZATION_SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 46,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 64,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/native_materialization.rs",
+          "line": 163,
           "evidence": "Rust path reference"
         }
       ]
@@ -28785,12 +30526,12 @@
         },
         {
           "path": "crates/eval/src/research_execution/response_validation.rs",
-          "line": 219,
+          "line": 277,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/session.rs",
-          "line": 68,
+          "line": 70,
           "evidence": "Rust path reference"
         }
       ]
@@ -28817,7 +30558,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 44,
+          "line": 45,
           "evidence": "Rust path reference"
         }
       ]
@@ -28844,15 +30585,47 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 328,
+          "line": 336,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 339,
+          "line": 347,
           "evidence": "Rust path reference"
         }
       ]
+    },
+    {
+      "id": "eval.runner.default_parallel_eval_workers",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "50",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/runner.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/runner.rs",
+        "symbol": "DEFAULT_PARALLEL_EVAL_WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/runner.rs",
+          "line": 141,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/eval/src/runner.rs",
+          "line": 143,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id eval.runner.default_parallel_eval_workers is resolved at every listed production helper call"
     },
     {
       "id": "eval.runner.iteron_process_grace_divisor",
@@ -28875,7 +30648,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 649,
+          "line": 657,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -28905,7 +30678,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 658,
+          "line": 666,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -28932,7 +30705,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 654,
+          "line": 662,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -28962,17 +30735,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 696,
+          "line": 704,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 706,
+          "line": 714,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 715,
+          "line": 723,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29002,12 +30775,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1131,
+          "line": 1139,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1568,
+          "line": 1576,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29037,7 +30810,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 566,
+          "line": 574,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29067,7 +30840,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 331,
+          "line": 339,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29097,12 +30870,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 558,
+          "line": 566,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 641,
+          "line": 649,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29132,7 +30905,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 574,
+          "line": 582,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29162,7 +30935,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1497,
+          "line": 1505,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29192,7 +30965,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1363,
+          "line": 1371,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29348,7 +31121,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 301,
+          "line": 388,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 450,
           "evidence": "Rust path reference"
         },
         {
@@ -29380,7 +31158,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 302,
+          "line": 389,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 451,
           "evidence": "Rust path reference"
         },
         {
@@ -29412,12 +31195,22 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 299,
+          "line": 386,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 300,
+          "line": 387,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 448,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 449,
           "evidence": "Rust path reference"
         },
         {
@@ -29491,7 +31284,7 @@
         },
         {
           "path": "crates/eval/src/research_execution.rs",
-          "line": 321,
+          "line": 405,
           "evidence": "Rust path reference"
         },
         {
@@ -29582,7 +31375,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 298,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
@@ -29614,7 +31407,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 297,
+          "line": 385,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 446,
           "evidence": "Rust path reference"
         },
         {
@@ -29646,7 +31444,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 168,
+          "line": 177,
           "evidence": "Rust path reference"
         },
         {
@@ -29683,7 +31481,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 169,
+          "line": 178,
           "evidence": "Rust path reference"
         },
         {
@@ -29726,6 +31524,117 @@
       ]
     },
     {
+      "id": "eval.trainer_bridge.all_trainer_capabilities",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[TrainerCapability; 8]",
+      "default": "[\n    TrainerCapability::Batch,\n    TrainerCapability::Asynchronous,\n    TrainerCapability::Population,\n    TrainerCapability::Bandit,\n    TrainerCapability::MultiObjective,\n    TrainerCapability::Trajectory,\n    TrainerCapability::CheckpointResume,\n    TrainerCapability::OpaqueArtifact,\n]",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "ALL_TRAINER_CAPABILITIES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/qualification_campaign.rs",
+          "line": 554,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 550,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.legacy_trainer_bridge_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "LEGACY_TRAINER_BRIDGE_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 255,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 260,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 385,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 394,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 415,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 430,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.trainer_bridge.max_batch_suggestions",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/trainer_bridge.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/trainer_bridge.rs",
+        "symbol": "MAX_BATCH_SUGGESTIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 520,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.trainer_bridge.max_distributed_workers",
       "module": "verification_quorum",
       "class": "structural",
@@ -29747,7 +31656,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 239,
+          "line": 320,
           "evidence": "Rust path reference"
         }
       ]
@@ -29774,17 +31683,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 340,
+          "line": 489,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
-          "line": 352,
+          "line": 501,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 332,
+          "line": 606,
           "evidence": "Rust path reference"
         }
       ]
@@ -29811,22 +31720,22 @@
       "use_sites": [
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 211,
+          "line": 292,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 218,
+          "line": 299,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 230,
+          "line": 311,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 232,
+          "line": 313,
           "evidence": "Rust path reference"
         }
       ]
@@ -29853,7 +31762,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 191,
+          "line": 272,
           "evidence": "Rust path reference"
         }
       ]
@@ -29880,7 +31789,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 317,
+          "line": 591,
           "evidence": "Rust path reference"
         }
       ]
@@ -29907,7 +31816,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 171,
+          "line": 243,
           "evidence": "Rust path reference"
         }
       ]
@@ -29918,7 +31827,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "1",
+      "default": "2",
       "domain": {},
       "krate": "eval",
       "decl": "crates/eval/src/trainer_bridge.rs",
@@ -29933,13 +31842,297 @@
       },
       "use_sites": [
         {
-          "path": "crates/eval/src/trainer_bridge.rs",
-          "line": 181,
+          "path": "crates/eval/src/qualification_campaign.rs",
+          "line": 509,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/trainer_bridge.rs",
           "line": 255,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 341,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/trainer_bridge.rs",
+          "line": 458,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 181,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.candidate_graph_schema_id",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-candidate/3\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "CANDIDATE_GRAPH_SCHEMA_ID"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 549,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/response_validation/helpers.rs",
+          "line": 93,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/research_execution/session.rs",
+          "line": 186,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 138,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 254,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 364,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.candidate_graph_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "3",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "CANDIDATE_GRAPH_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/research_execution/protocol_validation.rs",
+          "line": 168,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 31,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 90,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 108,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 120,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 183,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 238,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 345,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.max_address_text_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4_096",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "MAX_ADDRESS_TEXT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 532,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 541,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 553,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 566,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.max_candidate_topology_edges",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "16_384",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "MAX_CANDIDATE_TOPOLOGY_EDGES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 265,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.max_native_value_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64 * 1024",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "MAX_NATIVE_VALUE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 519,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.max_value_depth",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "16",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "MAX_VALUE_DEPTH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 527,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.candidate_graph.max_value_nodes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4_096",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/candidate_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/candidate_graph.rs",
+        "symbol": "MAX_VALUE_NODES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 527,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 538,
           "evidence": "Rust path reference"
         }
       ]
@@ -29950,7 +32143,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"iteron-implementation/1\"",
+      "default": "\"iteron-implementation/2\"",
       "domain": {},
       "krate": "eval",
       "decl": "crates/eval/src/tuner.rs",
@@ -29966,23 +32159,33 @@
       "use_sites": [
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 164,
+          "line": 172,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/adapter_registry.rs",
-          "line": 229,
+          "line": 257,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/qualification_campaign.rs",
+          "line": 929,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/qualification_campaign.rs",
+          "line": 1008,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/research_execution/response_validation.rs",
-          "line": 43,
+          "line": 45,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 352,
-          "evidence": "Rust path reference"
+          "line": 482,
+          "evidence": "macro token reference"
         }
       ]
     },
@@ -30089,6 +32292,65 @@
       "behavior_oracle": "installed profile id eval.tuner.journal.max_record_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "eval.tuner.legacy_implementation_protocol",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation/1\"",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "LEGACY_IMPLEMENTATION_PROTOCOL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 482,
+          "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.legacy_universal_candidate_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "2",
+      "domain": {},
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 236,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/state_ops.rs",
+          "line": 362,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.tuner.max_candidates",
       "module": "verification_quorum",
       "class": "bounded",
@@ -30140,7 +32402,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 199,
+          "line": 213,
           "evidence": "Rust path reference"
         }
       ]
@@ -30256,8 +32518,13 @@
       },
       "use_sites": [
         {
+          "path": "crates/eval/src/tuner/candidate_graph.rs",
+          "line": 264,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 341,
+          "line": 394,
           "evidence": "Rust path reference"
         }
       ]
@@ -30268,7 +32535,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "2",
+      "default": "CANDIDATE_GRAPH_SCHEMA_VERSION",
       "domain": {},
       "krate": "eval",
       "decl": "crates/eval/src/tuner.rs",
@@ -30283,9 +32550,9 @@
       },
       "use_sites": [
         {
-          "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 314,
-          "evidence": "Rust path reference"
+          "path": "crates/eval/src/tuner.rs",
+          "line": 31,
+          "evidence": "production declaration"
         }
       ]
     },
@@ -30392,7 +32659,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 446,
+          "line": 454,
           "evidence": "Rust path reference"
         }
       ]
@@ -33521,6 +35788,60 @@
       ]
     },
     {
+      "id": "evolve.transcript.default_primary_producer",
+      "module": "session_checkpoint",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"rule\"",
+      "domain": {},
+      "krate": "evolve",
+      "decl": "crates/evolve/src/transcript.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "evolve",
+        "path": "crates/evolve/src/transcript.rs",
+        "symbol": "DEFAULT_PRIMARY_PRODUCER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/evolve/src/transcript.rs",
+          "line": 206,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id evolve.transcript.default_primary_producer is resolved at every listed production helper call"
+    },
+    {
+      "id": "evolve.transcript.default_secondary_producer",
+      "module": "session_checkpoint",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"prompt\"",
+      "domain": {},
+      "krate": "evolve",
+      "decl": "crates/evolve/src/transcript.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "evolve",
+        "path": "crates/evolve/src/transcript.rs",
+        "symbol": "DEFAULT_SECONDARY_PRODUCER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/evolve/src/transcript.rs",
+          "line": 213,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id evolve.transcript.default_secondary_producer is resolved at every listed production helper call"
+    },
+    {
       "id": "evolve.transcript.demo_transcript_key",
       "module": "session_checkpoint",
       "class": "structural",
@@ -33542,7 +35863,7 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 411,
+          "line": 443,
           "evidence": "Rust path reference"
         }
       ]
@@ -33571,27 +35892,27 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 222,
+          "line": 254,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 228,
+          "line": 260,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 351,
+          "line": 383,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 358,
+          "line": 390,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 364,
+          "line": 396,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -33621,27 +35942,27 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 242,
+          "line": 274,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 248,
+          "line": 280,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 334,
+          "line": 366,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 340,
+          "line": 372,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 418,
+          "line": 450,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -33671,22 +35992,22 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 256,
+          "line": 288,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 262,
+          "line": 294,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 300,
+          "line": 332,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 306,
+          "line": 338,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -33714,12 +36035,12 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 391,
+          "line": 423,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 413,
+          "line": 445,
           "evidence": "Rust path reference"
         }
       ]
@@ -33746,12 +36067,12 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 269,
+          "line": 301,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 324,
+          "line": 356,
           "evidence": "Rust path reference"
         }
       ]
@@ -33777,12 +36098,12 @@
       "use_sites": [
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 236,
+          "line": 268,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/evolve/src/transcript.rs",
-          "line": 317,
+          "line": 349,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -35589,7 +37910,7 @@
       "use_sites": [
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 346,
+          "line": 347,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35616,17 +37937,17 @@
       "use_sites": [
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 181,
+          "line": 182,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 337,
+          "line": 338,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 351,
+          "line": 352,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36710,12 +39031,12 @@
       "use_sites": [
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 89,
+          "line": 90,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 93,
+          "line": 94,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36745,12 +39066,12 @@
       "use_sites": [
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 137,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 147,
+          "line": 148,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36841,12 +39162,12 @@
       "use_sites": [
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 136,
+          "line": 137,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/lsp/src/lifecycle.rs",
-          "line": 143,
+          "line": 144,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37003,6 +39324,252 @@
       "behavior_oracle": "installed profile id marketplace.composition_model.max_slot_key_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "marketplace.hotswap.genesis_hash",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "GENESIS_HASH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 240,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 610,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.hotswap_ledger_schema",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-hotswap-ledger/1\"",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "HOTSWAP_LEDGER_SCHEMA"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 535,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 626,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.max_hotswap_deadline_ms",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "3_600_000",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "MAX_HOTSWAP_DEADLINE_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 568,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.max_hotswap_id_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "MAX_HOTSWAP_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 852,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.max_hotswap_ledger_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "16 * 1024 * 1024",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "MAX_HOTSWAP_LEDGER_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 281,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 603,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.max_hotswap_reason_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1024",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "MAX_HOTSWAP_REASON_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 752,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 844,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.max_hotswap_record_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "16 * 1024",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "MAX_HOTSWAP_RECORD_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 277,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 619,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.hotswap.phases",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[HotSwapPhase; 10]",
+      "default": "[\n        HotSwapPhase::Verify,\n        HotSwapPhase::ShadowLoad,\n        HotSwapPhase::Quiesce,\n        HotSwapPhase::Snapshot,\n        HotSwapPhase::Migrate,\n        HotSwapPhase::Restore,\n        HotSwapPhase::Readiness,\n        HotSwapPhase::AtomicSwitch,\n        HotSwapPhase::Drain,\n        HotSwapPhase::Committed,\n    ]",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/hotswap.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/hotswap.rs",
+        "symbol": "validate_transition::PHASES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 716,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 719,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "marketplace.implementation.implementation_catalog_schema_version",
       "module": "tool_exposure",
       "class": "structural",
@@ -37024,12 +39591,49 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 204,
+          "line": 205,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 206,
+          "line": 207,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation.implementation_process_protocol_v1",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "1",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation.rs",
+        "symbol": "IMPLEMENTATION_PROCESS_PROTOCOL_V1"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 75,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/process.rs",
+          "line": 201,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 113,
           "evidence": "Rust path reference"
         }
       ]
@@ -37040,7 +39644,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "1",
+      "default": "2",
       "domain": {},
       "krate": "marketplace",
       "decl": "crates/marketplace/src/implementation.rs",
@@ -37055,19 +39659,44 @@
       },
       "use_sites": [
         {
-          "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 72,
+          "path": "crates/marketplace/src/hotswap.rs",
+          "line": 345,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap/runtime_executor.rs",
+          "line": 311,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap/runtime_executor.rs",
+          "line": 312,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/hotswap/runtime_executor.rs",
+          "line": 673,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
           "line": 75,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation/validation.rs",
+          "line": 79,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime.rs",
+          "line": 446,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 198,
-          "evidence": "Rust path reference"
+          "line": 201,
+          "evidence": "macro token reference"
         }
       ]
     },
@@ -37093,12 +39722,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 67,
+          "line": 68,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 206,
+          "line": 210,
           "evidence": "Rust path reference"
         }
       ]
@@ -37125,12 +39754,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 64,
+          "line": 65,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 203,
+          "line": 207,
           "evidence": "Rust path reference"
         }
       ]
@@ -37157,12 +39786,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 65,
+          "line": 66,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 204,
+          "line": 208,
           "evidence": "Rust path reference"
         }
       ]
@@ -37189,12 +39818,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 83,
+          "line": 87,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 217,
+          "line": 221,
           "evidence": "Rust path reference"
         }
       ]
@@ -37221,12 +39850,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 196,
+          "line": 197,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 199,
+          "line": 200,
           "evidence": "Rust path reference"
         },
         {
@@ -37278,7 +39907,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 93,
+          "line": 97,
           "evidence": "Rust path reference"
         }
       ]
@@ -37305,22 +39934,22 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 85,
+          "line": 89,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 87,
+          "line": 91,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 219,
+          "line": 223,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 221,
+          "line": 225,
           "evidence": "Rust path reference"
         }
       ]
@@ -37347,7 +39976,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 171,
+          "line": 172,
           "evidence": "Rust path reference"
         },
         {
@@ -37379,12 +40008,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 89,
+          "line": 93,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 223,
+          "line": 227,
           "evidence": "Rust path reference"
         }
       ]
@@ -37411,7 +40040,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 20,
+          "line": 21,
           "evidence": "Rust path reference"
         },
         {
@@ -37443,12 +40072,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation/validation.rs",
-          "line": 81,
+          "line": 85,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 215,
+          "line": 219,
           "evidence": "Rust path reference"
         }
       ]
@@ -37475,12 +40104,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 210,
+          "line": 211,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation.rs",
-          "line": 213,
+          "line": 214,
           "evidence": "Rust path reference"
         }
       ]
@@ -37614,12 +40243,44 @@
       ]
     },
     {
+      "id": "marketplace.implementation_protocol.duplicate_key_marker",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"__iteron_duplicate_json_key__\"",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "DUPLICATE_KEY_MARKER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 777,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 786,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "marketplace.implementation_protocol.implementation_protocol",
       "module": "tool_exposure",
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"iteron-implementation/1\"",
+      "default": "\"iteron-implementation/2\"",
       "domain": {},
       "krate": "marketplace",
       "decl": "crates/marketplace/src/implementation_protocol.rs",
@@ -37635,17 +40296,49 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 283,
-          "evidence": "Rust path reference"
+          "line": 574,
+          "evidence": "macro token reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 314,
+          "line": 579,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/wire.rs",
-          "line": 71,
+          "line": 116,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.implementation_protocol_v1",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"iteron-implementation/1\"",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "IMPLEMENTATION_PROTOCOL_V1"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 574,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/wire.rs",
+          "line": 114,
           "evidence": "Rust path reference"
         }
       ]
@@ -37672,17 +40365,17 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 222,
+          "line": 300,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 269,
+          "line": 520,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 325,
+          "line": 609,
           "evidence": "Rust path reference"
         }
       ]
@@ -37709,12 +40402,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 153,
+          "line": 219,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 156,
+          "line": 222,
           "evidence": "Rust path reference"
         },
         {
@@ -37724,17 +40417,17 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 352,
+          "line": 356,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 355,
+          "line": 359,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/wire.rs",
-          "line": 30,
+          "line": 29,
           "evidence": "Rust path reference"
         }
       ]
@@ -37761,12 +40454,71 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 347,
+          "line": 631,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 350,
+          "line": 634,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_implementation_state_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "512 * 1024",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_IMPLEMENTATION_STATE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 643,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 646,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_protocol.max_implementation_state_deadline_ms",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "3_600_000",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_protocol.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_protocol.rs",
+        "symbol": "MAX_IMPLEMENTATION_STATE_DEADLINE_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_protocol.rs",
+          "line": 598,
           "evidence": "Rust path reference"
         }
       ]
@@ -37793,12 +40545,44 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 268,
+          "line": 519,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_protocol.rs",
-          "line": 358,
+          "line": 670,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.max_implementation_state_evidence",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime.rs",
+        "symbol": "MAX_IMPLEMENTATION_STATE_EVIDENCE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime.rs",
+          "line": 456,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime.rs",
+          "line": 458,
           "evidence": "Rust path reference"
         }
       ]
@@ -37825,12 +40609,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/wire.rs",
-          "line": 31,
+          "line": 30,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/wire.rs",
-          "line": 34,
+          "line": 33,
           "evidence": "Rust path reference"
         }
       ]
@@ -37857,7 +40641,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 423,
+          "line": 427,
           "evidence": "Rust path reference"
         }
       ]
@@ -37886,7 +40670,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/lib.rs",
-          "line": 198,
+          "line": 212,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -40193,12 +42977,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 34,
+          "line": 35,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 41,
+          "line": 42,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -40228,12 +43012,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 48,
+          "line": 49,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 55,
+          "line": 56,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -40263,12 +43047,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 62,
+          "line": 63,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 69,
+          "line": 70,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47523,12 +50307,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/governor_policy.rs",
-          "line": 134,
+          "line": 137,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/governor_policy.rs",
-          "line": 136,
+          "line": 139,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47593,17 +50377,17 @@
       "use_sites": [
         {
           "path": "crates/provider/src/governor_policy.rs",
-          "line": 229,
+          "line": 261,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/provider/src/governor_policy.rs",
-          "line": 231,
+          "line": 263,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/governor_policy.rs",
-          "line": 236,
+          "line": 268,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47630,7 +50414,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 674,
+          "line": 677,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47658,7 +50442,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 680,
+          "line": 683,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -47688,12 +50472,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 918,
+          "line": 921,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 923,
+          "line": 926,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47723,22 +50507,22 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 704,
+          "line": 707,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 729,
+          "line": 732,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 731,
+          "line": 734,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 746,
+          "line": 749,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47768,7 +50552,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 934,
+          "line": 937,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47798,7 +50582,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 1145,
+          "line": 1148,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47826,7 +50610,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 563,
+          "line": 566,
           "evidence": "Rust path reference"
         }
       ]
@@ -59099,12 +61883,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 257,
+          "line": 272,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 259,
+          "line": 274,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59131,12 +61915,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 271,
+          "line": 291,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 273,
+          "line": 293,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59163,12 +61947,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 299,
+          "line": 319,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 301,
+          "line": 321,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59195,11 +61979,38 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 320,
+          "line": 340,
           "evidence": "param_bool runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id tools.process.policy.default_operator_prompt is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.process.policy.default_persistent_backend",
+      "module": "tool_arguments",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"persistent\"",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/process/policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/process/policy.rs",
+        "symbol": "DEFAULT_PERSISTENT_BACKEND"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/process/policy.rs",
+          "line": 268,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id tools.process.policy.default_persistent_backend is resolved at every listed production helper call"
     },
     {
       "id": "tools.process.policy.default_stdin_poll_milliseconds",
@@ -59222,12 +62033,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 285,
+          "line": 305,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 287,
+          "line": 307,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59257,12 +62068,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 221,
+          "line": 232,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 266,
+          "line": 281,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59292,12 +62103,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 142,
+          "line": 153,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 164,
+          "line": 175,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59327,17 +62138,17 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 138,
+          "line": 149,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 159,
+          "line": 170,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 174,
+          "line": 185,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59367,22 +62178,22 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 60,
+          "line": 71,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 228,
+          "line": 239,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 280,
+          "line": 300,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 308,
+          "line": 328,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -59412,12 +62223,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 52,
+          "line": 63,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/process/policy.rs",
-          "line": 294,
+          "line": 314,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60497,7 +63308,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "1",
+      "default": "2",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/capability_graph.rs",
@@ -60513,17 +63324,17 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 177,
+          "line": 189,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 196,
+          "line": 208,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 198,
+          "line": 210,
           "evidence": "Rust path reference"
         }
       ]
@@ -60550,12 +63361,12 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 209,
+          "line": 221,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 212,
+          "line": 224,
           "evidence": "Rust path reference"
         }
       ]
@@ -60582,12 +63393,12 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 202,
+          "line": 214,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 204,
+          "line": 216,
           "evidence": "Rust path reference"
         }
       ]
@@ -60614,7 +63425,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 186,
+          "line": 198,
           "evidence": "Rust path reference"
         }
       ]
@@ -60641,7 +63452,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 266,
+          "line": 282,
           "evidence": "Rust path reference"
         }
       ]
@@ -60668,22 +63479,22 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 240,
+          "line": 247,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 280,
+          "line": 289,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 281,
+          "line": 290,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 305,
+          "line": 335,
           "evidence": "Rust path reference"
         },
         {
@@ -60719,7 +63530,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "2",
+      "default": "3",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/export.rs",
@@ -60735,7 +63546,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 293,
+          "line": 322,
           "evidence": "Rust path reference"
         }
       ]
@@ -61009,7 +63820,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 296,
+          "line": 325,
           "evidence": "Rust path reference"
         },
         {
@@ -61111,7 +63922,7 @@
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 294,
+          "line": 323,
           "evidence": "Rust path reference"
         },
         {
@@ -61173,7 +63984,7 @@
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 295,
+          "line": 324,
           "evidence": "Rust path reference"
         },
         {
@@ -61282,27 +64093,62 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 259,
+          "line": 275,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 298,
+          "line": 314,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 230,
+          "line": 237,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 279,
+          "line": 288,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/modules.rs",
           "line": 148,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 270,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 286,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 790,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 791,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 801,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 803,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 871,
           "evidence": "Rust path reference"
         }
       ]
@@ -61480,22 +64326,22 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 240,
+          "line": 247,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 280,
+          "line": 289,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 281,
+          "line": 290,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 305,
+          "line": 335,
           "evidence": "Rust path reference"
         },
         {
@@ -61633,7 +64479,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 297,
+          "line": 326,
           "evidence": "Rust path reference"
         }
       ]
@@ -64164,27 +67010,62 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 259,
+          "line": 275,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/capability_graph.rs",
-          "line": 298,
+          "line": 314,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 230,
+          "line": 237,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 279,
+          "line": 288,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/modules.rs",
           "line": 148,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 270,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 286,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 790,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 791,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 801,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 803,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 871,
           "evidence": "Rust path reference"
         }
       ]
@@ -64294,6 +67175,265 @@
       ]
     },
     {
+      "id": "tunables.service_graph.all",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[Self; 9]",
+      "default": "[\n        Self::Context,\n        Self::ToolPolicy,\n        Self::Memory,\n        Self::Router,\n        Self::Planner,\n        Self::Collaboration,\n        Self::Scheduler,\n        Self::Verifier,\n        Self::ModelRouter,\n    ]",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "associated_const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "ProductionPortId::ALL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 275,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/capability_graph.rs",
+          "line": 314,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/export.rs",
+          "line": 237,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/export.rs",
+          "line": 288,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/modules.rs",
+          "line": 148,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 270,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 286,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 790,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 791,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 801,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 803,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 871,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.closed_host_invariants",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[HostInvariant; 7]",
+      "default": "[\n    HostInvariant::ActivationAndPromotion,\n    HostInvariant::CapabilityAndPermission,\n    HostInvariant::BudgetAndDeadline,\n    HostInvariant::CancellationAndProcessReaping,\n    HostInvariant::EvidenceDurability,\n    HostInvariant::ReplayAndIdentity,\n    HostInvariant::TrustAndSecretHandling,\n]",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "CLOSED_HOST_INVARIANTS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 643,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 814,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.external_protocol_service_ids",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[&str; 6]",
+      "default": "[\n    \"service/lsp.transport\",\n    \"service/mcp.transport\",\n    \"service/observation.export\",\n    \"service/optimizer.runtime\",\n    \"service/provider.adapters\",\n    \"service/tunables.registry\",\n]",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "EXTERNAL_PROTOCOL_SERVICE_IDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 828,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.max_runtime_service_graph_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "256 * 1024",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "MAX_RUNTIME_SERVICE_GRAPH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 676,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.runtime_crate_ids",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "[&str; 22]",
+      "default": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "RUNTIME_CRATE_IDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 780,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.runtime_service_graph_schema_version",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u16",
+      "default": "2",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 660,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 668,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tunables.service_graph.runtime_service_node_count",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "66",
+      "domain": {},
+      "krate": "tunables",
+      "decl": "crates/tunables/src/service_graph.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tunables",
+        "path": "crates/tunables/src/service_graph.rs",
+        "symbol": "RUNTIME_SERVICE_NODE_COUNT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 269,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 669,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "tunables.strategy_slots.strategy_slots",
       "module": "budget_allocation",
       "class": "structural",
@@ -64347,22 +67487,22 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 244,
+          "line": 251,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 285,
+          "line": 294,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 286,
+          "line": 295,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 306,
+          "line": 336,
           "evidence": "Rust path reference"
         },
         {
@@ -64404,7 +67544,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/export.rs",
-          "line": 299,
+          "line": 328,
           "evidence": "Rust path reference"
         },
         {
@@ -64913,10 +68053,411 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 97,
+          "line": 112,
           "evidence": "production declaration"
         }
       ]
+    },
+    {
+      "id": "verify.runtime_policy.default_flaky_minimum_disagreements",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u8",
+      "default": "1",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_FLAKY_MINIMUM_DISAGREEMENTS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 291,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_flaky_minimum_disagreements is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_flaky_quarantine_seconds",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "0",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_FLAKY_QUARANTINE_SECONDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 296,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_flaky_quarantine_seconds is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_flaky_repeat_count",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u8",
+      "default": "1",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_FLAKY_REPEAT_COUNT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 284,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_flaky_repeat_count is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_flaky_report_disagreement",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "true",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_FLAKY_REPORT_DISAGREEMENT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 301,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_flaky_report_disagreement is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_checkpoint_before_verification",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "false",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 241,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_checkpoint_before_verification is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_checkpoint_minimum_turn_interval",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "1",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_CHECKPOINT_MINIMUM_TURN_INTERVAL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 246,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_checkpoint_minimum_turn_interval is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_checkpoint_turn_boundary",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "true",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_CHECKPOINT_TURN_BOUNDARY"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 237,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_checkpoint_turn_boundary is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_feedback_command_output_bytes",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1_000",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_FEEDBACK_COMMAND_OUTPUT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 168,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 170,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_feedback_command_output_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_feedback_oracle_output_bytes",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4_000",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_FEEDBACK_ORACLE_OUTPUT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 176,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 178,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_feedback_oracle_output_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_feedback_total_bytes",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "3_000",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_FEEDBACK_TOTAL_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 184,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 186,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_feedback_total_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_max_commands",
+      "module": "verification_quorum",
+      "class": "bounded",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1",
+      "domain": {
+        "min": 0,
+        "max": 1
+      },
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_MAX_COMMANDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 370,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 372,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_max_commands is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_quorum_required_agreement",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u8",
+      "default": "1",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_QUORUM_REQUIRED_AGREEMENT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 325,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_quorum_required_agreement is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_quorum_strong_veto",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "true",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_QUORUM_STRONG_VETO"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 330,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_quorum_strong_veto is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_quorum_verifiers",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u8",
+      "default": "1",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_QUORUM_VERIFIERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 318,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_quorum_verifiers is resolved at every listed production helper call"
     },
     {
       "id": "verify.runtime_policy.default_verification_repair_attempts",
@@ -64939,11 +68480,38 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 57,
+          "line": 72,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_repair_attempts is resolved at every listed production helper call"
+    },
+    {
+      "id": "verify.runtime_policy.default_verification_selection",
+      "module": "verification_quorum",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"full\"",
+      "domain": {},
+      "krate": "verify",
+      "decl": "crates/verify/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "verify",
+        "path": "crates/verify/src/runtime_policy.rs",
+        "symbol": "DEFAULT_VERIFICATION_SELECTION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/verify/src/runtime_policy.rs",
+          "line": 364,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id verify.runtime_policy.default_verification_selection is resolved at every listed production helper call"
     },
     {
       "id": "verify.runtime_policy.default_verifier_timeout_secs",
@@ -64966,12 +68534,12 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 275,
+          "line": 360,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 456,
+          "line": 554,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -64999,7 +68567,7 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 96,
+          "line": 111,
           "evidence": "production declaration"
         }
       ]
@@ -65028,7 +68596,7 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 399,
+          "line": 497,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65058,12 +68626,12 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 374,
+          "line": 472,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 429,
+          "line": 527,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65093,12 +68661,12 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 352,
+          "line": 450,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 358,
+          "line": 456,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65128,7 +68696,7 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 413,
+          "line": 511,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65158,7 +68726,7 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 422,
+          "line": 520,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65188,7 +68756,7 @@
       "use_sites": [
         {
           "path": "crates/verify/src/runtime_policy.rs",
-          "line": 289,
+          "line": 387,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -65636,7 +69204,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 310,
+          "line": 312,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -65663,12 +69231,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 303,
+          "line": 305,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 305,
+          "line": 307,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65695,16 +69263,43 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 385,
+          "line": 396,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 387,
+          "line": 398,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id workflow.execution_policy.default_task_attempts is resolved at every listed production helper call"
+    },
+    {
+      "id": "workflow.execution_policy.default_task_failure_action",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"reassign\"",
+      "domain": {},
+      "krate": "workflow",
+      "decl": "crates/workflow/src/execution_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/execution_policy.rs",
+        "symbol": "DEFAULT_TASK_FAILURE_ACTION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/execution_policy.rs",
+          "line": 403,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.execution_policy.default_task_failure_action is resolved at every listed production helper call"
     },
     {
       "id": "workflow.execution_policy.max_speculative_cleanup_timeout",
@@ -65731,7 +69326,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 262,
+          "line": 264,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -65761,12 +69356,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 248,
+          "line": 250,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 250,
+          "line": 252,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65796,12 +69391,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 352,
+          "line": 363,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 354,
+          "line": 365,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -65829,7 +69424,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 258,
+          "line": 260,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -66090,6 +69685,97 @@
       ]
     },
     {
+      "id": "workflow.quorum.default_early_stop_minimum_evidence",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1",
+      "domain": {},
+      "krate": "workflow",
+      "decl": "crates/workflow/src/quorum.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/quorum.rs",
+        "symbol": "DEFAULT_EARLY_STOP_MINIMUM_EVIDENCE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 71,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 73,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.quorum.default_early_stop_minimum_evidence is resolved at every listed production helper call"
+    },
+    {
+      "id": "workflow.quorum.default_early_stop_required_roles",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "0",
+      "domain": {},
+      "krate": "workflow",
+      "decl": "crates/workflow/src/quorum.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/quorum.rs",
+        "symbol": "DEFAULT_EARLY_STOP_REQUIRED_ROLES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 79,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 81,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.quorum.default_early_stop_required_roles is resolved at every listed production helper call"
+    },
+    {
+      "id": "workflow.quorum.default_early_stop_strong_veto",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "true",
+      "domain": {},
+      "krate": "workflow",
+      "decl": "crates/workflow/src/quorum.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/quorum.rs",
+        "symbol": "DEFAULT_EARLY_STOP_STRONG_VETO"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 91,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.quorum.default_early_stop_strong_veto is resolved at every listed production helper call"
+    },
+    {
       "id": "workflow.quorum.max_early_stop_quorum",
       "module": "planner_fanout",
       "class": "bounded",
@@ -66113,12 +69799,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 29,
+          "line": 32,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 31,
+          "line": 34,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -66153,11 +69839,78 @@
         },
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 76,
+          "line": 77,
           "evidence": "param_u64 runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id workflow.schema.retry_max is resolved at every listed production helper call"
+    },
+    {
+      "id": "workflow.schema_retry.default_schema_retry_base_ms",
+      "module": "planner_fanout",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "2",
+      "domain": {},
+      "krate": "workflow",
+      "decl": "crates/workflow/src/schema_retry.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/schema_retry.rs",
+        "symbol": "DEFAULT_SCHEMA_RETRY_BASE_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 90,
+          "evidence": "param_u64 runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 92,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.schema_retry.default_schema_retry_base_ms is resolved at every listed production helper call"
+    },
+    {
+      "id": "workflow.schema_retry.default_schema_retry_cap_ms",
+      "module": "planner_fanout",
+      "class": "bounded",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "20",
+      "domain": {
+        "min": 0,
+        "max": 20
+      },
+      "krate": "workflow",
+      "decl": "crates/workflow/src/schema_retry.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "workflow",
+        "path": "crates/workflow/src/schema_retry.rs",
+        "symbol": "DEFAULT_SCHEMA_RETRY_CAP_MS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 82,
+          "evidence": "param_u64 runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 84,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id workflow.schema_retry.default_schema_retry_cap_ms is resolved at every listed production helper call"
     },
     {
       "id": "workflow.schema_retry.max_schema_retry_attempts",
@@ -66183,12 +69936,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 23,
+          "line": 25,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 25,
+          "line": 27,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -66218,12 +69971,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 35,
+          "line": 37,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 37,
+          "line": 39,
           "evidence": "param_integer runtime resolution"
         }
       ],

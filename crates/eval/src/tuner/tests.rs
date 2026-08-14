@@ -4,6 +4,7 @@ use crate::types::{
     CellKey, CellResult, CostStatus, EVAL_SCHEMA_VERSION, KernelTaxObservation, OracleStatus,
     SamplingControl,
 };
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,6 +58,7 @@ fn candidate(id: &str, value: &str) -> TunerCandidate {
         values: BTreeMap::from([(tunable_family().into(), value.into())]),
         profile: None,
         implementations: Vec::new(),
+        graph: None,
     }
 }
 
@@ -362,12 +364,13 @@ fn trainer_bridge(
             heartbeat_secs: 1,
             max_attempts_per_trial: 1,
         },
+        capabilities: ALL_TRAINER_CAPABILITIES.to_vec(),
     }
 }
 
 fn universal_candidate(id: &str) -> TunerCandidate {
     TunerCandidate {
-        schema_version: UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+        schema_version: LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
         id: id.into(),
         values: BTreeMap::new(),
         profile: Some(iteron_tunables::ProfileDocument {
@@ -396,6 +399,7 @@ fn universal_candidate(id: &str) -> TunerCandidate {
             manifest_sha256: format!("sha256:{}", "d".repeat(64)),
             artifact_sha256: format!("sha256:{}", "e".repeat(64)),
         }],
+        graph: None,
     }
 }
 
@@ -458,9 +462,17 @@ fn universal_candidate_v2_strictly_binds_executable_sources() {
     old_schema.schema_version = 1;
     assert!(old_schema.validate_universal().is_err());
 
-    let mut wrong_protocol = candidate.clone();
-    wrong_protocol.implementations[0].protocol = "iteron-implementation/2".into();
-    assert!(wrong_protocol.validate_universal().is_err());
+    let mut current_protocol = candidate.clone();
+    current_protocol.implementations[0].protocol = "iteron-implementation/2".into();
+    current_protocol.validate_universal().unwrap();
+
+    let mut unsupported_protocol = candidate.clone();
+    unsupported_protocol.implementations[0].protocol = "iteron-implementation/3".into();
+    assert!(unsupported_protocol.validate_universal().is_err());
+
+    let mut invalid_digest = candidate.clone();
+    invalid_digest.implementations[0].artifact_sha256 = "sha256:not-a-digest".into();
+    assert!(invalid_digest.validate_universal().is_err());
 
     let mut relative_source = candidate.clone();
     relative_source.implementations[0].catalog_path = "catalog.json".into();
@@ -478,4 +490,113 @@ fn universal_candidate_v2_strictly_binds_executable_sources() {
         changed_path.digest_sha256().unwrap(),
         candidate.digest_sha256().unwrap()
     );
+}
+
+fn prefixed_digest(character: char) -> String {
+    format!("sha256:{}", character.to_string().repeat(64))
+}
+
+#[test]
+fn candidate_graph_v3_materializes_every_address_and_binds_identity() {
+    let profile_address = CandidateAddress {
+        kind: CandidateAddressKind::UnifiedProfile,
+        selector_kind: CandidateSelectorKind::Key,
+        selector: "eval.tuner.max_candidates".into(),
+        owner_kind: CandidateOwnerKind::Schema,
+        owner: "iteron_tunables::Param/ResolutionValue".into(),
+    };
+    let direct_address = CandidateAddress {
+        kind: CandidateAddressKind::DirectConfig,
+        selector_kind: CandidateSelectorKind::Path,
+        selector: "runtime.max_candidates".into(),
+        owner_kind: CandidateOwnerKind::Schema,
+        owner: "config::Runtime".into(),
+    };
+    let param_value = iteron_tunables::ResolutionValue::Integer { value: 64 };
+    let candidate = TunerCandidate {
+        schema_version: CANDIDATE_GRAPH_SCHEMA_VERSION,
+        id: "candidate-v3".into(),
+        values: BTreeMap::new(),
+        profile: None,
+        implementations: Vec::new(),
+        graph: Some(CandidateGraph {
+            schema_id: CANDIDATE_GRAPH_SCHEMA_ID.into(),
+            dimensions: vec![
+                CandidateDimension::Param {
+                    address: profile_address.clone(),
+                    param: profile_address.selector.clone(),
+                    value: param_value.clone(),
+                },
+                CandidateDimension::NativeValue {
+                    address: direct_address.clone(),
+                    value: iteron_tunables::ResolutionValue::Boolean { value: true },
+                },
+            ],
+            lineage: CandidateLineage {
+                parent_sha256: None,
+                generation: 0,
+                sparse_delta: Vec::new(),
+            },
+            experiment: CandidateExperiment {
+                dataset_sha256: prefixed_digest('a'),
+                evaluator_sha256: prefixed_digest('b'),
+                environment_sha256: prefixed_digest('c'),
+                resource_sha256: prefixed_digest('d'),
+                fidelity_sha256: prefixed_digest('e'),
+                seed: 7,
+            },
+            topology: vec![CandidateTopologyEdge {
+                dependency: profile_address.clone(),
+                dependent: direct_address,
+                condition: Some(CandidateCondition {
+                    address: profile_address,
+                    equals: param_value,
+                }),
+            }],
+            implementations: Vec::new(),
+        }),
+    };
+    candidate.validate_universal().unwrap();
+    let materialized = candidate.materialize().unwrap();
+    assert_eq!(materialized.profile.params.len(), 1);
+    assert_eq!(materialized.direct_config_patches.len(), 1);
+    assert!(materialized.caller_input_patches.is_empty());
+    assert_eq!(
+        candidate.graph_identity().unwrap().unwrap().schema_id,
+        CANDIDATE_GRAPH_SCHEMA_ID
+    );
+    assert_eq!(
+        candidate.rendered_profile().unwrap(),
+        candidate.rendered_profile().unwrap()
+    );
+}
+
+#[test]
+fn optimization_census_runtime_addresses_are_unique_and_roundtrip() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("governance/optimization-census.json");
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let rows = document["candidates"].as_array().unwrap();
+    let mut addresses = BTreeSet::new();
+    let mut runtime_rows = 0_usize;
+    for row in rows {
+        if row["disposition"] != "runtime_settable" {
+            continue;
+        }
+        runtime_rows += 1;
+        let address: CandidateAddress =
+            serde_json::from_value(row["external_address"].clone()).unwrap();
+        address.validate().unwrap();
+        assert!(addresses.insert(address.clone()));
+        let roundtrip: CandidateAddress =
+            serde_json::from_slice(&serde_json::to_vec(&address).unwrap()).unwrap();
+        assert_eq!(roundtrip, address);
+    }
+    assert_eq!(
+        runtime_rows,
+        document["runtime_settable"].as_u64().unwrap() as usize
+    );
+    assert_eq!(addresses.len(), runtime_rows);
 }

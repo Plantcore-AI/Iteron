@@ -183,8 +183,14 @@ impl VerificationConfig {
         let flaky = verifier_plan.map_or_else(FlakyQuarantinePolicy::default, |plan| {
             FlakyQuarantinePolicy {
                 repeat_count: u8::try_from(plan.attempts).unwrap_or(u8::MAX),
-                minimum_disagreements: 1,
-                quarantine_seconds: 0,
+                minimum_disagreements: iteron_tunables::param_integer(
+                    "cli.config.verification.default_flaky_minimum_disagreements",
+                    1,
+                ),
+                quarantine_seconds: iteron_tunables::param_integer(
+                    "cli.config.verification.default_flaky_quarantine_seconds",
+                    0,
+                ),
                 report_disagreement: plan.report_flake,
             }
         });

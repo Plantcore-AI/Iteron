@@ -1,6 +1,7 @@
 //! Bounded process owner for explicitly operator-enabled research runs.
 
 mod implementation;
+pub(crate) mod native_materialization;
 mod process;
 pub(crate) mod protocol_validation;
 pub(crate) mod response_validation;
@@ -13,6 +14,7 @@ use crate::terminal_bench::{
     parse_external_harness_result,
 };
 use implementation::require_consumption;
+use native_materialization::require_native_consumption;
 use process::CaptureSummary;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -72,18 +74,19 @@ impl ExecutionControl {
 }
 
 pub(crate) fn result_sidecar_path(run: &RunSpec) -> Option<String> {
-    let RunSpec::TerminalBench21 { request, .. } = run else {
-        return None;
-    };
-    Some(
-        Path::new(&request.runs_dir)
-            .join(format!(
-                ".iteron-research-{}-{}-result.json",
-                request.task.task_id, request.task.trial_id
-            ))
-            .to_string_lossy()
-            .into_owned(),
-    )
+    match run {
+        RunSpec::TerminalBench21 { request, .. } => Some(
+            Path::new(&request.runs_dir)
+                .join(format!(
+                    ".iteron-research-{}-{}-result.json",
+                    request.task.task_id, request.task.trial_id
+                ))
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        RunSpec::ExternalNative { spec } => Some(spec.result_path.clone()),
+        RunSpec::IteronCli { .. } => None,
+    }
 }
 
 pub(crate) fn materialize_candidate_profile(
@@ -244,11 +247,92 @@ fn finish_natural_run(
                 ),
             }
         }
+        RunSpec::ExternalNative { spec } => {
+            finish_external_native(spec, exit_code, stdout.bytes, stderr.bytes)
+        }
     };
     if snapshot.state == ResearchRunState::Completed {
-        require_consumption(run, snapshot)
+        require_native_consumption(run, require_consumption(run, snapshot))
     } else {
         snapshot
+    }
+}
+
+fn finish_external_native(
+    spec: &crate::research_protocol::ExternalNativeRunSpec,
+    exit_code: i32,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+) -> ExecutionSnapshot {
+    let bytes = match read_file_bounded(Path::new(&spec.result_path), spec.max_evidence_bytes) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return terminal_snapshot(
+                ResearchRunState::Failed,
+                "native adapter result could not be read within bounds",
+            );
+        }
+    };
+    let value = match crate::strict_json::parse_json_no_duplicates(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return terminal_snapshot(
+                ResearchRunState::Failed,
+                "native adapter result is not strict JSON",
+            );
+        }
+    };
+    let result: crate::research_protocol::ExternalNativeResult = match serde_json::from_value(value)
+    {
+        Ok(result) => result,
+        Err(_) => {
+            return terminal_snapshot(
+                ResearchRunState::Failed,
+                "native adapter result has the wrong schema",
+            );
+        }
+    };
+    if result.schema_id != crate::research_protocol::EXTERNAL_NATIVE_RESULT_SCHEMA
+        || result.run_id != spec.run_id
+        || result.exit_code != exit_code
+        || result.success != (exit_code == 0 && result.outcome == "completed")
+        || !matches!(result.outcome.as_str(), "completed" | "failed")
+        || result.score_micros.is_some_and(|score| score > 1_000_000)
+    {
+        return terminal_snapshot(
+            ResearchRunState::Failed,
+            "native adapter result failed exact correlation",
+        );
+    }
+    let artifact = match artifact_reference(Path::new(&spec.result_path), spec.max_evidence_bytes) {
+        Ok(artifact) => artifact,
+        Err(()) => {
+            return terminal_snapshot(
+                ResearchRunState::EvidenceLimit,
+                "native adapter result evidence is invalid",
+            );
+        }
+    };
+    let state = if result.success {
+        ResearchRunState::Completed
+    } else {
+        ResearchRunState::Failed
+    };
+    ExecutionSnapshot {
+        state,
+        terminal_result: result.success.then_some(ResearchTerminalResult {
+            schema_id: result.schema_id,
+            run_id: result.run_id,
+            outcome: result.outcome,
+            success: result.success,
+            exit_code: Some(result.exit_code),
+            score_micros: result.score_micros,
+        }),
+        artifacts: vec![artifact],
+        detail: (!result.success).then_some("native adapter reported failure".into()),
+        exit_code: Some(exit_code),
+        stdout_bytes,
+        stderr_bytes,
     }
 }
 
@@ -425,6 +509,7 @@ fn result_path(run: &RunSpec) -> &str {
     match run {
         RunSpec::IteronCli { spec } => &spec.result_path,
         RunSpec::TerminalBench21 { request, .. } => &request.result_path,
+        RunSpec::ExternalNative { spec } => &spec.result_path,
     }
 }
 
@@ -432,6 +517,7 @@ fn stdout_limit(run: &RunSpec) -> u64 {
     match run {
         RunSpec::IteronCli { spec } => spec.max_stdout_bytes,
         RunSpec::TerminalBench21 { request, .. } => request.resources.max_stdout_bytes,
+        RunSpec::ExternalNative { spec } => spec.max_stdout_bytes,
     }
 }
 
@@ -439,6 +525,7 @@ fn stderr_limit(run: &RunSpec) -> u64 {
     match run {
         RunSpec::IteronCli { spec } => spec.max_stderr_bytes,
         RunSpec::TerminalBench21 { request, .. } => request.resources.max_stderr_bytes,
+        RunSpec::ExternalNative { spec } => spec.max_stderr_bytes,
     }
 }
 

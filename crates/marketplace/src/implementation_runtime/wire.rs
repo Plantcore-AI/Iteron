@@ -1,12 +1,11 @@
 use super::{
-    IMPLEMENTATION_PROTOCOL, ImplementationRequest, ImplementationRequestEnvelope,
-    ImplementationResponse, ImplementationRuntime, ImplementationRuntimeError,
-    MAX_IMPLEMENTATION_STDIN_BYTES, Output,
+    ImplementationRequest, ImplementationRequestEnvelope, ImplementationResponse,
+    ImplementationRuntime, ImplementationRuntimeError, MAX_IMPLEMENTATION_STDIN_BYTES, Output,
 };
 use crate::implementation_protocol::{
-    ImplementationProtocolError, MAX_IMPLEMENTATION_MESSAGE_BYTES,
-    parse_implementation_observation, parse_implementation_request,
-    parse_implementation_response_for,
+    IMPLEMENTATION_PROTOCOL, IMPLEMENTATION_PROTOCOL_V1, ImplementationProtocolError,
+    MAX_IMPLEMENTATION_MESSAGE_BYTES, parse_implementation_observation,
+    parse_implementation_request, parse_implementation_response_for,
 };
 use std::sync::mpsc;
 use std::time::Instant;
@@ -68,7 +67,7 @@ impl ImplementationRuntime {
         let request_id = format!("host-{}", self.next_request);
         self.next_request += 1;
         ImplementationRequestEnvelope {
-            protocol: IMPLEMENTATION_PROTOCOL.to_owned(),
+            protocol: self.wire_protocol().to_owned(),
             request_id,
             implementation_id: self.plan.implementation_id().to_owned(),
             module: self.plan.module(),
@@ -86,6 +85,7 @@ impl ImplementationRuntime {
         };
         if observation.implementation_id != self.plan.implementation_id()
             || observation.module != self.plan.module()
+            || observation.protocol != self.wire_protocol()
             || self.active_run.as_deref() != Some(observation.run_id.as_str())
             || self
                 .last_sequence
@@ -107,6 +107,14 @@ impl ImplementationRuntime {
             self.state = super::RuntimeState::Loaded;
         }
         Ok(observation)
+    }
+
+    fn wire_protocol(&self) -> &'static str {
+        if self.plan.protocol_version() == crate::IMPLEMENTATION_PROCESS_PROTOCOL_V1 {
+            IMPLEMENTATION_PROTOCOL_V1
+        } else {
+            IMPLEMENTATION_PROTOCOL
+        }
     }
 
     pub(super) fn next_output(

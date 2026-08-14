@@ -22,12 +22,12 @@
     },
     "eval": {
       "bounded": 40,
-      "searchable": 7,
-      "structural": 65
+      "searchable": 8,
+      "structural": 85
     },
     "evolve": {
       "bounded": 58,
-      "searchable": 8,
+      "searchable": 10,
       "structural": 49
     },
     "kernel": {
@@ -43,7 +43,7 @@
     "marketplace": {
       "bounded": 12,
       "searchable": 1,
-      "structural": 28
+      "structural": 42
     },
     "mcp": {
       "bounded": 54,
@@ -92,27 +92,27 @@
     },
     "tools": {
       "bounded": 100,
-      "searchable": 50,
+      "searchable": 51,
       "structural": 11
     },
     "tunables": {
       "bounded": 18,
       "searchable": 4,
-      "structural": 106
+      "structural": 113
     },
     "verify": {
-      "bounded": 6,
-      "searchable": 2,
+      "bounded": 7,
+      "searchable": 16,
       "structural": 4
     },
     "workflow": {
-      "bounded": 43,
-      "searchable": 14,
+      "bounded": 44,
+      "searchable": 19,
       "structural": 11
     }
   },
   "schema_version": 1,
-  "settable": 1256,
-  "structural": 679,
-  "total": 1935
+  "settable": 1281,
+  "structural": 720,
+  "total": 2001
 }

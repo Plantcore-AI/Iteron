@@ -2,10 +2,10 @@ use super::{
     ImplementationRuntime, ImplementationRuntimeError, Input, Output, RuntimeEvidence, RuntimeState,
 };
 use crate::implementation::{
-    IMPLEMENTATION_PROCESS_PROTOCOL_VERSION, MAX_IMPLEMENTATION_ARG_BYTES, MAX_IMPLEMENTATION_ARGV,
-    MAX_IMPLEMENTATION_ARGV_BYTES, MAX_IMPLEMENTATION_CANCELLATION_MS,
-    MAX_IMPLEMENTATION_EVIDENCE_BYTES, MAX_IMPLEMENTATION_OBSERVATIONS,
-    MAX_IMPLEMENTATION_RUNTIME_MS, ProcessLaunchPlan,
+    IMPLEMENTATION_PROCESS_PROTOCOL_V1, IMPLEMENTATION_PROCESS_PROTOCOL_VERSION,
+    MAX_IMPLEMENTATION_ARG_BYTES, MAX_IMPLEMENTATION_ARGV, MAX_IMPLEMENTATION_ARGV_BYTES,
+    MAX_IMPLEMENTATION_CANCELLATION_MS, MAX_IMPLEMENTATION_EVIDENCE_BYTES,
+    MAX_IMPLEMENTATION_OBSERVATIONS, MAX_IMPLEMENTATION_RUNTIME_MS, ProcessLaunchPlan,
 };
 use crate::implementation_protocol::{
     ImplementationProtocolError, MAX_IMPLEMENTATION_MESSAGE_BYTES,
@@ -83,6 +83,7 @@ impl ImplementationRuntime {
                 stderr: Vec::new(),
                 observation_bytes: 0,
                 observations: 0,
+                state: Vec::new(),
             },
             state: RuntimeState::Spawned,
             active_run: None,
@@ -195,7 +196,10 @@ fn validate_plan(plan: &ProcessLaunchPlan) -> Result<(), ImplementationRuntimeEr
             "environment must be empty and cleared",
         ));
     }
-    if plan.protocol_version() != IMPLEMENTATION_PROCESS_PROTOCOL_VERSION {
+    if !matches!(
+        plan.protocol_version(),
+        IMPLEMENTATION_PROCESS_PROTOCOL_V1 | IMPLEMENTATION_PROCESS_PROTOCOL_VERSION
+    ) {
         return Err(ImplementationRuntimeError::InvalidPlan(
             "unsupported protocol version",
         ));
