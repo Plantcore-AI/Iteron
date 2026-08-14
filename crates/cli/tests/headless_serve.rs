@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
@@ -15,8 +16,42 @@ const MODEL_ID: &str = "headless-model";
 const KEY_ENV: &str = "ITERON_HEADLESS_TEST_KEY";
 const KEY: &str = "bounded-loopback-placeholder";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
-const TIMEOUT: Duration = Duration::from_secs(10);
-const IO_TIMEOUT: Duration = Duration::from_secs(3);
+const BASE_TIMEOUT: Duration = Duration::from_secs(10);
+const BASE_IO_TIMEOUT: Duration = Duration::from_secs(3);
+const BASE_QUIET_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// How much longer than native hardware this run is allowed to take.
+///
+/// The release proof runs the whole x86_64 musl test binary — server child included — under
+/// `qemu-x86_64-static` on an aarch64 host, where every syscall and instruction is emulated. The
+/// waits below are ceilings, not sleeps, so scaling them costs nothing on a passing native run
+/// and stops emulation from being reported as a protocol failure. The scale is parsed strictly
+/// and clamped, so a malformed or absurd value falls back to native timing rather than disabling
+/// a timeout.
+fn timeout_scale() -> u32 {
+    static SCALE: OnceLock<u32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    })
+}
+
+fn timeout() -> Duration {
+    BASE_TIMEOUT * timeout_scale()
+}
+
+fn io_timeout() -> Duration {
+    BASE_IO_TIMEOUT * timeout_scale()
+}
+
+/// The ceiling on "and then nothing else arrives" assertions. Scaling this one strengthens the
+/// assertion under emulation: a late duplicate frame gets proportionally longer to show up.
+fn quiet_timeout() -> Duration {
+    BASE_QUIET_TIMEOUT * timeout_scale()
+}
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 struct CoreProcess {
@@ -111,11 +146,11 @@ impl PausedProvider {
         let (release, release_rx) = sync_channel(1);
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("provider accepts one request");
-            stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+            stream.set_read_timeout(Some(io_timeout())).unwrap();
             read_http_request(&mut stream);
             seen_tx.send(()).unwrap();
             release_rx
-                .recv_timeout(TIMEOUT)
+                .recv_timeout(timeout())
                 .expect("test releases the provider response");
             write_success(&mut stream, chunks);
         });
@@ -310,7 +345,8 @@ fn spawn_core(scratch: &Scratch) -> (CoreProcess, String, SocketAddr) {
 }
 
 fn wait_for_listening(process: &mut CoreProcess) -> SocketAddr {
-    let readiness = process.listening.recv_timeout(TIMEOUT);
+    let timeout = timeout();
+    let readiness = process.listening.recv_timeout(timeout);
     match readiness {
         Ok(Ok(address)) => address,
         Ok(Err(error)) => {
@@ -320,7 +356,7 @@ fn wait_for_listening(process: &mut CoreProcess) -> SocketAddr {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             terminate_after_readiness_failure(process);
             panic!(
-                "timed out after {TIMEOUT:?} waiting for app_server listening log with bound address"
+                "timed out after {timeout:?} waiting for app_server listening log with bound address"
             );
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -342,8 +378,8 @@ fn connect(address: SocketAddr) -> TcpStream {
     let stream = TcpStream::connect(address).unwrap_or_else(|error| {
         panic!("connect to headless listener at child-reported address {address}: {error}")
     });
-    stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-    stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
+    stream.set_read_timeout(Some(io_timeout())).unwrap();
+    stream.set_write_timeout(Some(io_timeout())).unwrap();
     stream
 }
 
@@ -401,7 +437,8 @@ fn assert_closed_without_frame(stream: TcpStream) {
 /// "the run produced no record". Polling to a deadline keeps the assertion exactly as strong —
 /// still EXACTLY one, never more — while letting a machine under contention finish the write.
 fn only_rollout(runs: &Path) -> PathBuf {
-    let deadline = Instant::now() + TIMEOUT;
+    let timeout = timeout();
+    let deadline = Instant::now() + timeout;
     loop {
         let mut paths = fs::read_dir(runs)
             .unwrap()
@@ -421,7 +458,7 @@ fn only_rollout(runs: &Path) -> PathBuf {
         );
         assert!(
             Instant::now() < deadline,
-            "no rollout appeared under {} within {TIMEOUT:?}",
+            "no rollout appeared under {} within {timeout:?}",
             runs.display()
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -438,7 +475,7 @@ fn take_stderr(process: &mut CoreProcess) -> Vec<u8> {
 }
 
 fn wait_for_exit(mut process: CoreProcess) -> (std::process::ExitStatus, Vec<u8>) {
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout();
     loop {
         if let Some(status) = process.child.try_wait().unwrap() {
             return (status, take_stderr(&mut process));
@@ -461,7 +498,7 @@ fn stop(mut process: CoreProcess) -> Vec<u8> {
     #[cfg(not(unix))]
     let _ = process.child.kill();
 
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout();
     loop {
         if process.child.try_wait().unwrap().is_some() {
             return take_stderr(&mut process);
@@ -678,7 +715,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     let mut last_seq = first_event["seq"].as_u64().unwrap();
     provider
         .request_seen
-        .recv_timeout(TIMEOUT)
+        .recv_timeout(timeout())
         .expect("provider turn reached the in-flight point");
     drop(first_reader);
     drop(first);
@@ -713,7 +750,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
 
     resumed_reader
         .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(250)))
+        .set_read_timeout(Some(quiet_timeout()))
         .unwrap();
     let mut unexpected = String::new();
     match resumed_reader.read_line(&mut unexpected) {
@@ -757,14 +794,14 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     );
     provider
         .request_seen
-        .recv_timeout(TIMEOUT)
+        .recv_timeout(timeout())
         .expect("provider received the flood turn");
     drop(reader);
     drop(client);
     provider.release.send(()).unwrap();
     provider.finish();
 
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout();
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
         send(&mut candidate, hello(&token, PROTOCOL_VERSION, 0));
