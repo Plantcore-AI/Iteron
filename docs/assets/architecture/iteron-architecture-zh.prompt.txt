@@ -1,0 +1,101 @@
+Create a presentation-ready systems-paper architecture figure.
+
+PURPOSE
+- Title, verbatim: "ITERON · 目标架构"
+- Intended message: "与 Iteron 英文目标架构图完全同构：保持所有分区、节点、连线、颜色与空间关系，仅将技术标签翻译为简体中文。"
+
+CANVAS
+- Aspect ratio: "16:9 landscape"
+- Background: "干净的近白色技术文档底色"
+
+VISUAL STYLE
+- Medium: "正式系统论文架构图，精确扁平框体，克制配色，清晰中文技术字体，无装饰性插画"
+- Palette: "近白底色；深蓝与钴蓝表示运行时；绿色表示离线控制；紫色表示可进化策略；橙色表示人工晋升；红色表示禁止路径"
+
+SEMANTIC ZONES — draw each zone exactly once as containment, never as an arrow endpoint:
+- offline: "离线进化控制平面"; semantic tone: green
+- runtime: "ITERON HARNESS 边界"; semantic tone: blue
+- strategy: "可进化 HARNESS / 策略槽位"; semantic tone: purple
+- world: "可替换世界 / 执行模块"; semantic tone: blue
+
+NODE INVENTORY — draw each node exactly once; kind is semantic guidance only and must not be rendered:
+- evidence: "证据"; zone: offline; semantic kind, do not render: "受治理的运行时证据"
+- candidate_factory: "候选工厂"; zone: offline; semantic kind, do not render: "包含 Harness：搜索 · DSPy · 生成代码，以及模型：SFT · DPO · GRPO · RL"
+- held_out_eval: "留出集评估"; zone: offline; semantic kind, do not render: "独立留出集评估"
+- shadow: "影子验证"; zone: offline; semantic kind, do not render: "影子流量验证"
+- canary: "金丝雀验证"; zone: offline; semantic kind, do not render: "受控金丝雀验证"
+- human_promotion: "人工晋升"; zone: offline; semantic kind, do not render: "人工门禁"
+- strategy_bundle: "不可变策略束"; zone: offline; semantic kind, do not render: "已发布的不可变策略束"
+- microkernel: "固定微内核 / 可信计算基"; zone: runtime; semantic kind, do not render: "协议 · 归约器 · 能力准入 · 预算 · 效果代理 · 记录 / 重放"
+- harness_slots: "可进化 HARNESS / 策略槽位"; zone: strategy; semantic kind, do not render: "三乘三网格：路由器、规划器、上下文、记忆、调度器、工具策略、验证器、模型路由器、协作"
+- world_modules: "可替换世界 / 执行模块"; zone: world; semantic kind, do not render: "单行：模型提供商、文件系统、Shell + Git、沙箱、MCP + LSP、垂类适配器"
+
+ONLY ALLOWED SINGLE-HEADED ARROW LEDGER — draw every listed edge exactly once and no unlisted connector:
+- IT-01: "证据" (evidence) — "受治理证据" → "候选工厂" (candidate_factory); tone: green; style: dashed; place the sole arrowhead at the receiver candidate_factory
+- IT-02: "候选工厂" (candidate_factory) — "候选" → "留出集评估" (held_out_eval); tone: green; style: dashed; place the sole arrowhead at the receiver held_out_eval
+- IT-03: "留出集评估" (held_out_eval) — "通过" → "影子验证" (shadow); tone: green; style: dashed; place the sole arrowhead at the receiver shadow
+- IT-04: "影子验证" (shadow) — "通过" → "金丝雀验证" (canary); tone: green; style: dashed; place the sole arrowhead at the receiver canary
+- IT-05: "金丝雀验证" (canary) — "通过" → "人工晋升" (human_promotion); tone: green; style: dashed; place the sole arrowhead at the receiver human_promotion
+- IT-06: "人工晋升" (human_promotion) — "批准晋升" → "不可变策略束" (strategy_bundle); tone: green; style: dashed; place the sole arrowhead at the receiver strategy_bundle
+- IT-07: "不可变策略束" (strategy_bundle) — "慢速离线发布闭环" → "证据" (evidence); tone: green; style: dashed; place the sole arrowhead at the receiver evidence
+- IT-08: "不可变策略束" (strategy_bundle) — "激活已钉死策略束" → "固定微内核 / 可信计算基" (microkernel); tone: green; style: solid; place the sole arrowhead at the receiver microkernel
+- IT-09: "固定微内核 / 可信计算基" (microkernel) — "有界策略接口" → "可进化 HARNESS / 策略槽位" (harness_slots); tone: blue; style: solid; place the sole arrowhead at the receiver harness_slots
+- IT-10: "可进化 HARNESS / 策略槽位" (harness_slots) — "能力受限的执行提议" → "可替换世界 / 执行模块" (world_modules); tone: blue; style: solid; place the sole arrowhead at the receiver world_modules
+- IT-11: "可替换世界 / 执行模块" (world_modules) — "快速在线任务闭环" → "可进化 HARNESS / 策略槽位" (harness_slots); tone: blue; style: solid; place the sole arrowhead at the receiver harness_slots
+- IT-12: "可替换世界 / 执行模块" (world_modules) — "运行时证据" → "证据" (evidence); tone: blue; style: solid; place the sole arrowhead at the receiver evidence
+
+FORBIDDEN EDGES — never draw these source/receiver pairs:
+- "候选工厂" (candidate_factory) → "固定微内核 / 可信计算基" (microkernel): "禁止自我授予权威"
+- "候选工厂" (candidate_factory) → "可进化 HARNESS / 策略槽位" (harness_slots): "候选不可自行激活。"
+- "留出集评估" (held_out_eval) → "不可变策略束" (strategy_bundle): "不得绕过影子验证、金丝雀验证和人工晋升。"
+- "金丝雀验证" (canary) → "固定微内核 / 可信计算基" (microkernel): "未完成人工晋升并形成不可变策略束前，金丝雀不可激活策略。"
+- "可进化 HARNESS / 策略槽位" (harness_slots) → "不可变策略束" (strategy_bundle): "在线 HARNESS 不可改写其已发布策略束。"
+
+LAYOUT REQUIREMENTS:
+- "以提供的原始 PNG 为构图权威：保持其几何、比例、字号层级、包含关系、颜色和走线。"
+- "页眉从左到右依次为 ITERON、目标架构、HARNESS 可以进化，权威不可进化。"
+- "离线进化控制平面是运行时边界上方的通栏绿色区域。"
+- "运行时边界内自上而下为固定微内核、紫色三乘三策略网格、蓝色一乘六执行模块行。"
+- "IT-07 绘制为绿色长虚线返回闭环；IT-11 绘制为蓝色大外围反馈闭环。"
+- "从离线平面指向运行时绘制一条红色虚线尝试路径，以红色 X 终止，并标注禁止自我授予权威；这是禁止标记，不是允许边。"
+- "不要添加底部图注；caption 仅放在原图右上角页眉位置。"
+
+REQUIRED TEXT — render each string verbatim:
+- "ITERON"
+- "目标架构"
+- "HARNESS 可以进化，权威不可进化。"
+- "Harness：搜索 · DSPy · 生成代码"
+- "模型：SFT · DPO · GRPO · RL"
+- "慢速离线发布闭环"
+- "禁止自我授予权威"
+- "协议 · 归约器 · 能力准入 · 预算 · 效果代理 · 记录 / 重放"
+- "路由器"
+- "规划器"
+- "上下文"
+- "记忆"
+- "调度器"
+- "工具策略"
+- "验证器"
+- "模型路由器"
+- "协作"
+- "模型提供商"
+- "文件系统"
+- "SHELL + GIT"
+- "沙箱"
+- "MCP + LSP"
+- "垂类适配器"
+- "快速在线任务闭环"
+
+CAPTION
+- Bottom caption, verbatim: "HARNESS 可以进化，权威不可进化。"
+
+CONNECTOR INTEGRITY — mandatory:
+- Every connector must correspond to exactly one ledger edge above.
+- Treat zone, node, and edge IDs as internal references; do not render the IDs.
+- Render every zone label, node label, edge label, required-text string, title, and caption verbatim.
+- Draw one conventional single-headed arrow per edge, with its arrowhead at the receiver and its tail visibly leaving the source.
+- Draw no extra connectors, no dangling connectors, no double-headed arrows, and no shared-trunk connectors.
+- Never terminate an arrow in whitespace, on a zone boundary, on a node that is not its receiver, or on another connector.
+- Route opposite-direction edges in visibly separate lanes; never merge them into a single two-way line.
+- Keep edge labels beside unobstructed line segments and keep arrowheads clear of all text.
+- If routing becomes crowded, increase whitespace or simplify node interiors; never reverse, merge, omit, duplicate, or invent an edge.

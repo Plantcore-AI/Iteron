@@ -98,6 +98,22 @@ Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
 | **Provider truth** | Credential-visible discovery and explicit available, disabled, or unknown capability states. |
 | **Modular ownership** | Machine-validated Rust boundaries with accountable human maintainers and protected review. |
 
+## Architecture
+
+The target boundary freezes authority in a small trusted computing base while
+strategy slots and execution modules remain replaceable. Offline candidates can
+reach the runtime only through held-out evaluation, shadow, canary, and explicit
+human promotion. See the [architecture guide](docs/architecture.md) for the
+current implementation boundary and extraction path.
+
+### English
+
+![Iteron target architecture in English](docs/assets/architecture/iteron-architecture-en.png)
+
+### 中文
+
+![Iteron 目标架构中文版](docs/assets/architecture/iteron-architecture-zh.png)
+
 ## What ships today
 
 - Interactive TUI and bounded one-shot interfaces.
