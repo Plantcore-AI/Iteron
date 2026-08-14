@@ -1366,9 +1366,13 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         pty.wait_until("slash export completes off the input path", |pty| {
             slash_export.is_file() && pty.screen_text().contains("exported ->")
         });
+        let second_export_capture_start = pty.capture.len();
         pty.send(b"/export\r");
-        pty.wait_until("default export versions instead of overwriting", |_| {
+        pty.wait_until("default export versions instead of overwriting", |pty| {
             slash_export_2.is_file()
+                && pty.capture[second_export_capture_start..]
+                    .windows(b"exported ->".len())
+                    .any(|window| window == b"exported ->")
         });
     }
     #[cfg(not(target_os = "linux"))]
