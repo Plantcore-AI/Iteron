@@ -625,7 +625,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-build
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-x86_64
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-x86_64-static
       CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
       AR_x86_64_unknown_linux_musl: x86_64-linux-musl-ar
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/workspace -C strip=symbols
@@ -635,30 +635,34 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
-      # Keep this identical to CI's narrow Ubuntu 24.04 bwrap authorization. The profile grants
-      # user namespaces only to the root-owned system binary and leaves the global restriction on.
-      - name: Install Linux build and sandbox dependencies
+      - name: Verify pre-provisioned Linux build and sandbox dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo flock /var/lock/iteron-release-host.lock bash -se <<'ROOT'
-          apt-get update
-          apt-get install -y apparmor apparmor-utils bubblewrap musl-tools qemu-user
-          tee /etc/apparmor.d/core-ci-bwrap >/dev/null <<'PROFILE'
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile core-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          PROFILE
-          apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
-          ROOT
+          command -v bwrap >/dev/null
+          command -v musl-gcc >/dev/null
+          test -r /etc/apparmor.d/core-ci-bwrap
+      - name: Fetch the checksum-pinned static x86-64 emulator
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          set -euo pipefail
+          qemu_root="$RUNNER_TEMP/qemu-user-static"
+          package="$qemu_root/qemu-user-static.deb"
+          mkdir -p "$qemu_root/root"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://ports.ubuntu.com/ubuntu-ports/pool/universe/q/qemu/qemu-user-static_8.2.2+ds-0ubuntu1.18_arm64.deb" \
+            --output "$package"
+          printf '%s  %s\n' \
+            '0565144632acc09b92da93e5ef9a2f44fa092797c5b0949744351b184ad948a8' \
+            "$package" | sha256sum --check --strict -
+          dpkg-deb --extract "$package" "$qemu_root/root"
+          test -x "$qemu_root/root/usr/bin/qemu-x86_64-static"
+          echo "$qemu_root/root/usr/bin" >> "$GITHUB_PATH"
       - name: Verify the DGX x86-64 cross-execution boundary
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           command -v x86_64-linux-musl-gcc >/dev/null
           command -v x86_64-linux-musl-ar >/dev/null
-          command -v qemu-x86_64 >/dev/null
+          command -v qemu-x86_64-static >/dev/null
       - name: Install the pinned Rust target
         shell: bash
         run: >-
