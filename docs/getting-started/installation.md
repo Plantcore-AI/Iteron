@@ -1,7 +1,7 @@
 # Installation
 
 Iteron's supported distribution matrix is macOS and Linux. Windows is not
-supported. The source workspace is version `v0.0.5`. Consult the selected
+supported. The source workspace is version `v0.0.6`. Consult the selected
 release's asset list before installing; source versioning alone does not prove
 that an archive exists for a host.
 
@@ -59,8 +59,8 @@ An explicit `--bin-dir` wins. Otherwise the destination is
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.5/install.sh \
-  | sh -s -- --version v0.0.5 --bin-dir "$HOME/bin"
+  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.6/install.sh \
+  | sh -s -- --version v0.0.6 --bin-dir "$HOME/bin"
 ```
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the

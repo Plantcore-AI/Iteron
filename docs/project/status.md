@@ -2,7 +2,7 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
-The current source workspace declares version **v0.0.5**.
+The current source workspace declares version **v0.0.6**.
 
 ## Delivered baseline
 
@@ -24,8 +24,8 @@ The repository currently contains:
 - a repository-only `iteron-harness` research executable, versioned JSON protocol schema,
   stdlib-only Python client, and credential-free fixture optimizer; these research tools are
   source interfaces and are deliberately absent from release archives and the installer;
-- five published pre-alpha tags (`v0.0.1` through `v0.0.5`). The first four are
-  historical local macOS builds; `v0.0.5` is the current release. Each release's
+- six published pre-alpha tags (`v0.0.1` through `v0.0.6`). The first four are
+  historical local macOS builds; `v0.0.6` is the current release. Each release's
   manifest and GitHub asset list are authoritative for its exact targets and
   attestations;
 - a macOS/Linux three-target release workflow, installer, checksums, license

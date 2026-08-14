@@ -7,6 +7,43 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-08-15
+
+### Added
+
+- Candidate Graph v3, a language-neutral trainer bridge, and the repository-only
+  `iteron-harness` research protocol for bounded external harness optimization.
+- Independent external contracts for all 28 optimization modules, including
+  content-addressed implementations, state migration, transactional hot swap,
+  rollback, and exact consumption evidence.
+- A bounded offline TPE/successive-halving tuner, signed evidence-bundle schema
+  and fixture, an evidence-only scoreboard, and the TUI experiment lab.
+
+### Changed
+
+- Exposed 1,894 source-current runtime settings through typed external addresses
+  with zero advertised-but-inert or unaddressed rows; retained 830 safety,
+  authority, durability, identity, and protocol candidates as read-only pending
+  owning-human review.
+- Made workflow topology model-directed through the generic `Workflow` surface
+  instead of a fixed Ultracode planner, lexical auto-trigger, or hard-coded fan.
+- Kept the base model and safety kernel frozen: evolution labels describe harness
+  artifact provenance and cannot authorize model-weight training.
+
+### Fixed
+
+- Made provider setup usable from a terminal and a pipe while keeping credential
+  values outside repository and diagnostic output.
+- Repaired the release verification and content-canary gates exposed after the
+  immutable `v0.0.5` publication.
+
+### Known limitations
+
+- `iteron-harness` remains a source-only research executable and is deliberately
+  absent from release archives and the installer.
+- No real benchmark campaign or performance-superiority result is claimed by
+  this release.
+
 ## [0.0.5] - 2026-08-14
 
 ### Added
@@ -127,7 +164,8 @@ interfaces may change between releases.
 - The release was built locally for `aarch64-apple-darwin` only and has no GitHub
   OIDC attestation.
 
-[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.2...v0.0.3
