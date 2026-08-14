@@ -1,9 +1,9 @@
 # Effort levels
 
-Effort is a session setting with two distinct effects:
+Effort is a session setting with two effects:
 
 1. a requested model reasoning level or thinking budget;
-2. whether the built-in Ultracode orchestration policy is enabled.
+2. at `ultracode`, model-directed access to the bounded workflow tool.
 
 | Level | Iteron intent |
 | --- | --- |
@@ -12,7 +12,7 @@ Effort is a session setting with two distinct effects:
 | `high` | larger thinking budget |
 | `xhigh` | deeper thinking budget |
 | `max` | maximum built-in thinking budget |
-| `ultracode` | `max` reasoning intent plus bounded internal orchestration |
+| `ultracode` | `max` reasoning intent plus optional model-directed workflows |
 
 Set effort for one run:
 
@@ -30,5 +30,6 @@ token budget, expose only an on/off toggle, or mark it unsupported. Iteron
 records the requested and sent form where available instead of claiming that all
 providers implement the same semantics.
 
-`ultracode` is not a provider model value. The provider-facing intent is `max`;
-the extra behavior belongs to the harness. See [Ultracode](ultracode.md).
+`ultracode` is not a provider model value. The provider-facing intent is `max`; the model may use
+the harness workflow tool when a task-specific graph adds value, but no workflow is launched merely
+because this effort level is active. See [Ultracode](ultracode.md).

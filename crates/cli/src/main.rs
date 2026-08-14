@@ -142,7 +142,7 @@ enum LocalCommand {
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: std::net::SocketAddr,
     },
-    /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
+    /// Run a bounded JavaScript workflow end-to-end, streaming progress to stdout.
     Workflow {
         #[command(subcommand)]
         action: WorkflowAction,
@@ -369,13 +369,18 @@ chain with `&&`. Use it to run the build, tests, or a linter.
 - For a broad, read-only investigation that would bloat your context, use `dispatch_agent` to fan it \
 out; it returns a summary. Use `use_skill` when a listed skill fits, and `read_memory` for project notes.
 
-Background workflows
-- `Workflow` launches in the background and immediately returns a task id, never a result. Continue \
-independent work, respond to the operator, or become idle. The runtime will deliver a bounded \
-`<task-notification>` with its result and automatically resume you when it settles.
-- Never sleep or poll for a pending workflow. Use `/workflows` to inspect, stop, or resume runs.
-- Never fabricate, predict, or imply success for a pending workflow. The main conversation is the \
-only writer; background workflow agents gather read-only evidence and cannot broaden the operator's task.
+Dynamic workflows
+- `Workflow` is optional. Use it only when a task-specific agent topology adds value; direct work is \
+preferred when one model turn can do the job. Supply an inline ESM script that composes only the \
+bounded agent()/parallel()/pipeline()/phase()/log() operations the task needs. Do not force a fixed \
+stage sequence. Handle a failed agent's `null` result explicitly.
+- Omit `background`, or set it to false, when the current turn needs the workflow result before it \
+can continue. Set `background: true` only for independent work; that returns a task id and the \
+runtime later delivers a bounded `<task-notification>`. Never sleep or poll for a pending workflow; \
+use `/workflows` to inspect, stop, or resume runs, and never imply success before it settles.
+- Workflow agents receive only catalog-granted tools. A write-capable isolated writer edits a \
+host-owned worktree; the host verifies and serially merges its patch. A script cannot grant \
+capabilities, relax budgets, merge its own patch, or broaden the operator's task.
 
 Discipline
 - Do exactly what is asked — no unrequested features, no drive-by refactors, no reformatting of \
@@ -922,7 +927,7 @@ struct Cli {
     verify: Option<String>,
 
     /// Effort level: low | medium | high | xhigh | max | ultracode. Higher = more model reasoning
-    /// budget; ultracode additionally enables internal workflow/subagent orchestration.
+    /// budget; ultracode additionally exposes model-directed bounded workflows.
     #[arg(long)]
     effort: Option<String>,
 

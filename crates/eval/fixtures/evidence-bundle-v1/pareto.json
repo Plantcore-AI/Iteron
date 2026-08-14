@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "points": [
+    {
+      "candidate_id": "baseline",
+      "resolved_rate": 1.0,
+      "average_cost_usd": 0.1,
+      "average_latency_ms": 10.0,
+      "failed_runs": 0
+    },
+    {
+      "candidate_id": "candidate",
+      "resolved_rate": 0.0,
+      "average_cost_usd": 0.2,
+      "average_latency_ms": 20.0,
+      "failed_runs": 0
+    }
+  ],
+  "frontier": [
+    "baseline"
+  ]
+}

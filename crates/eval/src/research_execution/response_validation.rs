@@ -365,7 +365,11 @@ pub(crate) fn validate_envelope(
             || run.profile_sha256() != response_profile_digest
             || implementation_activation_sha256 != response_activation_digest
             || candidate_graph_identity != response_graph_identity
-            || run.implementation_candidate_digest() != response_activation_digest.as_deref()
+            || (!matches!(
+                run.as_ref(),
+                crate::research_protocol::RunSpec::ExternalNative { .. }
+            ) && run.implementation_candidate_digest()
+                != response_activation_digest.as_deref())
             || run_id != response_id =>
         {
             Err(ResearchProtocolError::Correlation)

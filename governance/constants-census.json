@@ -2,8 +2,8 @@
   "by_crate": {
     "agents": {
       "bounded": 16,
-      "searchable": 19,
-      "structural": 11
+      "searchable": 18,
+      "structural": 10
     },
     "changeset": {
       "bounded": 5,
@@ -11,9 +11,9 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 201,
-      "searchable": 221,
-      "structural": 174
+      "bounded": 200,
+      "searchable": 218,
+      "structural": 171
     },
     "ctx": {
       "bounded": 42,
@@ -21,9 +21,9 @@
       "structural": 11
     },
     "eval": {
-      "bounded": 40,
+      "bounded": 42,
       "searchable": 8,
-      "structural": 85
+      "structural": 95
     },
     "evolve": {
       "bounded": 58,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1281,
-  "structural": 720,
-  "total": 2001
+  "settable": 1278,
+  "structural": 726,
+  "total": 2004
 }

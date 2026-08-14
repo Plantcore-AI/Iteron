@@ -8,9 +8,6 @@ use super::worktree::WriterWorktree;
 use super::{KernelSpawner, safe_agent_refusal};
 use crate::runtime::{UiEvent, bounded_child_report, ui_workflow_label, usage_tokens};
 
-/// Leaves reported as dropped when the plan records no fan-cap truncation at all.
-const NO_LEAVES_TRUNCATED: usize = 0;
-
 fn workflow_child_activity(event: &UiEvent) -> Option<String> {
     match event {
         UiEvent::ToolStart { name, args, .. } => {
@@ -46,8 +43,6 @@ impl KernelSpawner {
         call: AgentCall,
         activity: Option<AgentActivityReporter>,
     ) -> AgentOutcome {
-        let ultracode_planner =
-            call.agent_type.as_deref() == Some(iteron_agents::ULTRACODE_PLANNER_NAME);
         let _session_admission = match self.cx.session_spawn_ledger.admit() {
             Ok(admission) => admission,
             Err(error) => return AgentOutcome::null(error.to_string()),
@@ -140,7 +135,7 @@ impl KernelSpawner {
             .map(|outcome| (*outcome).clone())
             .map_err(|error| safe_agent_refusal(&error.public_summary()));
         let child_done = matches!(&outcome, Ok(iteron_protocol::Outcome::Done));
-        let result = match outcome {
+        let mut result = match outcome {
             // Any terminal with a non-empty final report becomes the JS string value (real model
             // output). This mirrors the kernel's own investigator distillation, which treats every
             // `Ok(_)` outcome as carrying a report and only degrades on an empty one.
@@ -181,14 +176,6 @@ impl KernelSpawner {
                 reason: Some(safe_agent_refusal(&error.public_summary())),
             },
         };
-        let mut result = if ultracode_planner {
-            self.normalize_ultracode_plan(&mut child, result)
-        } else {
-            result
-        };
-        // The planner slot runs on the planner child's normalized output, so it is part of that
-        // child's policy run. Closing before normalization made every production planner decision
-        // an impossible post-terminal append and silently degraded the dynamic plan to `null`.
         let terminal = match child.finalize_policy_run() {
             Ok(()) => terminal,
             Err(error) => {
@@ -282,142 +269,6 @@ impl KernelSpawner {
                 let _ = worktree.discard().await;
                 *result = AgentOutcome::null(error.public_summary());
             }
-        }
-    }
-
-    /// Convert the planner's untrusted line list into a harness-authored JSON task list. This is
-    /// deliberately inside the spawner boundary: QuickJS never gets raw model control-flow data,
-    /// and the pinned `core/planner` seat can narrow/reorder but cannot invent a leaf.
-    pub(crate) fn normalize_ultracode_plan(
-        &self,
-        child: &mut super::Agent,
-        outcome: AgentOutcome,
-    ) -> AgentOutcome {
-        let Some(config) = self.cx.ultracode_planning else {
-            return AgentOutcome::null(
-                "the ultracode planner is available only to the built-in dynamic workflow",
-            );
-        };
-        let AgentOutcome::Text {
-            text,
-            tokens,
-            tool_calls,
-            last_tool_summary,
-        } = outcome
-        else {
-            return outcome;
-        };
-        let leaves = text.lines().map(str::to_owned).collect::<Vec<_>>();
-        let evidence_leaves = leaves.clone();
-        let opportunity = match child
-            .begin_policy_decision(crate::runtime::policy_evidence::PLANNER_SLOT, None)
-        {
-            Ok(opportunity) => opportunity,
-            Err(error) => return AgentOutcome::null(error.public_summary()),
-        };
-        let planned = match iteron_agents::Decomposer::plan_within_with(
-            self.cx.planner.as_ref(),
-            config.class,
-            leaves,
-            config.max_leaves,
-            iteron_protocol::capability_set::CapabilitySet::only(
-                iteron_protocol::Capability::ReadOnly,
-            )
-            .intersect(self.cx.authority_ceiling),
-        ) {
-            Ok(planned) => {
-                let action = if planned.is_some() {
-                    "fan_plan"
-                } else {
-                    "direct_plan"
-                };
-                let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::selected(
-                    crate::runtime::policy_evidence::PLANNER_SLOT,
-                    &[
-                        iteron_protocol::PolicyActionV1::PlannerDirectPlan,
-                        iteron_protocol::PolicyActionV1::PlannerFanPlan,
-                    ],
-                    if action == "fan_plan" {
-                        iteron_protocol::PolicyActionV1::PlannerFanPlan
-                    } else {
-                        iteron_protocol::PolicyActionV1::PlannerDirectPlan
-                    },
-                    "iteron:planner-features-v1",
-                    &(
-                        config.class,
-                        config.max_leaves,
-                        &evidence_leaves,
-                        planned.is_some(),
-                    ),
-                    &"planner_may_select_only_normalized_gathered_leaves",
-                ) {
-                    Ok(draft) => draft,
-                    Err(error) => return AgentOutcome::null(error.public_summary()),
-                };
-                if let Err(error) = child.append_policy_decision(opportunity, draft) {
-                    return AgentOutcome::null(error.public_summary());
-                }
-                planned
-            }
-            Err(error) => {
-                let draft = match crate::runtime::policy_evidence::PolicyDecisionDraft::abstained(
-                    crate::runtime::policy_evidence::PLANNER_SLOT,
-                    &[
-                        iteron_protocol::PolicyActionV1::PlannerDirectPlan,
-                        iteron_protocol::PolicyActionV1::PlannerFanPlan,
-                    ],
-                    "iteron:planner-features-v1",
-                    &(config.class, config.max_leaves, &evidence_leaves),
-                    &"invalid_plans_fail_closed",
-                ) {
-                    Ok(draft) => draft,
-                    Err(evidence_error) => {
-                        return AgentOutcome::null(evidence_error.public_summary());
-                    }
-                };
-                if let Err(evidence_error) = child.append_policy_decision(opportunity, draft) {
-                    return AgentOutcome::null(evidence_error.public_summary());
-                }
-                return AgentOutcome::null(format!("planner policy refused the plan: {error}"));
-            }
-        };
-        let (tasks, dropped, duplicates_removed, invalid_removed) = match planned {
-            Some(plan) => {
-                let tasks = plan
-                    .fan_tasks()
-                    .iter()
-                    .map(|task| {
-                        serde_json::json!({
-                            "objective": task.objective,
-                            "scope": task.scope,
-                            "deliverable": task.deliverable,
-                            "agentType": task.agent_type,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (
-                    tasks,
-                    plan.truncated.unwrap_or(iteron_tunables::param_integer(
-                        "cli.runtime.workflow_spawner.activity.no_leaves_truncated",
-                        NO_LEAVES_TRUNCATED,
-                    )),
-                    plan.duplicates_removed,
-                    plan.invalid_removed,
-                )
-            }
-            None => (Vec::new(), 0, 0, 0),
-        };
-        AgentOutcome::Text {
-            text: serde_json::json!({
-                "tasks": tasks,
-                "dropped": dropped,
-                "duplicatesRemoved": duplicates_removed,
-                "invalidRemoved": invalid_removed,
-            })
-            .to_string(),
-            tokens,
-            tool_calls,
-            last_tool_summary,
         }
     }
 }

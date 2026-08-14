@@ -18,7 +18,10 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+// The child owns an independent 30-second runtime budget in one fixture. Keep the outer
+// process-reaping envelope strictly larger so workspace-level scheduler and fsync contention cannot
+// mask the runtime's terminal result while the test still remains bounded.
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
 const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;

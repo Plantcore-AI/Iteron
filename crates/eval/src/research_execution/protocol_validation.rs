@@ -64,8 +64,9 @@ impl ResearchRequestEnvelope {
                 run.validate()?;
                 validate_optional_activation_digest(implementation_activation_sha256)?;
                 validate_optional_graph_identity(candidate_graph_identity.as_ref())?;
-                if implementation_activation_sha256.as_deref()
-                    != run.implementation_candidate_digest()
+                if !matches!(run.as_ref(), RunSpec::ExternalNative { .. })
+                    && implementation_activation_sha256.as_deref()
+                        != run.implementation_candidate_digest()
                 {
                     return Err(ResearchProtocolError::InvalidField(
                         "implementation activation correlation".into(),

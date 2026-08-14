@@ -145,7 +145,7 @@ PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,�
 - **microkernel 只做一件事:当那个不可谈判的权威。** 它不关心"怎么规划得更好"或"该选哪个工具",那些是会随垂类、随任务、随时间变的**品味问题**。内核只回答一个**同质**的问题:"这个被提议的 effect,在当前 identity、`CapabilitySet` 上限、budget、版本约束下,是否被允许发生,允许发生成什么样,并被如何不可篡改地记录。" 无论上面提议的是一次文件写、一次 provider 调用、还是一次 subagent fan-out,内核用**同一条**受审边界处理它们。多样性在内核眼里被 ABI 归一成了五种 typed proposal,于是"处理多样性"退化成"对五种契约做同一件事"。
 - **多样性全部外移到 Plane B 的 slot。** 正因为把"品味"从内核里剥出去,系统才能承载无限多样、且**持续进化**的策略:router 可以有一百种、planner 可以按垂类换、tool_policy 可以被搜索。多样性越丰富,越需要一个**小而不变**的核来保证它们都在同一套 budget/authority/evidence 约束下运行。**内核的"小"与"单一",正是上层"大"与"多样"的前提,而不是它的对立面。**
 
-因此这**不是**一个把内核也做成万能选择器的 AutoML 平台,而是一个**冻结核 + 可进化外壳**的 agent substrate:**evolution 只调 module/profile,永不做"内核选择",也不在运行时插入一个 agent 步骤去改内核。** 进化确实可以涉及 model 侧:存在一条可选的、经**同一个 conformance gate** 的 post-training 回流路径(curated data -> SFT/pref/RL -> 回流),且本平台产出的 governed trajectory **可以**被用作训练 model 的数据来源,但这些都发生在离线、人工门控的 Plane C 内,与运行时 TCB 严格隔离。至于**为什么从头写而不是复用现有 agent 源码**:业界成熟 coding agent 的架构大多把 authority、prompt 组装、context 选择、tool dispatch 与"内核"揉在一起,其"策略"以硬编码启发式散落各处,既不可 diff 也不可独立评测;要让"除内核外一切可进化、且安全不可被优化掉"成立,**冻结核 + typed ABI + 可 checkpoint 的策略空间**必须是**地基**而非事后改造,这正是本体系需要从结构上重新组织、而非在既有实现上打补丁的原因。
+因此这**不是**一个把内核也做成万能选择器的 AutoML 平台,而是一个**冻结 model + 冻结核 + 可进化外壳**的 agent substrate:**evolution 只调 module/profile,永不做"内核选择",也不在运行时插入一个 agent 步骤去改内核。** Iteron 不训练 model，也不把 governed trajectory 导出到 model-training target；保留的 SFT/pref/GRPO/RL 名称只记录 harness producer provenance。至于**为什么从头写而不是复用现有 agent 源码**:业界成熟 coding agent 的架构大多把 authority、prompt 组装、context 选择、tool dispatch 与"内核"揉在一起,其"策略"以硬编码启发式散落各处,既不可 diff 也不可独立评测;要让"除内核外一切可进化、且安全不可被优化掉"成立,**冻结核 + typed ABI + 可 checkpoint 的策略空间**必须是**地基**而非事后改造,这正是本体系需要从结构上重新组织、而非在既有实现上打补丁的原因。
 
 ### 2.7 现状口径 (honest status)
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::report::{aggregate, compare};
 use crate::types::{
     CellKey, CellResult, CostStatus, EVAL_SCHEMA_VERSION, KernelTaxObservation, OracleStatus,
-    SamplingControl,
+    RunStatus, SamplingControl,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -302,6 +302,80 @@ fn conditional_tpe_prefers_the_pending_value_seen_in_the_good_density() {
     assert_eq!(suggested.candidate.id, "z-good-pending");
 }
 
+#[test]
+fn frozen_evidence_fixture_is_inspectable_but_never_feedback_eligible() {
+    let verified = crate::evidence_bundle::verify_evidence_bundle(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/evidence-bundle-v1"),
+        "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+    )
+    .unwrap();
+    let evidence = &verified.evidence_rows;
+    let inspection = OfflineTuner::inspect_evidence_rows(evidence).unwrap();
+    assert_eq!(
+        inspection.provenance,
+        EvidenceRowsProvenance::SyntheticFixture
+    );
+    assert_eq!(inspection.train_rows, 3);
+    assert_eq!(inspection.held_out_rows, 1);
+    assert!(!inspection.feedback_eligible);
+
+    let root = TempRoot::new("fixture-refusal");
+    let mut tuner = OfflineTuner::create(
+        spec(vec![candidate("candidate-a", "x")], 1, vec![1]),
+        &root.join("tuner.jsonl"),
+    )
+    .unwrap();
+    let request = tuner.issue_trials().unwrap().remove(0);
+    assert!(matches!(
+        tuner.record_verified_evidence(&request.trial_id, &verified),
+        Err(TunerError::TrainIsolation(_))
+    ));
+    assert_eq!(tuner.snapshot().inflight_trials, [request.trial_id]);
+}
+
+#[test]
+fn tpe_suggestion_is_identical_after_hash_chain_replay() {
+    let candidates = vec![
+        candidate("a-good", "preferred"),
+        candidate("b-bad", "other-1"),
+        candidate("c-bad", "other-2"),
+        candidate("d-bad", "other-3"),
+        candidate("e-bad-pending", "other-4"),
+        candidate("z-good-pending", "preferred"),
+    ];
+    let spec = spec(candidates, 1, vec![1]);
+    let run_prefix = |tuner: &mut OfflineTuner| {
+        for index in 0..4 {
+            let request = tuner.issue_trials().unwrap().remove(0);
+            tuner
+                .record_manifest(
+                    &request.trial_id,
+                    &manifest(&request, index == 0, EvaluationPurpose::Tune),
+                    "arm",
+                )
+                .unwrap();
+        }
+    };
+
+    let resumed_root = TempRoot::new("tpe-resume");
+    let resumed_journal = resumed_root.join("tuner.jsonl");
+    let mut before_restart = OfflineTuner::create(spec.clone(), &resumed_journal).unwrap();
+    run_prefix(&mut before_restart);
+    let replay_snapshot = before_restart.snapshot();
+    drop(before_restart);
+    let mut replayed = OfflineTuner::open(spec.clone(), &resumed_journal).unwrap();
+    assert_eq!(replayed.snapshot(), replay_snapshot);
+    let replayed_candidate = replayed.issue_trials().unwrap().remove(0).candidate.id;
+
+    let uninterrupted_root = TempRoot::new("tpe-uninterrupted");
+    let mut uninterrupted =
+        OfflineTuner::create(spec, &uninterrupted_root.join("tuner.jsonl")).unwrap();
+    run_prefix(&mut uninterrupted);
+    let uninterrupted_candidate = uninterrupted.issue_trials().unwrap().remove(0).candidate.id;
+    assert_eq!(replayed_candidate, uninterrupted_candidate);
+    assert_eq!(replayed_candidate, "z-good-pending");
+}
+
 /// A candidate must be able to name the whole registry. Pinning this to the family count rather
 /// than a literal is the point: a later registry growth that left the width behind would silently
 /// cap every candidate below the space it is searching, and nothing else would notice.
@@ -451,6 +525,33 @@ fn universal_candidate_rejects_a_second_address_space() {
         candidates: vec![candidate],
     };
     assert!(OfflineTuner::create(spec, &root.join("mixed.jsonl")).is_err());
+}
+
+#[test]
+fn universal_candidate_cannot_represent_a_pin_only_family() {
+    let (family, value) = iteron_tunables::families()
+        .iter()
+        .find_map(|family| {
+            (family.optimization.class == iteron_tunables::OptimizationClass::Pin)
+                .then(|| {
+                    iteron_tunables::canonical_embedded_default(family.id)
+                        .map(|value| (family.id, value))
+                })
+                .flatten()
+        })
+        .expect("registry has a pin with an embedded value");
+    let mut candidate = universal_candidate("pin-refusal");
+    candidate
+        .profile
+        .as_mut()
+        .unwrap()
+        .values
+        .push(iteron_tunables::ProfileValue {
+            family: family.into(),
+            as_declared_source: iteron_tunables::SourceKind::UserConfig,
+            value,
+        });
+    assert!(candidate.validate_universal().is_err());
 }
 
 #[test]

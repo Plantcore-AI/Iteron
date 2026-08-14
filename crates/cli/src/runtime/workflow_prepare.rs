@@ -1,8 +1,8 @@
 use super::*;
 
-/// Posture a `Workflow` call takes when the model omits `background`: detached, because the
-/// in-turn default froze the conversation behind every fan-out.
-const DEFAULT_WORKFLOW_BACKGROUND: bool = true;
+/// Posture a `Workflow` call takes when the model omits `background`: remain in-turn so the
+/// current response can consume prerequisite evidence. Independent work may explicitly detach.
+const DEFAULT_WORKFLOW_BACKGROUND: bool = false;
 
 /// Manifest `created_at` written when the host clock reads before the Unix epoch; the manifest
 /// stays re-launchable with an unusable stamp rather than failing the tool call.
@@ -89,14 +89,8 @@ impl Agent {
         {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
-        // Resolve exactly one workflow selector. Named built-ins are harness-owned source, not a
-        // magic agent type exposed to arbitrary scripts; resume recognizes the persisted exact
-        // source so it reconstructs the same planner adapter and budget schedule.
-        let name = input
-            .get("name")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
+        // Resolve exactly one model-authored workflow source. Resume feeds the persisted script
+        // through the same path, so a relaunched run retains identical program bytes.
         let inline = input
             .get("script")
             .and_then(|value| value.as_str())
@@ -105,97 +99,29 @@ impl Agent {
             .get("scriptPath")
             .and_then(|value| value.as_str())
             .filter(|value| !value.trim().is_empty());
-        let selector_count = usize::from(name.is_some())
-            .saturating_add(usize::from(inline.is_some()))
-            .saturating_add(usize::from(path.is_some()));
+        let selector_count =
+            usize::from(inline.is_some()).saturating_add(usize::from(path.is_some()));
         if selector_count != 1 {
             return Err(
-                "Workflow: provide exactly one of `name`, `script` (inline ESM), or `scriptPath`"
-                    .into(),
+                "Workflow: provide exactly one of `script` (inline ESM) or `scriptPath`".into(),
             );
         }
-        let script = match (name, inline, path) {
-            (Some(ULTRACODE_WORKFLOW_NAME), None, None) => iteron_tunables::param_str(
-                "cli.runtime.ultracode_dynamic_script",
-                ULTRACODE_DYNAMIC_SCRIPT,
-            )
-            .to_string(),
-            (Some(other), None, None) => {
-                return Err(format!("Workflow: unknown built-in workflow `{other}`"));
-            }
-            (None, Some(source), None) => source.to_string(),
-            (None, None, Some(rel)) => {
+        let script = match (inline, path) {
+            (Some(source), None) => source.to_string(),
+            (None, Some(rel)) => {
                 let full = self.workspace.join(rel);
                 std::fs::read_to_string(&full)
                     .map_err(|error| format!("Workflow: cannot read scriptPath `{rel}`: {error}"))?
             }
             _ => unreachable!("selector_count enforces one workflow source"),
         };
-        let builtin_ultracode = script.trim()
-            == iteron_tunables::param_str(
-                "cli.runtime.ultracode_dynamic_script",
-                ULTRACODE_DYNAMIC_SCRIPT,
-            )
-            .trim();
-        let mut args = input
+        let args = input
             .get("args")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        let ultracode_config = if builtin_ultracode {
-            let object = args
-                .as_object_mut()
-                .ok_or_else(|| "Workflow ultracode: `args` must be an object".to_string())?;
-            let task = object
-                .get("task")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "Workflow ultracode: `args.task` must be non-empty".to_string())?;
-            let task = strict_utf8_head(
-                task,
-                iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES),
-            );
-            let class = object
-                .get("taskClass")
-                .cloned()
-                .ok_or_else(|| "Workflow ultracode: `args.taskClass` is required".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<iteron_agents::TaskClass>(value)
-                        .map_err(|_| "Workflow ultracode: `args.taskClass` is invalid".to_string())
-                })?;
-            if !class.fans_out() {
-                return Err("Workflow ultracode: localized tasks do not require a fan".into());
-            }
-            let fan_breadth = self.execution_policy.fan_breadth.ok_or_else(|| {
-                "Workflow ultracode: pinned fan-breadth policy is inactive".to_owned()
-            })?;
-            let requested_leaves = object
-                .get("maxLeaves")
-                .and_then(|value| value.as_u64())
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(fan_breadth)
-                .clamp(1, fan_breadth);
-            object.insert("task".into(), serde_json::Value::String(task));
-            object.insert(
-                "taskClass".into(),
-                serde_json::Value::String(workflow_class_label(class).replace('-', "_")),
-            );
-            object.insert(
-                "coverage".into(),
-                serde_json::Value::String(ultracode_coverage(class).into()),
-            );
-            object.insert("maxLeaves".into(), requested_leaves.into());
-            Some((class, requested_leaves))
-        } else {
-            None
-        };
-        // A REQUEST to outlive the turn, and since 2026-08-06 the DEFAULT one. Only an installed
-        // owner can grant it; see `crate::workflow::PreparedWorkflow::background`.
-        //
-        // The default flipped because the old one made the decoupling unreachable in practice: a
-        // run only left the turn when the model remembered to ask, so the common case was still a
-        // conversation frozen behind a fan-out. Detaching is the posture; `background: false` is
-        // how a model that genuinely needs the result inside this turn asks to wait for it.
+        // Detaching is explicit: omitted `background` keeps prerequisite evidence available to the
+        // current turn. Only an installed owner can grant `background: true`; see
+        // `crate::workflow::PreparedWorkflow::background`.
         let background = input
             .get("background")
             .and_then(|value| value.as_bool())
@@ -238,108 +164,28 @@ impl Agent {
         if remaining_turns == 0 {
             return Err("Workflow: parent turn budget is exhausted".into());
         }
-        let baseline_engine_limits = if let Some((class, requested_leaves)) = ultracode_config {
-            // The planner's fixed host ceiling is part of the pinned, content-addressed agent
-            // catalog (family 76).  Read that exact definition instead of repeating its token,
-            // wall, and tool-error limits here: a duplicate literal would let the child-spawner
-            // drift away from the catalog identity committed at run genesis.
-            let planner_definition = self
-                .agent_catalog
-                .get(iteron_agents::ULTRACODE_PLANNER_NAME)
-                .ok_or_else(|| {
-                    "Workflow ultracode: pinned agent catalog has no planner definition".to_owned()
-                })?;
-            let remaining_wall = self
-                .run_time_remaining()
-                .map(|remaining| remaining.as_secs().max(1))
-                .unwrap_or(self.budget.max_wall_secs)
-                .min(self.execution_policy.workflow.max_wall_seconds);
-            // Planning is a real first child, so reserve its one model turn before dividing the
-            // investigation half. The first slice is therefore always planner; fan slices begin
-            // at ordinal one and their sum stays within the admitted aggregate.
-            let Some(allocation) = allocate_orchestration(
-                remaining_turns.saturating_sub(1),
-                requested_leaves,
-                remaining_wall,
-                self.execution_policy,
-            ) else {
-                return Err(
-                    "Workflow ultracode: writer-first reserve leaves no bounded planner + fan"
-                        .into(),
-                );
-            };
-            let fan_tokens = self
-                .remaining_provider_tokens()
-                .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
-                .map(|tokens| {
-                    self.execution_policy
-                        .workflow
-                        .max_tokens
-                        .map_or(tokens, |ceiling| tokens.min(ceiling))
-                });
-            if fan_tokens == Some(0) {
-                return Err(
-                    "Workflow ultracode: no provider-token budget remains for the fan".into(),
-                );
-            }
-            let planner = pinned_ultracode_planner_budget(
-                planner_definition,
-                self.effective_max_usd(),
-                fan_tokens,
-                remaining_wall,
-                self.budget.max_consecutive_tool_errors,
-            )?;
-            let fan = Budget {
-                max_turns: allocation.fan_turns,
-                max_usd: self.effective_max_usd(),
-                max_tokens: fan_tokens,
-                max_wall_secs: allocation.fan_wall_secs,
-                max_consecutive_tool_errors: self.budget.max_consecutive_tool_errors,
-            };
-            let mut slices = vec![planner];
-            slices.extend(fan_budget_slices(
-                &fan,
-                allocation.active_workers,
-                self.effective_max_usd(),
-            ));
-            cx.budget_slices = Some(slices);
-            cx.ultracode_planning = Some(workflow_spawner::UltracodePlanning {
-                class,
-                max_leaves: allocation.active_workers,
+        cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
+        // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
+        cx.budget.max_tokens = self
+            .remaining_provider_tokens()
+            .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
+            .map(|tokens| {
+                self.execution_policy
+                    .workflow
+                    .max_tokens
+                    .map_or(tokens, |ceiling| tokens.min(ceiling))
             });
-            iteron_workflow::RunLimits::new(
-                fan_concurrency_permits(allocation.active_workers)
-                    .min(self.execution_policy.workflow.max_concurrency),
-                allocation
-                    .active_workers
-                    .saturating_add(1)
-                    .min(self.execution_policy.workflow.max_calls),
-            )
-            .map_err(|error| format!("Workflow: invalid ultracode engine budget: {error}"))?
-        } else {
-            cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
-            // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
-            cx.budget.max_tokens = self
-                .remaining_provider_tokens()
-                .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
-                .map(|tokens| {
-                    self.execution_policy
-                        .workflow
-                        .max_tokens
-                        .map_or(tokens, |ceiling| tokens.min(ceiling))
-                });
-            cx.budget.max_wall_secs = cx
-                .budget
-                .max_wall_secs
-                .min(self.execution_policy.workflow.max_wall_seconds);
-            let kernel_limits = in_turn_workflow_budget(self.execution_policy)
-                .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
-            iteron_workflow::RunLimits::new(
-                kernel_limits.max_concurrency(),
-                kernel_limits.max_agent_calls(),
-            )
-            .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?
-        };
+        cx.budget.max_wall_secs = cx
+            .budget
+            .max_wall_secs
+            .min(self.execution_policy.workflow.max_wall_seconds);
+        let kernel_limits = in_turn_workflow_budget(self.execution_policy)
+            .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
+        let baseline_engine_limits = iteron_workflow::RunLimits::new(
+            kernel_limits.max_concurrency(),
+            kernel_limits.max_agent_calls(),
+        )
+        .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?;
         let baseline_engine_limits =
             workflow_spawner::governed_workflow_limits(&cx.budget, baseline_engine_limits)
                 .map_err(|error| format!("Workflow: invalid priced engine budget: {error}"))?;
@@ -500,8 +346,8 @@ impl Agent {
     ///
     /// # Detached runs
     ///
-    /// A run asks to outlive its turn **by default**; `Workflow({background: false})` is how a model
-    /// that needs the result inside this call opts out. The request is granted
+    /// A run asks to outlive its turn only with `Workflow({background: true})`; omission keeps the
+    /// result inside this call. The request is granted
     /// only when the installed launcher returns [`crate::workflow::Launched::Detached`] — i.e. only
     /// where a session-scoped owner exists to hold it. When it is granted this method returns a
     /// **receipt**, not a result: the run has no value yet, and saying otherwise would report a
@@ -678,81 +524,5 @@ impl Agent {
             ));
         }
         Ok(summary)
-    }
-}
-
-/// Intersect the run-local ceilings with the exact built-in planner definition carried by the
-/// pinned agent catalog.  The catalog's execution digest is part of run genesis, so this is an
-/// immutable runtime owner; copying its numeric values into the child spawner would create an
-/// uncommitted second default.
-fn pinned_ultracode_planner_budget(
-    definition: &iteron_agents::AgentDef,
-    max_usd: Option<f64>,
-    max_tokens: Option<u64>,
-    max_wall_secs: u64,
-    max_consecutive_tool_errors: u32,
-) -> Result<Budget, String> {
-    definition.validate().map_err(|reason| {
-        format!("Workflow ultracode: pinned planner definition is invalid: {reason}")
-    })?;
-    let canonical = iteron_agents::AgentDef::ultracode_planner();
-    if definition.execution_digest() != canonical.execution_digest() {
-        return Err(
-            "Workflow ultracode: planner definition differs from the fixed built-in identity"
-                .into(),
-        );
-    }
-    let ceiling = &definition.budget;
-    Ok(Budget {
-        max_turns: ceiling.max_turns,
-        // All descendants debit the parent's one shared USD ledger; the fixed planner definition
-        // deliberately owns no independent dollar allowance.
-        max_usd,
-        max_tokens: match (max_tokens, ceiling.max_tokens) {
-            (Some(parent), Some(child)) => Some(parent.min(child)),
-            (Some(parent), None) => Some(parent),
-            (None, child) => child,
-        },
-        max_wall_secs: max_wall_secs.min(ceiling.max_wall_secs),
-        max_consecutive_tool_errors: max_consecutive_tool_errors
-            .min(ceiling.max_consecutive_tool_errors),
-    })
-}
-
-#[cfg(test)]
-mod planner_budget_tests {
-    use super::*;
-
-    #[test]
-    fn planner_slice_reads_the_pinned_catalog_identity_and_only_narrows_it() {
-        let definition = iteron_agents::AgentDef::ultracode_planner();
-        let exact = pinned_ultracode_planner_budget(
-            &definition,
-            Some(2.0),
-            Some(u64::MAX),
-            u64::MAX,
-            u32::MAX,
-        )
-        .expect("canonical planner definition");
-        assert_eq!(exact.max_turns, definition.budget.max_turns);
-        assert_eq!(exact.max_tokens, definition.budget.max_tokens);
-        assert_eq!(exact.max_wall_secs, definition.budget.max_wall_secs);
-        assert_eq!(
-            exact.max_consecutive_tool_errors,
-            definition.budget.max_consecutive_tool_errors
-        );
-        assert_eq!(exact.max_usd, Some(2.0));
-
-        let narrowed = pinned_ultracode_planner_budget(&definition, None, Some(17), 9, 1)
-            .expect("narrow parent ceilings");
-        assert_eq!(narrowed.max_tokens, Some(17));
-        assert_eq!(narrowed.max_wall_secs, 9);
-        assert_eq!(narrowed.max_consecutive_tool_errors, 1);
-
-        let mut impostor = definition;
-        impostor.budget.max_tokens = Some(1);
-        assert!(
-            pinned_ultracode_planner_budget(&impostor, None, None, u64::MAX, u32::MAX,).is_err()
-        );
     }
 }

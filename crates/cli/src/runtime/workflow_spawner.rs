@@ -60,14 +60,6 @@ fn child_provider_governor(
         .ok_or_else(|| safe_agent_refusal("workflow provider governor owner is not installed"))
 }
 
-/// Harness-owned inputs for the built-in Ultracode planner call. The model may propose only raw
-/// lines; this pinned policy seat turns them into the exact bounded task objects the script may fan.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct UltracodePlanning {
-    pub(super) class: iteron_agents::TaskClass,
-    pub(super) max_leaves: usize,
-}
-
 mod activity;
 mod tunables;
 mod worktree;
@@ -184,9 +176,9 @@ pub struct KernelSpawnerContext {
     /// child's turns/wall/usd. Defaults to `iteron_agents::subagent_budget_ceiling()`.
     pub budget: Budget,
     /// Optional declaration-order budget slices for a kernel-built fan. When present, spawn ordinal
-    /// N receives slice N and an ordinal outside the schedule is refused. This is how the built-in
-    /// Ultracode script preserves one aggregate fan ceiling instead of multiplying a per-child
-    /// ceiling by the number of `agent()` calls. General user-authored workflows leave it `None`.
+    /// N receives slice N and an ordinal outside the schedule is refused, preserving one aggregate
+    /// fan ceiling instead of multiplying a per-child ceiling by the number of `agent()` calls.
+    /// General user-authored workflows leave it `None`.
     pub(super) budget_slices: Option<Vec<Budget>>,
     /// Optional parent-owned ledger collector. A built-in in-turn fan merges these child ledgers
     /// back into the writer's shared accounting after the engine joins; standalone workflows have
@@ -197,9 +189,6 @@ pub struct KernelSpawnerContext {
     /// distinguish operator drain/interrupt from budget, harness and provider failures in its
     /// durable compatibility record.
     pub(super) child_outcomes: Option<ChildOutcomeCollector>,
-    /// Present only for the built-in dynamic Ultracode script. A user-authored workflow cannot
-    /// acquire the planner adapter merely by spelling its internal agent type.
-    pub(super) ultracode_planning: Option<UltracodePlanning>,
     /// Parent drain is orderly quiescence, not workflow cancellation. Sharing this flag lets a
     /// child checkpoint and return `Outcome::Drained`; the engine cancellation token remains the
     /// separate immediate-stop surface.
@@ -402,7 +391,6 @@ impl KernelSpawnerContext {
             budget_slices: None,
             child_ledgers: None,
             child_outcomes: None,
-            ultracode_planning: None,
             drain: None,
             model_context_window: None,
             model_max_output_tokens: None,
@@ -656,20 +644,6 @@ impl KernelSpawner {
             .ok_or_else(|| safe_agent_refusal("pinned child ceiling is inactive"))?;
         if !is_writer {
             budget = child_ceiling.narrow_budget(budget);
-        }
-        if requested_type == iteron_agents::ULTRACODE_PLANNER_NAME {
-            let decomposition = cx
-                .execution_policy
-                .decomposition
-                .ok_or_else(|| safe_agent_refusal("pinned decomposition profile is inactive"))?;
-            if budget.max_tokens != Some(decomposition.max_output_tokens)
-                || decomposition.thinking_tokens
-                    != cx.effort_policy.thinking_budget(decomposition.effort)
-            {
-                return Err(safe_agent_refusal(
-                    "pinned decomposition profile differs from the executable planner budget",
-                ));
-            }
         }
         if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && cx.pricing_port.is_none() {
             return Err(

@@ -2,6 +2,7 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
+The current source workspace declares version **v0.0.5**.
 
 ## Delivered baseline
 
@@ -20,15 +21,16 @@ The repository currently contains:
   macOS/Linux sandbox backends selected with `--confine`; the shipped default is
   unconfined and bypasses permission prompts;
 - machine-validated human ownership boundaries and repository review policy;
-- four published pre-alpha tags (`v0.0.1` through `v0.0.4`), each locally built
-  for `aarch64-apple-darwin` with manifest, receipt, checksums, legal evidence,
-  and SBOM; each release note and manifest explicitly records the absence of
-  GitHub OIDC attestation, and `v0.0.2` through `v0.0.4` also carry an offline
-  provenance asset. These are not accepted workflow-native three-target release
-  evidence;
+- a repository-only `iteron-harness` research executable, versioned JSON protocol schema,
+  stdlib-only Python client, and credential-free fixture optimizer; these research tools are
+  source interfaces and are deliberately absent from release archives and the installer;
+- five published pre-alpha tags (`v0.0.1` through `v0.0.5`). The first four are
+  historical local macOS builds; `v0.0.5` is the current release. Each release's
+  manifest and GitHub asset list are authoritative for its exact targets and
+  attestations;
 - a macOS/Linux three-target release workflow, installer, checksums, license
   evidence, SBOMs, provenance, and public-install canaries; accepted three-target
-  evidence still awaits usable native release capacity.
+  evidence still awaits completion of the release-verification and content-canary gates.
 
 ## Not accepted as complete
 
@@ -40,8 +42,10 @@ Iteron does not yet claim:
 - complete MCP, LSP, plugin, PTY, or background-process lifecycle support;
 - authoritative context, cache, cost, or billing truth for every provider route;
 - Windows distribution, a stable compatibility promise, or long-term support;
-- live self-training, GRPO, reinforcement learning, or autonomous policy
-  promotion;
+- model training or fine-tuning of any kind; legacy SFT, preference, GRPO, and
+  RL names are provenance labels for harness candidates only;
+- autonomous policy promotion;
+- benchmark-performance superiority or results from a completed real campaign;
 - parity with Codex, Claude Code, or another production coding agent.
 
 ## How progress is accepted

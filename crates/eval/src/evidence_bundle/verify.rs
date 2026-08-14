@@ -6,6 +6,14 @@ pub fn verify_evidence_bundle(
     directory: &Path,
     trusted_public_key: &str,
 ) -> Result<VerifiedEvidenceBundle, EvidenceBundleError> {
+    let directory_metadata =
+        std::fs::symlink_metadata(directory).map_err(|error| io(directory, error))?;
+    if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+        return Err(EvidenceBundleError::Artifact {
+            path: directory.display().to_string(),
+            reason: "evidence bundle must be a regular non-symlink directory".into(),
+        });
+    }
     let index_path = directory.join("bundle.index.json");
     let index: EvidenceBundleIndex = decode(&read_regular(
         &index_path,
@@ -14,6 +22,7 @@ pub fn verify_evidence_bundle(
     if index.schema_version != 1
         || index.bundle_type != "iteron-eval-signed-evidence"
         || index.public_key != trusted_public_key
+        || index.comparison.baseline_id == index.comparison.candidate_id
         || index.files.is_empty()
         || index.files.len()
             > iteron_tunables::param_integer(
@@ -27,6 +36,7 @@ pub fn verify_evidence_bundle(
     validate_label(&index.comparison.candidate_id)?;
     validate_label(&index.comparison.baseline_arm)?;
     validate_label(&index.comparison.candidate_arm)?;
+    index.evidence_rows.validate()?;
     verify_index(&index)?;
     verify_file_set(directory, &index)?;
 
@@ -64,13 +74,35 @@ pub fn verify_evidence_bundle(
             &index.comparison.candidate_arm,
         )?,
     ])?;
-    if paired != expected_paired || pareto != expected_pareto {
+    let expected_evidence_rows = emit_evidence_rows(
+        &baseline,
+        &index.comparison.baseline_id,
+        &index.comparison.baseline_arm,
+        &candidate,
+        &index.comparison.candidate_id,
+        &index.comparison.candidate_arm,
+    )?;
+    // Measured rows are reproducible projections of the attested manifests. The committed
+    // synthetic acceptance fixture intentionally exercises train and held-out isolation in one
+    // signed envelope, so it is authenticated by the index signature/digest but never claimed to
+    // be a projection of its inert comparison artifacts.
+    let rows_match_measured_inputs = index.evidence_rows.provenance
+        == EvidenceRowsProvenance::SyntheticFixture
+        || index.evidence_rows == expected_evidence_rows;
+    if paired != expected_paired || pareto != expected_pareto || !rows_match_measured_inputs {
         return Err(EvidenceBundleError::Digest);
     }
+    let evidence_rows = index.evidence_rows.clone();
+    let verified_seal = VerifiedEvidenceSeal {
+        index_sha256: index.index_sha256.clone(),
+        evidence_rows_sha256: evidence_rows.document_sha256.clone(),
+    };
     Ok(VerifiedEvidenceBundle {
         index,
+        evidence_rows,
         paired,
         pareto,
+        _verified: verified_seal,
     })
 }
 
@@ -139,6 +171,7 @@ fn verify_index(index: &EvidenceBundleIndex) -> Result<(), EvidenceBundleError> 
         bundle_type: index.bundle_type.clone(),
         public_key: index.public_key.clone(),
         comparison: index.comparison.clone(),
+        evidence_rows: index.evidence_rows.clone(),
         files: index.files.clone(),
     };
     let bytes = serde_json::to_vec(&unsigned)
@@ -201,10 +234,29 @@ fn maximum_for_role(role: &str) -> Result<u64, EvidenceBundleError> {
 
 fn validate_file_name(value: &str) -> Result<(), EvidenceBundleError> {
     let mut components = Path::new(value).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+    if value.len() > 255
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || matches!(value, "." | ".." | "bundle.index.json")
+        || !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(EvidenceBundleError::Digest);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_file_name;
+
+    #[test]
+    fn bundle_file_names_use_the_same_bounded_ascii_grammar_as_the_schema() {
+        assert!(validate_file_name("baseline.attestation.json").is_ok());
+        for invalid in ["é.json", "../escape.json", "bundle.index.json", ""] {
+            assert!(validate_file_name(invalid).is_err());
+        }
+        assert!(validate_file_name(&format!("{}.json", "a".repeat(252))).is_err());
+    }
 }

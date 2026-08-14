@@ -1,9 +1,9 @@
 # Installation
 
 Iteron's supported distribution matrix is macOS and Linux. Windows is not
-supported. The current `v0.0.4` release contains only the macOS Apple Silicon
-archive; the two Linux entries in the three-target matrix remain pending until
-the DGX release workflow can run successfully.
+supported. The source workspace is version `v0.0.5`. Consult the selected
+release's asset list before installing; source versioning alone does not prove
+that an archive exists for a host.
 
 !!! warning "Pre-alpha release"
     A downloadable release is not a compatibility or unattended-safety promise.
@@ -20,7 +20,18 @@ host for which the latest release actually contains an archive can use:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
 
-Then run `iteron --version`.
+Then verify shell resolution and the binary version:
+
+```sh
+command -v iteron
+iteron --version
+```
+
+`command -v` must print the intended executable path. If it prints nothing, add
+the chosen install directory to `PATH` in the shell's startup file and start a
+new shell. If it prints a different path, invoke the intended path directly or
+fix `PATH` ordering before diagnosing providers. Neither check reads a provider
+credential.
 
 The installer:
 
@@ -31,6 +42,11 @@ The installer:
 - rejects unexpected archive members, links, special files, and path traversal;
 - smoke-tests the downloaded binary before replacing an existing installation;
 - installs atomically without `sudo` and never edits a shell profile.
+
+It installs only the `iteron` command. `iteron-harness` is a repository-only research executable;
+it is not included in an archive or installed by this script. Its source-build instructions and
+language-neutral client contract are documented in the
+[research harness protocol](../reference/research-harness-protocol.md).
 
 After installation, follow [Setup and BYOK](setup-and-byok.md) to validate and
 store a provider credential outside the repository.
@@ -43,8 +59,8 @@ An explicit `--bin-dir` wins. Otherwise the destination is
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.4/install.sh \
-  | sh -s -- --version v0.0.4 --bin-dir "$HOME/bin"
+  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.5/install.sh \
+  | sh -s -- --version v0.0.5 --bin-dir "$HOME/bin"
 ```
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
@@ -55,11 +71,11 @@ code-execution sandbox. See [supported platforms](../reference/platforms.md).
 
 ## Release matrix and current availability
 
-| Host | Release target | Native release runner | In `v0.0.4` |
+| Host | Release target | Native release runner | Expected release asset |
 | --- | --- | --- | --- |
-| macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | available |
-| Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | pending |
-| Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | pending |
+| macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
+| Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
+| Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
 
 The release workflow requires all three targets to be built, tested, packaged,
 and smoke-tested before a release counts as accepted
@@ -81,7 +97,7 @@ commands.
 
 ## Verify a release independently
 
-The four published tags through `v0.0.4` were built locally and contain only an
+The historical tags through `v0.0.4` were built locally and contain only an
 `aarch64-apple-darwin` archive. They include checksums, a manifest and receipt,
 legal material, and an SPDX SBOM. Each tag's release notes and manifest record
 the absence of GitHub OIDC attestation; `v0.0.2` through `v0.0.4` also carry a
@@ -99,7 +115,7 @@ An accepted workflow release is expected to publish:
 
 Download the desired archive and verification material from the
 [release page](https://github.com/Plantcore-AI/Iteron/releases). Check its exact
-row in `SHA256SUMS`. For a future workflow-built release that advertises GitHub
+row in `SHA256SUMS`. For a workflow-built release that advertises GitHub
 attestation, also run:
 
 ```sh

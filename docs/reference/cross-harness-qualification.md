@@ -12,7 +12,7 @@ The runner is a Python standard-library client. It actively:
    `iteron --machine-contract`;
 3. independently pins `iteron-harness`, calls its `iteron-research/1` `surface` operation from
    Python, and verifies response correlation;
-4. requires the adapter registry to be exactly `iteron-cli/1`, `iteron-native-adapter/1`, and
+4. requires the adapter registry to be exactly `iteron-cli/1`, `iteron-native-adapter/2`, and
    `terminal-bench/2.1`; and
 5. requires the installed surface to return the exact ordered 28-module registry.
 

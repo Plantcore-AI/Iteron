@@ -36,7 +36,7 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 
 一套 harness 在某个垂类上被训练出来的状态,被封装成一个一等制品,本规范称之为 **harness checkpoint**,其正式名字是 **PolicyManifest**。它是:
 
-- **方法无关的 (method-agnostic)**:无论专精化是由搜索 (如 GEPA)、SFT、偏好优化 (preference)、GRPO 还是 RL 产出的,它们 MUST 发射出**同一种**制品类型:PolicyManifest。产生它的方法不改变它的形状。
+- **方法无关的 (method-agnostic)**:无论 harness producer 使用搜索，还是保留的 SFT/偏好/GRPO/RL provenance 标签，它们 MUST 发射出同一种 harness `PolicyManifest`。这些名称不授权 model training。
 - **可版本化、可 diff 的 (versioned & diffable)**:它有 checkpoint 代数,包含 diff、merge、restrict、retire、transfer 这些算子,因此可以像软件发布一样被比较、组合、收窄、退役、迁移。语义约定为:`diff` 按 slot 给出逐槽变更集;`merge` 在两个 manifest 无冲突时并槽,冲突槽 MUST 报错而非静默择一;`restrict` 只能收窄能力上限,MUST NOT 放宽 (见 §1.5 的 capability admission);`retire` 把一个版本标记为不可再被晋升为 active;`transfer` 把同一制品套到另一个被冻结的 base model 上。
 - **被独立评估的 (independently evaluated)**:一个 candidate PolicyManifest MUST 由一个**独立的 evaluator**,在**垂类拥有的、留出的 (held-out) 目标**上打分。候选者不能自评、不能伪造自己的 held-out 结果、不能改写证据。
 - **像发布一样被晋升/回滚的 (promoted/rolled-back like a release)**:它经过 admission、held-out 评估、shadow、canary,才成为 active,并且带确定性回滚 (deterministic rollback)。
@@ -55,7 +55,7 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 | 维度 | AutoML / AutoAgent 式框架 | Iteron (可训练 substrate) |
 |---|---|---|
 | 交付物 | 一个"最优 agent"或一段自动搭好的流水线 | 一个稳定的 typed ABI 加一个可被任意方法训练的策略空间 |
-| 优化方法 | 平台自带、内置、通常单一的搜索/优化器 | **不绑定方法**;bring-your-own (搜索/SFT/偏好/GRPO/RL 皆可),都发射同一种 PolicyManifest |
+| 优化方法 | 平台自带、内置、通常单一的搜索/优化器 | **不绑定 harness producer**；兼容标签都发射同一种 harness PolicyManifest |
 | 产物形态 | 常是"方法形状的碎屑"或一个不可移植的封装 | 单一、方法无关、可 diff、可版本化、可跨 model 携带的 harness checkpoint |
 | 权威边界 | 通常无明确的、被冻结的信任边界 | microkernel (身份、权限、证据、预算、副作用中枢) 被**冻结**,不参与优化 |
 | 安全 | 常是事后附加 | 安全 MUST NOT 是自进化算子的不动点;deny-by-default 内建 |
@@ -74,9 +74,9 @@ StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)*
 - **进化是离线的、非权威的、人类把关的 (offline, non-authoritative, human-gated)。** 它是一条流水线:trajectory -> 受治理的数据集 (governed dataset) -> candidate producer -> PolicyManifest -> admission -> 独立 held-out 评估 -> shadow -> canary -> active,带确定性回滚。各阶段的职责与失败处置约定如下:`trajectory` 收集运行轨迹作为原料;`governed dataset` 施加数据同意与去敏治理,未获同意的数据 MUST NOT 进入;`candidate producer` 是 bring-your-own 的训练方法,产出 immutable candidate;`admission` 做 capability 准入检查,不通过即拒绝入库;`held-out 评估`由独立 evaluator 打分,分数不达门槛即淘汰;`shadow` 让 candidate 只旁路观察不产生副作用;`canary` 让它承接一小部分真实流量;`active` 是全量启用。任一阶段失败,系统 MUST 停在该阶段并保留上一个 active 版本;运行时的 microkernel 不参与产生或激活 policy。
 - **进化不能自我授权。** capability admission 强制 candidate 的授权等于 subset(该 slot 的 ceiling  INTERSECT  其确切父辈的 ceiling),**只做交集,永不做并集 ("never union")**。一个 candidate 可以*提议*,但不能*授予*能力、不能改写证据、不能放松预算、不能伪造自己的 held-out 结果、不能自我晋升。举例:若某 slot 的 ceiling 允许"读工作区文件"而其父辈 ceiling 不允许"发起网络出站",则交集里没有网络出站,candidate 无论怎样提议都拿不到它。
 - **进化包不包括"选内核"或"跑一个 agent 步骤"?不。** 进化选的是策略 (StrategySlot 的取值),不是内核;microkernel 的接口在进化过程中**不变**。进化产生的是一个静态制品 (PolicyManifest),不是一次 agent 运行。
-- **进化涉不涉及训练 model?默认不。** 主路径是在**不训练 model** 的前提下进化 harness,以求得 co-design 之效 (可移植、model-agnostic)。当确需改权重时,把 curated 轨迹经 SFT/偏好/RL 回流,并 MUST 经过**同一道** admission 与评测门再入。即训练可以发生在两侧,但 harness 是那个恒可用、可移植、model 无关的一侧。
+- **进化涉不涉及训练 model?不涉及。** Iteron 只优化 harness；base model 与 safety kernel 冻结。`ModelAdapter`/`ModelWeights` 是保留 wire 值并被结构性拒绝，trajectory API 不存在 model-training export target。
 
-由此也澄清一个常见问题:"这个平台的产物能不能拿去训练 model?"可以:curated 的轨迹与 harness checkpoint 是极好的 post-training 语料,但那属于 model 一侧的、可选的回流路径,且必须重新过评测门;它不是 Iteron 的主张,主张是**在冻结 model 的前提下进化 harness**。
+由此也澄清一个常见问题:"这个平台的产物能不能拿去训练 model?"Iteron 的答案是**不能作为其导出目标**。记录的 consent 只约束 harness 优化用途，不能隐式扩张为 model post-training 权限。
 
 ### 1.6 为什么必须开源 (open)
 

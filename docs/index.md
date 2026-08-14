@@ -5,7 +5,8 @@
 # Iteron
 
 Iteron is an open-source, terminal-native coding agent and a modular Rust
-substrate for bounded, recoverable, and observable agent runtimes.
+substrate for bounded, recoverable, and observable agent runtimes. The current
+workspace version is **v0.0.5**.
 
 Created and led by [Jamal Cao
 (@fr0m-scratch)](https://github.com/fr0m-scratch), Creator and Project Lead.
@@ -56,6 +57,8 @@ verification command before accepting completion.
 1. [Install or build Iteron](getting-started/installation.md).
 2. Run the [setup and BYOK guide](getting-started/setup-and-byok.md) to validate
    and store a provider key outside the repository.
+   Use [credential-free provider diagnosis](getting-started/provider-diagnosis.md)
+   before loading a key.
 3. Follow the [quickstart](getting-started/quickstart.md) in a disposable test
    repository.
 4. Review [permissions and sandbox limitations](using/permissions-and-sandbox.md)
@@ -74,6 +77,11 @@ complete process supervision, full MCP/LSP lifecycle support, trustworthy cost
 accounting, and governed strategy evolution are target work. See the
 [architecture](architecture.md) and [roadmap](roadmap.md); neither page turns a
 target contract into a shipped feature.
+
+Evolution contracts only admit harness artifacts. The base model and safety
+kernel remain frozen; reserved model-weight and model-adapter manifest values
+fail closed. Iteron has not published a first-party performance campaign or a
+model-training result.
 
 ## Project links
 

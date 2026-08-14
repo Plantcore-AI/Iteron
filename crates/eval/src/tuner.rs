@@ -1,7 +1,11 @@
 //! Bounded, offline-only conditional TPE and successive-halving coordinator.
 
+use crate::evidence_bundle::{
+    EvidenceRowOutcome, EvidenceRowsDocument, EvidenceRowsProvenance, VerifiedEvidenceBundle,
+    emit_candidate_evidence_rows,
+};
 use crate::trainer_bridge::TrainerBridgeSpec;
-use crate::types::{CostStatus, EvaluationManifest, EvaluationPurpose, Partition, RunStatus};
+use crate::types::{CostStatus, EvaluationManifest, EvaluationPurpose, Partition};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -12,7 +16,14 @@ mod candidate_graph;
 mod journal;
 mod state_ops;
 pub(crate) use activation::{MaterializedActivation, materialize_activation};
-pub use candidate_graph::*;
+pub use candidate_graph::{
+    CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,
+    CandidateAddressKind, CandidateCondition, CandidateDimension, CandidateExecutionDependency,
+    CandidateExecutionNode, CandidateExperiment, CandidateGraph, CandidateGraphIdentity,
+    CandidateLineage, CandidateMaterialization, CandidateNodeClass, CandidateOwnerKind,
+    CandidatePatch, CandidateProductionPlan, CandidateSelectorKind, CandidateTopologyEdge,
+    MAX_CANDIDATE_TOPOLOGY_EDGES,
+};
 use journal::TunerJournal;
 use state_ops::{apply_event, digest, initial_state, result_order, tpe_score, validate_spec};
 
@@ -184,6 +195,18 @@ pub struct TrialResult {
     pub manifest_digest: String,
 }
 
+/// Read-only acceptance result for a frozen evidence-row document. It deliberately carries the
+/// fixture marker and has no conversion into a journal event or runtime activation type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunerEvidenceInspection {
+    pub document_sha256: String,
+    pub provenance: EvidenceRowsProvenance,
+    pub train_rows: usize,
+    pub held_out_rows: usize,
+    pub feedback_eligible: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TunerStatus {
@@ -232,6 +255,8 @@ pub enum TunerError {
     TrainIsolation(String),
     #[error("cannot encode tuner state: {0}")]
     Encode(String),
+    #[error("evidence rows are invalid: {0}")]
+    EvidenceRows(String),
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +276,30 @@ pub struct OfflineTuner {
 }
 
 impl OfflineTuner {
+    /// Validate and classify the shared evidence schema without mutating the tuner. Synthetic
+    /// fixtures and held-out rows remain inspectable for acceptance/UI tests but are never marked
+    /// feedback-eligible.
+    pub fn inspect_evidence_rows(
+        evidence: &EvidenceRowsDocument,
+    ) -> Result<TunerEvidenceInspection, TunerError> {
+        evidence
+            .validate()
+            .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
+        let held_out_rows = evidence
+            .rows
+            .iter()
+            .filter(|row| row.partition == Partition::HeldOut)
+            .count();
+        Ok(TunerEvidenceInspection {
+            document_sha256: evidence.document_sha256.clone(),
+            provenance: evidence.provenance,
+            train_rows: evidence.rows.len().saturating_sub(held_out_rows),
+            held_out_rows,
+            feedback_eligible: evidence.provenance == EvidenceRowsProvenance::Measured
+                && held_out_rows == 0,
+        })
+    }
+
     pub fn create(spec: TunerSpec, journal_path: &Path) -> Result<Self, TunerError> {
         validate_spec(&spec)?;
         let spec_digest = digest(&spec)?;
@@ -344,7 +393,8 @@ impl OfflineTuner {
             .state
             .inflight
             .get(trial_id)
-            .ok_or_else(|| TunerError::InvalidTransition("trial is not in flight".into()))?;
+            .ok_or_else(|| TunerError::InvalidTransition("trial is not in flight".into()))?
+            .clone();
         if manifest.purpose != EvaluationPurpose::Tune
             || manifest.dataset_digest != self.spec.train_dataset_digest
             || manifest.bundle_digest.as_deref() != Some(request.candidate_digest.as_str())
@@ -357,25 +407,73 @@ impl OfflineTuner {
                 "held-out/test or mismatched training data cannot enter tuner feedback".into(),
             ));
         }
-        let cells = manifest
-            .cells
-            .iter()
-            .filter(|cell| cell.config == arm)
-            .collect::<Vec<_>>();
-        if cells.is_empty() {
-            return Err(TunerError::TrainIsolation("selected arm is missing".into()));
+        let evidence = emit_candidate_evidence_rows(manifest, &request.candidate.id, arm)
+            .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
+        self.record_evidence_document(trial_id, &evidence)
+    }
+
+    /// Record observations only from a verifier-minted bundle. The private seal on
+    /// `VerifiedEvidenceBundle` prevents callers from constructing a handwritten substitute.
+    pub fn record_verified_evidence(
+        &mut self,
+        trial_id: &str,
+        bundle: &VerifiedEvidenceBundle,
+    ) -> Result<TrialResult, TunerError> {
+        bundle
+            .validate_in_memory_seal()
+            .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
+        self.record_evidence_document(trial_id, &bundle.evidence_rows)
+    }
+
+    fn record_evidence_document(
+        &mut self,
+        trial_id: &str,
+        evidence: &EvidenceRowsDocument,
+    ) -> Result<TrialResult, TunerError> {
+        let inspection = Self::inspect_evidence_rows(evidence)?;
+        if !inspection.feedback_eligible {
+            return Err(TunerError::TrainIsolation(
+                "synthetic fixture or held-out evidence cannot enter tuner feedback".into(),
+            ));
         }
-        let completed = cells
+        let request = self
+            .state
+            .inflight
+            .get(trial_id)
+            .ok_or_else(|| TunerError::InvalidTransition("trial is not in flight".into()))?
+            .clone();
+        let rows = evidence
+            .rows
             .iter()
-            .filter(|cell| cell.run_status == RunStatus::Completed)
-            .count();
-        let resolved = cells
+            .filter(|row| row.run_id == trial_id && row.candidate_id == request.candidate.id)
+            .collect::<Vec<_>>();
+        if rows.is_empty()
+            || rows.iter().any(|row| {
+                row.partition != Partition::Train
+                    || row.dataset_digest != self.spec.train_dataset_digest
+                    || row.candidate_digest.as_deref() != Some(request.candidate_digest.as_str())
+            })
+        {
+            return Err(TunerError::TrainIsolation(
+                "held-out/test or mismatched training data cannot enter tuner feedback".into(),
+            ));
+        }
+        let completed = rows
             .iter()
-            .filter(|cell| cell.run_status == RunStatus::Completed && cell.resolved == Some(true))
+            .filter(|row| {
+                matches!(
+                    row.outcome,
+                    EvidenceRowOutcome::Success | EvidenceRowOutcome::TaskFailure
+                )
+            })
             .count();
-        let priced = cells.iter().all(|cell| {
-            cell.cost_status == CostStatus::Known
-                && cell
+        let resolved = rows
+            .iter()
+            .filter(|row| row.outcome == EvidenceRowOutcome::Success)
+            .count();
+        let priced = rows.iter().all(|row| {
+            row.cost_status == CostStatus::Known
+                && row
                     .cost_usd
                     .is_some_and(|value| value.is_finite() && value >= 0.0)
         });
@@ -389,11 +487,11 @@ impl OfflineTuner {
                 resolved as f64 / completed as f64
             },
             average_cost_usd: priced.then(|| {
-                cells.iter().filter_map(|cell| cell.cost_usd).sum::<f64>() / cells.len() as f64
+                rows.iter().filter_map(|row| row.cost_usd).sum::<f64>() / rows.len() as f64
             }),
-            average_latency_ms: cells.iter().map(|cell| cell.elapsed_ms as f64).sum::<f64>()
-                / cells.len() as f64,
-            manifest_digest: digest(manifest)?,
+            average_latency_ms: rows.iter().map(|row| row.elapsed_ms as f64).sum::<f64>()
+                / rows.len() as f64,
+            manifest_digest: evidence.document_sha256.clone(),
         };
         self.commit(TunerEvent::ObservationRecorded {
             result: Box::new(result.clone()),

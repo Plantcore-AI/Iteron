@@ -7,9 +7,10 @@
 //! release record and active-bundle pointer. It has no runtime registry handle or loader, so
 //! adaptive runtime activation remains explicitly **NO-GO**.
 //!
-//! The contracts are method-agnostic: hand-authored rules, search, contextual bandits, SFT,
-//! preference optimization, GRPO, offline RL, online RL, LoRA/adapters, and generated policy code
-//! may eventually produce the same versioned [`PolicyManifest`]. For now, these types support
+//! The contracts are optimizer-agnostic, but the optimized object is always the harness. Legacy
+//! SFT, preference, GRPO, and RL method names are producer-provenance labels for harness artifacts;
+//! they do not authorize model training. Base-model weights and adapters are frozen and reserved
+//! artifact vocabulary that [`PolicyManifest::validate`] always refuses. These types support
 //! recording, offline validation, and assessment only.
 
 use iteron_protocol::Capability;
@@ -253,7 +254,7 @@ pub enum ContractError {
     MissingIdentity,
     #[error("policy artifact locator must be non-empty")]
     MissingArtifactLocator,
-    #[error("data-derived policy method {0:?} requires an optimization/training dataset digest")]
+    #[error("data-derived harness method {0:?} requires an optimization dataset digest")]
     MissingTrainingDataset(EvolutionMethod),
     #[error("policy bundle id must be non-empty and contain at least one policy")]
     InvalidBundleIdentity,
@@ -465,7 +466,9 @@ pub enum ArtifactKind {
     Rules,
     Prompt,
     WasmComponent,
+    /// Reserved wire value. Iteron never produces, admits, or activates a model adapter.
     ModelAdapter,
+    /// Reserved wire value. Iteron never produces, admits, or activates model weights.
     ModelWeights,
     ExternalService,
     /// Statically linked Rust implementation shipped with this exact Core build.
@@ -477,7 +480,9 @@ pub enum ArtifactKind {
     Unknown,
 }
 
-/// How the candidate was produced. Promotion semantics deliberately do not depend on this field.
+/// How a harness candidate was produced. Promotion semantics deliberately do not depend on this
+/// field. The SFT, preference, GRPO, and RL spellings are retained as wire-compatible producer
+/// provenance labels only; none of them authorizes changing or exporting data to train a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvolutionMethod {
@@ -547,9 +552,10 @@ impl PolicyRef {
     }
 }
 
-/// Claimed provenance and compatibility for a candidate. Dataset and eval digest fields are
-/// mandatory for learned policies, but validation checks only their encoding. A future trusted
-/// registry must recompute and attest the content and detect train/eval overlap.
+/// Claimed provenance and compatibility for a harness candidate. Optimization-dataset and eval
+/// digest fields are mandatory for data-derived policies, but validation checks only their
+/// encoding. A future trusted registry must recompute and attest the content and detect
+/// optimization/evaluation overlap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyManifest {
     pub schema_version: u16,
@@ -579,6 +585,14 @@ impl PolicyManifest {
         if self.artifact_kind == ArtifactKind::Unknown {
             return Err(ContractError::UnrecognisedVocabulary(
                 "artifact kind is unknown to this build",
+            ));
+        }
+        if matches!(
+            self.artifact_kind,
+            ArtifactKind::ModelAdapter | ArtifactKind::ModelWeights
+        ) {
+            return Err(ContractError::UnrecognisedVocabulary(
+                "model artifacts are reserved: Iteron only admits harness artifacts",
             ));
         }
         if self.method == EvolutionMethod::Unknown {
@@ -625,9 +639,9 @@ impl PolicyManifest {
 
 impl EvolutionMethod {
     fn requires_training_data(self) -> bool {
-        // Search, bandits and generated code can leak or overfit their optimization corpus just as
-        // gradient-based methods can. Represent a genuinely data-free candidate as HandAuthored;
-        // every data-derived method must pin the exact governed input set.
+        // Every data-derived harness producer can leak or overfit its optimization corpus.
+        // Represent a genuinely data-free candidate as HandAuthored; every other producer label
+        // must pin the exact governed input set.
         !matches!(self, Self::HandAuthored)
     }
 }
@@ -799,14 +813,27 @@ pub enum DataClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrainingConsent {
+    /// The record may be used by an offline producer to optimize a harness artifact. This value
+    /// never grants model-training use; Iteron exposes no model-training export target.
     Allowed,
     EvaluationOnly,
     Denied,
 }
 
+/// Closed set of destinations for a trajectory projection. Model training is deliberately not a
+/// variant: unknown/future wire values fail closed rather than widening recorded consent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrajectoryExportTarget {
+    HarnessOptimization,
+    Evaluation,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Governance is part of the trajectory rather than an out-of-band promise. Runtime audit data
-/// and training data are separate products: a run may be retained for compliance but ineligible
-/// for learning.
+/// and harness-optimization data are separate products: a run may be retained for compliance but
+/// ineligible for producing a harness checkpoint. No trajectory API targets model training.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataGovernance {
     pub class: DataClass,
@@ -882,9 +909,10 @@ impl RewardVector {
     }
 }
 
-/// Content-minimal training/evaluation projection of a run. It is not safe to aggregate merely
-/// because it validates: tenant, governance, digests, and redaction status remain unauthenticated
-/// assertions until a future evolution TCB verifies them.
+/// Content-minimal harness-optimization/evaluation projection of a run. It is not safe to
+/// aggregate merely because it validates: tenant, governance, digests, and redaction status remain
+/// unauthenticated assertions until a future evolution TCB verifies them. The projection has no
+/// model-training export target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrajectoryEnvelope {
     pub schema_version: u16,
@@ -901,6 +929,32 @@ pub struct TrajectoryEnvelope {
 }
 
 impl TrajectoryEnvelope {
+    /// Validate an explicitly scoped export. There is no model-training target.
+    pub fn validate_for_export(&self, target: TrajectoryExportTarget) -> Result<(), ContractError> {
+        self.validate()?;
+        match target {
+            TrajectoryExportTarget::HarnessOptimization
+                if self.governance.consent == TrainingConsent::Allowed =>
+            {
+                Ok(())
+            }
+            TrajectoryExportTarget::Evaluation
+                if matches!(
+                    self.governance.consent,
+                    TrainingConsent::Allowed | TrainingConsent::EvaluationOnly
+                ) =>
+            {
+                Ok(())
+            }
+            TrajectoryExportTarget::Unknown => Err(ContractError::UnrecognisedVocabulary(
+                "trajectory export target is unknown to this build",
+            )),
+            _ => Err(ContractError::UnrecognisedVocabulary(
+                "recorded consent does not permit the requested trajectory export target",
+            )),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.schema_version != EVOLUTION_SCHEMA_VERSION {
             return Err(ContractError::UnsupportedSchema(self.schema_version));
@@ -1491,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn learned_manifest_requires_training_provenance() {
+    fn reserved_model_artifacts_are_refused_before_provenance_checks() {
         let manifest = PolicyManifest {
             schema_version: EVOLUTION_SCHEMA_VERSION,
             policy: policy(StrategySlot::planner(), "planner-grpo"),
@@ -1507,7 +1561,70 @@ mod tests {
         };
         assert!(matches!(
             manifest.validate(),
+            Err(ContractError::UnrecognisedVocabulary(
+                "model artifacts are reserved: Iteron only admits harness artifacts"
+            ))
+        ));
+    }
+
+    #[test]
+    fn data_derived_harness_manifest_requires_optimization_provenance() {
+        let manifest = PolicyManifest {
+            schema_version: EVOLUTION_SCHEMA_VERSION,
+            policy: policy(StrategySlot::planner(), "planner-grpo"),
+            artifact_kind: ArtifactKind::Prompt,
+            artifact_locator: "registry://planner-grpo@1.0.0".into(),
+            parent: None,
+            method: EvolutionMethod::Grpo,
+            protocol: ProtocolRange { min: 1, max: 1 },
+            required_capabilities: BTreeSet::new(),
+            training_dataset_digest: None,
+            evaluation_suite_digest: D.into(),
+            base_model: crate::BaseModelId::unspecified(),
+        };
+        assert!(matches!(
+            manifest.validate(),
             Err(ContractError::MissingTrainingDataset(EvolutionMethod::Grpo))
+        ));
+    }
+
+    #[test]
+    fn both_reserved_model_artifact_wire_values_fail_closed() {
+        for artifact_kind in [ArtifactKind::ModelAdapter, ArtifactKind::ModelWeights] {
+            let manifest = PolicyManifest {
+                schema_version: EVOLUTION_SCHEMA_VERSION,
+                policy: policy(StrategySlot::planner(), "frozen-model-refusal"),
+                artifact_kind,
+                artifact_locator: "reserved://must-not-load".into(),
+                parent: None,
+                method: EvolutionMethod::HandAuthored,
+                protocol: ProtocolRange { min: 1, max: 1 },
+                required_capabilities: BTreeSet::new(),
+                training_dataset_digest: None,
+                evaluation_suite_digest: D.into(),
+                base_model: crate::BaseModelId::unspecified(),
+            };
+            assert!(matches!(
+                manifest.validate(),
+                Err(ContractError::UnrecognisedVocabulary(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn model_training_is_not_a_trajectory_export_target() {
+        let target: TrajectoryExportTarget = serde_json::from_str(r#""model_training""#).unwrap();
+        assert_eq!(target, TrajectoryExportTarget::Unknown);
+        assert!(matches!(
+            envelope(DataGovernance {
+                class: DataClass::Public,
+                consent: TrainingConsent::Allowed,
+                content_license: Some("Apache-2.0".into()),
+                contains_secret_material: false,
+                retention_policy: "training-v1".into(),
+            })
+            .validate_for_export(target),
+            Err(ContractError::UnrecognisedVocabulary(_))
         ));
     }
 

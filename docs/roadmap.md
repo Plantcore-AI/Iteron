@@ -112,8 +112,8 @@ Acceptance gates:
 
 - immutable trajectory and consent-aware dataset registries;
 - held-out evaluation, shadow, canary, promotion, rollback, and audit trails;
-- bounded strategy slots for search, bandits, SFT, preference optimization, GRPO,
-  offline RL, and later methods;
+- bounded strategy slots with optimizer-neutral harness-producer provenance
+  (legacy SFT/preference/GRPO/RL names never authorize model training);
 - independent evaluation ownership and contamination controls;
 - a second non-coding vertical demonstrated without a kernel branch.
 

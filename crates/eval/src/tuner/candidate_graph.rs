@@ -227,11 +227,53 @@ pub struct CandidatePatch {
     pub value: ResolutionValue,
 }
 
+/// Runtime class of one production-plan node. This is carried beside the full dimension rather
+/// than standing in for it: an adapter must receive and apply the value-bearing dimension, not
+/// merely acknowledge an address or digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateNodeClass {
+    UnifiedProfile,
+    DirectConfig,
+    CallerInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateExecutionDependency {
+    pub address: CandidateAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<CandidateCondition>,
+}
+
+/// One value-bearing node in the exact order in which production composition must apply it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateExecutionNode {
+    pub ordinal: u32,
+    pub class: CandidateNodeClass,
+    pub dimension: CandidateDimension,
+    #[serde(default)]
+    pub dependencies: Vec<CandidateExecutionDependency>,
+}
+
+/// Closed production plan consumed by the combined native adapter. Implementation bindings are
+/// part of the same plan and the same terminal receipt, even though graph edges address value
+/// dimensions (implementation lifecycle dependencies remain marketplace-owned).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateProductionPlan {
+    pub nodes: Vec<CandidateExecutionNode>,
+    pub implementations: Vec<CandidateImplementation>,
+}
+
 /// Every accepted v3 dimension occurs exactly once in one of these outputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateMaterialization {
     pub profile: ProfileDocument,
+    /// Exact value-bearing graph nodes retained for production ordering and consumption receipts.
+    pub dimensions: Vec<CandidateDimension>,
     pub direct_config_patches: Vec<CandidatePatch>,
     pub caller_input_patches: Vec<CandidatePatch>,
     pub implementations: Vec<CandidateImplementation>,
@@ -344,6 +386,7 @@ impl CandidateGraph {
         iteron_tunables::validate_profile(&profile).map_err(|error| invalid(&error.to_string()))?;
         Ok(CandidateMaterialization {
             profile,
+            dimensions: self.dimensions.clone(),
             direct_config_patches,
             caller_input_patches,
             implementations: self.implementations.clone(),
@@ -371,6 +414,102 @@ impl CandidateMaterialization {
     pub fn has_native_patches(&self) -> bool {
         !self.direct_config_patches.is_empty() || !self.caller_input_patches.is_empty()
     }
+
+    /// Resolve the validated topology into one deterministic production order. Conditions are
+    /// retained on the dependent node so the production adapter must evaluate them before apply.
+    /// A second fail-closed graph check here prevents a deserialized/materialized value from ever
+    /// being treated as an executable plan solely because its topology digest was accepted.
+    pub fn production_plan(&self) -> Result<CandidateProductionPlan, TunerError> {
+        production_plan_from_dimensions(&self.dimensions, &self.topology, &self.implementations)
+    }
+}
+
+fn production_plan_from_dimensions(
+    dimensions: &[CandidateDimension],
+    topology: &[CandidateTopologyEdge],
+    implementations: &[CandidateImplementation],
+) -> Result<CandidateProductionPlan, TunerError> {
+    let mut by_address = BTreeMap::new();
+    let mut values = BTreeMap::new();
+    for dimension in dimensions {
+        dimension.validate()?;
+        if by_address
+            .insert(dimension.address().clone(), dimension.clone())
+            .is_some()
+        {
+            return Err(invalid("production plan contains a duplicate node"));
+        }
+        values.insert(dimension.address().clone(), dimension.value());
+    }
+    validate_implementations(implementations)?;
+    validate_topology(topology, &values)?;
+
+    let mut indegree = by_address
+        .keys()
+        .cloned()
+        .map(|address| (address, 0_usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut outgoing = BTreeMap::<CandidateAddress, Vec<CandidateAddress>>::new();
+    let mut dependencies = BTreeMap::<CandidateAddress, Vec<CandidateExecutionDependency>>::new();
+    for edge in topology {
+        *indegree
+            .get_mut(&edge.dependent)
+            .ok_or_else(|| invalid("production topology names a missing dependent node"))? += 1;
+        outgoing
+            .entry(edge.dependency.clone())
+            .or_default()
+            .push(edge.dependent.clone());
+        dependencies
+            .entry(edge.dependent.clone())
+            .or_default()
+            .push(CandidateExecutionDependency {
+                address: edge.dependency.clone(),
+                condition: edge.condition.clone(),
+            });
+    }
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(address, degree)| (*degree == 0).then_some(address.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut ordered = Vec::with_capacity(by_address.len());
+    while let Some(address) = ready.pop_first() {
+        let dimension = by_address
+            .get(&address)
+            .cloned()
+            .ok_or_else(|| invalid("production topology lost a node"))?;
+        let class = match address.kind {
+            CandidateAddressKind::UnifiedProfile => CandidateNodeClass::UnifiedProfile,
+            CandidateAddressKind::DirectConfig => CandidateNodeClass::DirectConfig,
+            CandidateAddressKind::CallerInput => CandidateNodeClass::CallerInput,
+        };
+        ordered.push(CandidateExecutionNode {
+            ordinal: ordered
+                .len()
+                .try_into()
+                .map_err(|_| invalid("production topology ordinal overflow"))?,
+            class,
+            dimension,
+            dependencies: dependencies.remove(&address).unwrap_or_default(),
+        });
+        for dependent in outgoing.get(&address).into_iter().flatten() {
+            let degree = indegree
+                .get_mut(dependent)
+                .ok_or_else(|| invalid("production topology names a missing node"))?;
+            *degree = degree
+                .checked_sub(1)
+                .ok_or_else(|| invalid("production topology indegree underflow"))?;
+            if *degree == 0 {
+                ready.insert(dependent.clone());
+            }
+        }
+    }
+    if ordered.len() != by_address.len() {
+        return Err(invalid("production topology contains a cycle"));
+    }
+    Ok(CandidateProductionPlan {
+        nodes: ordered,
+        implementations: implementations.to_vec(),
+    })
 }
 
 fn profile_address(

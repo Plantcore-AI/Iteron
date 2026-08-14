@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iteron.dev/schema/synthetic-cycle-authorization-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "authorization_id",
+    "authorized_by",
+    "authorization_scope",
+    "approval_artifact_path",
+    "approval_artifact_sha256",
+    "source_frozen_model",
+    "target_frozen_model",
+    "primary_producer",
+    "secondary_producer",
+    "provider",
+    "model_training_authorized"
+  ],
+  "properties": {
+    "schema_id": { "const": "iteron-synthetic-cycle-authorization/1" },
+    "authorization_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "authorized_by": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "authorization_scope": { "const": "synthetic_harness_promotion_and_rollback" },
+    "approval_artifact_path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "approval_artifact_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "source_frozen_model": { "$ref": "#/$defs/frozenModel" },
+    "target_frozen_model": { "$ref": "#/$defs/frozenModel" },
+    "primary_producer": { "enum": ["rule_search", "prompt_preference"] },
+    "secondary_producer": { "enum": ["rule_search", "prompt_preference"] },
+    "provider": { "const": "none" },
+    "model_training_authorized": { "const": false }
+  },
+  "$defs": {
+    "frozenModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_family", "model_id", "model_digest"],
+      "properties": {
+        "model_family": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "model_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

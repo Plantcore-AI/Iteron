@@ -406,11 +406,11 @@ def probe_non_rust_harness(pin: dict[str, Any]) -> dict[str, Any]:
             raise QualificationError(f"adapter[{index}] operations are unbounded")
     if pins != {
         ("iteron-cli", "1"),
-        ("iteron-native-adapter", "1"),
+        ("iteron-native-adapter", "2"),
         ("terminal-bench", "2.1"),
     }:
         raise QualificationError(
-            "adapter registry is not exactly iteron-cli/1 + iteron-native-adapter/1 + terminal-bench/2.1"
+            "adapter registry is not exactly iteron-cli/1 + iteron-native-adapter/2 + terminal-bench/2.1"
         )
     surface = payload["surface"]
     if not isinstance(surface, dict):

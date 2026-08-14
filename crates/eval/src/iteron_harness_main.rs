@@ -21,10 +21,25 @@ fn main() -> std::process::ExitCode {
     {
         return iteron_eval::qualification_campaign::run_provider_cli(&args[1..]);
     }
+    if args
+        .first()
+        .is_some_and(|operation| operation == "hermetic-fixture")
+    {
+        return iteron_eval::run_hermetic_fixture_cli(&args[1..]);
+    }
+    if args
+        .first()
+        .is_some_and(|operation| operation == "synthetic-cycle")
+    {
+        return iteron_eval::engineering_cycle::run_synthetic_cycle_cli(&args[1..]);
+    }
     let result = match args.as_slice() {
         [operation] if operation == "surface" => one_shot(AdapterOperation::Surface),
         [operation] if operation == "candidate-validate" => {
             one_shot(AdapterOperation::CandidateValidate)
+        }
+        [operation, bundle, trusted_public_key] if operation == "scoreboard" => {
+            scoreboard(Path::new(bundle), trusted_public_key)
         }
         [operation, flag, binary_flag, binary]
             if operation == "serve"
@@ -42,7 +57,7 @@ fn main() -> std::process::ExitCode {
         }
         [operation] if operation == "serve" => serve(ResearchExecutionMode::DryRun, None),
         _ => Err(
-            "usage: iteron-harness <surface|candidate-validate|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
+            "usage: iteron-harness <surface|candidate-validate|scoreboard BUNDLE_DIR TRUSTED_PUBLIC_KEY|hermetic-fixture --output CREATE_NEW_FILE|synthetic-cycle --authorization FILE --output CREATE_NEW_DIRECTORY|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
                 .into(),
         ),
     };
@@ -53,6 +68,20 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(2)
         }
     }
+}
+
+fn scoreboard(bundle: &Path, trusted_public_key: &str) -> Result<(), String> {
+    let board = iteron_eval::generate_evidence_scoreboard(bundle, trusted_public_key)
+        .map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&board).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_PROTOCOL_RESPONSE_BYTES {
+        return Err("scoreboard exceeds the protocol response byte bound".into());
+    }
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())
 }
 
 fn serve_native(path: &Path) -> Result<(), String> {

@@ -37,7 +37,7 @@
 Iteron combines a focused full-screen coding experience with a modular Rust
 runtime. It supports interactive work, bounded one-shot automation, explicit
 permissions, provider routing, durable sessions, verification, and
-machine-readable output.
+machine-readable output. The current workspace version is **v0.0.5**.
 
 ## Install
 
@@ -50,6 +50,17 @@ and does not edit shell profiles. Release targets are macOS arm64, Linux arm64,
 and Linux x86-64. See the [installation and verification
 guide](docs/getting-started/installation.md) for version pinning, checksums,
 attestations, and source builds.
+
+Verify that the installed directory is on the shell's executable search path:
+
+```sh
+command -v iteron
+iteron --version
+```
+
+If the first command prints nothing, add the install directory (normally
+`$HOME/.local/bin`) to `PATH` and open a new shell. This check does not need a
+provider credential.
 
 ## Quickstart
 
@@ -90,6 +101,8 @@ iteron -p -C /path/to/untrusted-repository --ask-permissions --confine \
 Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
 [Setup and BYOK](docs/getting-started/setup-and-byok.md), and the
 [permissions and sandbox guide](docs/using/permissions-and-sandbox.md).
+Provider setup can be diagnosed without exposing or loading a credential; see
+[credential-free provider diagnosis](docs/getting-started/provider-diagnosis.md).
 
 ## Why Iteron
 
@@ -110,6 +123,12 @@ reach the runtime only through held-out evaluation, shadow, canary, and explicit
 human promotion. See the [architecture guide](docs/architecture.md) for the
 current implementation boundary and extraction path.
 
+Iteron optimizes **harness artifacts only**. Base-model weights and adapters are
+frozen: their reserved manifest values are rejected. SFT, preference, GRPO, and
+RL names in the evolution wire vocabulary describe producer provenance for a
+harness artifact; they do not authorize model training or trajectory export for
+model training.
+
 ![Iteron target architecture in English](docs/assets/architecture/iteron-architecture-en.png)
 
 ## What ships today
@@ -126,8 +145,11 @@ current implementation boundary and extraction path.
   replay-oriented contracts.
 
 Iteron remains a modular monolith; it does not claim complete microkernel
-conformance, production readiness, confidentiality isolation, or live
-self-evolution. The [architecture](docs/architecture.md), [project
+conformance, production readiness, confidentiality isolation, live
+self-evolution, or benchmark performance. The [evidence-bound claim
+sheet](docs/reference/claim-sheet.md), [systems-paper
+draft](docs/reference/harness-checkpoints-paper.md),
+[architecture](docs/architecture.md), [project
 status](docs/project/status.md), and [roadmap](docs/roadmap.md) distinguish
 shipped behavior from target contracts.
 

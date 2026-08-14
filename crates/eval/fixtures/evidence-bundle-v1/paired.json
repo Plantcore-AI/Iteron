@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "report_type": "signed_evidence_bundle",
+  "corpus_version": "evidence-bundle-v1-fixture",
+  "dataset_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "model": "synthetic-fixed-model",
+  "provider": "synthetic-provider",
+  "comparison": {
+    "baseline": {
+      "name": "baseline_arm",
+      "attempted": 1,
+      "completed": 1,
+      "resolved": 1,
+      "resolved_rate": 1.0,
+      "failed_runs": 0
+    },
+    "treatment": {
+      "name": "candidate_arm",
+      "attempted": 1,
+      "completed": 1,
+      "resolved": 0,
+      "resolved_rate": 0.0,
+      "failed_runs": 0
+    },
+    "matched_pairs": 1,
+    "minimum_pairs": 1,
+    "resolved_rate_delta": -1.0,
+    "paired_ci95": [
+      -1.0,
+      -1.0
+    ],
+    "statistical_conclusion": {
+      "status": "significant_decrease"
+    },
+    "statistically_significant": true,
+    "cost_delta_usd": 0.1,
+    "cost_delta_reason": null
+  },
+  "kernel_tax": {
+    "label": "kernel_tax",
+    "status": "reserved",
+    "turns_delta": null,
+    "cost_delta_usd": null,
+    "latency_delta_ms": null,
+    "included_in_resolved_rate": false
+  }
+}

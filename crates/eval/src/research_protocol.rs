@@ -3,13 +3,16 @@
 use crate::adapter_registry::{AdapterOperation, AdapterPin, AdapterRegistryEntry};
 use crate::strict_json::parse_json_no_duplicates;
 use crate::terminal_bench::{AdapterCommand, ArtifactReference, TerminalBenchRequest};
-use crate::tuner::{CandidateAddress, CandidateGraphIdentity, CandidatePatch, TunerCandidate};
+use crate::tuner::{
+    CandidateAddress, CandidateGraphIdentity, CandidateNodeClass, CandidatePatch,
+    CandidateProductionPlan, TunerCandidate,
+};
 use serde::{Deserialize, Serialize};
 
 pub const RESEARCH_PROTOCOL: &str = "iteron-research/1";
-pub const EXTERNAL_NATIVE_ADAPTER_PROTOCOL: &str = "iteron-native-adapter/1";
-pub const NATIVE_MATERIALIZATION_SCHEMA: &str = "iteron-candidate-materialization/1";
-pub const NATIVE_CONSUMPTION_SCHEMA: &str = "iteron-candidate-materialization-consumption/1";
+pub const EXTERNAL_NATIVE_ADAPTER_PROTOCOL: &str = "iteron-native-adapter/2";
+pub const NATIVE_MATERIALIZATION_SCHEMA: &str = "iteron-candidate-materialization/2";
+pub const NATIVE_CONSUMPTION_SCHEMA: &str = "iteron-candidate-materialization-consumption/2";
 pub const EXTERNAL_NATIVE_RESULT_SCHEMA: &str = "iteron-native-adapter-result/1";
 pub const MAX_NATIVE_MATERIALIZATION_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_NATIVE_RECEIPT_BYTES: usize = 4 * 1024 * 1024;
@@ -129,6 +132,9 @@ pub struct NativeMaterializationDocument {
     pub schema_id: String,
     pub candidate_sha256: String,
     pub candidate_graph_identity: CandidateGraphIdentity,
+    pub implementation_activation_sha256: Option<String>,
+    /// Full value-bearing production graph. A digest without this plan is never executable.
+    pub production_plan: CandidateProductionPlan,
     pub direct_config_patches: Vec<CandidatePatch>,
     pub caller_input_patches: Vec<CandidatePatch>,
 }
@@ -146,6 +152,36 @@ pub struct NativePatchConsumption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NativeNodeConsumption {
+    pub ordinal: u32,
+    pub address: CandidateAddress,
+    pub class: CandidateNodeClass,
+    pub input_node_sha256: String,
+    pub observed_node_sha256: String,
+    pub dependencies_loaded: bool,
+    pub conditions_satisfied: bool,
+    pub loaded: bool,
+    pub applied: bool,
+    pub observed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeImplementationConsumption {
+    pub module: iteron_tunables::ModuleId,
+    pub implementation_id: String,
+    pub input_binding_sha256: String,
+    pub observed_binding_sha256: String,
+    pub loaded: bool,
+    pub applied: bool,
+    pub observed: bool,
+    pub started: bool,
+    pub terminal: bool,
+    pub stopped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeConsumptionReceipt {
     pub schema_id: String,
     pub candidate_sha256: String,
@@ -153,7 +189,10 @@ pub struct NativeConsumptionReceipt {
     pub experiment_sha256: String,
     pub topology_sha256: String,
     pub native_materialization_sha256: String,
+    pub implementation_activation_sha256: Option<String>,
     pub run_id: String,
+    pub nodes: Vec<NativeNodeConsumption>,
+    pub implementations: Vec<NativeImplementationConsumption>,
     pub patches: Vec<NativePatchConsumption>,
 }
 

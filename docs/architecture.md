@@ -31,13 +31,16 @@ do not receive ambient authority.
 
 ### Evolution control plane
 
-A future isolated control plane may produce immutable strategy candidates through
-search, bandits, SFT, preference optimization, GRPO, offline RL, or later methods.
+A future isolated control plane may produce immutable **harness** candidates.
+SFT, preference, GRPO, and RL names are producer-provenance labels for harness
+artifacts only; the base model remains frozen.
 Promotion follows trajectory to governed dataset to candidate to held-out
 evaluation to shadow to canary to active, with deterministic rollback.
 
 Safety policy, permissions, durability, evidence integrity, budgets, data consent,
 and promotion authority remain human-controlled and cannot be optimized away.
+Model adapters and weights are reserved manifest vocabulary and fail validation;
+trajectory projection has no model-training export target.
 
 ## Current implementation truth
 

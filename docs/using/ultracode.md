@@ -1,42 +1,36 @@
 # Ultracode
 
 Ultracode is Iteron's highest effort setting. It combines the maximum
-provider-facing reasoning intent with a bounded internal investigation-and-write
-workflow.
+provider-facing reasoning intent with access to Iteron's bounded dynamic-workflow
+engine.
 
 ```sh
 iteron --effort ultracode
 ```
 
-## Current workflow
+## Model-directed workflows
 
-For a substantive task, the current policy may:
+An Ultracode submission goes to the main model before any workflow is launched. The model may work
+directly, or call `Workflow` with a task-specific JavaScript program when delegation or a richer
+execution topology is useful. There is no mandatory stage sequence and no keyword router that
+turns an under-specified task into fan-out.
 
-1. classify the task and decide that fan-out is not beneficial;
-2. produce a bounded, normalized set of read-only investigation leaves;
-3. run viable investigators under explicit turn and time reserves;
-4. reduce their untrusted evidence in declaration order;
-5. give one writer the original task plus the bounded evidence.
+Scripts may compose `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()` in whatever
+bounded graph the task needs. They must handle failed agents, represented as `null`, explicitly.
+Omitting `background`, or setting it to `false`, keeps prerequisite results in the current turn;
+`background: true` is for independent work and returns a task receipt immediately.
 
-Investigators run bounded-concurrent: several are in flight at once, capped by a
-permit pool, and the live tree renders one row per investigator. Iteron does
-not claim a generic DAG scheduler or multiple concurrent writers. If
-decomposition fails, yields no useful evidence, or would consume the writer
-reserve, Iteron falls back to the single writer.
-
-## Workflow scripts
-
-The same engine also runs standalone workflow scripts — JavaScript files that
-call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`. See
+The same engine runs standalone workflow scripts from the CLI. See
 `iteron workflow` in the [CLI reference](../reference/cli.md) and the example
 script at `crates/workflow/examples/repo-audit.js`.
 
 ## Authority remains fixed
 
-Investigators are read-only. The writer still uses the same permission gate,
-budgets, durable record, and verification path. Internal orchestration cannot
-grant capabilities, relax ceilings, rewrite evidence, or promote a learned
-strategy.
+The host, not the script, grants agent definitions and tools. Workflow calls remain bounded by the
+same concurrency, call, turn, token, wall-time, recursion, durable-record, and cancellation
+controls. Write-capable agents use host-owned worktrees; the host verifies and serially merges
+their patches, rejecting conflicts. A model-authored workflow cannot grant capabilities, relax a
+ceiling, merge its own patch, rewrite evidence, or promote a learned strategy.
 
 Ultracode is an experimental harness policy, not an autonomous software team and
 not a claim of parity with another coding agent.

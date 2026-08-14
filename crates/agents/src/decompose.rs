@@ -1,10 +1,9 @@
-//! `Decomposer` — the deterministic task-class router and plan instantiator.
+//! `Decomposer` — deterministic task classification and bounded plan instantiation.
 //!
-//! "Control flow is not the model's" (`user-prior-art.md` §3 #6). So the harness owns the topology:
-//! a deterministic `route()` heuristic picks a `TaskClass`, and `plan()` instantiates a fixed
-//! `Fan → Reduce` topology for the evidence classes (the model only ever fills the leaf prompts).
-//! A task that names a concrete location routes to `Localized` → the caller falls back to the
-//! single-agent loop, because fan-out is net-negative on a localized change (ADR-005).
+//! The classifier records cheap task-shape evidence and `plan()` can bound an already-proposed set
+//! of leaves. It does not positively admit fan-out: model-directed workflow topology enters through
+//! the workflow proposal surface, while the baseline router returns a direct route for every class
+//! (ADR-0002). A replacement strategy may still propose bounded breadth through the typed slot.
 //!
 //! The heuristic is coarse by design — a cheap-model classifier is a designed pluggable upgrade
 //! (ADR-011), not built here. It is a pure function of `(task, RepoSignals)` with no I/O, so the
@@ -67,9 +66,9 @@ pub struct NormalizedLeaves {
 pub enum TaskClass {
     /// Names a concrete path / symbol / line / stack frame → single-agent loop (no fan-out).
     Localized,
-    /// Under-specified localization: the *where* is unknown; fan out to find it.
+    /// Under-specified localization: the *where* is unknown.
     UnderSpecified,
-    /// Spans many files (rename / refactor / cross-cutting change); fan out to cover them.
+    /// Spans many files (rename / refactor / cross-cutting change).
     MultiFile,
     /// Requires running/reproducing to understand (a crash, a failing/flaky test, a regression).
     RunToUnderstand,
@@ -864,19 +863,13 @@ impl RouterStrategy {
         })
     }
 
-    /// The baseline route: the existing deterministic heuristic, narrowed to the offer.
+    /// The baseline route classifies task shape but never positively admits fan-out.
     ///
-    /// A fanning class the caller did not permit becomes a direct route rather than an error —
-    /// "you may not fan out" is an answer the router can honour. The class is preserved, so the
-    /// record still says what the task looked like even when it was not allowed to fan.
+    /// Positive workflow admission belongs to the main model's task-specific `Workflow` proposal.
+    /// The class is preserved as evidence for records and replacement strategies, while zero
+    /// breadth makes the deterministic fallback direct regardless of lexical matches.
     fn decide_typed(input: &RouterSlotObservation) -> RouterRoute {
         let class = Decomposer::route(&input.task, &input.repo);
-        if class.fans_out() && input.fan_out_permitted {
-            return RouterRoute {
-                class,
-                max_leaves: input.max_leaves,
-            };
-        }
         RouterRoute::direct(class)
     }
 
@@ -935,7 +928,7 @@ mod router_slot_tests {
     }
 
     #[test]
-    fn the_slot_returns_the_same_class_the_inherent_heuristic_does() {
+    fn the_baseline_preserves_classification_but_never_positively_fans() {
         let input = broad();
         let proposal = RouterStrategy::default()
             .route(&input, read_only())
@@ -945,7 +938,8 @@ mod router_slot_tests {
             Decomposer::route(&input.task, &input.repo),
             "putting route() behind the seam must not change what it decides"
         );
-        assert_eq!(proposal.route.max_leaves, FAN_CAP as u16);
+        assert_eq!(proposal.route.max_leaves, 0);
+        assert!(!proposal.route.fans_out());
         assert!(proposal.eligible.contains(Capability::ReadOnly));
     }
 
@@ -1011,12 +1005,33 @@ mod router_slot_tests {
     }
 
     #[test]
-    fn a_narrower_leaf_ceiling_is_honoured_not_ignored() {
+    fn a_replacement_may_narrow_the_offered_leaf_ceiling() {
+        struct Narrowing(SlotId);
+        impl StrategySlot for Narrowing {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+
+            fn decide(&self, observation: &SlotObservation) -> SlotOutcome {
+                let input: RouterSlotObservation =
+                    serde_json::from_value(observation.payload.clone()).unwrap();
+                SlotOutcome {
+                    admitted: CapabilitySet::only(Capability::ReadOnly),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute {
+                            class: TaskClass::MultiFile,
+                            max_leaves: input.max_leaves.min(3),
+                        },
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
         let mut input = broad();
-        input.max_leaves = 3;
-        let proposal = RouterStrategy::default()
-            .route(&input, read_only())
-            .unwrap();
+        input.max_leaves = 8;
+        let proposal =
+            RouterStrategy::route_with(&Narrowing(router_slot()), &input, read_only()).unwrap();
         assert_eq!(proposal.route.max_leaves, 3);
 
         let leaves: Vec<String> = (0..9).map(|index| format!("leaf {index}")).collect();

@@ -55,10 +55,10 @@ class QualificationContractTest(unittest.TestCase):
                 },
                 {
                     "benchmark_id": "iteron-native-adapter",
-                    "benchmark_version": "1",
+                    "benchmark_version": "2",
                     "request_schema_id": "iteron-research/1#external-native-run-request",
                     "result_schema_id": "iteron-native-adapter-result/1",
-                    "materialization_protocol": "iteron-native-adapter/1",
+                    "materialization_protocol": "iteron-native-adapter/2",
                     "supported_operations": [
                         "surface",
                         "candidate_validate",

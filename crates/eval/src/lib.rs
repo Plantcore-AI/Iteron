@@ -10,6 +10,7 @@ pub mod attestation;
 pub mod contract;
 mod contract_result;
 pub mod corpus;
+pub mod engineering_cycle;
 pub mod evidence;
 pub mod evidence_bundle;
 pub mod measurement;
@@ -23,6 +24,7 @@ pub mod report;
 mod research_execution;
 pub mod research_protocol;
 pub mod runner;
+pub mod scoreboard;
 mod statistics;
 mod strict_json;
 pub mod terminal_bench;
@@ -55,8 +57,11 @@ pub use evidence::{
     paired_projection_report, sign_held_out_evidence,
 };
 pub use evidence_bundle::{
-    BundleComparison, BundleFile, EvidenceBundleError, EvidenceBundleIndex, EvidenceBundleInput,
-    EvidenceSigner, VerifiedEvidenceBundle, compile_evidence_bundle, verify_evidence_bundle,
+    BundleComparison, BundleFile, EVIDENCE_ROWS_SCHEMA_ID, EVIDENCE_ROWS_SCHEMA_VERSION,
+    EvidenceBundleError, EvidenceBundleIndex, EvidenceBundleInput, EvidenceRow, EvidenceRowOutcome,
+    EvidenceRowsDocument, EvidenceRowsProvenance, EvidenceSigner, MAX_EVIDENCE_ROWS,
+    MAX_EVIDENCE_ROWS_BYTES, VerifiedEvidenceBundle, compile_evidence_bundle,
+    emit_candidate_evidence_rows, emit_evidence_rows, parse_evidence_rows, verify_evidence_bundle,
 };
 pub use measurement::{
     KernelTaxLine, MEASUREMENT_SCHEMA_VERSION, MeasurementError, PairedArmSummary,
@@ -82,12 +87,24 @@ pub use research_protocol::{
     ExternalNativeResult, ExternalNativeRunSpec, ImplementationCandidateRef,
     MAX_NATIVE_MATERIALIZATION_BYTES, MAX_NATIVE_RECEIPT_BYTES, MAX_PROTOCOL_REQUEST_BYTES,
     MAX_PROTOCOL_RESPONSE_BYTES, NATIVE_CONSUMPTION_SCHEMA, NATIVE_MATERIALIZATION_SCHEMA,
-    NativeConsumptionReceipt, NativeMaterializationDocument, NativePatchConsumption,
-    RESEARCH_PROTOCOL, ResearchProtocolError, ResearchRequest, ResearchRequestEnvelope,
-    ResearchResponse, ResearchResponseEnvelope, ResearchRunState, ResearchTerminalResult, RunSpec,
-    parse_research_request, parse_research_response,
+    NativeConsumptionReceipt, NativeImplementationConsumption, NativeMaterializationDocument,
+    NativeNodeConsumption, NativePatchConsumption, RESEARCH_PROTOCOL, ResearchProtocolError,
+    ResearchRequest, ResearchRequestEnvelope, ResearchResponse, ResearchResponseEnvelope,
+    ResearchRunState, ResearchTerminalResult, RunSpec, parse_research_request,
+    parse_research_response,
+};
+pub use runner::hermetic::{
+    FrozenModelProviderIdentity, HERMETIC_RUN_PREVIOUS_SCHEMA_VERSION, HERMETIC_RUN_SCHEMA_VERSION,
+    HermeticFixtureReceipt, HermeticRepositoryPin, HermeticRunManifest, HermeticRunPins,
+    PhysicalAttemptIdentity, deterministic_hermetic_fixture, hermetic_config_sha256,
+    hermetic_seed_schedule_sha256, hermetic_sidecar_path, run_evaluation_hermetic,
+    run_hermetic_fixture_cli,
 };
 pub use runner::{EvalOptions, ParallelEvalOptions, run_evaluation, run_evaluation_parallel};
+pub use scoreboard::{
+    EvidenceScoreRow, EvidenceScoreboard, SCOREBOARD_SCHEMA_ID, SCOREBOARD_SCHEMA_VERSION,
+    ScoreboardError, generate_evidence_scoreboard,
+};
 pub use terminal_bench::{
     AdapterCommand, ArtifactReference, BenchmarkPin, ExternalHarnessResult, ProfileIdentity,
     ResourceBounds, ResourceUsage, RunEvidence, TaskIdentity, TerminalBenchAdapterError,
@@ -110,13 +127,14 @@ pub use trainer_bridge::{
 };
 pub use tuner::{
     CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,
-    CandidateAddressKind, CandidateCondition, CandidateDimension, CandidateExperiment,
-    CandidateGraph, CandidateGraphIdentity, CandidateImplementation, CandidateLineage,
-    CandidateMaterialization, CandidateOwnerKind, CandidatePatch, CandidateSelectorKind,
+    CandidateAddressKind, CandidateCondition, CandidateDimension, CandidateExecutionDependency,
+    CandidateExecutionNode, CandidateExperiment, CandidateGraph, CandidateGraphIdentity,
+    CandidateImplementation, CandidateLineage, CandidateMaterialization, CandidateNodeClass,
+    CandidateOwnerKind, CandidatePatch, CandidateProductionPlan, CandidateSelectorKind,
     CandidateTopologyEdge, IMPLEMENTATION_PROTOCOL, LEGACY_IMPLEMENTATION_PROTOCOL,
     LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION, MAX_CANDIDATE_TOPOLOGY_EDGES, MAX_TUNER_CONCURRENCY,
     MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialRequest, TrialResult,
-    TunerCandidate, TunerError, TunerSnapshot, TunerSpec, TunerStatus,
+    TunerCandidate, TunerError, TunerEvidenceInspection, TunerSnapshot, TunerSpec, TunerStatus,
     UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
 };
 pub use types::{

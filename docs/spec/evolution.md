@@ -2,7 +2,7 @@
 
 前面几节确立了两条不变量:microkernel 是冻结的 TCB,ABI(TaskEnvelope / ContextRequest / ToolIntent / EffectProposal / ArtifactRef)是稳定的类型边界。本节回答由此产生的核心问题:**在这个冻结的骨架之上,到底什么在进化,以什么形式沉淀,又如何安全地上线。** 这三问分别由类型(§6.1 至 §6.4)、流水线(§6.5)、门控(§6.6 至 §6.8)三组规范回答。
 
-Iteron 的定位可以压成一句:**特化一个 agent 意味着训练 harness,而不是训练 model。** 每一个非 kernel 的决策都是某个 typed policy space 里的一条 policy;它被训练出来的状态是一等公民,我们称之为 **harness checkpoint**,其具体类型是 `PolicyManifest`。它由任意训练方法(search/GEPA、SFT、preference、GRPO、RL)以**同一种形式**产出,由一个**独立的 evaluator** 在 vertical 自持的 held-out 目标上打分,像 release 一样被 promote 与 rollback,并能跨冻结的 base model 携带。一句话:**weights 学的是 prior,harness 学的是 situation。** 权重沉淀通用先验,harness checkpoint 沉淀某个 vertical 的具体情境(私有轨迹、人工纠正、工具清单、自持 verifier);这些信号对每一个 base model 都天然是 out-of-distribution 的,而且刷新速度快于任何模型发布周期。
+Iteron 的定位可以压成一句:**特化一个 agent 意味着训练 harness,而不是训练 model。** 每一个非 kernel 的决策都是某个 typed policy space 里的一条 policy;它被训练出来的状态是一等公民,我们称之为 **harness checkpoint**,其具体类型是 `PolicyManifest`。任意 harness producer 都发射同一种形式；SFT、preference、GRPO、RL 名称若出现在 wire 上，仅是 producer provenance label。checkpoint 由独立 evaluator 在 held-out 目标上打分，像 release 一样被 promote 与 rollback。base model 全程冻结。
 
 本节的规范性内容围绕以下六件事展开:harness checkpoint 的类型(§6.1)、可进化的 typed policy space(§6.2)、方法无关性与模型的关系(§6.3)、checkpoint algebra(§6.4)、离线非权威的进化流水线(§6.5)、capability-monotone admission 与独立 evaluator(§6.6 与 §6.7),最后是进化边界的硬约束、open-substrate/closed-pipeline 拆分,以及诚实的现状披露(§6.8 至 §6.10)。
 
@@ -20,7 +20,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 |---|---|---|---|
 | `schema_version` | `u16` | 契约版本,当前为 3 | MUST 等于运行时支持版本;加载器只迁移 N-1,拒绝其余(§6.4 载入语义) |
 | `policy` | `PolicyRef` | 不可变身份 = `{slot, policy_id, version, digest}` | `digest` MUST 为 artifact 字节的 SHA-256(64 位小写 hex),**不是** mutable URL |
-| `artifact_kind` | `ArtifactKind` | 实现形态:`Rules`/`Prompt`/`WasmComponent`/`ModelAdapter`/`ModelWeights`/`ExternalService`/`Builtin`/`GeneratedCode` | manifest **绝不是**把任意 native code 载入 kernel 的许可 |
+| `artifact_kind` | `ArtifactKind` | harness 实现形态:`Rules`/`Prompt`/`WasmComponent`/`ExternalService`/`Builtin`/`GeneratedCode`;`ModelAdapter`/`ModelWeights` 仅为保留 wire 值 | 两个 model 值 MUST 被 `validate` 拒绝，永不能产出、admit 或 activate |
 | `artifact_locator` | `String`(<=2048B) | artifact 字节的定位符 | MUST 非空;超长触发 `LocatorTooLong` |
 | `parent` | `Option<PolicyRef>` | 精确父策略身份(用于 lineage 与 admission) | root candidate 为 `None` |
 | `method` | `EvolutionMethod` | 如何产出(见 §6.3) | **promotion 语义故意不依赖此字段** |
@@ -32,14 +32,14 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 
 字段类型约束定义了失败模式的完整集合。`slot` 违反命名规则触发 `InvalidSlot`;任一 digest 非规范 64 位小写 hex 触发 `MalformedDigest`;learned method 缺 `training_dataset_digest` 触发 `MissingTrainingDataset`。这些错误在反序列化边界即被拒,fail-closed;一个无法通过 `validate` 的 manifest 永远进不到 admission。
 
-**worked example: 一个 GRPO 产出的 planner checkpoint。** 下面的 JSON 是一条合法 manifest 的骨架:
+**worked example: 一个带 GRPO producer-provenance 标签的 planner harness checkpoint。** 下面的 JSON 是一条合法 manifest 的骨架；`grpo` 只描述 harness producer，绝不代表 model 训练:
 
 ```json
 {
   "schema_version": 3,
   "policy": { "slot": "core/planner", "policy_id": "planner-grpo",
               "version": "1.4.0", "digest": "3f9a…(64 hex)" },
-  "artifact_kind": "model_adapter",
+  "artifact_kind": "prompt",
   "artifact_locator": "registry://planner-grpo@1.4.0",
   "parent": { "slot": "core/planner", "policy_id": "planner-sft", "version": "1.3.0", "digest": "…" },
   "method": "grpo",
@@ -91,15 +91,15 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 
 ### 6.3 方法无关性,以及进化与 model 的关系(四个核心边界)
 
-**方法无关性(method-agnosticism)是硬约束。** `EvolutionMethod` 枚举了产出方式:`HandAuthored`、`Search`、`ContextualBandit`、`SupervisedFineTune`、`PreferenceOptimization`、`Grpo`、`OfflineRl`、`OnlineRl`、`GeneratedCode`。规范性要求:**promotion 语义 MUST NOT 依赖 `method` 字段。** 一条 GEPA 式反射搜索产出的 prompt policy,与一条 GRPO 产出的 adapter policy,走**完全相同**的 admission, held-out, shadow, canary, active 流水线,用**完全相同**的 `PolicyManifest` 类型。这正是把"九个各自为政的 optimizer"降格为"可互换的 producer"的机制:换一个训练方法,只是换一个填 `PolicyManifest` 的 producer,门控与晋升逻辑一字不改。
+**方法无关性(method-agnosticism)是硬约束。** `EvolutionMethod` 枚举了 producer provenance:`HandAuthored`、`Search`、`ContextualBandit`、`SupervisedFineTune`、`PreferenceOptimization`、`Grpo`、`OfflineRl`、`OnlineRl`、`GeneratedCode`。SFT/preference/GRPO/RL 名称仅为 wire-compatible 的 **harness artifact producer 标签**，不授权 model training。规范性要求:**promotion 语义 MUST NOT 依赖 `method` 字段。** 不同 producer 产出的 prompt/rules/Wasm 等 harness policy 走完全相同的 admission、held-out、shadow、canary、active 流水线。
 
 进化边界在四个维度上被精确界定:
 
 **(a) 进化不涉及 kernel selection,也不涉及任何运行中的 agent step。** 进化流水线**不选择、不替换、不搜索 kernel**。microkernel 是冻结 TCB;进化只在 `StrategySlot` 空间里产出 candidate。它也不是一个"跑起来的 agent 在自己改自己":candidate producer 是**离线**的,`crates/evolve` 明确"outside the runtime trusted computing base",没有 runtime registry handle、没有 loader,**live self-evolution activation 是 NO-GO**。一个正在服务请求的运行时实例,无法在其自身的关键路径上创建、admit 或激活任何 policy。
 
-**(b) step 1 不训练任何 model weights。** 第一步里,唯一被"训练"的对象是 harness(即 `StrategySlot` 空间里的 policy)。base model 是**冻结**的。harness 会 **co-adapt 到给定的 model**,包括适配该 model 的 post-training 标签:例如某个 model 暴露一个 `ultracode` 之类的 post-training tag 表示"高强度代码推理档位",`core/model_router` / `core/tool_policy` 可以学会在合适场景下打这个 tag。这是"harness 学 situation"的一个具体形态:**不改 model,只学会更好地使用 model。** (作为对比,`ArtifactKind` 里确实保留了 `ModelAdapter`/`ModelWeights` 形态位,以便未来某条 slot policy 的实现恰好是一个 adapter,但那属于后续;step 1 的骨架实验以冻结 model 为基线。)
+**(b) Iteron 永不训练 model weights。** 唯一被优化的对象是 harness(即 `StrategySlot` 空间里的 policy)。base model 是**冻结**的。`ArtifactKind::ModelAdapter` 与 `ArtifactKind::ModelWeights` 只为 wire compatibility 保留，`PolicyManifest::validate` 对两者恒定 fail-closed；它们永不能被产出、admit 或 activate。
 
-**(c) 流水线的产出可用于训练 model。** 这是 open-substrate/closed-pipeline 拆分(§6.9)的直接推论。流水线沉淀两类可复用资产:治理过的 **trajectory**(`TrajectoryEnvelope`,内含 `RewardVector` 与 `DataGovernance`)与 **PolicyManifest**。这两类 artifact **MAY** 在后续被喂给 model 的 post-training(SFT/preference/RL 语料)。也就是说,同一批 artifact 在 step 1 用来训 harness,在后续 **OPTIONALLY** 可用来训 model;但这条路径受 §6.6 的 consent/governance 门控(`TrainingConsent::Allowed` 才可转化),且是可选增量,不是 step 1 的前提。越过 recorded consent 把 trajectory 转作 model 训练语料是被禁止的(§6.8)。
+**(c) trajectory export 不能以 model training 为目标。** `TrajectoryEnvelope` 只承载 harness 优化与独立评估所需的有界投影；`TrainingConsent::Allowed` 仅允许离线 producer 优化 harness artifact。API 中不存在 model-training export target，consent 也不能扩张出该用途。
 
 **(d) ABI 在进化下不变。** 这是最强的一条边界:进化在冻结的五个 ABI 契约**之上**发生,**从不修改**它们。协议演进走独立的、人控的 version registry 与 N-1 迁移(§6.4),不是进化流水线能触及的。一条 candidate 只能在既有 ABI 的形状内提出动作;它无法新增、删除或改写 TaskEnvelope、ContextRequest、ToolIntent、EffectProposal、ArtifactRef 中的任何一个。进化时 microkernel 接口是否会变,答案是**不会**,这正是 checkpoint 能跨 model、跨版本携带的前提:坐标系不动,坐标系上的点才能被 diff、merge、transfer(§6.4)。
 
@@ -210,9 +210,9 @@ admission 是 candidate 进入流水线的第一道、也是最强的一道门�
 Iteron 在开放性上做一条**刻意的拆分**:
 
 - **open substrate(开放基座)。** microkernel、五个 ABI 契约、`StrategySlot` 命名空间、`PolicyManifest`/`PolicyBundle` 类型、admission 与 promotion 的**契约与语义**,构成公开的 Plantcore-AI/Iteron 基座。任何人都能对着这套 typed ABI 产出、diff、admit、评估一个 checkpoint。
-- **closed training pipeline(闭源训练侧)。** 具体的 **evolution/training 流水线**(candidate producer 的实现、搜索/训练算法、内部评估资产)**不开源**:采用 bring-your-own(自带 producer)或一个 closed-source 的 evolution service。
+- **external harness-optimization pipeline(外部优化侧)。** candidate producer 的实现、搜索/优化算法与内部评估资产可由使用者自带；它只能产出 harness artifact。
 
-这条拆分的技术后果就是 §6.3(c):因为 artifact 类型(trajectory、PolicyManifest)是开放且方法无关的,**流水线的产出可用于训练 model**(post-training 语料),即便流水线本身是闭源的。open substrate 让 checkpoint 可携带、可审计、可组合;closed pipeline 让"如何产出更好的 checkpoint"成为可保护的资产。两者互不污染:基座不含任何训练机密,训练侧不改任何 ABI。一个自带 producer 的第三方,只要产出的 `PolicyManifest` 通过 `validate` 与 admission,就能接入同一条流水线,而无需暴露其内部训练算法。
+open substrate 让 checkpoint 可携带、可审计、可组合；外部 producer 让“如何产出更好的 harness checkpoint”成为可替换实现。二者都受冻结 model 边界约束：trajectory 不能导出到 model-training target，producer 也不能发射 adapter 或 weights。
 
 ---
 
@@ -233,7 +233,7 @@ Iteron 在开放性上做一条**刻意的拆分**:
 
 1. 可进化的对象 MUST 限于 `StrategySlot` 空间内的 policy;microkernel 与五个 ABI 契约 MUST NOT 被进化流水线修改。
 2. harness checkpoint MUST 以 `PolicyManifest` 表达,方法无关;**promotion 语义 MUST NOT 依赖 `method`**。
-3. 进化 MUST 离线、非权威、human-gated;**step 1 MUST NOT 训练任何 model weights**;harness MAY co-adapt 到 model 的 post-training tag;同一 artifact MAY 后续用于 model post-training(受 consent 门控)。
+3. 进化 MUST 离线、非权威、human-gated;Iteron MUST NOT 训练任何 model weights；trajectory MUST NOT 导出到 model-training target。
 4. admission MUST intersection-only、capability-monotone;candidate MUST NOT 授予能力、放松预算、改写证据、伪造 held-out、或自升/自回滚。
 5. evaluator MUST 独立于 producer;**producer MUST NOT 伪造自己的晋升**。
 6. 基座开放、训练流水线闭源;二者 MUST NOT 互相污染 ABI 或泄露训练机密。
