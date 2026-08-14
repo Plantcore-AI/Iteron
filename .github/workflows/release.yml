@@ -670,7 +670,13 @@ jobs:
           cat > "$tool_root/bin/x86_64-linux-musl-gcc" <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
-          exec "$ITERON_ZIG" cc -target x86_64-linux-musl "$@"
+          normalized=()
+          for argument in "$@"; do
+            if [[ "$argument" != --target=x86_64-unknown-linux-musl ]]; then
+              normalized+=("$argument")
+            fi
+          done
+          exec "$ITERON_ZIG" cc -target x86_64-linux-musl "${normalized[@]}"
           WRAPPER
           cat > "$tool_root/bin/x86_64-linux-musl-ar" <<'WRAPPER'
           #!/usr/bin/env bash

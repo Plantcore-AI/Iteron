@@ -120,6 +120,10 @@ nav:
       - Output formats: reference/output-formats.md
       - Agent definitions: reference/agent-definitions.md
       - External harness: reference/external-harness.md
+      - Research harness protocol: reference/research-harness-protocol.md
+      - Replaceable implementation protocol: reference/implementation-protocol.md
+      - Universal trainer bridge: reference/universal-trainer-protocol.md
+      - Optimization invariant owner review: reference/optimization-invariant-review.md
       - Terminal-Bench 2.1: reference/terminal-bench-2.1.md
       - Files and directories: reference/files-and-directories.md
       - Supported platforms: reference/platforms.md
