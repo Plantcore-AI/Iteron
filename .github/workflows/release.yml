@@ -641,28 +641,57 @@ jobs:
           command -v bwrap >/dev/null
           command -v musl-gcc >/dev/null
           test -r /etc/apparmor.d/core-ci-bwrap
-      - name: Fetch the checksum-pinned static x86-64 emulator
+      - name: Fetch checksum-pinned x86-64 cross-execution tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           set -euo pipefail
-          qemu_root="$RUNNER_TEMP/qemu-user-static"
-          package="$qemu_root/qemu-user-static.deb"
-          mkdir -p "$qemu_root/root"
+          tool_root="$RUNNER_TEMP/x86-cross-tools"
+          qemu_root="$tool_root/qemu-user-static"
+          package="$tool_root/qemu-user-static.deb"
+          zig_archive="$tool_root/zig.tar.xz"
+          zig_root="$tool_root/zig-linux-aarch64-0.13.0"
+          mkdir -p "$tool_root/bin" "$qemu_root"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz" \
+            --output "$zig_archive"
+          printf '%s  %s\n' \
+            '041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556' \
+            "$zig_archive" | sha256sum --check --strict -
+          tar --extract --xz --file "$zig_archive" --directory "$tool_root"
+          test -x "$zig_root/zig"
           curl --fail --location --proto '=https' --tlsv1.2 \
             "https://ports.ubuntu.com/ubuntu-ports/pool/universe/q/qemu/qemu-user-static_8.2.2+ds-0ubuntu1.18_arm64.deb" \
             --output "$package"
           printf '%s  %s\n' \
             '0565144632acc09b92da93e5ef9a2f44fa092797c5b0949744351b184ad948a8' \
             "$package" | sha256sum --check --strict -
-          dpkg-deb --extract "$package" "$qemu_root/root"
-          test -x "$qemu_root/root/usr/bin/qemu-x86_64-static"
-          echo "$qemu_root/root/usr/bin" >> "$GITHUB_PATH"
+          dpkg-deb --extract "$package" "$qemu_root"
+          test -x "$qemu_root/usr/bin/qemu-x86_64-static"
+          cat > "$tool_root/bin/x86_64-linux-musl-gcc" <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$ITERON_ZIG" cc -target x86_64-linux-musl "$@"
+          WRAPPER
+          cat > "$tool_root/bin/x86_64-linux-musl-ar" <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$ITERON_ZIG" ar "$@"
+          WRAPPER
+          chmod 0755 \
+            "$tool_root/bin/x86_64-linux-musl-gcc" \
+            "$tool_root/bin/x86_64-linux-musl-ar"
+          echo "ITERON_ZIG=$zig_root/zig" >> "$GITHUB_ENV"
+          echo "$tool_root/bin" >> "$GITHUB_PATH"
+          echo "$qemu_root/usr/bin" >> "$GITHUB_PATH"
       - name: Verify the DGX x86-64 cross-execution boundary
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           command -v x86_64-linux-musl-gcc >/dev/null
           command -v x86_64-linux-musl-ar >/dev/null
           command -v qemu-x86_64-static >/dev/null
+          x86_64-linux-musl-gcc --version >/dev/null
+          x86_64-linux-musl-ar --version >/dev/null
+          qemu-x86_64-static --version >/dev/null
       - name: Install the pinned Rust target
         shell: bash
         run: >-
