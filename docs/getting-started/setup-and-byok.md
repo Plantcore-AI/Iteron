@@ -16,9 +16,15 @@ repository or `config.json`.
 | MiniMax | `iteron setup --byok minimax` | `MINIMAX_API_KEY` |
 | Fireworks | `iteron setup --byok fireworks` | `FIREWORKS_API_KEY` |
 
-The default provider is `glm`. A provider's presence in this table describes a
-wire adapter, not free usage, account funding, regional availability, or access
-to every model in its catalog.
+When you have not selected a provider, Iteron routes to the first one in this
+table that has a credential, so setting a single environment variable is enough
+to get a working first run. `glm` is only the last-resort fallback, used when
+nothing on the machine can authenticate anywhere. An explicit choice, from
+`--provider`, `ITERON_PROVIDER`, or `~/.iteron/config.json`, is never overridden
+this way: your credential goes only where you named it.
+
+A provider's presence in this table describes a wire adapter, not free usage,
+account funding, regional availability, or access to every model in its catalog.
 
 ## 2. Run the setup wizard
 
@@ -48,10 +54,43 @@ opens the same wizard and asks which setup type and provider to use. BYOK is the
 normal public setup path; select `--plan` only if an Iteron operator has issued
 you a hosted-plan token.
 
+On a Unix terminal the prompt turns echo off while you type, and says so. Where
+that is not possible the prompt says the line will be visible instead, so you can
+decide whether to paste a production key into a terminal that will remember it.
+
 !!! warning "An exported key wins"
     For a built-in provider, its environment variable takes precedence over the
     credential file. Unset an old variable before setup if the new stored key
     should take effect. Iteron never prints either value.
+
+## 2b. Setup without a terminal
+
+A wizard cannot run in CI, in a container build, from a configuration management
+run, or from an agent. `--stdin` takes the credential from standard input and
+asks nothing:
+
+```sh
+printenv OPENAI_API_KEY | iteron setup --byok openai --stdin
+```
+
+Everything the wizard would have asked must be on the command line, and a run
+that is missing one names the flag that supplies it. Validation, the refusal to
+write a rejected key, and the `0600` credential file are identical to the
+interactive path.
+
+For a hosted-plan token, name the provider with `--provider` and pass the expiry
+that the wizard would otherwise prompt for:
+
+```sh
+printenv ITERON_PLAN_TOKEN \
+  | iteron setup --plan --provider glm --stdin --expires-at 1893456000
+```
+
+`--expires-at` is refused on a BYOK key, which does not expire.
+
+!!! tip "Keep the credential off the command line"
+    Pipe it, as above. An argument is visible in the process table to every user
+    on the machine, and your shell writes it to its history file.
 
 ## 3. Verify the active route
 

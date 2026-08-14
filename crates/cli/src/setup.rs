@@ -54,7 +54,10 @@ pub(crate) trait Ask {
         options: &[String],
         default: &str,
     ) -> anyhow::Result<String>;
-    /// Ask for a credential. Implementations must not echo it.
+    /// Ask for a credential, appending the visibility the implementation can actually deliver.
+    ///
+    /// An implementation that cannot suppress echo must say so rather than claim it did: the
+    /// operator decides whether to paste a production key into a terminal that will remember it.
     fn secret(&mut self, question: &str) -> anyhow::Result<String>;
     /// Ask for an optional plain line.
     fn line(&mut self, question: &str) -> anyhow::Result<String>;
@@ -97,8 +100,10 @@ pub(crate) fn collect_answers(
             known_providers.join(", ")
         );
     }
+    // Whether the line is actually hidden is a property of the terminal, not of this string, so
+    // the implementation appends the claim it can keep.
     let token = ask.secret(&format!(
-        "Paste the {} credential for `{provider_id}` (input is not echoed): ",
+        "Paste the {} credential for `{provider_id}`",
         kind.label()
     ))?;
     let token = token.trim().to_owned();
@@ -177,16 +182,102 @@ pub(crate) fn persist(answers: &SetupAnswers) -> anyhow::Result<std::path::PathB
     Ok(path)
 }
 
+/// One invocation of setup, however the operator spelled it.
+///
+/// The non-interactive fields exist because a wizard is not a provisioning interface. Setup that
+/// can only run at a terminal cannot run in CI, in a container image, from a configuration
+/// management run, or from an agent, which left "export the variable and hand-write
+/// `config.json`" as the only automatable path -- exactly the state this module was written to
+/// end.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SetupRequest {
+    pub kind: Option<SetupKind>,
+    pub provider_id: Option<String>,
+    /// Take the credential from stdin and ask nothing.
+    pub read_credential_from_stdin: bool,
+    pub expires_at_unix: Option<u64>,
+}
+
+/// Read a credential from stdin for `--stdin`.
+///
+/// A credential is passed this way precisely so it never becomes an argument, where the process
+/// table and the shell history would both see it. Trailing newlines are stripped because `printenv`
+/// and here-strings add one; interior whitespace is not, because no provider issues a key
+/// containing it and silently repairing a malformed key would hide the operator's mistake until
+/// the first paid turn.
+fn read_credential_from_stdin() -> anyhow::Result<String> {
+    use std::io::Read as _;
+    let mut buffer = String::new();
+    std::io::stdin().read_to_string(&mut buffer)?;
+    Ok(buffer)
+}
+
+/// Assemble the answers a `--stdin` run supplies entirely from flags and the piped credential.
+///
+/// Everything a wizard would have asked must already be on the command line. Refusing here, by
+/// name, beats prompting into a pipe that will never answer.
+fn answers_without_a_terminal(
+    request: &SetupRequest,
+    known: &[String],
+    piped: &str,
+) -> anyhow::Result<SetupAnswers> {
+    let kind = request.kind.ok_or_else(|| {
+        anyhow::anyhow!(
+            "`--stdin` cannot ask which credential this is; pass `--byok <provider>` or `--plan`"
+        )
+    })?;
+    let provider_id = request.provider_id.clone().ok_or_else(|| {
+        anyhow::anyhow!("`--stdin` cannot ask which provider this is; pass `--byok <provider>` or `--provider <provider>`")
+    })?;
+    if !known.iter().any(|id| id == &provider_id) {
+        anyhow::bail!(
+            "provider `{provider_id}` is not configured (known: {}); declare it in ~/.iteron/config.json first",
+            known.join(", ")
+        );
+    }
+    if kind == SetupKind::Byok && request.expires_at_unix.is_some() {
+        anyhow::bail!("`--expires-at` describes a hosted-plan token; a BYOK key does not expire");
+    }
+    // `printenv` and here-strings both add a trailing newline. Interior whitespace is left alone:
+    // no provider issues a key containing it, and silently repairing a malformed one would hide
+    // the operator's mistake until the first paid turn.
+    let token = piped.trim_matches(['\r', '\n']).to_owned();
+    if token.is_empty() {
+        anyhow::bail!("no credential arrived on stdin");
+    }
+    Ok(SetupAnswers {
+        kind,
+        provider_id,
+        token,
+        expires_at_unix: request.expires_at_unix,
+    })
+}
+
 /// `iteron setup`, `iteron setup --plan`, `iteron setup --byok <provider>`.
-pub(crate) async fn run_setup(
-    kind: Option<SetupKind>,
-    provider_id: Option<String>,
-) -> anyhow::Result<u8> {
+pub(crate) async fn run_setup(request: SetupRequest) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     let configured = user_file.providers.clone().unwrap_or_default();
     let known = providers::configured_provider_ids(&configured);
-    let mut ask = TerminalAsk::new()?;
-    let answers = collect_answers(&mut ask, kind, provider_id, &known)?;
+    let answers = if request.read_credential_from_stdin {
+        answers_without_a_terminal(&request, &known, &read_credential_from_stdin()?)?
+    } else {
+        let mut ask = TerminalAsk::new()?;
+        let mut answers =
+            collect_answers(&mut ask, request.kind, request.provider_id.clone(), &known)?;
+        // A `--expires-at` supplied on the command line is an answer already given, so the wizard
+        // must not ask for it again. It is refused on a BYOK key for the same reason the piped
+        // path refuses it: an expiry on a key that never expires would stop working on a date
+        // nobody chose.
+        if let Some(expires_at_unix) = request.expires_at_unix {
+            if answers.kind == SetupKind::Byok {
+                anyhow::bail!(
+                    "`--expires-at` describes a hosted-plan token; a BYOK key does not expire"
+                );
+            }
+            answers.expires_at_unix = Some(expires_at_unix);
+        }
+        answers
+    };
 
     eprintln!("checking the credential against `{}`…", answers.provider_id);
     let proof =
@@ -375,6 +466,56 @@ pub(crate) fn run_config_set(key: &str, value: &str) -> anyhow::Result<u8> {
 
 /// The terminal implementation of [`Ask`]. Kept out of the state machine so the machine has no
 /// terminal dependency and can be tested exhaustively.
+/// Terminal echo, switched off for as long as this value lives.
+///
+/// Restoration happens in `Drop` rather than after the read, so an error or a panic between the
+/// two cannot leave the operator at a shell that has stopped showing what they type.
+struct EchoGuard {
+    #[cfg(unix)]
+    fd: std::os::fd::RawFd,
+    #[cfg(unix)]
+    original: libc::termios,
+}
+
+impl EchoGuard {
+    /// Turn echo off, or report that this terminal does not allow it.
+    #[cfg(unix)]
+    fn suppress() -> Option<Self> {
+        use std::os::fd::AsRawFd as _;
+        let fd = std::io::stdin().as_raw_fd();
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is this process's stdin, and `original` is a live, correctly sized
+        // `termios` this call is allowed to fill.
+        if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+            return None;
+        }
+        let mut quiet = original;
+        quiet.c_lflag &= !libc::ECHO;
+        // SAFETY: same descriptor, and `quiet` is the attribute set just read with one flag
+        // cleared. TCSAFLUSH discards anything typed ahead of the prompt, so a keystroke buffered
+        // before echo went off cannot be echoed afterwards.
+        if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &quiet) } != 0 {
+            return None;
+        }
+        Some(Self { fd, original })
+    }
+
+    #[cfg(not(unix))]
+    fn suppress() -> Option<Self> {
+        None
+    }
+}
+
+impl Drop for EchoGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: restores exactly the attributes `suppress` read from this same descriptor.
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original);
+        }
+    }
+}
+
 struct TerminalAsk {
     stdin: std::io::Stdin,
 }
@@ -425,12 +566,27 @@ impl Ask for TerminalAsk {
     }
 
     fn secret(&mut self, question: &str) -> anyhow::Result<String> {
-        eprint!("{question}");
+        // Suppress echo before the prompt is drawn, so what the prompt claims is already true by
+        // the time anyone can type. Whether it worked decides which claim is printed: this line
+        // used to promise "input is not echoed" while reading a plain, fully echoed line, which
+        // put every pasted credential into terminal scrollback.
+        let quiet = EchoGuard::suppress();
+        eprint!(
+            "{question}{}: ",
+            if quiet.is_some() {
+                " (input is not echoed)"
+            } else {
+                " (input will be visible)"
+            }
+        );
         std::io::stderr().flush()?;
-        // Echo suppression is a terminal facility this binary does not otherwise take a
-        // dependency on. Say plainly that the line is visible rather than implying it is not.
-        let answer = self.read_line()?;
-        Ok(answer)
+        let answer = self.read_line();
+        if quiet.is_some() {
+            // The terminal swallowed the operator's Enter along with the credential.
+            eprintln!();
+        }
+        drop(quiet);
+        answer
     }
 
     fn line(&mut self, question: &str) -> anyhow::Result<String> {
@@ -588,5 +744,109 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("no credential"), "{error}");
+    }
+
+    fn stdin_request(kind: SetupKind, provider: &str) -> SetupRequest {
+        SetupRequest {
+            kind: Some(kind),
+            provider_id: Some(provider.into()),
+            read_credential_from_stdin: true,
+            expires_at_unix: None,
+        }
+    }
+
+    /// The wizard could only ever run at a terminal, which left "export the variable and
+    /// hand-write config.json" as the only path available to CI, a container build, a
+    /// configuration management run, or an agent. Piping the credential answers every question.
+    #[test]
+    fn a_piped_credential_needs_no_terminal() {
+        let answers = answers_without_a_terminal(
+            &stdin_request(SetupKind::Byok, "kimi"),
+            &known(),
+            "sk-live-token\n",
+        )
+        .unwrap();
+        assert_eq!(
+            answers,
+            SetupAnswers {
+                kind: SetupKind::Byok,
+                provider_id: "kimi".into(),
+                token: "sk-live-token".into(),
+                expires_at_unix: None,
+            }
+        );
+        assert_eq!(credential_document(&answers), "sk-live-token\n");
+    }
+
+    /// Only the trailing newline every pipe adds is removed. A key with interior whitespace is
+    /// wrong, and repairing it here would surface the mistake on a paid turn instead of now.
+    #[test]
+    fn only_the_trailing_newline_is_stripped() {
+        let answers = answers_without_a_terminal(
+            &stdin_request(SetupKind::Byok, "glm"),
+            &known(),
+            "sk with space\r\n",
+        )
+        .unwrap();
+        assert_eq!(answers.token, "sk with space");
+    }
+
+    /// A hosted-plan expiry is supplied by flag, because there is no prompt left to ask it in.
+    #[test]
+    fn a_piped_plan_token_takes_its_expiry_from_the_flag() {
+        let mut request = stdin_request(SetupKind::HostedPlan, "glm");
+        request.expires_at_unix = Some(1_893_456_000);
+        let answers = answers_without_a_terminal(&request, &known(), "plan-token\n").unwrap();
+        assert_eq!(answers.expires_at_unix, Some(1_893_456_000));
+        assert!(
+            credential_document(&answers).contains("\"expires_at_unix\":1893456000"),
+            "the expiry must travel with the stored token"
+        );
+    }
+
+    /// An expiry on a BYOK key is a category error, not a harmless extra flag: it would make a key
+    /// that never expires look like one that does, and stop working on a date nobody chose.
+    #[test]
+    fn an_expiry_on_a_byok_key_is_refused() {
+        let mut request = stdin_request(SetupKind::Byok, "glm");
+        request.expires_at_unix = Some(1_893_456_000);
+        let error = answers_without_a_terminal(&request, &known(), "sk-1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not expire"), "{error}");
+    }
+
+    /// Piping cannot answer a question, so anything the wizard would have asked must already be on
+    /// the command line. Each refusal names the flag that supplies the missing answer.
+    #[test]
+    fn a_piped_run_refuses_by_naming_the_missing_flag() {
+        let mut without_kind = stdin_request(SetupKind::Byok, "glm");
+        without_kind.kind = None;
+        let error = answers_without_a_terminal(&without_kind, &known(), "sk-1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("--byok") && error.contains("--plan"),
+            "{error}"
+        );
+
+        let mut without_provider = stdin_request(SetupKind::Byok, "glm");
+        without_provider.provider_id = None;
+        let error = answers_without_a_terminal(&without_provider, &known(), "sk-1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--provider"), "{error}");
+
+        let error =
+            answers_without_a_terminal(&stdin_request(SetupKind::Byok, "nope"), &known(), "sk-1\n")
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("`nope` is not configured"), "{error}");
+
+        let error =
+            answers_without_a_terminal(&stdin_request(SetupKind::Byok, "glm"), &known(), "\n")
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("no credential arrived on stdin"), "{error}");
     }
 }

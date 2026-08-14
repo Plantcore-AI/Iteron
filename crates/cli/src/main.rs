@@ -155,6 +155,22 @@ enum LocalCommand {
         /// Bring your own key for this provider id.
         #[arg(long, value_name = "PROVIDER")]
         byok: Option<String>,
+        /// Provider id for a flow that does not name one positionally, such as `--plan`.
+        #[arg(long, value_name = "PROVIDER", conflicts_with = "byok")]
+        provider: Option<String>,
+        /// Read the credential from stdin instead of prompting, so setup runs without a terminal.
+        ///
+        /// The credential never appears on the command line, where it would reach the process
+        /// table and the shell history: `printenv DEEPSEEK_API_KEY | iteron setup --byok deepseek
+        /// --stdin`.
+        #[arg(long)]
+        stdin: bool,
+        /// Unix timestamp a hosted-plan credential expires at.
+        ///
+        /// Refused on a BYOK key, which does not expire. The check lives in setup rather than in
+        /// the argument parser because the wizard can also arrive at BYOK without `--byok`.
+        #[arg(long, value_name = "UNIX")]
+        expires_at: Option<u64>,
     },
     /// Inspect or drop the credential in use.
     Auth {
@@ -1401,13 +1417,26 @@ async fn run_cli() -> anyhow::Result<u8> {
     // resolved and before any provider is constructed: the whole point of `iteron setup` is that it
     // works on a machine where no provider resolves yet, and none of the three needs a workspace.
     match &cli.command {
-        Some(LocalCommand::Setup { plan, byok }) => {
+        Some(LocalCommand::Setup {
+            plan,
+            byok,
+            provider,
+            stdin,
+            expires_at,
+        }) => {
             let kind = match (plan, byok) {
                 (true, _) => Some(setup::SetupKind::HostedPlan),
                 (false, Some(_)) => Some(setup::SetupKind::Byok),
                 (false, None) => None,
             };
-            return setup::run_setup(kind, byok.clone()).await;
+            let provider_id = byok.clone().or_else(|| provider.clone());
+            return setup::run_setup(setup::SetupRequest {
+                kind,
+                provider_id,
+                read_credential_from_stdin: *stdin,
+                expires_at_unix: *expires_at,
+            })
+            .await;
         }
         Some(LocalCommand::Auth { action }) => {
             return match action {
@@ -1918,6 +1947,23 @@ async fn run_cli() -> anyhow::Result<u8> {
     // printed: the selected one, plus any provider named by an explicit model qualifier. The rest
     // continue in the background and the model picker joins them. Waiting for all of them is why a
     // launch with five configured providers paid for four it was never going to use.
+    // Nobody chose this provider: it is the build-time fallback, which cannot know which account
+    // this machine has. If it has no credential and some other route does, route there instead, so
+    // "install it and run it" works for whoever installed it rather than failing on a variable for
+    // a provider they may never have signed up for.
+    //
+    // Gated on `Builtin` precisely so an explicit choice is never rerouted. Silently sending an
+    // operator's credential to a provider they did not name would be a spend and disclosure
+    // decision, and those are theirs. This reads local credential presence only: no catalog, no
+    // request, nothing that could make startup depend on the network.
+    if provider_origin == config::ConfigOrigin::Builtin
+        && let Ok(local) = providers::ProviderDirectory::inspect_local(&configured_providers)
+        && !local.has_credential(&provider_name)
+        && let Some(credentialed) = local.first_credentialed_provider()
+    {
+        provider_name = credentialed.to_owned();
+    }
+
     let mut eager_providers = vec![provider_name.clone()];
     if let Some((model, _)) = model_candidate.as_ref()
         && let Some((qualifier, _)) = model.split_once(':')
