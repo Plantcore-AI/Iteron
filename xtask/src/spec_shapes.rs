@@ -223,7 +223,10 @@ fn validate_with(root: &Path, divergences: &[Divergence]) -> Result<()> {
     failures.extend(denied_identifiers(root)?);
 
     if failures.is_empty() {
-        println!(
+        // Diagnostics go to stderr: `tunables invariant-review-packet` and
+        // `tunables check-invariant-reviews` run this gate before writing machine-readable
+        // JSON to stdout, and a success line there corrupts the documented `> packet.json`.
+        eprintln!(
             "spec shapes agree with `{PROTOCOL_DIR}`: {matched} types compared, {} recorded \
              divergences",
             divergences.len()
