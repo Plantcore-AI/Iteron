@@ -28,6 +28,7 @@ from smoke_release_process import (  # noqa: E402
 TASK = "return the deterministic release smoke response"
 PROVIDER_ID = "release-smoke"
 MODEL_ID = "release-smoke-model"
+MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000
 KEY_ENV = "ITERON_RELEASE_SMOKE_KEY"
 PLACEHOLDER_KEY = "release-smoke-placeholder"
 EXPECTED_ASSISTANT_TEXT = "release smoke reply"
@@ -715,6 +716,11 @@ def _write_config(home: Path, api_root: str) -> None:
                 "enabled": True,
                 "catalog": False,
                 "models": [MODEL_ID],
+                "model_capabilities": {
+                    MODEL_ID: {
+                        "context_window_tokens": MODEL_CONTEXT_WINDOW_TOKENS,
+                    }
+                },
             }
         ],
     }
