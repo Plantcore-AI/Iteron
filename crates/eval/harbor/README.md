@@ -46,7 +46,7 @@ installed agent process. Use a host template such as
 The adapter requires exactly the one canonical credential variable for a
 built-in route. A custom `base_url` must use exactly a namespaced,
 sensitivity-classified key of the form
-`HARBOR_CORE_<LABEL>_<SENSITIVE_SUFFIX>` (for example,
+`HARBOR_ITERON_<LABEL>_<SENSITIVE_SUFFIX>` (for example,
 `HARBOR_ITERON_GATEWAY_API_KEY`). Shell startup, loader, home, path, proxy and
 Core configuration names such as `BASH_ENV`, `LD_PRELOAD`, `HOME`, `PATH`, and
 `ITERON_CONFIG_HOME` are not accepted as credential names. Every additional
