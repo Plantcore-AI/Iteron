@@ -119,6 +119,8 @@ nav:
       - Language-server tools: reference/language-server-tools.md
       - Output formats: reference/output-formats.md
       - Agent definitions: reference/agent-definitions.md
+      - External harness: reference/external-harness.md
+      - Terminal-Bench 2.1: reference/terminal-bench-2.1.md
       - Files and directories: reference/files-and-directories.md
       - Supported platforms: reference/platforms.md
       - Troubleshooting: reference/troubleshooting.md
@@ -143,6 +145,7 @@ nav:
           - Control, benchmark, tunables, and trainable harness plan: development/control-benchmark-harness-implementation-plan.md
           - Hooks, OpenTelemetry, memory, and context observability plan: development/observability-memory-context-implementation-plan.md
           - Trainable harness runtime acceptance: development/trainable-harness-runtime-acceptance.md
+          - DeepSeek harness gap audit: development/deepseek-harness-gap-audit.md
           - Public history audit: development/public-history-audit.md
           - Releasing: development/releasing.md
       - License: project/license.md
