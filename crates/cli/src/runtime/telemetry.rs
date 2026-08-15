@@ -25,6 +25,7 @@
 mod otlp;
 
 use serde::Deserialize;
+#[cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,7 @@ use std::time::Duration;
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The `otel` block of the USER config.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryFile {
     #[serde(default)]
@@ -137,14 +139,27 @@ pub(crate) enum TelemetrySendOutcome {
 }
 
 impl TelemetrySink {
+    /// Resolve telemetry from the immutable operator config snapshot parsed by the composition
+    /// root. The `otel` value is deserialized into its closed typed block here; no file IO or
+    /// second top-level config parse occurs on the launch path.
+    pub(crate) fn from_user_config(value: Option<&serde_json::Value>) -> Option<TelemetrySink> {
+        let block = serde_json::from_value::<TelemetryBlock>(value?.clone()).ok()?;
+        Self::from_block(block)
+    }
+
     /// Load from the USER config only. A missing or malformed file yields no sink: telemetry is
     /// opt-in, and a broken config must not brick the agent for a feature nobody asked for.
+    #[cfg(test)]
     pub fn load_user(home: &Path) -> Option<TelemetrySink> {
         let path = iteron_protocol::home::path(home, "config.json");
         let block = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str::<TelemetryFile>(&text).ok())
             .and_then(|file| file.otel)?;
+        Self::from_block(block)
+    }
+
+    fn from_block(block: TelemetryBlock) -> Option<TelemetrySink> {
         if !block.enabled || block.endpoint.trim().is_empty() {
             return None;
         }

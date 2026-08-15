@@ -51,6 +51,254 @@ pub(super) fn recorded_route(
     })
 }
 
+pub(super) struct PreparedAdoption {
+    pub(super) fresh: bool,
+    pub(super) control: app_server::Control,
+    pub(super) run_id: String,
+    pub(super) events: Vec<iteron_protocol::Event>,
+    pub(super) selection: ModelSelection,
+    pub(super) substituted: Option<String>,
+    pub(super) context_window_tokens: Option<u64>,
+}
+
+pub(super) enum PreparedAdoptionResult {
+    Ready(PreparedAdoption),
+    Failed {
+        message: String,
+        handoff_run: Option<String>,
+    },
+}
+
+/// Begin the record read, route construction and writer-lock acquisition without touching the TUI
+/// thread. The visible picker closes immediately and the completion is generation-free because at
+/// most one adoption job exists; starting another aborts the stale one first.
+pub(super) fn start_adopt_session(
+    app: &mut App,
+    session: &Session,
+    directory: &ProviderDirectory,
+    run_id: String,
+) {
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before resuming another session",
+        );
+        return;
+    }
+    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+        app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "{} still pending for this session; send or clear them before resuming another one",
+                block::plural(
+                    app.queued.len().saturating_add(app.steer_previews.len()),
+                    "submission"
+                )
+            ),
+        );
+        return;
+    }
+    let rollout_path = session.rollout_path().to_path_buf();
+    let runs = rollout_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let current_run = rollout_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    if run_id == current_run {
+        app.note(
+            block::NoticeLevel::Info,
+            "that session is already the live one",
+        );
+        return;
+    }
+    if let Some(previous) = app.session_adoption_job.take() {
+        previous.abort();
+    }
+    let current_selection = ModelSelection {
+        provider_id: app.route.provider_id.clone(),
+        model_id: session.model().to_owned(),
+    };
+    let directory = directory.clone();
+    let worker_run_id = run_id.clone();
+    app.status = format!("opening session {run_id}…");
+    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
+        let run = iteron_protocol::RunId(worker_run_id.clone());
+        let events = match iteron_record::load_forked(&runs, &run) {
+            Ok(events) => events,
+            Err(error) => {
+                return PreparedAdoptionResult::Failed {
+                    message: format!(
+                        "cannot read session {}: {error}",
+                        ui_safe_text(&worker_run_id)
+                    ),
+                    handoff_run: None,
+                };
+            }
+        };
+        let recorded = recorded_route(&events);
+        let (selection, built, substituted) = match &recorded {
+            Some((Some(provider_id), model_id)) => {
+                let candidate = ModelSelection {
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                };
+                match directory.build(&candidate) {
+                    Ok(provider) => (candidate, Some(provider), None),
+                    Err(error) => (
+                        current_selection,
+                        None,
+                        Some(format!(
+                            "the recorded route {provider_id}:{model_id} is not usable here ({error})"
+                        )),
+                    ),
+                }
+            }
+            Some((None, model_id)) => (
+                current_selection,
+                None,
+                Some(format!(
+                    "this session predates provider identity and records only model `{model_id}`"
+                )),
+            ),
+            None => (
+                current_selection,
+                None,
+                Some("this session records no route".into()),
+            ),
+        };
+        let provider = match built {
+            Some(provider) => provider,
+            None => match directory.build(&selection) {
+                Ok(provider) => provider,
+                Err(error) => {
+                    return PreparedAdoptionResult::Failed {
+                        message: format!("cannot resume that session here: {error}"),
+                        handoff_run: None,
+                    };
+                }
+            },
+        };
+        let rollout = match iteron_record::Rollout::open_existing(
+            &runs,
+            &run,
+            iteron_protocol::TenantId::default(),
+        ) {
+            Ok(rollout) => rollout,
+            Err(error) => {
+                return PreparedAdoptionResult::Failed {
+                    message: format!(
+                        "cannot take over session {}: {error}. Another iteron process may still be running it.",
+                        ui_safe_text(&worker_run_id)
+                    ),
+                    handoff_run: Some(worker_run_id),
+                };
+            }
+        };
+        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+        let capabilities = directory.selection_capabilities(&selection);
+        PreparedAdoptionResult::Ready(PreparedAdoption {
+            fresh: false,
+            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
+                rollout,
+                fresh: false,
+                route: Box::new(app_server::ModelSelection {
+                    provider,
+                    provider_id: selection.provider_id.clone(),
+                    model_id: selection.model_id.clone(),
+                    catalog_digest,
+                    capability_digest,
+                    context_window_tokens: capabilities.context_window_tokens,
+                    max_output_tokens: capabilities.max_output_tokens,
+                }),
+            })),
+            run_id: worker_run_id,
+            events,
+            selection,
+            substituted,
+            context_window_tokens: capabilities.context_window_tokens,
+        })
+    }));
+}
+
+/// Prepare a fresh rollout, provider instance, and writer lease on the same bounded adoption actor.
+/// `/sessions new` therefore acknowledges immediately and never opens/fsyncs a record on the TUI
+/// thread.
+pub(super) fn start_fresh_session(app: &mut App, session: &Session, directory: &ProviderDirectory) {
+    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "send or clear pending submissions before creating another session",
+        );
+        return;
+    }
+    if let Some(previous) = app.session_adoption_job.take() {
+        previous.abort();
+    }
+    let selection = ModelSelection {
+        provider_id: app.route.provider_id.clone(),
+        model_id: session.model().to_owned(),
+    };
+    let runs = session
+        .rollout_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let directory = directory.clone();
+    app.status = "creating session…".into();
+    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
+        let provider = match directory.build(&selection) {
+            Ok(provider) => provider,
+            Err(error) => {
+                return PreparedAdoptionResult::Failed {
+                    message: format!("cannot create a session on the current route: {error}"),
+                    handoff_run: None,
+                };
+            }
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
+        let rollout =
+            match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
+                Ok(rollout) => rollout,
+                Err(error) => {
+                    return PreparedAdoptionResult::Failed {
+                        message: format!("cannot create session: {error}"),
+                        handoff_run: None,
+                    };
+                }
+            };
+        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+        let capabilities = directory.selection_capabilities(&selection);
+        PreparedAdoptionResult::Ready(PreparedAdoption {
+            fresh: true,
+            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
+                rollout,
+                fresh: true,
+                route: Box::new(app_server::ModelSelection {
+                    provider,
+                    provider_id: selection.provider_id.clone(),
+                    model_id: selection.model_id.clone(),
+                    catalog_digest,
+                    capability_digest,
+                    context_window_tokens: capabilities.context_window_tokens,
+                    max_output_tokens: capabilities.max_output_tokens,
+                }),
+            })),
+            run_id: run.0,
+            events: Vec::new(),
+            selection,
+            substituted: None,
+            context_window_tokens: capabilities.context_window_tokens,
+        })
+    }));
+}
+
 /// One recorded tool call, rebuilt from the durable transcript.
 pub(super) struct AdoptedTool {
     is_error: bool,
@@ -209,288 +457,4 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.retryable_task = None;
     app.resume_handoff = None;
     app.follow_latest();
-}
-
-/// Adopt a recorded session into THIS running TUI: the live session takes over that run's journal,
-/// identity and transcript, and the next turn continues it.
-///
-/// # Why the client opens the rollout
-///
-/// Opening it is what takes the target run's exclusive writer lock, and that is the refusal an
-/// operator actually meets — another `iteron` process is on that session. Taking it here means such an
-/// adoption is refused before the resident runtime is asked to do anything, so a session that cannot
-/// be adopted cannot disturb the one that is running.
-///
-/// # Why a route is always sent
-///
-/// The kernel restores the adopted record's route but cannot resolve a provider for it. Sending the
-/// route the session will actually dispatch on — the record's own when this process can build it,
-/// this process's current route otherwise — is what makes the adopted run's next request match its
-/// own record instead of being refused by the route gate.
-pub(super) async fn adopt_session(
-    app: &mut App,
-    session: &mut Session,
-    directory: &ProviderDirectory,
-    run_id: &str,
-) {
-    if app.running || app.pending.is_some() {
-        app.note(
-            block::NoticeLevel::Warn,
-            "finish the current turn before resuming another session",
-        );
-        return;
-    }
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
-        // Those submissions were composed for THIS run. Dispatching them into an adopted session
-        // would send the operator's words to a conversation they were not written for.
-        app.note(
-            block::NoticeLevel::Warn,
-            format!(
-                "{} still pending for this session; send or clear them before resuming another one",
-                block::plural(
-                    app.queued.len().saturating_add(app.steer_previews.len()),
-                    "submission"
-                )
-            ),
-        );
-        return;
-    }
-    let rollout_path = session.rollout_path().to_path_buf();
-    let runs = rollout_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let current_run = rollout_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if run_id == current_run {
-        app.note(
-            block::NoticeLevel::Info,
-            "that session is already the live one",
-        );
-        return;
-    }
-    let run = iteron_protocol::RunId(run_id.to_owned());
-    let tenant = iteron_protocol::TenantId::default();
-
-    // One read of the record serves both halves: the route to bind and the history to render.
-    let events = match iteron_record::load_forked(&runs, &run) {
-        Ok(events) => events,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot read session {}: {error}", ui_safe_text(run_id)),
-            );
-            return;
-        }
-    };
-
-    // The record's own route when this process can build it. A provider the operator has not
-    // configured, or one that fails to construct, is NOT silently substituted — the session
-    // continues on the route this process is already using, and says so.
-    let recorded = recorded_route(&events);
-    let current_selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
-    };
-    let (selection, built, substituted) = match &recorded {
-        Some((Some(provider_id), model_id)) => {
-            let candidate = ModelSelection {
-                provider_id: provider_id.clone(),
-                model_id: model_id.clone(),
-            };
-            // Building it IS the resolvability test, and the instance is kept: constructing a
-            // second one to answer the same question would open a second client for nothing.
-            match directory.build(&candidate) {
-                Ok(provider) => (candidate, Some(provider), None),
-                Err(error) => (
-                    current_selection,
-                    None,
-                    Some(format!(
-                        "the recorded route {provider_id}:{model_id} is not usable here ({error})"
-                    )),
-                ),
-            }
-        }
-        Some((None, model_id)) => (
-            current_selection,
-            None,
-            Some(format!(
-                "this session predates provider identity and records only model `{model_id}`"
-            )),
-        ),
-        None => (
-            current_selection,
-            None,
-            Some("this session records no route".into()),
-        ),
-    };
-    let provider = match built {
-        Some(provider) => provider,
-        None => match directory.build(&selection) {
-            Ok(provider) => provider,
-            Err(error) => {
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("cannot resume that session here: {error}"),
-                );
-                return;
-            }
-        },
-    };
-
-    // Takes the target run's exclusive writer lock. The live run keeps its own until the runtime
-    // swaps them, so a refusal here costs the operator nothing.
-    let rollout = match iteron_record::Rollout::open_existing(&runs, &run, tenant) {
-        Ok(rollout) => rollout,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!(
-                    "cannot take over session {}: {error}. Another iteron process may still be \
-                     running it.",
-                    ui_safe_text(run_id)
-                ),
-            );
-            app.prepare_resume_handoff(run_id);
-            return;
-        }
-    };
-
-    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-    let capabilities = directory.selection_capabilities(&selection);
-    let reply = session
-        .control(app_server::Control::AdoptRun(Box::new(
-            app_server::AdoptRun {
-                rollout,
-                fresh: false,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            },
-        )))
-        .await;
-    let (adopted, state, tunables_checkpoint, compaction_trigger_tokens, blocked) = match reply {
-        Some(app_server::ControlReply::Adopted {
-            adopted,
-            snapshot,
-            tunables_checkpoint,
-            compaction_trigger_tokens,
-            blocked,
-        }) => (
-            adopted,
-            snapshot,
-            tunables_checkpoint,
-            compaction_trigger_tokens,
-            blocked,
-        ),
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason);
-            // The documented restart still works, so the operator keeps a way through.
-            app.prepare_resume_handoff(run_id);
-            return;
-        }
-        _ => {
-            app.note(
-                block::NoticeLevel::Err,
-                "the runtime is no longer reachable",
-            );
-            return;
-        }
-    };
-
-    // Everything below renders the identity the RUNTIME reached. The frontend never displays a run
-    // the next turn would not continue.
-    clear_transcript_for_adoption(app);
-    let (blocks, total) = adopted_transcript_blocks(&events);
-    let rendered = blocks.len();
-    if rendered < total {
-        app.note(
-            block::NoticeLevel::Info,
-            format!(
-                "showing the last {rendered} of {total} recorded transcript blocks; the model \
-                 continues from all of them"
-            ),
-        );
-    }
-    for kind in blocks {
-        app.push_block(kind);
-    }
-
-    session.adopt_run(
-        adopted.rollout_path.clone(),
-        *tunables_checkpoint,
-        compaction_trigger_tokens,
-        (*state).clone(),
-    );
-    app.session_name = session_display_name(&adopted.rollout_path);
-    app.mode = state.mode;
-    app.effort = state.effort;
-    app.model = state.model.clone();
-    app.cost = state.cost.clone();
-    app.turns = adopted.turns;
-    app.route = app.route.reselect(
-        directory,
-        &ModelSelection {
-            provider_id: selection.provider_id.clone(),
-            model_id: state.model.clone(),
-        },
-    );
-    app.model_context_window = capabilities.context_window_tokens;
-    clear_last_turn_telemetry_from(app, &state);
-    app.status = format!("idle · resumed {}", adopted.run_id);
-
-    if let Some(reason) = substituted {
-        app.note(
-            block::NoticeLevel::Warn,
-            format!(
-                "{reason}; this session continues on {}:{}",
-                selection.provider_id, selection.model_id
-            ),
-        );
-    } else if let Some((recorded_provider, recorded_model)) = adopted
-        .recorded_route
-        .as_ref()
-        .filter(|(provider_id, model_id)| {
-            provider_id != &selection.provider_id || model_id != &selection.model_id
-        })
-    {
-        // The kernel reports the route it restored FROM THE RECORD, independently of what this
-        // frontend parsed out of the same events. A disagreement means the session is dispatching
-        // on a route its own record does not name, which the operator has to be told.
-        app.note(
-            block::NoticeLevel::Warn,
-            format!(
-                "the runtime restored route {recorded_provider}:{recorded_model} from that record, \
-                 but this session dispatches on {}:{}",
-                selection.provider_id, selection.model_id
-            ),
-        );
-    }
-    app.note(
-        block::NoticeLevel::Ok,
-        format!(
-            "resumed {} here · {} · {} · {}:{} · left {}",
-            adopted.run_id,
-            block::plural(adopted.messages, "message"),
-            block::plural(adopted.turns as usize, "turn"),
-            selection.provider_id,
-            state.model,
-            adopted.previous_run_id
-        ),
-    );
-
-    // The session moved and cannot dispatch. The identity above is still rendered — it is where the
-    // runtime is — and this says, last and loudest, that the process has to be restarted to use it.
-    if let Some(blocked) = blocked {
-        app.note(block::NoticeLevel::Err, blocked);
-        app.prepare_resume_handoff(&adopted.run_id);
-    }
 }

@@ -113,23 +113,13 @@ struct FixedNotification {
 }
 
 impl FixedNotification {
-    fn new(sequence: &[u8]) -> Option<Self> {
+    fn from_bounded(sequence: &[u8]) -> Option<Self> {
         if sequence.is_empty()
             || sequence.len()
                 > iteron_tunables::param_integer(
                     "cli.tui.notification.max_notification_bytes",
                     MAX_NOTIFICATION_BYTES,
                 )
-            || (sequence != TERMINAL_BELL
-                && ![
-                    OSC9_RUN_COMPLETE,
-                    OSC9_APPROVAL_REQUIRED,
-                    OSC9_LONG_IDLE,
-                    OSC777_RUN_COMPLETE,
-                    OSC777_APPROVAL_REQUIRED,
-                    OSC777_LONG_IDLE,
-                ]
-                .contains(&sequence))
         {
             return None;
         }
@@ -139,6 +129,35 @@ impl FixedNotification {
             bytes,
             len: sequence.len() as u8,
         })
+    }
+
+    fn new(sequence: &[u8]) -> Option<Self> {
+        if sequence != TERMINAL_BELL
+            && ![
+                OSC9_RUN_COMPLETE,
+                OSC9_APPROVAL_REQUIRED,
+                OSC9_LONG_IDLE,
+                OSC777_RUN_COMPLETE,
+                OSC777_APPROVAL_REQUIRED,
+                OSC777_LONG_IDLE,
+            ]
+            .contains(&sequence)
+        {
+            return None;
+        }
+        Self::from_bounded(sequence)
+    }
+
+    fn probe(sequence: &[u8]) -> Option<Self> {
+        if ![
+            super::terminal_input::KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY,
+            super::terminal_input::OSC11_QUERY,
+        ]
+        .contains(&sequence)
+        {
+            return None;
+        }
+        Self::from_bounded(sequence)
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -165,9 +184,20 @@ pub(super) struct LiveNotificationTransport {
     shared: Arc<Mutex<LiveNotificationQueue>>,
 }
 
-impl LiveTerminalWriter<std::io::Stdout> {
+const TERMINAL_FRAME_BUFFER_BYTES: usize = 64 * 1024;
+
+impl LiveTerminalWriter<std::io::BufWriter<std::io::Stdout>> {
     pub(super) fn stdout() -> (Self, LiveNotificationTransport) {
-        Self::with_desktop_sequences(std::io::stdout(), live_stdout_supports_desktop_sequences())
+        Self::with_desktop_sequences(
+            std::io::BufWriter::with_capacity(
+                iteron_tunables::param_integer(
+                    "cli.tui.notification.terminal_frame_buffer_bytes",
+                    TERMINAL_FRAME_BUFFER_BYTES,
+                ),
+                std::io::stdout(),
+            ),
+            live_stdout_supports_desktop_sequences(),
+        )
     }
 }
 
@@ -220,7 +250,7 @@ impl<W: Write> LiveTerminalWriter<W> {
                 Err(error) => return self.fail_notification(sequence, accepted, error),
             }
         }
-        self.inner.flush()
+        Ok(())
     }
 
     fn fail_notification(
@@ -281,7 +311,8 @@ impl<W: Write> Write for LiveTerminalWriter<W> {
         while let Some(frame) = notifications.pop_front() {
             self.write_notification(frame)?;
         }
-        Ok(())
+        // One syscall boundary for the retained frame and the complete notification batch.
+        self.inner.flush()
     }
 }
 
@@ -324,6 +355,18 @@ impl LiveNotificationTransport {
             queue.notifications.push_back(frame);
             Ok(())
         })
+    }
+
+    /// Queue an exact capability query behind the retained frame on the unique terminal writer.
+    /// The input demultiplexer is armed before this call, and no worker opens or changes stdout.
+    pub(super) fn admit_probe(&mut self, sequence: &[u8]) -> io::Result<()> {
+        let frame = FixedNotification::probe(sequence).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown terminal probe sequence",
+            )
+        })?;
+        self.admit_fixed(frame)
     }
 }
 
@@ -626,6 +669,10 @@ fn notification_sequence(protocol: Protocol, trigger: Trigger) -> &'static [u8] 
 }
 
 #[cfg(test)]
+#[path = "notification/probe_tests.rs"]
+mod probe_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -779,7 +826,10 @@ mod tests {
             ]
             .concat()
         );
-        assert_eq!(output.flushes, NOTIFICATION_QUEUE_CAPACITY + 1);
+        assert_eq!(
+            output.flushes, 2,
+            "one retained-frame flush plus one complete notification-batch flush"
+        );
     }
 
     #[test]

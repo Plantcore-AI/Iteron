@@ -41,6 +41,9 @@ impl Drop for TestRoot {
 fn patch_only_registry(root: &Path) -> Registry {
     let mut registry = Registry {
         tools: Vec::new(),
+        spec_revision: Default::default(),
+        spec_snapshot: Default::default(),
+        task_spec_snapshot: Default::default(),
         root: root.to_path_buf(),
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),

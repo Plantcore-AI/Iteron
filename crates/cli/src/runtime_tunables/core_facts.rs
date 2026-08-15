@@ -27,10 +27,12 @@ use std::collections::BTreeMap;
 
 use super::fixed_artifacts::FixedAuthoritySample;
 
-const RATIO_EIGHT_TENTHS: DecimalValue = DecimalValue {
-    coefficient: 8,
-    scale: 1,
-};
+fn ratio_one() -> DecimalValue {
+    DecimalValue {
+        coefficient: 1,
+        scale: 0,
+    }
+}
 const SUMMARY_OUTPUT_TOKENS: i64 = 2_048;
 const MEMORY_FACT_BYTES: i64 = 8_000;
 const SKILL_LISTING_BYTES: i64 = 2_000;
@@ -398,7 +400,7 @@ fn add_compaction(
                 },
             ),
         ),
-        ("usable_window_ratio", dec(RATIO_EIGHT_TENTHS)),
+        ("usable_window_ratio", dec(ratio_one())),
         (
             "fallback_trigger_tokens",
             int(i64u(input.compaction.trigger_tokens, "compaction_trigger")?),
@@ -414,7 +416,7 @@ fn add_compaction(
         builder.declare("compaction_trigger", SourceKind::UserConfig, trigger)?;
     }
     let compaction_adaptive = object([
-        ("usable_window_ratio", dec(RATIO_EIGHT_TENTHS)),
+        ("usable_window_ratio", dec(ratio_one())),
         (
             "keep_recent_messages",
             int(i64u(input.compaction.keep_recent, "keep_recent")?),
@@ -429,7 +431,7 @@ fn add_compaction(
     builder.observe_default(
         "compaction_adaptive",
         object([
-            ("usable_window_ratio", dec(RATIO_EIGHT_TENTHS)),
+            ("usable_window_ratio", dec(ratio_one())),
             (
                 "keep_recent_messages",
                 int(i64u(input.compaction.keep_recent, "keep_recent")?),

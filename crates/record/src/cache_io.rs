@@ -202,6 +202,20 @@ pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_replace_with(path, bytes, true, |_| Ok(()))
 }
 
+/// Crash-atomic private replacement. Permissions are applied to the fsynced temporary inode
+/// before publication, eliminating both the public-mode rename window and the second open/fsync
+/// cycle that callers previously paid after [`atomic_replace`].
+pub(crate) fn atomic_replace_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_replace_with(path, bytes, true, |temporary| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(temporary, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    })
+}
+
 /// [`atomic_replace`] for one member of a batch: the file's own bytes are still fsynced before the
 /// rename, but the containing directory is not. The caller MUST call [`sync_dir`] once after the
 /// batch, or a crash can leave the renames undurable. Rewriting N sidecars one directory sync at a

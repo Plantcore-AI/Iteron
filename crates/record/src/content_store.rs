@@ -32,9 +32,9 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use storage::{
     Layout, OwnerLock, StoreLock, crate_sync_dir, ensure_available_locked, ensure_layout,
-    load_bytes, load_bytes_with_state, lock_owner, lock_owner_shared, lock_store, read_edges,
-    read_limited, read_state, remove_if_present, store_locked, write_edge_locked, write_state,
-    write_tombstone,
+    load_bytes, load_bytes_with_state, lock_owner, lock_owner_shared, lock_store,
+    lock_store_shared, read_edges, read_limited, read_state, reference_edge_path,
+    remove_if_present, store_locked, write_edge_locked, write_state, write_tombstone,
 };
 
 const RECORD_LOCK_RETRY_ATTEMPTS: usize = 401;
@@ -266,7 +266,7 @@ fn read_private_content_at_reference(
 ) -> Result<Vec<u8>, ContentStoreError> {
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _store_lock = lock_store(&layout)?;
+    let _store_lock = lock_store_shared(&layout)?;
     read_private_content_at_reference_locked(&layout, owner, seq, surface, handle)
 }
 
@@ -277,8 +277,16 @@ fn read_private_content_at_reference_locked(
     surface: ContentReferenceSurface,
     handle: &PrivateContentHandle,
 ) -> Result<Vec<u8>, ContentStoreError> {
-    let run_dir = layout.run_reference_dir(owner);
-    let entries = std::fs::read_dir(&run_dir).map_err(|error| {
+    let path = reference_edge_path(
+        layout,
+        &handle.digest,
+        owner,
+        seq,
+        0,
+        class_label(handle.class),
+        surface,
+    )?;
+    let bytes = read_limited(&path, MAX_REFERENCE_EDGE_BYTES).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             ContentStoreError::Unresolved {
                 digest: handle.digest.clone(),
@@ -288,49 +296,15 @@ fn read_private_content_at_reference_locked(
             ContentStoreError::Io(error)
         }
     })?;
-    let mut found = false;
-    let mut count = 0usize;
-    for entry in entries.take(
-        iteron_tunables::param_integer(
-            "record.content_store.model.max_content_references",
-            MAX_CONTENT_REFERENCES,
-        ) + 1,
-    ) {
-        if count
-            == iteron_tunables::param_integer(
-                "record.content_store.model.max_content_references",
-                MAX_CONTENT_REFERENCES,
-            )
-        {
-            return Err(ContentStoreError::ReferenceBound {
-                max: iteron_tunables::param_integer(
-                    "record.content_store.model.max_content_references",
-                    MAX_CONTENT_REFERENCES,
-                ),
-            });
-        }
-        count = count.saturating_add(1);
-        let edge: ReferenceEdge = serde_json::from_slice(&read_limited(
-            &entry?.path(),
-            iteron_tunables::param_integer(
-                "record.content_store.model.max_reference_edge_bytes",
-                MAX_REFERENCE_EDGE_BYTES,
-            ),
-        )?)?;
-        if edge.version != STORE_VERSION || edge.run_id != *owner {
-            return Err(ContentStoreError::Corrupt);
-        }
-        if edge.seq == seq.0
-            && edge.ordinal == 0
-            && edge.surface == surface
-            && edge.field_class == class_label(handle.class)
-            && edge.digest == handle.digest
-        {
-            found = true;
-            break;
-        }
-    }
-    if !found {
+    let edge: ReferenceEdge = serde_json::from_slice(&bytes)?;
+    if edge.version != STORE_VERSION
+        || edge.digest != handle.digest
+        || edge.run_id != *owner
+        || edge.seq != seq.0
+        || edge.ordinal != 0
+        || edge.field_class != class_label(handle.class)
+        || edge.surface != surface
+    {
         return Err(ContentStoreError::Unresolved {
             digest: handle.digest.clone(),
             reason: "reference_missing",
@@ -356,7 +330,7 @@ fn private_content_sources_at_reference(
 ) -> Result<Vec<PrivateContentSource>, ContentStoreError> {
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _store_lock = lock_store(&layout)?;
+    let _store_lock = lock_store_shared(&layout)?;
     let sources = lineage::sources_for_reference(&layout, owner, &handle.digest, seq, surface)?;
     for source in &sources {
         references::verify_source_owner_locked(&layout, source)?;
@@ -370,7 +344,10 @@ pub fn guard_private_content(
     tenant: &TenantId,
     digest: &ErasureContentDigest,
 ) -> Result<(), ContentStoreError> {
-    let _ = load_bytes(&Layout::new(runs_dir, tenant), digest)?;
+    let layout = Layout::new(runs_dir, tenant);
+    ensure_layout(&layout)?;
+    let _store_lock = lock_store_shared(&layout)?;
+    let _ = load_bytes(&layout, digest)?;
     Ok(())
 }
 

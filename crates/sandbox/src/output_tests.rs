@@ -15,7 +15,7 @@ async fn huge_single_line_is_fully_drained_but_memory_retention_is_bounded() {
     let mut capture = BoundedCapture::with_limit(limit);
     tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        drain_bounded(&mut reader, &mut capture, limit),
+        drain_bounded(&mut reader, &mut capture, limit, None, OutputStream::Stdout),
     )
     .await
     .expect("reader must continue draining after the retention ceiling")
@@ -40,7 +40,9 @@ async fn utf8_scalar_split_at_the_byte_ceiling_is_safe() {
     let bytes = b"abc\xF0\x9F\x98\x80tail"; // `abc`, then a four-byte emoji.
     let mut reader = &bytes[..];
     let mut capture = BoundedCapture::with_limit(5); // retain only the first two emoji bytes
-    drain_bounded(&mut reader, &mut capture, 5).await.unwrap();
+    drain_bounded(&mut reader, &mut capture, 5, None, OutputStream::Stdout)
+        .await
+        .unwrap();
     let (text, truncated) = capture.finish("stdout", 5);
 
     assert!(truncated);
@@ -49,6 +51,124 @@ async fn utf8_scalar_split_at_the_byte_ceiling_is_safe() {
         !text.contains('\u{FFFD}'),
         "an incomplete boundary scalar is dropped, not corrupted"
     );
+}
+
+#[tokio::test]
+async fn observer_is_bounded_and_terminal_bypasses_a_full_chunk_queue() {
+    let (observer, mut receiver) = OutputObserver::bounded("cargo test", 7, 4);
+    for value in 0_u8..100 {
+        let _ = observer.inner.chunk_tx.try_send(OutputChunk {
+            command_identity: Arc::from("cargo test"),
+            attempt: 7,
+            stream: OutputStream::Stdout,
+            bytes: Arc::from([value]),
+            retained_limit_bytes: 1024,
+            dropped_chunks: 0,
+        });
+    }
+    observer.finish(
+        &RunOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: true,
+            stderr_truncated: false,
+            timed_out: false,
+        },
+        false,
+    );
+
+    let mut delivered_chunks = 0;
+    let terminal = loop {
+        match receiver.recv().await {
+            Some(OutputObservation::Chunk(_)) => delivered_chunks += 1,
+            Some(OutputObservation::Terminal(terminal)) => break terminal,
+            None => panic!("terminal state must survive a full lossy chunk queue"),
+        }
+    };
+    assert_eq!(delivered_chunks, 4, "only the bounded queue may drain");
+    assert_eq!(terminal.command_identity.as_ref(), "cargo test");
+    assert_eq!(terminal.attempt, 7);
+    assert!(terminal.stdout_truncated);
+}
+
+struct AlwaysFailReader;
+
+impl tokio::io::AsyncRead for AlwaysFailReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Err(std::io::Error::other("injected read failure")))
+    }
+}
+
+#[tokio::test]
+async fn read_error_publishes_exactly_one_io_terminal_past_full_chunk_queue() {
+    let (observer, mut receiver) = OutputObserver::bounded("failing verifier", 3, 4);
+    for value in 0_u8..4 {
+        observer
+            .inner
+            .chunk_tx
+            .try_send(OutputChunk {
+                command_identity: Arc::from("failing verifier"),
+                attempt: 3,
+                stream: OutputStream::Stdout,
+                bytes: Arc::from([value]),
+                retained_limit_bytes: 64,
+                dropped_chunks: 0,
+            })
+            .unwrap();
+    }
+    let mut reader = AlwaysFailReader;
+    let mut capture = BoundedCapture::with_limit(64);
+    assert!(
+        drain_bounded(
+            &mut reader,
+            &mut capture,
+            64,
+            Some(&observer),
+            OutputStream::Stdout,
+        )
+        .await
+        .is_err()
+    );
+    // A later collector settlement cannot overwrite the first authoritative error terminal.
+    observer.finish(
+        &RunOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
+        },
+        false,
+    );
+
+    let terminal = loop {
+        match receiver.recv().await {
+            Some(OutputObservation::Chunk(_)) => {}
+            Some(OutputObservation::Terminal(terminal)) => break terminal,
+            None => panic!("I/O-failure terminal was lost behind chunk pressure"),
+        }
+    };
+    assert_eq!(terminal.reason, OutputTerminalReason::IoFailure);
+    assert_eq!(terminal.exit_code, SIGNALLED_EXIT_CODE);
+    assert!(
+        receiver.recv().await.is_none(),
+        "terminal must be delivered once"
+    );
+}
+
+#[tokio::test]
+async fn observer_cancellation_is_race_free() {
+    let (observer, _receiver) = OutputObserver::bounded("verifier", 1, 4);
+    observer.cancel();
+    tokio::time::timeout(std::time::Duration::from_millis(50), observer.cancelled())
+        .await
+        .expect("a cancellation sent before waiter creation must still be observed");
 }
 
 #[cfg(unix)]

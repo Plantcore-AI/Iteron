@@ -99,7 +99,7 @@ impl StderrDiagnosticDrain {
     fn flush(&self) {
         use std::io::Write as _;
 
-        for diagnostic in self.receiver.try_iter() {
+        for diagnostic in self.take() {
             let envelope =
                 iteron_kernel::diagnostics::KernelDiagnosticEnvelope::current(diagnostic);
             // Serialization is infallible for the closed, string-free vocabulary. Presentation
@@ -110,6 +110,13 @@ impl StderrDiagnosticDrain {
                 let _ = std::io::stderr().lock().write_all(&line);
             }
         }
+    }
+
+    /// Drain diagnostics that predate frontend attachment into the structured first-paint notice
+    /// path. Diagnostics emitted after attachment remain in the same bounded receiver and are
+    /// still flushed to stderr when the frontend returns.
+    fn take(&self) -> Vec<iteron_kernel::diagnostics::KernelDiagnostic> {
+        self.receiver.try_iter().collect()
     }
 }
 
@@ -1630,19 +1637,19 @@ async fn run_cli() -> anyhow::Result<u8> {
         // grows without bound and had no ceiling on this path at all.
         let limit = cli.limit.unwrap_or(session_view::MAX_SESSIONS_PER_PAGE);
         if cli.output_format.is_machine() {
-            let document = session_view::list_sessions(&runs_dir, &tenant, Some(&repo), limit);
+            let document = session_view::list_sessions(&runs_dir, &tenant, Some(&repo), limit)?;
             println!("{}", serde_json::to_string(&document)?);
             return Ok(output::EXIT_SUCCESS);
         }
-        let metas = iteron_record::session::list_scoped(&runs_dir, &tenant, Some(&repo));
-        if metas.is_empty() {
+        let page = session_view::list_session_metas(&runs_dir, &tenant, Some(&repo), limit)?;
+        if page.sessions.is_empty() {
             eprintln!(
                 "no sessions for {} in {}",
                 repo.display(),
                 runs_dir.display()
             );
         } else {
-            for m in metas.iter().take(limit) {
+            for m in &page.sessions {
                 let route = if m.provider_id.is_empty() {
                     m.model.clone()
                 } else {
@@ -1657,10 +1664,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                     m.run_id, m.turns, route, cost, m.title
                 );
             }
-            if metas.len() > limit {
+            if page.has_more {
                 eprintln!(
-                    "showing the {limit} most recent of {} sessions; raise --limit or run `iteron prune`",
-                    metas.len()
+                    "page showing the {limit} most recent sessions; raise --limit or run `iteron prune`"
                 );
             }
         }
@@ -2197,6 +2203,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
     let mut resolved_agent_definition_tag = cli.agent_definition_tag.clone();
     let mut resumed_tunables_checkpoint = None;
+    let last_success_route_path =
+        config::config_home().map(|home| home.join(".iteron/cache/last-success-route-v1.json"));
+    let mut route_source = if provider_was_explicit || requested_model.is_some() {
+        "operator_config"
+    } else {
+        "versioned_default"
+    };
+    let mut route_fallback_reason: Option<String> = None;
     if let Some(resume) = &resume_id {
         let recorded = iteron_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
         resumed_tunables_checkpoint = Some(
@@ -2231,6 +2245,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             _ => None,
         });
         if let Some((recorded_provider, recorded_model)) = last_route {
+            route_source = "resumed_run";
             let provider_runtime_override = matches!(
                 provider_origin,
                 config::ConfigOrigin::Cli | config::ConfigOrigin::Environment
@@ -2279,12 +2294,45 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
     }
 
-    // Last point before any catalog is read for routing, and the first point at which the routed
-    // provider is final: `--resume` adopts the provider recorded in the rollout just above. Join
-    // the deferred half only for the launches that actually need it — a provider outside the eager
-    // set, or an unqualified model the routed provider does not offer.
-    if provider_directory.needs_settled_catalogs(requested_model.as_deref(), &provider_name) {
-        provider_directory.settle().await;
+    // With no operator or resume authority, prefer the last route that completed a real provider
+    // turn, but only while both catalog and capability digests still validate. The snapshot is
+    // content-free and never contains a credential. Invalid/stale state falls back visibly.
+    if resume_id.is_none()
+        && !provider_was_explicit
+        && requested_model.is_none()
+        && let Some(path) = last_success_route_path.as_deref()
+    {
+        match providers::LastSuccessRouteSnapshot::load_validated(path, &provider_directory) {
+            Ok(Some(snapshot)) => {
+                let prior = snapshot.selection();
+                provider_name = prior.provider_id;
+                requested_model = Some(prior.model_id);
+                model_origin = Some(config::ConfigOrigin::Builtin);
+                provider_was_explicit = true;
+                route_source = "last_success";
+            }
+            Ok(None) => {
+                route_fallback_reason = Some("no successful route snapshot".into());
+            }
+            Err(reason) => {
+                route_fallback_reason = Some(safe_agent_diagnostic(&reason));
+            }
+        }
+    }
+
+    // One-shot/headless callers have no first-frame boundary, so settle an unresolved selected
+    // route before constructing its provider. Interactive TUI discovery is deliberately left
+    // dormant here: `tui::run` draws first, then its existing provider-refresh task calls
+    // `settle()`, which is the sole signal that may start provider network I/O. Cached/static and
+    // explicitly qualified routes can still construct immediately; an unproved route remains an
+    // unavailable provider until the post-paint picker publishes verified evidence.
+    if (one_shot || headless_serve)
+        && provider_directory.needs_settled_catalogs(requested_model.as_deref(), &provider_name)
+        && !provider_directory.settle().await
+    {
+        eprintln!(
+            "provider refresh is still running after the 500ms first-use budget; continuing with validated cached/static route facts"
+        );
     }
 
     // Resolve one explicit `(provider, model)` pair from the dynamic catalogs. A trusted provider
@@ -2496,9 +2544,28 @@ async fn run_cli() -> anyhow::Result<u8> {
     // different root than the config would make that fallback a half-measure.
     let home_core = config::config_home().map(|home| home.join(".iteron"));
 
-    let agent_catalog = discover_agent_catalog(&repo, &runtime_plugins.agents);
-    let (mut configured_hooks, configured_telemetry) = if let Some(home) = config::config_home() {
-        let mut hooks = runtime::hooks::Hooks::load_user(&home);
+    let agent_snapshot_path =
+        agent_catalog_snapshot_path(home_core.as_deref(), &repo, &runtime_plugins.agents);
+    let refresh_agent_catalog_after_paint =
+        !one_shot && !headless_serve && agent_snapshot_path.is_some();
+    let agent_catalog = if refresh_agent_catalog_after_paint {
+        agent_snapshot_path
+            .as_deref()
+            .and_then(|path| {
+                iteron_agents::AgentCatalogSnapshot::load(path)
+                    .ok()
+                    .flatten()
+            })
+            .map(iteron_agents::AgentCatalogSnapshot::into_catalog)
+            .unwrap_or_else(iteron_agents::AgentCatalog::builtin_only)
+    } else {
+        discover_agent_catalog(&repo, &runtime_plugins.agents)
+    };
+    startup.mark(startup::StartupPhase::AgentDiscovery);
+    let (mut configured_hooks, configured_telemetry) = if config::config_home().is_some() {
+        // `user_file` is the one immutable operator-config snapshot for this launch. Hooks and
+        // telemetry project typed views from it instead of reopening/parsing the same file.
+        let mut hooks = runtime::hooks::Hooks::from_user_config(user_file.hooks.as_ref());
         for (event, commands) in &runtime_plugins.hooks {
             for command in commands {
                 if let Err(reason) = hooks.append_verified_plugin(event, command.clone()) {
@@ -2506,7 +2573,8 @@ async fn run_cli() -> anyhow::Result<u8> {
                 }
             }
         }
-        let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
+        let telemetry =
+            runtime::telemetry::TelemetrySink::from_user_config(user_file.unknown.get("otel"));
         hooks.set_sensitive_env_names(credential_env_names.clone());
         if !hooks.is_empty() {
             eprintln!("hooks: loaded from ~/.iteron/config.json (user config)");
@@ -2547,7 +2615,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         .provider_governor
         .clone()
         .unwrap_or_default()
-        .resolve(workflow_run_limits.max_concurrency(), prompt_cache_enabled)
+        .resolve(
+            iteron_provider::GovernorPolicy::default().max_in_flight_per_route,
+            prompt_cache_enabled,
+        )
         .map_err(anyhow::Error::msg)?;
     let provider_control_capabilities = provider_arc.control_capabilities();
     provider_control_capabilities
@@ -2743,7 +2814,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         effective_settings.mcp_exposure.clone(),
     )?;
     let budget = effective_settings.budget.clone();
-    let route = route::RouteView::resolve(
+    let mut route = route::RouteView::resolve(
         &provider_directory,
         &selection,
         route::RouteLimits {
@@ -2753,6 +2824,14 @@ async fn run_cli() -> anyhow::Result<u8> {
             max_wall_secs: budget.max_wall_secs,
         },
     );
+    route
+        .catalog_provenance
+        .push_str(&format!(" · route source {route_source}"));
+    if let Some(reason) = route_fallback_reason.as_deref() {
+        route
+            .catalog_provenance
+            .push_str(&format!(" · fallback {}", safe_agent_diagnostic(reason)));
+    }
     eprintln!(
         "iteron · repo={} · model={} · run={}",
         repo.display(),
@@ -2763,6 +2842,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         "route: {}:{} · {} · {}",
         route.provider_id, route.model_id, route.api_root, route.credential
     );
+    eprintln!("route source: {route_source}");
+    if let Some(reason) = route_fallback_reason.as_deref() {
+        eprintln!("route fallback: {}", safe_agent_diagnostic(reason));
+    }
     if let Some(reason) = &route.blocked_reason {
         eprintln!("route blocked: {reason}");
     }
@@ -2907,6 +2990,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 .expect("resume checkpoint was decoded above"),
         )?
     };
+    agent.set_last_success_route_path(last_success_route_path.clone());
     agent
         .install_mcp_runtime(mcp_runtime)
         .map_err(anyhow::Error::msg)?;
@@ -3130,6 +3214,35 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
 
     if !one_shot {
+        // The alternate screen intentionally replaces the primary-screen startup transcript.
+        // Replay the execution posture after the first frame so the operator never loses the
+        // exact authority, effort, verification and permission facts that govern this session.
+        let mut initial_notices = Vec::new();
+        if agent.bypass_permissions {
+            initial_notices.push(
+                "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)".to_owned(),
+            );
+        }
+        if let Some(command) = &agent.verify_command {
+            initial_notices.push(format!(
+                "verify gate: harness will run `{command}` before accepting 'done'"
+            ));
+        }
+        initial_notices.push(format!("effort: {}", agent.effort().label()));
+        initial_notices.push(
+            match agent
+                .permission_rules()
+                .cap_rule(iteron_protocol::Capability::CodeExecuting)
+            {
+                Some(iteron_protocol::Verdict::Auto) if cli.confine => "code execution: ON (--confine: egress-off sandbox, network denied, writes confined to workspace)".to_owned(),
+                Some(iteron_protocol::Verdict::Auto) => "code execution: ON (your own authority: network reachable, writes anywhere your account can; --confine restores the sandbox)".to_owned(),
+                _ => "code execution: OFF (bash/build/test refused). Pass --allow-code to enable.".to_owned(),
+            },
+        );
+        initial_notices.push(format!(
+            "permission mode: {}",
+            agent.permission_mode().label()
+        ));
         let attached = match app_server::attach(agent, true, false) {
             Ok(attached) => attached,
             Err(error) => {
@@ -3139,7 +3252,34 @@ async fn run_cli() -> anyhow::Result<u8> {
                 ));
             }
         };
-        tui::run(
+        provider_directory.set_activity(attached.handle.activity.clone());
+        let agent_refresh = if refresh_agent_catalog_after_paint {
+            let repo = repo.clone();
+            let plugin_agents = runtime_plugins.agents.clone();
+            let snapshot_path = agent_snapshot_path
+                .clone()
+                .expect("post-paint refresh requires a private snapshot path");
+            let activity = attached.handle.activity.clone();
+            let started_at = erasure_now_unix_ms();
+            let _ = activity.try_send(agent_discovery_activity(
+                iteron_protocol::ActivityState::Running,
+                started_at,
+            ));
+            Some(tokio::task::spawn_blocking(move || {
+                let catalog = scan_agent_catalog(&repo, &plugin_agents);
+                let stored = iteron_agents::AgentCatalogSnapshot::store(&snapshot_path, &catalog);
+                let terminal = if stored.is_ok() {
+                    iteron_protocol::ActivityState::Succeeded
+                } else {
+                    iteron_protocol::ActivityState::Failed
+                };
+                let _ = activity.try_send(agent_discovery_activity(terminal, started_at));
+                (catalog, stored.err().map(|error| error.to_string()))
+            }))
+        } else {
+            None
+        };
+        let tui_result = tui::run(
             attached,
             cli.task,
             provider_directory,
@@ -3150,11 +3290,39 @@ async fn run_cli() -> anyhow::Result<u8> {
                 keymap: user_file.tui_keymap.clone(),
                 external_editor: user_file.external_editor.clone(),
                 sensitive_env_names: credential_env_names,
+                initial_diagnostics: diagnostic_drain.take(),
+                initial_notices,
             },
             startup,
         )
-        .await?;
+        .await;
+        if let Some(mut agent_refresh) = agent_refresh {
+            match tokio::time::timeout(std::time::Duration::from_millis(250), &mut agent_refresh)
+                .await
+            {
+                Ok(Ok((catalog, store_error))) => {
+                    report_agent_catalog_scan(&catalog);
+                    if let Some(error) = store_error {
+                        eprintln!(
+                            "warning: refreshed agent catalog snapshot was not persisted ({})",
+                            safe_agent_diagnostic(&error)
+                        );
+                    }
+                }
+                Ok(Err(error)) => eprintln!(
+                    "warning: post-paint agent discovery worker did not finish ({})",
+                    safe_agent_diagnostic(&error.to_string())
+                ),
+                Err(_) => {
+                    // `spawn_blocking` cannot synchronously kill work already running. Aborting
+                    // the join authority detaches this cache-only refresh and bounds interactive
+                    // exit; it owns no terminal state and can only replace a next-run snapshot.
+                    agent_refresh.abort();
+                }
+            }
+        }
         diagnostic_drain.flush();
+        tui_result?;
         return Ok(output::EXIT_SUCCESS);
     }
     // One-shot has no frame to emit at; the terminal probe never runs, so the breakdown is final
@@ -3181,6 +3349,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         lifecycle: _,
         lifecycle_otel: _,
         hook_health: _,
+        activity: _,
         control,
     } = handle;
 
@@ -3240,6 +3409,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
             app_server::ServerEvent::Submission { .. } => continue,
+            // Live activity is already projected by interactive/headless frontends. The frozen
+            // one-shot stream-json schema has no activity record, so never forge one here.
+            app_server::ServerEvent::Activity(_) => continue,
             app_server::ServerEvent::RunEnded {
                 snapshot, summary, ..
             } => break (*summary, snapshot.ledger_summary),
@@ -3273,6 +3445,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
             app_server::ServerEvent::Submission { .. } => continue,
+            app_server::ServerEvent::Activity(_) => continue,
             app_server::ServerEvent::RunEnded { .. } => continue,
             // Same as the drain above: no `stream-json` record type exists for it yet.
             app_server::ServerEvent::WorkflowRun(_) => continue,
@@ -3391,6 +3564,15 @@ fn discover_agent_catalog(
     repo: &std::path::Path,
     plugin_agents: &[plugin_runtime::AgentArtifact],
 ) -> iteron_agents::AgentCatalog {
+    let catalog = scan_agent_catalog(repo, plugin_agents);
+    report_agent_catalog_scan(&catalog);
+    catalog
+}
+
+fn scan_agent_catalog(
+    repo: &std::path::Path,
+    plugin_agents: &[plugin_runtime::AgentArtifact],
+) -> iteron_agents::AgentCatalog {
     let plugin_files = plugin_agents
         .iter()
         .map(|artifact| {
@@ -3402,11 +3584,10 @@ fn discover_agent_catalog(
         })
         .collect::<Vec<_>>();
     let home = config::config_home();
-    let catalog = iteron_agents::AgentCatalog::discover_with_plugin_agents(
-        home.as_deref(),
-        repo,
-        &plugin_files,
-    );
+    iteron_agents::AgentCatalog::discover_with_plugin_agents(home.as_deref(), repo, &plugin_files)
+}
+
+fn report_agent_catalog_scan(catalog: &iteron_agents::AgentCatalog) {
     // A skipped symlink and a truncated directory are SCAN STEPS, not rejected agent definitions.
     // Printing one line each turned startup in a large tree into 150 lines of noise that buried the
     // three lines an operator actually needs — and called every `node_modules/.bin` entry a rejected
@@ -3430,7 +3611,63 @@ fn discover_agent_catalog(
             if skipped == 1 { "" } else { "s" }
         );
     }
-    catalog
+}
+
+/// One private snapshot per canonical workspace. A snapshot is only a previously verified
+/// bootstrap: physical discovery always refreshes it after paint and the running session never
+/// swaps its pinned catalog underneath an active turn.
+fn agent_catalog_snapshot_path(
+    home_core: Option<&std::path::Path>,
+    repo: &std::path::Path,
+    plugin_agents: &[plugin_runtime::AgentArtifact],
+) -> Option<std::path::PathBuf> {
+    use sha2::{Digest as _, Sha256};
+
+    let home_core = home_core?;
+    let mut digest = Sha256::new();
+    digest.update(b"iteron-agent-catalog-snapshot-scope-v1");
+    for bytes in std::iter::once(repo.as_os_str().as_encoded_bytes()).chain(
+        plugin_agents.iter().flat_map(|artifact| {
+            [
+                artifact.name.as_bytes(),
+                artifact.root.as_os_str().as_encoded_bytes(),
+                artifact.path.as_os_str().as_encoded_bytes(),
+            ]
+        }),
+    ) {
+        digest.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(bytes);
+    }
+    Some(
+        home_core
+            .join("cache")
+            .join("agent-catalog")
+            .join(format!("{:x}.json", digest.finalize())),
+    )
+}
+
+fn agent_discovery_activity(
+    state: iteron_protocol::ActivityState,
+    started_at_unix_ms: u64,
+) -> iteron_protocol::ActivityEvent {
+    let updated_at_unix_ms = erasure_now_unix_ms().max(started_at_unix_ms);
+    iteron_protocol::ActivityEvent {
+        schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+        id: "startup:agent_discovery".into(),
+        parent_id: None,
+        kind: iteron_protocol::ActivityKind::Startup,
+        state,
+        owner: iteron_protocol::ActivityOwner::Runtime,
+        started_at_unix_ms,
+        updated_at_unix_ms,
+        attempt: 1,
+        limit: 1,
+        next_retry_at_unix_ms: None,
+        deadline_unix_ms: None,
+        cancelability: iteron_protocol::ActivityCancelability::None,
+        detail_code: Some(iteron_protocol::ActivityDetailCode::AgentDiscovery),
+        progress: None,
+    }
 }
 
 /// Whether a catalog error describes the SCAN refusing to walk further, rather than a definition

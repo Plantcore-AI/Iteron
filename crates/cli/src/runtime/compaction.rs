@@ -83,7 +83,7 @@ impl Agent {
             system: "You compress a coding-agent transcript into a terse hand-off note.".into(),
             messages: msgs,
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: self.compaction.summary_profile.max_output_tokens,
             cache_system: self.provider_cache_system_enabled(),
             thinking_budget: self.effort_thinking_budget(self.compaction.summary_profile.effort),
@@ -372,6 +372,7 @@ impl Agent {
     pub(super) async fn settle_compaction(&mut self) {
         if self.compacted_in_run
             || self.record_failed
+            || !self.compaction.enabled
             || self.delegation_depth > 0
             || !self
                 .compaction
@@ -386,27 +387,70 @@ impl Agent {
         {
             return;
         }
-        // Plan against the PROJECTED transcript, which is exactly what the next submission will
-        // load, so the plan the record describes is the plan the next turn inherits.
-        let path = self.rollout.path().to_path_buf();
-        let Ok(messages) = Self::messages_from_rollout(&path) else {
-            return;
-        };
         // Same ceiling rule as the request path: a declared capability is used as declared, and
         // 8192 is the default for an UNKNOWN one only (#I-02). Clamping here would plan against a
         // window the route does not actually have.
         let request_max_tokens = self
             .model_max_output_tokens
             .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
-        let Some(plan) = self.compaction.plan_at_turn_end(
-            &self.effective_system(),
-            &messages,
-            &self.registry.specs(),
-            self.model_context_window,
-            request_max_tokens,
-        ) else {
+        let system = self.effective_system();
+        let tools = self.advertised_tool_specs_for_task("");
+        // The live working set is the exact projected transcript for an ordinary completed turn.
+        // Use its incremental estimator as a cheap negative precheck; only a near-threshold turn
+        // pays for durable replay and SHA verification. A missing working set means compaction or
+        // recovery rewrote the record, so replay remains mandatory and authoritative.
+        let prechecked = self.working_set.clone().map(|projected| {
+            let estimate = self.context_estimator.estimate_with_tool_tokens(
+                &system,
+                &projected,
+                tools.len(),
+                tools.estimated_tokens(),
+                tools.cache_identity(),
+            );
+            let estimate = self.calibrated_context_estimate(estimate);
+            let trigger = self
+                .compaction
+                .approaching_trigger_tokens(self.model_context_window, request_max_tokens);
+            (
+                projected.len() > self.compaction.keep_recent.saturating_add(2)
+                    && estimate.total_tokens > trigger,
+                projected,
+            )
+        });
+        if prechecked.as_ref().is_some_and(|(needed, _)| !needed) {
+            return;
+        }
+        // Plan against the durable projected transcript only after the cheap precheck says a
+        // compaction is plausible. The record remains the authority for the rewrite itself.
+        let path = self.rollout.path().to_path_buf();
+        let Ok(messages) = Self::messages_from_rollout(&path) else {
             return;
         };
+        let plan = match prechecked {
+            Some((true, _)) => self.compaction.force_plan(&messages),
+            Some((false, _)) => None,
+            None => {
+                let estimate = self.context_estimator.estimate_with_tool_tokens(
+                    &system,
+                    &messages,
+                    tools.len(),
+                    tools.estimated_tokens(),
+                    tools.cache_identity(),
+                );
+                let estimate = self.calibrated_context_estimate(estimate);
+                let trigger = self
+                    .compaction
+                    .approaching_trigger_tokens(self.model_context_window, request_max_tokens);
+                if messages.len() > self.compaction.keep_recent.saturating_add(2)
+                    && estimate.total_tokens > trigger
+                {
+                    self.compaction.force_plan(&messages)
+                } else {
+                    None
+                }
+            }
+        };
+        let Some(plan) = plan else { return };
         let Ok(report) = self
             .brokered_lifecycle_gate(
                 TurnId(self.seq_turn),

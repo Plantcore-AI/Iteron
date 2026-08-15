@@ -971,6 +971,11 @@
       "selector": { "field": "type", "value": "notice" },
       "fixtures": [
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v5.jsonl",
+          "format": "jsonl",
+          "schema_version": 5
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4

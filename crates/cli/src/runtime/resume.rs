@@ -887,6 +887,7 @@ impl Agent {
         self.observed_trust = staged.observed_trust;
         self.injected = None;
         self.injected_trust = None;
+        self.context_refresh_requested = false;
         self.apply_validated_compiled_policy_bundle(compiled_policy_bundle);
         // Re-offer the operator instructions this process was started with. A recorded
         // ContextInjection in the adopted journal still outranks it — which is every run that has
@@ -903,13 +904,19 @@ impl Agent {
         self.compacted_in_run = false;
         self.last_compaction_turn = staged.last_compaction_turn;
         self.interrupt_requested = false;
+        self.force_cancel_requested = false;
+        self.force_cancel
+            .store(false, std::sync::atomic::Ordering::Release);
         self.pricing = None;
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window
         // in between cannot admit an effect against the previous run's ledger.
         self.effect_admissions = effect_admission::EffectAdmissions::default();
+        self.live_unresolved_effects = 0;
+        self.recovery_effect_replay_required = true;
         // The estimator caches a per-message token estimate for a transcript that is being replaced.
         self.context_estimator.invalidate_transcript();
+        self.token_estimate_baselines.clear();
         self.context_estimator.pin_policy(adopted_token_estimator);
         self.context_source_evidence.clear();
         self.input_file_evidence = None;
@@ -940,12 +947,6 @@ impl Agent {
             previous_run_id: previous.run_id().0.clone(),
             messages: message_count,
             turns: self.ledger.turns,
-            recorded_route: self.selected_route.as_ref().map(|selected| {
-                (
-                    selected.route.provider_id.clone(),
-                    selected.route.model_id.clone(),
-                )
-            }),
         };
         drop(previous);
         Ok(adopted)

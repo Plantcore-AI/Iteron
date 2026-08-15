@@ -5,14 +5,23 @@ impl App {
     pub(super) fn push_block(&mut self, kind: block::BlockKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        let changed_from = self.transcript.len();
         self.transcript.push(Arc::new(block::Block::new(id, kind)));
-        self.mark_transcript_changed();
+        self.mark_transcript_changed_from(changed_from);
         self.autoscroll();
         id
     }
 
     pub(super) fn mark_transcript_changed(&mut self) {
+        self.mark_transcript_changed_from(0);
+    }
+
+    pub(super) fn mark_transcript_changed_from(&mut self, block_index: usize) {
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.transcript_dirty_from = Some(
+            self.transcript_dirty_from
+                .map_or(block_index, |current| current.min(block_index)),
+        );
     }
 
     /// Echo the operator's submitted prompt as a User block.
@@ -45,20 +54,31 @@ impl App {
         } else {
             return None;
         };
-        Some(FirstTokenStall { state, waited })
+        Some(FirstTokenStall {
+            state,
+            waited,
+            accepted: self.provider_accepted,
+        })
     }
 
     /// Append streamed assistant text; the in-flight buffer renders as a live markdown block.
     pub(super) fn stream_text(&mut self, delta: &str) {
         // A token arrived: this connection is slow at worst, not stalled (I-64).
         self.awaiting_first_token_since = None;
+        self.provider_accepted = false;
         self.flush_think();
         if let Some(complete) = self.text_scrubber.push(delta) {
             if complete.is_empty() {
                 return;
             }
-            self.cur_text.push_str(&ui_safe_text(&complete));
+            let complete = ui_safe_text(&complete);
+            self.cur_text.push_str(&complete);
+            self.assistant_stream_authority.push_str(&complete);
             self.cur_text_revision = self.cur_text_revision.wrapping_add(1);
+            // Advance the retained parser at the append boundary, not at an arbitrary later paint.
+            // Rendering therefore never owns parse work and a burst of deltas still scans every
+            // source byte once.
+            ensure_stream_doc(self);
             self.autoscroll();
         }
     }
@@ -68,6 +88,7 @@ impl App {
         // Extended thinking is the model producing tokens, so it stops the stall clock exactly
         // like text does — the same rule `TurnEnd.ttft_ms` already measures by (I-64).
         self.awaiting_first_token_since = None;
+        self.provider_accepted = false;
         if let Some(complete) = self.thinking_scrubber.push(delta) {
             if complete.is_empty() {
                 return;
@@ -100,20 +121,95 @@ impl App {
     /// Finalize streamed assistant text into a parsed Assistant markdown block.
     pub(super) fn flush_text(&mut self) {
         self.flush_think();
-        if let Some(pending) = self.text_scrubber.finish() {
-            self.cur_text.push_str(&ui_safe_text(&pending));
-            self.cur_text_revision = self.cur_text_revision.wrapping_add(1);
-        }
+        self.finish_text_boundary();
         if !self.cur_text.trim().is_empty() {
-            let t = std::mem::take(&mut self.cur_text);
-            self.push_block(block::BlockKind::Assistant(
-                crate::markdown::MarkdownDoc::parse(&t),
-            ));
+            ensure_stream_doc(self);
+            let doc = self
+                .cur_doc
+                .as_mut()
+                .expect("non-empty streaming text has an incremental document");
+            self.cur_doc_parse.finalize(doc, &self.cur_text);
+            let doc = self
+                .cur_doc
+                .take()
+                .expect("the finalized streaming document is retained");
+            self.cur_text.clear();
+            let id = self.push_block(block::BlockKind::Assistant(doc));
+            self.assistant_turn_block_ids.push(id);
         } else {
             self.cur_text.clear();
         }
         self.cur_doc = None;
         self.cur_doc_revision = self.cur_text_revision;
+    }
+
+    /// Close the stream scrubber without committing a transcript block. The authoritative run
+    /// boundary uses this before reconciliation so a missing terminal suffix can extend the same
+    /// live assistant block instead of creating an artificial blank line between two fragments.
+    pub(super) fn finish_text_boundary(&mut self) {
+        if let Some(pending) = self.text_scrubber.finish() {
+            let pending = ui_safe_text(&pending);
+            self.cur_text.push_str(&pending);
+            self.assistant_stream_authority.push_str(&pending);
+            self.cur_text_revision = self.cur_text_revision.wrapping_add(1);
+        }
+    }
+
+    /// Reconcile cumulative live bytes with the terminal authority. An exact missing suffix is
+    /// appended; overlap, duplication, or a rewrite atomically rebuilds only this model turn from
+    /// the authoritative terminal bytes.
+    pub(super) fn reconcile_terminal_assistant(&mut self, authoritative: &str) -> bool {
+        let authoritative = ui_safe_text(authoritative);
+        if authoritative == self.assistant_stream_authority {
+            return false;
+        }
+        if let Some(missing) = authoritative.strip_prefix(&self.assistant_stream_authority) {
+            self.cur_text.push_str(missing);
+            self.cur_text_revision = self.cur_text_revision.wrapping_add(1);
+            self.assistant_stream_authority.push_str(missing);
+            ensure_stream_doc(self);
+            self.autoscroll();
+            return false;
+        }
+
+        // A middle gap, duplicate, or rewrite cannot be repaired with suffix arithmetic. Replace
+        // only this model turn's assistant blocks at their earliest position; tool cards and every
+        // prior turn retain their ids/order.
+        let ids = self
+            .assistant_turn_block_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let insertion = self
+            .transcript
+            .iter()
+            .position(|block| ids.contains(&block.id))
+            .unwrap_or(self.transcript.len());
+        self.transcript.retain(|block| !ids.contains(&block.id));
+        self.render_cache.retain(|id, _| !ids.contains(id));
+        self.assistant_turn_block_ids.clear();
+        self.cur_text.clear();
+        self.cur_doc = None;
+        self.cur_doc_parse = crate::markdown::StreamingParse::default();
+        self.cur_doc_revision = self.cur_text_revision;
+        self.assistant_stream_authority.clone_from(&authoritative);
+        if !authoritative.trim().is_empty() {
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            self.transcript.insert(
+                insertion.min(self.transcript.len()),
+                Arc::new(block::Block::new(
+                    id,
+                    block::BlockKind::Assistant(crate::markdown::MarkdownDoc::parse(
+                        &authoritative,
+                    )),
+                )),
+            );
+            self.assistant_turn_block_ids.push(id);
+        }
+        self.mark_transcript_changed_from(insertion.min(self.transcript.len()));
+        self.autoscroll();
+        true
     }
 
     /// A tool is starting: finalize streaming and expose it in the activity shelf immediately, but
@@ -335,5 +431,77 @@ impl App {
                 block::BlockKind::Workflow(card) => Some(card),
                 _ => None,
             })
+    }
+}
+
+#[cfg(test)]
+mod terminal_reconcile_tests {
+    use super::*;
+
+    fn visible_current_answer(app: &App) -> String {
+        app.transcript
+            .iter()
+            .filter(|block| app.assistant_turn_block_ids.contains(&block.id))
+            .filter_map(|block| match &block.kind {
+                block::BlockKind::Assistant(document) => Some(document.to_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn terminal_authority_rebuilds_middle_gap_and_rewrite_exactly() {
+        let mut app = App::new();
+        app.assistant_stream_authority = "abef".into();
+        let id = app.push_block(block::BlockKind::Assistant(
+            crate::markdown::MarkdownDoc::parse("abef"),
+        ));
+        app.assistant_turn_block_ids.push(id);
+
+        assert!(app.reconcile_terminal_assistant("abcdef"));
+        assert_eq!(visible_current_answer(&app), "abcdef");
+        assert_eq!(app.assistant_stream_authority, "abcdef");
+
+        assert!(app.reconcile_terminal_assistant("rewritten answer"));
+        assert_eq!(visible_current_answer(&app), "rewritten answer");
+        assert_eq!(app.assistant_stream_authority, "rewritten answer");
+    }
+
+    #[test]
+    fn terminal_authority_rebuilds_duplicate_delta_without_touching_other_cards() {
+        let mut app = App::new();
+        let prior = app.push_block(block::BlockKind::User("prior turn".into()));
+        app.assistant_stream_authority = "abcabc".into();
+        let duplicated = app.push_block(block::BlockKind::Assistant(
+            crate::markdown::MarkdownDoc::parse("abcabc"),
+        ));
+        app.assistant_turn_block_ids.push(duplicated);
+        let tool = app.push_block(block::BlockKind::Notice {
+            level: block::NoticeLevel::Info,
+            text: "tool card".into(),
+        });
+
+        assert!(app.reconcile_terminal_assistant("abc"));
+        assert_eq!(visible_current_answer(&app), "abc");
+        assert_eq!(app.assistant_stream_authority, "abc");
+        assert!(app.transcript.iter().any(|block| block.id == prior));
+        assert!(app.transcript.iter().any(|block| block.id == tool));
+        assert!(!app.transcript.iter().any(|block| block.id == duplicated));
+    }
+
+    #[test]
+    fn terminal_authority_adds_only_a_missing_suffix() {
+        let mut app = App::new();
+        app.stream_text("arbitrary");
+        app.finish_text_boundary();
+
+        assert!(!app.reconcile_terminal_assistant("arbitrary chunking"));
+        app.flush_text();
+        assert_eq!(visible_current_answer(&app), "arbitrary chunking");
+        assert_eq!(
+            app.assistant_turn_block_ids.len(),
+            1,
+            "terminal suffix reconciliation must not split one answer with a blank transcript row"
+        );
     }
 }

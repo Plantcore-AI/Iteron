@@ -1,12 +1,9 @@
 //! `AgentCatalog` — discover agent definitions by origin (trust-by-origin, ADR-007), interpret them
 //! into `AgentDef`s, and project a compact, bounded listing for the model.
 //!
-//! Discovery walks `~/.iteron/agents` (user → `Trusted`) and the repo tree for `<...>/.iteron/agents`
-//! directories (project → `Workspace`). A definition found under a dependency/vendor path (e.g. a
-//! cloned dependency's `node_modules/.../.iteron/agents`) is `Untrusted` and **stripped — not
-//! returned** (ADR-007 §6: tree-discovered defs are untrusted; the recon incident in `Errors.md`).
-//! Every rejection (stripped, bidi, write-grant, parse failure) is recorded as a `LoadError` rather
-//! than vanishing — the inverse of Claude Code's silent-drop failure.
+//! Discovery reads `~/.iteron/agents`, explicit workspace roots, and their ancestors only. It never
+//! descends into `.git`, `target`, `node_modules`, or vendor trees. Definitions encountered at an
+//! admitted root are validated and every rejection is surfaced as a `LoadError`.
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +36,7 @@ pub struct AgentCatalog {
 }
 
 /// Content-free identity of the exact executable agent-definition set admitted by this process.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentCatalogRuntimeIdentity {
     pub digest_sha256: String,
     pub entry_count: usize,
@@ -53,6 +50,8 @@ const VENDOR_MARKERS: &[&str] = &[
     "node_modules",
     "vendor",
     "target",
+    "build",
+    "dist",
     ".cargo",
     "site-packages",
     "dist-packages",
@@ -62,10 +61,6 @@ const VENDOR_MARKERS: &[&str] = &[
     ".git",
 ];
 
-/// Bounds for the repo scan (invariant #1: everything has a declared ceiling).
-const MAX_SCAN_DEPTH: usize = 8;
-const MAX_SCAN_DIRS: usize = 4096;
-const MAX_SCAN_ENTRIES: usize = 65_536;
 const MAX_AGENT_FILES_PER_DIR: usize = 1_024;
 const MAX_AGENT_SOURCE_BYTES: usize = 256 * 1024;
 // The governed catalog schema admits 4,096 entries total. Two built-ins are always present, so
@@ -75,10 +70,38 @@ const MAX_CATALOG_SOURCES: usize = 4_096 - 2;
 const MAX_LOAD_ERRORS: usize = 4_096;
 
 impl AgentCatalog {
+    pub(crate) fn from_snapshot_defs(defs: Vec<AgentDef>) -> Result<Self, String> {
+        if !(2..=MAX_CATALOG_SOURCES + 2).contains(&defs.len()) {
+            return Err("agent snapshot definition count is outside the governed bound".into());
+        }
+        let builtins = [AgentDef::generic(), AgentDef::isolated_writer()];
+        if defs
+            .iter()
+            .take(2)
+            .zip(builtins.iter())
+            .any(|(actual, expected)| actual.execution_digest() != expected.execution_digest())
+        {
+            return Err("agent snapshot does not preserve the exact built-in definitions".into());
+        }
+        let mut names = std::collections::HashSet::with_capacity(defs.len());
+        for def in &defs {
+            def.validate()?;
+            if !names.insert(def.name.clone()) {
+                return Err("agent snapshot contains duplicate definition names".into());
+            }
+        }
+        Ok(Self {
+            sources_seen: defs.len().saturating_sub(2),
+            defs,
+            errors: Vec::new(),
+            source_limit_reported: false,
+            errors_truncated: false,
+        })
+    }
+
     /// Discover agent definitions. `user` is the user's home-equivalent root holding `.iteron/agents`
-    /// (Trusted); `repo` is the workspace root, scanned (bounded) for `.iteron/agents` directories
-    /// (Workspace, or Untrusted-and-stripped under a vendor path). Discovery order is sorted for a
-    /// stable, reproducible catalog (ADR-006). Built-ins are added first and win name collisions.
+    /// (Trusted); `repo` is the explicit workspace root. Only that root and its ancestors are
+    /// inspected. Discovery order is stable and built-ins win name collisions.
     pub fn discover(user: &Path, repo: &Path) -> Self {
         Self::discover_with_user(Some(user), repo)
     }
@@ -155,6 +178,14 @@ impl AgentCatalog {
     }
 
     fn discover_with_user(user: Option<&Path>, repo: &Path) -> Self {
+        Self::discover_from_roots(user, repo, &[])
+    }
+
+    fn discover_from_roots(
+        user: Option<&Path>,
+        repo: &Path,
+        workspace_members: &[PathBuf],
+    ) -> Self {
         let mut cat = AgentCatalog {
             defs: Vec::new(),
             errors: Vec::new(),
@@ -171,19 +202,15 @@ impl AgentCatalog {
             cat.load_dir(&user_dir, &user_dir, Trust::Trusted, SourceScope::User);
         }
 
-        // Repo definitions: a bounded scan finds the workspace's own `.iteron/agents` (Workspace)
-        // and any nested dependency ones (Untrusted → stripped).
-        let scan = find_agents_dirs(repo);
-        for error in scan.errors {
-            cat.record_error(error);
-        }
-        for dir in scan.dirs {
-            let trust = if is_vendored(&dir) {
-                Trust::Untrusted
-            } else {
-                Trust::Workspace
-            };
-            cat.load_dir(repo, &dir, trust, SourceScope::Repository);
+        let mut roots = explicit_workspace_roots(repo, workspace_members);
+        roots.sort();
+        roots.dedup();
+        for root in roots {
+            if is_vendored(&root) {
+                continue;
+            }
+            let dir = iteron_protocol::home::path(&root, "agents");
+            cat.load_dir(&root, &dir, Trust::Workspace, SourceScope::Repository);
         }
         cat
     }
@@ -437,151 +464,22 @@ fn is_vendored(p: &Path) -> bool {
     p.components().any(|c| match c {
         std::path::Component::Normal(os) => {
             let name = os.to_string_lossy();
-            VENDOR_MARKERS.iter().any(|m| *m == name)
+            iteron_ctx::source::is_default_pruned_component(&name)
+                || VENDOR_MARKERS.iter().any(|marker| *marker == name)
         }
         _ => false,
     })
 }
 
-/// Bounded DFS for `<...>/.iteron/agents` directories under `root`. Descends into vendor trees on
-/// purpose (that is where an injected definition hides, so we can find and strip it) but is capped
-/// by depth and total directories visited (invariant #1), and skips into no directory more than
-/// once. Results are sorted for a reproducible discovery order.
-struct AgentDirScan {
-    dirs: Vec<PathBuf>,
-    errors: Vec<LoadError>,
-}
-
-fn record_scan_error(errors: &mut Vec<LoadError>, error: LoadError) {
-    let max_load_errors =
-        iteron_tunables::param_usize("agents.catalog.max_load_errors", MAX_LOAD_ERRORS);
-    if errors.len() < max_load_errors {
-        errors.push(error);
-    } else if errors.len() == max_load_errors {
-        errors.push(LoadError {
-            source: "repository agent scan".into(),
-            reason: format!("further scan errors omitted after {max_load_errors} entries"),
-        });
+fn explicit_workspace_roots(repo: &Path, workspace_members: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut cursor = Some(repo);
+    while let Some(path) = cursor {
+        roots.push(path.to_path_buf());
+        cursor = path.parent();
     }
-}
-
-fn find_agents_dirs(root: &Path) -> AgentDirScan {
-    let max_scan_depth =
-        iteron_tunables::param_usize("agents.catalog.max_scan_depth", MAX_SCAN_DEPTH);
-    let max_scan_dirs = iteron_tunables::param_usize("agents.catalog.max_scan_dirs", MAX_SCAN_DIRS);
-    let max_scan_entries =
-        iteron_tunables::param_usize("agents.catalog.max_scan_entries", MAX_SCAN_ENTRIES);
-    let max_files_per_dir = iteron_tunables::param_usize(
-        "agents.catalog.max_agent_files_per_dir",
-        iteron_tunables::param_integer(
-            "agents.catalog.max_agent_files_per_dir",
-            MAX_AGENT_FILES_PER_DIR,
-        ),
-    );
-    let mut found = Vec::new();
-    let mut errors = Vec::new();
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    let mut visited = 0usize;
-    let mut visited_entries = 0usize;
-
-    while let Some((dir, depth)) = stack.pop() {
-        if depth > max_scan_depth {
-            continue;
-        }
-        if visited >= max_scan_dirs {
-            record_scan_error(
-                &mut errors,
-                LoadError {
-                    source: root.display().to_string(),
-                    reason: format!(
-                        "repository agent scan truncated at {max_scan_dirs} directories"
-                    ),
-                },
-            );
-            break;
-        }
-        if visited_entries >= max_scan_entries {
-            record_scan_error(
-                &mut errors,
-                LoadError {
-                    source: root.display().to_string(),
-                    reason: format!(
-                        "repository agent scan truncated at {max_scan_entries} directory entries"
-                    ),
-                },
-            );
-            break;
-        }
-        visited += 1;
-
-        let remaining = max_scan_entries - visited_entries;
-        let listing = match list_directory_bounded(
-            root,
-            &dir,
-            remaining.min(max_files_per_dir),
-            SourceScope::Repository,
-        ) {
-            Ok(Some(listing)) => listing,
-            Ok(None) => continue,
-            Err(error) => {
-                record_scan_error(
-                    &mut errors,
-                    LoadError {
-                        source: dir.display().to_string(),
-                        reason: error.reason().to_string(),
-                    },
-                );
-                continue;
-            }
-        };
-        visited_entries += listing.entries.len();
-        if listing.truncated {
-            record_scan_error(
-                &mut errors,
-                LoadError {
-                    source: dir.display().to_string(),
-                    reason: format!(
-                        "repository agent scan truncated directory at {} entries",
-                        remaining.min(max_files_per_dir)
-                    ),
-                },
-            );
-        }
-        let mut children = Vec::new();
-        for entry in listing.entries {
-            if entry.kind == SourceEntryKind::Directory {
-                children.push(entry.path);
-            } else if entry.kind == SourceEntryKind::Symlink {
-                record_scan_error(
-                    &mut errors,
-                    LoadError {
-                        source: entry.path.display().to_string(),
-                        reason: "repository scan skipped a symlink — not followed".into(),
-                    },
-                );
-            }
-        }
-        for child in &children {
-            // A `<...>/.iteron/agents` directory.
-            let is_agents_home_dir = child.file_name().and_then(|n| n.to_str()) == Some("agents")
-                && child
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .is_some_and(iteron_protocol::home::is_home_dir);
-            if is_agents_home_dir {
-                found.push(child.clone());
-            }
-        }
-        for child in children {
-            stack.push((child, depth + 1));
-        }
-    }
-    found.sort();
-    AgentDirScan {
-        dirs: found,
-        errors,
-    }
+    roots.extend(workspace_members.iter().cloned());
+    roots
 }
 
 #[cfg(test)]
@@ -664,9 +562,9 @@ mod tests {
     }
 
     #[test]
-    fn strips_vendored_definition() {
+    fn prunes_vendored_definition_before_descent() {
         let repo = scratch("vendor");
-        // A cloned dependency's own agents dir under node_modules — must be stripped, not returned.
+        // A cloned dependency's own agents dir under node_modules is never traversed.
         write_def(
             &repo.join("node_modules/evil-pkg/.iteron/agents"),
             "exfil.md",
@@ -688,8 +586,8 @@ mod tests {
         assert!(
             cat.errors()
                 .iter()
-                .any(|e| e.reason.contains("stripped") && e.source.contains("node_modules")),
-            "the strip is recorded as a surfaced error, not silent: {:?}",
+                .all(|error| !error.source.contains("node_modules")),
+            "pruned trees are never opened: {:?}",
             cat.errors()
         );
         std::fs::remove_dir_all(&repo).ok();

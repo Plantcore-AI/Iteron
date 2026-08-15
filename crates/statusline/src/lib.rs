@@ -35,6 +35,8 @@ pub enum ConfigError {
     TooManyFields { count: usize, limit: usize },
     #[error("field {name:?} appears twice; a status line must not show one fact in two places")]
     DuplicateField { name: String },
+    #[error("snapshot supplies field {name:?} twice")]
+    DuplicateSnapshotField { name: String },
     #[error("percent {value} is over 100")]
     PercentOutOfRange { value: u16 },
     #[error("field {field:?} takes {expected}, not {got}")]
@@ -55,6 +57,44 @@ pub enum Field {
     CostUsd,
     ContextPercent,
     SessionId,
+}
+
+/// One immutable, revisioned read of runtime-owned status facts. This crate never polls a
+/// provider, Git, or mutable agent state: a frontend captures facts once and every column renders
+/// from that same object, so a row cannot mix values from different turns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusSnapshot {
+    revision: u64,
+    values: std::collections::BTreeMap<Field, Value>,
+}
+
+impl StatusSnapshot {
+    pub fn new(
+        revision: u64,
+        values: impl IntoIterator<Item = (Field, Value)>,
+    ) -> Result<Self, ConfigError> {
+        let mut snapshot = std::collections::BTreeMap::new();
+        for (field, value) in values {
+            value.check(field)?;
+            if snapshot.insert(field, value).is_some() {
+                return Err(ConfigError::DuplicateSnapshotField {
+                    name: field.name().to_owned(),
+                });
+            }
+        }
+        Ok(Self {
+            revision,
+            values: snapshot,
+        })
+    }
+
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn value(&self, field: Field) -> Value {
+        self.values.get(&field).cloned().unwrap_or(Value::Unknown)
+    }
 }
 
 /// A status line may not grow without bound; it shares one terminal row with the prompt.
@@ -237,6 +277,10 @@ impl StatusLine {
             iteron_tunables::param_integer("statusline.lib.max_row_cells", MAX_ROW_CELLS),
         )
     }
+
+    pub fn render_snapshot(&self, snapshot: &StatusSnapshot) -> String {
+        self.render(|field| snapshot.value(field))
+    }
 }
 
 #[cfg(test)]
@@ -369,5 +413,23 @@ mod tests {
     fn cost_is_exact_rather_than_a_rounded_float() {
         assert_eq!(Value::Milli(1_234).render(), "1.234");
         assert_eq!(Value::Milli(7).render(), "0.007");
+    }
+
+    #[test]
+    fn revisioned_snapshot_is_atomic_and_missing_values_stay_unknown() {
+        let snapshot = StatusSnapshot::new(
+            7,
+            [
+                (Field::Model, Value::Text("model-a".into())),
+                (Field::Tokens, Value::Count(42)),
+            ],
+        )
+        .unwrap();
+        let line = StatusLine::from_names(["model", "tokens", "cost"]).unwrap();
+        assert_eq!(snapshot.revision(), 7);
+        assert_eq!(
+            line.render_snapshot(&snapshot),
+            format!("model-a | 42 | {UNKNOWN}")
+        );
     }
 }

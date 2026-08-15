@@ -145,8 +145,9 @@ MCP and hooks. Nested provider, retry, MCP and keymap structures add fields, but
 
 - A measured nine-token task paid 3,671 prompt tokens; 2,730 were tool schemas.
 - Tool schemas are filtered primarily by permission, not by relevance to the current task.
-- The fallback compaction trigger is 120k estimated tokens and keeps six recent messages.
-- With provider metadata, compaction triggers near 80% of usable context; proactive end-of-turn
+- The fallback compaction trigger is 120k estimated tokens; the normal recent tail is 25% of
+  model-usable context, clamped to 2k..15k tokens rather than a fixed six messages.
+- With provider metadata, the hard trigger is the usable context boundary; proactive end-of-turn
   compaction can therefore start near 60% of usable context.
 - Token estimation uses a byte heuristic, not the provider tokenizer.
 - Default memory component budgets are 25k index bytes, 16k recall bytes, 8k instruction bytes and

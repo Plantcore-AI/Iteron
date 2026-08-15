@@ -233,6 +233,7 @@ pub(crate) fn checkpoint_fixed_consumer(family: &str) -> Option<RuntimeGetterId>
         | "admission"
         | "writer_fan_turn_split"
         | "wall_split"
+        | "fan_concurrency"
         | "worker_min_turns"
         | "subagent_effort_inheritance"
         | "child_ceiling"
@@ -240,8 +241,7 @@ pub(crate) fn checkpoint_fixed_consumer(family: &str) -> Option<RuntimeGetterId>
         | "join_reduce"
         | "spawn_depth_control"
         | "task_priority_scheduling" => Some(RuntimeGetterId::EffectiveExecution),
-        "fan_concurrency"
-        | "provider_connect_tls_timeout"
+        "provider_connect_tls_timeout"
         | "provider_request_total_deadline"
         | "stream_idle_watchdog"
         | "http_pool_keepalive_idle_policy" => Some(RuntimeGetterId::EffectiveProvider),

@@ -11,6 +11,28 @@ use std::fs::{self, Metadata, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+/// Shared discovery prune vocabulary. Filesystem tools, context outline, and agent discovery use
+/// one list so a build/vendor tree cannot be skipped by one startup path and scanned by another.
+pub const DEFAULT_PRUNED_COMPONENTS: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    "vendor",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "__pycache__",
+];
+
+pub fn is_default_pruned_component(name: &str) -> bool {
+    iteron_tunables::param_str_list(
+        "ctx.source.default_pruned_components",
+        DEFAULT_PRUNED_COMPONENTS,
+    )
+    .contains(&name)
+}
+
 /// Filesystem provenance determines whether an intentional user symlink is allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceScope {
@@ -42,6 +64,14 @@ pub struct SourceEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceListing {
     pub entries: Vec<SourceEntry>,
+    pub truncated: bool,
+}
+
+/// A descriptor-bounded UTF-8 prefix. `truncated` means the source contains more bytes; callers
+/// must refuse an unterminated grammar rather than treating that prefix as a complete document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePrefix {
+    pub text: String,
     pub truncated: bool,
 }
 
@@ -143,7 +173,16 @@ pub fn read_bounded_utf8(
         .min(max_bytes)
         .saturating_add(1);
     let mut bytes = Vec::with_capacity(capacity);
-    file.take(max_bytes.saturating_add(1) as u64)
+    let mut limited = file.take(max_bytes.saturating_add(1) as u64);
+    let mut prefix = vec![0_u8; max_bytes.saturating_add(1).min(8 * 1024)];
+    let prefix_bytes = limited
+        .read(&mut prefix)
+        .map_err(|error| SourceError::new(path, format!("cannot read source: {error}")))?;
+    if prefix[..prefix_bytes].contains(&0) {
+        return Err(SourceError::new(path, "source has a binary NUL prefix"));
+    }
+    bytes.extend_from_slice(&prefix[..prefix_bytes]);
+    limited
         .read_to_end(&mut bytes)
         .map_err(|error| SourceError::new(path, format!("cannot read source: {error}")))?;
     if bytes.len() > max_bytes {
@@ -155,6 +194,63 @@ pub fn read_bounded_utf8(
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| SourceError::new(path, "source is not valid UTF-8"))
+}
+
+/// Read only the first `max_bytes` of an optional source through the same no-follow boundary as
+/// [`read_bounded_utf8`]. This is for metadata-first formats whose body is deliberately lazy. A
+/// valid file may be larger than the prefix ceiling; the returned `truncated` bit makes that fact
+/// explicit. An UTF-8 code point split exactly at the ceiling is refused rather than repaired.
+pub fn read_bounded_utf8_prefix(
+    root: &Path,
+    path: &Path,
+    max_bytes: usize,
+    scope: SourceScope,
+) -> Result<Option<SourcePrefix>, SourceError> {
+    let Some(resolved) = resolve_file(root, path, scope)? else {
+        return Ok(None);
+    };
+    let before = resolved.metadata;
+    if !before.is_file() {
+        return Err(SourceError::new(path, "source is not a regular file"));
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    if scope == SourceScope::Repository {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let file = match options.open(&resolved.path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(SourceError::new(
+                path,
+                format!("cannot open source: {error}"),
+            ));
+        }
+    };
+    let opened = file
+        .metadata()
+        .map_err(|error| SourceError::new(path, format!("cannot inspect open source: {error}")))?;
+    if !opened.is_file() {
+        return Err(SourceError::new(path, "source is not a regular file"));
+    }
+    ensure_same_file(path, &before, &opened)?;
+
+    let mut bytes = Vec::with_capacity(max_bytes.saturating_add(1).min(16 * 1024));
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| SourceError::new(path, format!("cannot read source prefix: {error}")))?;
+    let truncated = bytes.len() > max_bytes;
+    bytes.truncate(max_bytes);
+    if bytes.contains(&0) {
+        return Err(SourceError::new(path, "source has a binary NUL prefix"));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| SourceError::new(path, "source prefix is not valid UTF-8"))?;
+    Ok(Some(SourcePrefix { text, truncated }))
 }
 
 /// List at most `max_entries` entries without following entry symlinks.

@@ -9,10 +9,14 @@
 //! (Ctrl-A/Ctrl-E), word-left/right, Ctrl-W (delete word), Ctrl-U (kill to start), Ctrl-K (kill to
 //! end), multi-line newline insertion, and ↑/↓ input history with a stash of the in-progress line.
 
-use crate::file_input::{ContextKind, FileAttachment, FileAttachments, FileInputError};
-use crate::image_input::{ImageAttachment, ImageAttachments, ImageInputError};
+use crate::file_input::{
+    ContextKind, FileAttachment, FileAttachments, FileInputError, PreparedFile,
+};
+use crate::image_input::{ImageAttachment, ImageAttachments, ImageInputError, PreparedImage};
 use crate::paste_input::{ImageAnchors, PasteCapture, PasteInputError, PastedTexts};
+#[cfg(test)]
 use std::path::Path;
+use unicode_segmentation::UnicodeSegmentation as _;
 
 /// A cleared draft is a convenience, not another unbounded transcript. Count source UTF-8 bytes
 /// so the retained allocation has a hard, portable ceiling while the editor remains char-based.
@@ -38,14 +42,78 @@ fn is_stripped_control(c: char) -> bool {
         0x00..=0x1F           // C0 controls incl. ESC (0x1B), CR (0x0D), BEL, BS
         | 0x7F                // DEL
         | 0x80..=0x9F         // C1 controls
-        | 0x200B..=0x200F     // zero-width space / joiners / bidi marks
+        | 0x200B              // zero-width space
+        // U+200C/U+200D are legitimate grapheme-shaping controls (ZWNJ/ZWJ); stripping them tears
+        // apart Indic shaping and emoji-family clusters. U+200E/U+200F remain disallowed bidi marks.
+        | 0x200E..=0x200F
         | 0x202A..=0x202E     // bidi embedding/override
         | 0x2060..=0x2064     // word joiner / invisible operators
         | 0xFEFF              // BOM / zero-width no-break space
     )
 }
 
-/// The input line editor. Buffer is `Vec<char>` so cursor math is correct on multibyte input.
+/// Translate the editor's compatibility scalar offset to the leading edge of its grapheme.
+fn grapheme_floor_char_boundary(text: &str, target: usize) -> usize {
+    let target = target.min(text.chars().count());
+    let mut start = 0usize;
+    for grapheme in text.graphemes(true) {
+        let end = start.saturating_add(grapheme.chars().count());
+        if target < end {
+            return start;
+        }
+        if target == end {
+            return end;
+        }
+        start = end;
+    }
+    start
+}
+
+/// Translate a scalar offset to the trailing edge of its grapheme.
+fn grapheme_ceil_char_boundary(text: &str, target: usize) -> usize {
+    let target = target.min(text.chars().count());
+    let mut start = 0usize;
+    for grapheme in text.graphemes(true) {
+        let end = start.saturating_add(grapheme.chars().count());
+        if target <= start {
+            return start;
+        }
+        if target <= end {
+            return end;
+        }
+        start = end;
+    }
+    start
+}
+
+fn grapheme_previous_char_boundary(text: &str, target: usize) -> usize {
+    let target = grapheme_floor_char_boundary(text, target);
+    let mut previous = 0usize;
+    let mut end = 0usize;
+    for grapheme in text.graphemes(true) {
+        end = end.saturating_add(grapheme.chars().count());
+        if end >= target {
+            return previous;
+        }
+        previous = end;
+    }
+    previous
+}
+
+fn grapheme_next_char_boundary(text: &str, target: usize) -> usize {
+    let target = target.min(text.chars().count());
+    let mut end = 0usize;
+    for grapheme in text.graphemes(true) {
+        end = end.saturating_add(grapheme.chars().count());
+        if end > target {
+            return end;
+        }
+    }
+    end
+}
+
+/// The input line editor. Storage and public offsets remain Unicode-scalar indices for wire/API
+/// compatibility, while every cursor/edit boundary is snapped to an extended grapheme cluster.
 #[derive(Debug, Default)]
 pub struct Editor {
     buf: Vec<char>,
@@ -79,6 +147,21 @@ pub struct Editor {
     /// Monotonic dirty marker consumed by the persistence adapter. It deliberately counts text
     /// mutations rather than wall time so tests and replay remain deterministic.
     persistence_revision: u64,
+    /// Bounded, filesystem-free classification of the leading draft token. The TUI reads this
+    /// cached value on every paint/key route; only final Enter admission resolves an ambiguous
+    /// single-segment absolute path against disk.
+    draft_shape: DraftShape,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DraftShape {
+    #[default]
+    Prose,
+    Shell,
+    PathLike,
+    Slash {
+        immediate_while_running: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +202,10 @@ impl Editor {
 
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
+    }
+
+    pub fn draft_shape(&self) -> DraftShape {
+        self.draft_shape
     }
 
     pub fn has_submission(&self) -> bool {
@@ -185,6 +272,7 @@ impl Editor {
         Ok(capture)
     }
 
+    #[cfg(test)]
     pub fn attach_image_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
         let id = self.attachments.attach_path(path)?.id();
         self.admit_image(id);
@@ -241,6 +329,7 @@ impl Editor {
 
     /// Attach one workspace file. Containment, bounds and sanitisation all live in
     /// [`crate::file_input`]; the editor only owns the draft state and the chip order.
+    #[cfg(test)]
     pub fn attach_file_path(
         &mut self,
         workspace: &Path,
@@ -264,18 +353,16 @@ impl Editor {
         Ok(self.files.get(id).expect("a context was just attached"))
     }
 
-    pub fn attach_context_path(
+    pub(crate) fn admit_prepared_file(
         &mut self,
-        kind: ContextKind,
-        workspace: &Path,
-        path: &Path,
+        prepared: PreparedFile,
     ) -> Result<&FileAttachment, FileInputError> {
-        let id = self.files.attach_typed_path(kind, workspace, path)?.id();
+        let id = self.files.admit_prepared(prepared)?.id();
         self.admit_file(id);
         Ok(self
             .files
             .get(id)
-            .expect("a context file was just attached"))
+            .expect("a prepared file was just attached"))
     }
 
     fn admit_file(&mut self, id: u32) {
@@ -301,6 +388,27 @@ impl Editor {
         true
     }
 
+    /// Drop every next-turn text context and every generated tag naming it. This is the frontend
+    /// half of `/context refresh`: the next submission must rebuild context from current sources,
+    /// never silently retain an earlier file/diff/LSP snapshot.
+    pub fn clear_contexts(&mut self) -> usize {
+        let ids = self
+            .files
+            .as_slice()
+            .iter()
+            .map(FileAttachment::id)
+            .collect::<Vec<_>>();
+        let removed = ids.len();
+        self.files.clear();
+        self.chip_order
+            .retain(|kind| !matches!(kind, ChipKind::File(_)));
+        for id in ids {
+            self.remove_tag_occurrences(crate::paste_input::TagKind::File, id);
+        }
+        removed
+    }
+
+    #[cfg(test)]
     pub fn attach_image_bytes(
         &mut self,
         display_label: &str,
@@ -312,6 +420,21 @@ impl Editor {
             .attachments
             .get(id)
             .expect("an image was just attached under this id"))
+    }
+
+    /// Admit an image whose filesystem/decode/base64 work already completed in the bounded TUI
+    /// attachment actor. This method is deliberately in-memory-only so the render/input thread can
+    /// call it without inheriting any blocking work.
+    pub(crate) fn admit_prepared_image(
+        &mut self,
+        prepared: PreparedImage,
+    ) -> Result<&ImageAttachment, ImageInputError> {
+        let id = self.attachments.admit_prepared(prepared)?.id();
+        self.admit_image(id);
+        Ok(self
+            .attachments
+            .get(id)
+            .expect("a prepared image was just attached under this id"))
     }
 
     /// Remove the most recently added chip of any kind.
@@ -377,6 +500,9 @@ impl Editor {
     pub fn insert(&mut self, c: char) {
         self.buf.insert(self.cursor, c);
         self.cursor += 1;
+        // Inserting a joiner/combining scalar can merge the following scalar into the same visible
+        // glyph. A terminal cursor cannot sit inside that glyph, so advance to its trailing edge.
+        self.cursor = grapheme_ceil_char_boundary(&self.text(), self.cursor);
         self.leave_navigation();
         self.mark_persistence_change();
     }
@@ -386,9 +512,17 @@ impl Editor {
         // CR, backspace, bell, or a zero-width bidi/format control would corrupt the buffer's column
         // math and overlap on redraw. Keep only newlines and tabs among the control range; drop the
         // rest. Char-based so a multibyte char is never split.
-        for c in sanitize_foreign_text(s).chars() {
-            self.insert(c);
+        let sanitized = sanitize_foreign_text(s);
+        if sanitized.is_empty() {
+            return;
         }
+        let inserted = sanitized.chars().collect::<Vec<_>>();
+        let inserted_len = inserted.len();
+        self.buf.splice(self.cursor..self.cursor, inserted);
+        self.cursor = self.cursor.saturating_add(inserted_len);
+        self.cursor = grapheme_ceil_char_boundary(&self.text(), self.cursor);
+        self.leave_navigation();
+        self.mark_persistence_change();
     }
 
     /// Insert a literal newline (multi-line input, e.g. Shift+Enter).
@@ -404,10 +538,12 @@ impl Editor {
         let (mut lo, mut hi) = if a <= b { (a, b) } else { (b, a) };
         hi = hi.min(self.buf.len());
         lo = lo.min(hi);
+        let text = self.text();
+        lo = grapheme_floor_char_boundary(&text, lo);
+        hi = grapheme_ceil_char_boundary(&text, hi);
         if lo == hi {
             return;
         }
-        let text = self.text();
         let tag_ranges = crate::paste_input::find_tags(&text)
             .into_iter()
             .filter(|found| match found.kind {
@@ -525,14 +661,16 @@ impl Editor {
             return;
         }
         if self.cursor > 0 {
-            self.delete_range_synchronized(self.cursor - 1, self.cursor);
+            let start = grapheme_previous_char_boundary(&self.text(), self.cursor);
+            self.delete_range_synchronized(start, self.cursor);
         }
     }
 
     /// Forward delete (Delete key).
     pub fn delete(&mut self) {
         if self.cursor < self.buf.len() {
-            self.delete_range_synchronized(self.cursor, self.cursor + 1);
+            let end = grapheme_next_char_boundary(&self.text(), self.cursor);
+            self.delete_range_synchronized(self.cursor, end);
         }
     }
 
@@ -542,8 +680,9 @@ impl Editor {
     /// cursor, and making the caller normalise it is how an off-by-one becomes a silent truncation.
     pub fn span(&self, a: usize, b: usize) -> String {
         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-        let hi = hi.min(self.buf.len());
-        let lo = lo.min(hi);
+        let text = self.text();
+        let hi = grapheme_ceil_char_boundary(&text, hi.min(self.buf.len()));
+        let lo = grapheme_floor_char_boundary(&text, lo.min(hi));
         self.buf[lo..hi].iter().collect()
     }
 
@@ -584,13 +723,11 @@ impl Editor {
     // ---- cursor movement -------------------------------------------------------------------
 
     pub fn left(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        self.cursor = grapheme_previous_char_boundary(&self.text(), self.cursor);
         self.reverse_search = None;
     }
     pub fn right(&mut self) {
-        if self.cursor < self.buf.len() {
-            self.cursor += 1;
-        }
+        self.cursor = grapheme_next_char_boundary(&self.text(), self.cursor);
         self.reverse_search = None;
     }
     pub fn home(&mut self) {
@@ -609,7 +746,7 @@ impl Editor {
     /// layout (for example, a resize arriving beside a click) can never manufacture an invalid
     /// slice boundary.
     pub fn set_cursor(&mut self, char_index: usize) {
-        self.cursor = char_index.min(self.buf.len());
+        self.cursor = grapheme_floor_char_boundary(&self.text(), char_index.min(self.buf.len()));
         self.leave_navigation();
     }
 
@@ -632,7 +769,7 @@ impl Editor {
 
     /// Word-left (Alt-←/Alt-B): skip non-word chars then a word run.
     pub fn word_left(&mut self) {
-        self.cursor = self.word_boundary_left();
+        self.cursor = grapheme_floor_char_boundary(&self.text(), self.word_boundary_left());
         self.reverse_search = None;
     }
 
@@ -646,7 +783,7 @@ impl Editor {
         while i < n && Self::is_word(self.buf[i]) {
             i += 1;
         }
-        self.cursor = i;
+        self.cursor = grapheme_ceil_char_boundary(&self.text(), i);
         self.reverse_search = None;
     }
 
@@ -862,6 +999,7 @@ impl Editor {
         self.pastes.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
+        self.refresh_draft_shape();
         // All stores promise that an id names a moment, and keep that promise with a counter
         // that a restart destroys. The restored text is the only surviving evidence of the previous
         // process's ids, so step the counters past every id it names: without this, the first paste
@@ -913,6 +1051,43 @@ impl Editor {
 
     fn mark_persistence_change(&mut self) {
         self.persistence_revision = self.persistence_revision.wrapping_add(1);
+        self.refresh_draft_shape();
+    }
+
+    fn refresh_draft_shape(&mut self) {
+        // The command/path discriminator itself refuses tokens past 4 KiB. Mirror that ceiling so
+        // one key in a MiB draft never causes a full-buffer scan merely to refresh footer intent.
+        let prefix = self
+            .buf
+            .iter()
+            .copied()
+            .skip_while(|character| character.is_whitespace())
+            .take(4 * 1024 + 1)
+            .collect::<String>();
+        let trimmed = prefix.trim_start();
+        if trimmed.starts_with('!') {
+            self.draft_shape = DraftShape::Shell;
+            return;
+        }
+        let Some(command) = crate::commands::slash_command_body(trimmed, &|_| false) else {
+            self.draft_shape = if trimmed.starts_with('/') {
+                DraftShape::PathLike
+            } else {
+                DraftShape::Prose
+            };
+            return;
+        };
+        let immediate_while_running = crate::commands::dispatch(command).is_ok_and(|routed| {
+            matches!(
+                routed.route,
+                crate::commands::DispatchRoute::InProcess(
+                    crate::commands::SlashCommand::Mcp | crate::commands::SlashCommand::Status
+                )
+            )
+        });
+        self.draft_shape = DraftShape::Slash {
+            immediate_while_running,
+        };
     }
 }
 
@@ -939,7 +1114,7 @@ mod tests {
 
     #[test]
     fn paste_strips_control_and_escape_chars_but_keeps_newline_and_multibyte() {
-        // A paste carrying a raw ESC, a bell, a backspace, a CR, and a zero-width joiner must land as
+        // A paste carrying a raw ESC, a bell, a backspace, a CR, and a zero-width space must land as
         // clean text — no raw control bytes to corrupt column math (the 乱码 regression). Newlines,
         // tabs, CJK, and emoji survive intact and the cursor counts CHARS, not bytes.
         let mut e = Editor::new();
@@ -1029,6 +1204,39 @@ mod tests {
         e.right(); // cursor after 'é'
         e.insert('X');
         assert_eq!(e.text(), "héXllo");
+    }
+
+    #[test]
+    fn cursor_and_deletion_never_split_extended_graphemes() {
+        let family = "👨‍👩‍👧‍👦";
+        let flag = "🇺🇳";
+        let plane = "✈️";
+        let mut e = ed(&format!("A{family}{flag}{plane}东京"));
+
+        // The compatibility API still accepts scalar offsets, but an offset in the middle of a
+        // ZWJ family snaps to its leading edge instead of exposing an impossible terminal cursor.
+        e.set_cursor(3);
+        assert_eq!(e.cursor(), 1);
+        e.right();
+        assert_eq!(e.cursor(), 1 + family.chars().count());
+        e.delete();
+        assert_eq!(e.text(), format!("A{family}{plane}东京"));
+        e.backspace();
+        assert_eq!(e.text(), format!("A{plane}东京"));
+
+        e.end();
+        e.left();
+        assert_eq!(e.span(e.cursor(), usize::MAX), "京");
+        e.left();
+        assert_eq!(e.span(e.cursor(), usize::MAX), "东京");
+    }
+
+    #[test]
+    fn foreign_text_preserves_joiners_variation_selectors_and_flags() {
+        let source = "👨‍👩‍👧‍👦 🇺🇳 ✈️";
+        let e = ed(source);
+        assert_eq!(e.text(), source);
+        assert_eq!(e.cursor(), source.chars().count());
     }
 
     #[test]
@@ -1249,6 +1457,28 @@ mod tests {
         let state = e.persistence_state();
         assert_eq!(state.history, vec!["older", "跨重启 prompt"]);
         assert_eq!(state.draft.as_deref(), Some("跨重启 prompt"));
+    }
+
+    #[test]
+    fn up_before_history_hydration_is_repeatable_and_preserves_the_live_draft() {
+        let mut editor = Editor::new();
+        editor.insert_str("typed before history is ready");
+        let revision = editor.persistence_revision();
+        for _ in 0..8 {
+            editor.history_prev();
+            assert_eq!(editor.text(), "typed before history is ready");
+            assert_eq!(editor.persistence_revision(), revision);
+        }
+
+        // Mirror the TUI's late-hydration transaction: install history, then restore newer live
+        // input. The earlier Up presses must not leave a stale browse cursor or consume an entry.
+        let live = editor.text();
+        editor.restore_persisted(vec!["recorded prompt".into()], Some("old draft".into()));
+        editor.replace_text(&live);
+        editor.history_prev();
+        assert_eq!(editor.text(), "recorded prompt");
+        editor.history_next();
+        assert_eq!(editor.text(), "typed before history is ready");
     }
 
     #[test]

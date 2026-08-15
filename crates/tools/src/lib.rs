@@ -7,6 +7,7 @@ use iteron_protocol::intent::ToolIntent;
 use iteron_protocol::slot::StrategySlot;
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 mod edit;
@@ -212,6 +213,9 @@ enum ToolOrigin {
 /// results cannot repopulate the cache.
 pub struct Registry {
     tools: Vec<Tool>,
+    spec_revision: std::sync::atomic::AtomicU64,
+    spec_snapshot: std::sync::Mutex<Option<Arc<ToolSpecSnapshot>>>,
+    task_spec_snapshot: std::sync::Mutex<Option<TaskToolSpecSnapshot>>,
     root: PathBuf,
     memo: std::sync::Arc<Memo>,
     sensitive_env_names: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -231,6 +235,51 @@ pub struct Registry {
     process_control: Option<ProcessControl>,
     lsp_control: Option<LspControl>,
     deferred_tool_catalog: Option<tool_search::DeferredToolCatalog>,
+}
+
+/// Immutable, revisioned tool-schema materialization. Provider request builders can retain this
+/// object across turns without cloning every JSON schema or serializing an unchanged tool set.
+#[derive(Debug)]
+pub struct ToolSpecSnapshot {
+    revision: u64,
+    specs: Arc<[ToolSpec]>,
+}
+
+impl ToolSpecSnapshot {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn specs(&self) -> &Arc<[ToolSpec]> {
+        &self.specs
+    }
+}
+
+/// A task filter references an immutable base snapshot by indices. It does not clone schemas.
+#[derive(Debug, Clone)]
+pub struct TaskToolSpecSnapshot {
+    base: Arc<ToolSpecSnapshot>,
+    indices: Arc<[usize]>,
+    serialized_json: Arc<str>,
+    estimated_tokens: usize,
+}
+
+impl TaskToolSpecSnapshot {
+    pub fn revision(&self) -> u64 {
+        self.base.revision()
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &ToolSpec> {
+        self.indices.iter().map(|index| &self.base.specs[*index])
+    }
+
+    pub fn serialized_json(&self) -> &Arc<str> {
+        &self.serialized_json
+    }
+
+    pub fn estimated_tokens(&self) -> usize {
+        self.estimated_tokens
+    }
 }
 
 impl Registry {
@@ -273,6 +322,9 @@ impl Registry {
         let root = root.into();
         let mut r = Registry {
             tools: Vec::new(),
+            spec_revision: Default::default(),
+            spec_snapshot: Default::default(),
+            task_spec_snapshot: Default::default(),
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
@@ -292,8 +344,12 @@ impl Registry {
         edit::register(&mut r)?;
         multi_file_patch::register(&mut r)?;
         write_file::register(&mut r)?;
-        shell::register(&mut r)?;
-        r.process_control = Some(process::register(&mut r)?);
+        let process_supervisor = process::new_supervisor()?;
+        shell::register(&mut r, std::sync::Arc::clone(&process_supervisor))?;
+        r.process_control = Some(process::register_with_supervisor(
+            &mut r,
+            process_supervisor,
+        )?);
         r.lsp_control = lsp::register(&mut r, lsp_routes)?;
         // `lsp_query` uses the outcome-aware external-executor adapter because a third-party
         // language server may leave an uncertain effect. Its ToolSpec is nevertheless compiled
@@ -320,6 +376,9 @@ impl Registry {
         workspace_boundary::validate_root(&root).map_err(ToolError::Registration)?;
         let mut registry = Registry {
             tools: Vec::new(),
+            spec_revision: Default::default(),
+            spec_snapshot: Default::default(),
+            task_spec_snapshot: Default::default(),
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
@@ -350,6 +409,9 @@ impl Registry {
         let root = root.into();
         let mut r = Registry {
             tools: Vec::new(),
+            spec_revision: Default::default(),
+            spec_snapshot: Default::default(),
+            task_spec_snapshot: Default::default(),
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
@@ -430,11 +492,103 @@ impl Registry {
             catalog.insert(tool.spec.clone());
         }
         self.tools.push(tool);
+        self.invalidate_spec_snapshot();
         Ok(())
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools.iter().map(|t| t.spec.clone()).collect()
+        self.spec_snapshot().specs.to_vec()
+    }
+
+    pub fn spec_snapshot(&self) -> Arc<ToolSpecSnapshot> {
+        let revision = self
+            .spec_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        let mut cached = self
+            .spec_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = cached
+            .as_ref()
+            .filter(|snapshot| snapshot.revision == revision)
+        {
+            return Arc::clone(snapshot);
+        }
+        let specs: Arc<[ToolSpec]> = self
+            .tools
+            .iter()
+            .map(|tool| tool.spec.clone())
+            .collect::<Vec<_>>()
+            .into();
+        let snapshot = Arc::new(ToolSpecSnapshot { revision, specs });
+        *cached = Some(Arc::clone(&snapshot));
+        snapshot
+    }
+
+    pub fn specs_for_task_snapshot(
+        &self,
+        admitted_names: &std::collections::BTreeSet<String>,
+        task: &str,
+        eager_limit: Option<usize>,
+    ) -> TaskToolSpecSnapshot {
+        let base = self.spec_snapshot();
+        let visible = eager_limit
+            .filter(|limit| *limit > 0)
+            .filter(|_| admitted_names.contains(tool_search::TOOL_SEARCH))
+            .and_then(|limit| {
+                self.deferred_tool_catalog
+                    .as_ref()
+                    .map(|catalog| catalog.visible(admitted_names, task, limit))
+            });
+        let indices = base
+            .specs
+            .iter()
+            .enumerate()
+            .filter(|(_, spec)| {
+                admitted_names.contains(&spec.name)
+                    && visible
+                        .as_ref()
+                        .is_none_or(|names| names.contains(&spec.name))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let mut cached = self
+            .task_spec_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = cached.as_ref().filter(|snapshot| {
+            snapshot.revision() == base.revision() && snapshot.indices.as_ref() == indices
+        }) {
+            return snapshot.clone();
+        }
+        let selected = indices
+            .iter()
+            .map(|index| &base.specs[*index])
+            .collect::<Vec<_>>();
+        let serialized_json: Arc<str> = serde_json::to_string(&selected)
+            .expect("registered task tool schemas must serialize")
+            .into();
+        let snapshot = TaskToolSpecSnapshot {
+            base,
+            indices: indices.into(),
+            estimated_tokens: iteron_ctx::estimate_tokens(&serialized_json),
+            serialized_json,
+        };
+        *cached = Some(snapshot.clone());
+        snapshot
+    }
+
+    fn invalidate_spec_snapshot(&self) {
+        self.spec_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *self
+            .spec_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .task_spec_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Whether this result is already governed by the MCP transport's private cap/spill owner.
@@ -508,6 +662,7 @@ impl Registry {
                     .collect(),
             );
         }
+        self.invalidate_spec_snapshot();
         self.tools
             .iter()
             .map(|tool| tool.spec.name.clone())
@@ -526,6 +681,7 @@ impl Registry {
                     .unwrap_or(leading.len())
             };
             self.tools.sort_by_key(rank);
+            self.invalidate_spec_snapshot();
         }
         self.tools
             .iter()
@@ -1082,13 +1238,19 @@ fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
 /// check — it is what keeps a returned path stable and comparable for the memo cache and for the
 /// symlink-target checks `write_file` performs before it truncates anything.
 pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("workspace root: {error}"))?;
+    resolve_from_canonical_root(&root, rel)
+}
+
+/// Resolve against a root the caller already canonicalized for a multi-step filesystem operation.
+pub(crate) fn resolve_from_canonical_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let requested = Path::new(rel);
     let joined = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
-        root.canonicalize()
-            .map_err(|e| format!("workspace root: {e}"))?
-            .join(requested)
+        root.join(requested)
     };
 
     // Canonicalize the path if it exists; otherwise canonicalize the nearest existing ancestor
@@ -1176,6 +1338,9 @@ mod tests {
     fn pure_plus_egress_is_a_registration_error() {
         let mut r = Registry {
             tools: Vec::new(),
+            spec_revision: Default::default(),
+            spec_snapshot: Default::default(),
+            task_spec_snapshot: Default::default(),
             root: ".".into(),
             memo: Default::default(),
             sensitive_env_names: Default::default(),
@@ -1212,6 +1377,36 @@ mod tests {
             registry.specs().into_iter().map(|spec| spec.name).collect();
         assert!(after.is_subset(&before));
         assert!(!after.contains("invented_writer"));
+    }
+
+    #[test]
+    fn unchanged_task_tool_set_reuses_the_revisioned_serialization() {
+        let mut registry = Registry::read_only(".").unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let first = registry.specs_for_task_snapshot(&admitted, "inspect the repository", None);
+        let second = registry.specs_for_task_snapshot(&admitted, "inspect the repository", None);
+        assert_eq!(first.revision(), second.revision());
+        assert!(Arc::ptr_eq(&first.base, &second.base));
+        assert!(Arc::ptr_eq(&first.indices, &second.indices));
+        assert!(Arc::ptr_eq(
+            first.serialized_json(),
+            second.serialized_json()
+        ));
+
+        let revision = first.revision();
+        registry.narrow_to(&["read_file".into()]);
+        let narrowed = registry.specs_for_task_snapshot(&admitted, "inspect the repository", None);
+        assert_ne!(narrowed.revision(), revision);
+        assert!(!Arc::ptr_eq(&first.base, &narrowed.base));
+        assert!(!Arc::ptr_eq(
+            first.serialized_json(),
+            narrowed.serialized_json()
+        ));
     }
 
     #[test]

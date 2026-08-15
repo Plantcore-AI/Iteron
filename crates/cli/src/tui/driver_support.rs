@@ -1,4 +1,6 @@
 use super::*;
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 /// Parse a capability class name for `/permissions` (snake_case, matching the serde rename).
 pub(super) fn parse_cap(s: &str) -> Option<Capability> {
@@ -12,41 +14,56 @@ pub(super) fn parse_cap(s: &str) -> Option<Capability> {
     }
 }
 
-/// Terminal display width of a char: wide (CJK/Hangul/Kana/fullwidth/most emoji) = 2, zero-width /
-/// combining = 0, else 1. A small zero-dep approximation of unicode-width for cursor/column math
-/// (review: the input cursor was misplaced for CJK/emoji).
-///
-/// The transcript's marker/connector glyphs are all deliberately width-1 here: `●` (U+25CF), `⎿`
-/// (U+23BF), `✻`/`✢`/`✳`/`✶`/`✽`/`·` (the spinner). `⏺` (U+23FA) is emoji-presentation (width 2) on
-/// some non-mac terminals — which is exactly why `block::primary_marker()` only EMITS `⏺` on macOS
-/// (where it draws width-1) and `●` elsewhere. So every glyph this renderer emits matches the width
-/// this function reports, and rows never overlap (the 乱码 bug).
+/// Terminal width from the same Unicode tables as the renderer. Hand-maintained ranges diverged on
+/// emoji presentation selectors, newer CJK, ZWJ sequences, and combining marks.
 pub(crate) fn char_width(c: char) -> u16 {
-    let u = c as u32;
-    if u == 0 {
-        return 0;
+    if c == '\t' {
+        return 1;
     }
-    if matches!(u, 0x200B..=0x200F | 0x202A..=0x202E | 0xFE00..=0xFE0F | 0x0300..=0x036F | 0x2060..=0x2064)
-    {
-        return 0;
+    #[cfg(target_os = "macos")]
+    if c == '⏺' {
+        return 1;
     }
-    if matches!(u,
-        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
-        | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60
-        | 0xFFE0..=0xFFE6 | 0x1_F300..=0x1_FAFF | 0x2_0000..=0x3_FFFD)
-    {
-        return 2;
+    u16::try_from(unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).unwrap_or(u16::MAX)
+}
+
+/// Width of one extended grapheme cluster. Terminal cells belong to graphemes, not Unicode scalar
+/// values: summing the scalars in a family emoji, flag, or emoji+variation-selector over-counts it
+/// and can place the cursor in the middle of what the terminal paints as one glyph.
+pub(crate) fn grapheme_width(grapheme: &str) -> u16 {
+    if grapheme == "\t" {
+        return 1;
     }
-    1
+    #[cfg(target_os = "macos")]
+    if grapheme == "⏺" {
+        return 1;
+    }
+    u16::try_from(grapheme.width()).unwrap_or(u16::MAX)
+}
+
+/// Terminal-cell width of a complete string, preserving extended grapheme clusters.
+pub(crate) fn text_width(text: &str) -> u16 {
+    text.graphemes(true)
+        .map(grapheme_width)
+        .fold(0u16, u16::saturating_add)
 }
 
 /// Display width of the first `n_chars` chars of `s`. Saturating so a pathologically long line
 /// cannot overflow the u16 (review LOW).
 pub(super) fn display_col(s: &str, n_chars: usize) -> u16 {
-    s.chars()
-        .take(n_chars)
-        .map(char_width)
-        .fold(0u16, |a, w| a.saturating_add(w))
+    let mut consumed_chars = 0usize;
+    let mut columns = 0u16;
+    for grapheme in s.graphemes(true) {
+        let next = consumed_chars.saturating_add(grapheme.chars().count());
+        // A stale/mouse-supplied scalar index can land inside a cluster. Use the cluster's leading
+        // boundary instead of counting a partial ZWJ/flag/VS sequence that no terminal can draw.
+        if next > n_chars {
+            break;
+        }
+        consumed_chars = next;
+        columns = columns.saturating_add(grapheme_width(grapheme));
+    }
+    columns
 }
 
 /// Convert a char index into a byte index within `s` (the editor counts chars; string slicing
@@ -71,13 +88,7 @@ pub(super) fn complete_path(repo: &std::path::Path, partial: &str) -> Vec<String
     };
     let base = repo.join(dir_part);
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(&base) else {
-        return out;
-    };
-    let mut entries: Vec<_> = rd.flatten().collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let name = e.file_name().to_string_lossy().to_string();
+    for (name, is_dir) in cached_completion_directory(&base) {
         if name.starts_with('.') && !file_part.starts_with('.') {
             continue;
         }
@@ -90,13 +101,83 @@ pub(super) fn complete_path(repo: &std::path::Path, partial: &str) -> Vec<String
         {
             continue;
         }
-        let is_dir = e.path().is_dir();
         out.push(format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }));
         if out.len() >= 8 {
             break;
         }
     }
     out
+}
+
+const COMPLETION_DIRECTORY_CACHE_ENTRIES: usize = 32;
+const COMPLETION_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(1);
+
+fn completion_directory_cache_entries() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.driver_support.completion_directory_cache_entries",
+        COMPLETION_DIRECTORY_CACHE_ENTRIES,
+    )
+    .max(1)
+}
+
+fn completion_directory_cache_ttl() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.tui.driver_support.completion_directory_cache_ttl",
+        COMPLETION_DIRECTORY_CACHE_TTL,
+    )
+}
+type CompletionDirectoryEntry = (std::path::PathBuf, Instant, Vec<(String, bool)>);
+
+#[derive(Default)]
+struct CompletionDirectoryCache {
+    entries: VecDeque<CompletionDirectoryEntry>,
+}
+
+/// Cache the expensive read_dir/file-type/sort projection, not the typed prefix. Different
+/// keystrokes in the same directory therefore filter one retained list while the bounded one-second
+/// TTL still reveals newly-created files promptly.
+fn cached_completion_directory(base: &std::path::Path) -> Vec<(String, bool)> {
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<CompletionDirectoryCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(CompletionDirectoryCache::default()));
+    let now = Instant::now();
+    if let Ok(mut cache) = cache.lock()
+        && let Some(index) = cache.entries.iter().position(|(path, inserted, _)| {
+            path == base
+                && now.saturating_duration_since(*inserted) <= completion_directory_cache_ttl()
+        })
+        && let Some(entry) = cache.entries.remove(index)
+    {
+        let result = entry.2.clone();
+        cache.entries.push_back(entry);
+        return result;
+    }
+
+    let mut entries = std::fs::read_dir(base)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            entry.file_type().ok().map(|kind| (name, kind.is_dir()))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    if let Ok(mut cache) = cache.lock() {
+        cache.entries.retain(|(path, inserted, _)| {
+            path != base
+                && now.saturating_duration_since(*inserted) <= completion_directory_cache_ttl()
+        });
+        while cache.entries.len() >= completion_directory_cache_entries() {
+            cache.entries.pop_front();
+        }
+        cache
+            .entries
+            .push_back((base.to_path_buf(), now, entries.clone()));
+    }
+    entries
 }
 
 pub(super) fn fg(c: Color) -> Style {
@@ -155,9 +236,117 @@ pub(super) fn eq_tick_slots() -> std::ops::Range<usize> {
         MAX_EQ_EVENTS_PER_TICK,
     )
 }
+
+const CATCH_UP_ENTER_DEPTH: usize = 8;
+const CATCH_UP_ENTER_AGE: Duration = Duration::from_millis(120);
+const CATCH_UP_EXIT_DEPTH: usize = 2;
+const CATCH_UP_EXIT_AGE: Duration = Duration::from_millis(40);
+const CATCH_UP_HOLD: Duration = Duration::from_millis(250);
+const CATCH_UP_SEVERE_DEPTH: usize = 64;
+const CATCH_UP_SEVERE_AGE: Duration = Duration::from_millis(300);
+
+fn catch_up_enter_depth() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.driver_support.catch_up_enter_depth",
+        CATCH_UP_ENTER_DEPTH,
+    )
+}
+
+fn catch_up_enter_age() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.tui.driver_support.catch_up_enter_age",
+        CATCH_UP_ENTER_AGE,
+    )
+}
+
+fn catch_up_exit_depth() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.driver_support.catch_up_exit_depth",
+        CATCH_UP_EXIT_DEPTH,
+    )
+}
+
+fn catch_up_exit_age() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.tui.driver_support.catch_up_exit_age",
+        CATCH_UP_EXIT_AGE,
+    )
+}
+
+fn catch_up_hold() -> Duration {
+    iteron_tunables::param_duration("cli.tui.driver_support.catch_up_hold", CATCH_UP_HOLD)
+}
+
+fn catch_up_severe_depth() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.driver_support.catch_up_severe_depth",
+        CATCH_UP_SEVERE_DEPTH,
+    )
+}
+
+fn catch_up_severe_age() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.tui.driver_support.catch_up_severe_age",
+        CATCH_UP_SEVERE_AGE,
+    )
+}
+
+/// Hysteretic stream catch-up controller. Depth reacts to bursts; oldest-observed age catches a
+/// shallow but stalled queue. Exit and re-entry holds prevent frame cadence from oscillating.
+#[derive(Debug, Default)]
+pub(super) struct CatchUp {
+    active: bool,
+    severe: bool,
+    exit_eligible_since: Option<Instant>,
+    reentry_after: Option<Instant>,
+}
+
+impl CatchUp {
+    pub(super) fn update(&mut self, depth: usize, age: Duration, now: Instant) {
+        if self.active {
+            self.severe = depth >= catch_up_severe_depth() || age >= catch_up_severe_age();
+            if depth <= catch_up_exit_depth() && age <= catch_up_exit_age() {
+                let eligible = *self.exit_eligible_since.get_or_insert(now);
+                if now.saturating_duration_since(eligible) >= catch_up_hold() {
+                    self.active = false;
+                    self.severe = false;
+                    self.exit_eligible_since = None;
+                    self.reentry_after = Some(now + catch_up_hold());
+                }
+            } else {
+                self.exit_eligible_since = None;
+            }
+            return;
+        }
+        let held = self.reentry_after.is_some_and(|until| now < until);
+        if !held && (depth >= catch_up_enter_depth() || age >= catch_up_enter_age()) {
+            self.active = true;
+            self.severe = depth >= catch_up_severe_depth() || age >= catch_up_severe_age();
+        }
+    }
+
+    pub(super) fn slots(&self) -> std::ops::Range<usize> {
+        let baseline = eq_tick_slots().end;
+        let limit = if self.severe {
+            baseline.saturating_mul(4)
+        } else if self.active {
+            baseline.saturating_mul(2)
+        } else {
+            baseline
+        };
+        0..limit
+    }
+
+    #[cfg(test)]
+    pub(super) fn state(&self) -> (bool, bool) {
+        (self.active, self.severe)
+    }
+}
 /// Spinner/elapsed animation cadence. The loop is event-driven, so the animation carries its own
 /// clock rather than riding on an input poll's timeout.
-pub(super) const SPINNER_TICK: Duration = Duration::from_millis(100);
+pub(super) const SPINNER_TICK: Duration = Duration::from_millis(80);
+pub(super) const FIRST_TOKEN_SPINNER_TICK: Duration = Duration::from_millis(50);
+pub(super) const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
 /// How long the input thread blocks in one crossterm read before looking at its channel again. It
 /// matches the idle cadence the loop used to poll at, so moving input off the loop costs no extra
 /// wakeups on an idle session.
@@ -176,6 +365,7 @@ pub(super) fn next_wake(
     running: bool,
     last_spin: Instant,
     next_tool_reveal: Option<Instant>,
+    spinner_tick: Duration,
 ) -> Option<Instant> {
     let mut wake: Option<Instant> = None;
     let mut at_earliest = |candidate: Instant| {
@@ -185,13 +375,7 @@ pub(super) fn next_wake(
         at_earliest(next_frame_at);
     }
     if running {
-        at_earliest(
-            last_spin
-                + iteron_tunables::param_duration(
-                    "cli.tui.driver_support.spinner_tick",
-                    SPINNER_TICK,
-                ),
-        );
+        at_earliest(last_spin + spinner_tick);
     }
     if let Some(reveal) = next_tool_reveal {
         at_earliest(reveal);
@@ -210,6 +394,20 @@ pub(super) async fn wake_until(deadline: Option<Instant>) {
 pub(super) enum InputThreadControl {
     Pause(std::sync::mpsc::SyncSender<()>),
     Resume,
+}
+
+fn try_input_control(
+    sender: &std::sync::mpsc::SyncSender<InputThreadControl>,
+    command: InputThreadControl,
+) -> Result<(), String> {
+    sender.try_send(command).map_err(|error| match error {
+        std::sync::mpsc::TrySendError::Full(_) => {
+            "terminal input control queue is busy; retry the action".to_owned()
+        }
+        std::sync::mpsc::TrySendError::Disconnected(_) => {
+            "terminal input reader is no longer available".to_owned()
+        }
+    })
 }
 
 pub(super) fn service_input_control(
@@ -338,16 +536,14 @@ pub(super) fn reload_operator_keymap(
 pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
     term: &mut Terminal<B>,
     guard: &mut TermGuard,
-    input_control: &std::sync::mpsc::Sender<InputThreadControl>,
+    input_control: &std::sync::mpsc::SyncSender<InputThreadControl>,
     workspace: &Path,
     configured: Option<Vec<String>>,
     draft: &str,
     sensitive_env_names: &[String],
 ) -> Result<Result<String, String>, String> {
     let (acknowledge, acknowledged) = std::sync::mpsc::sync_channel(0);
-    input_control
-        .send(InputThreadControl::Pause(acknowledge))
-        .map_err(|_| "terminal input reader is no longer available".to_owned())?;
+    try_input_control(input_control, InputThreadControl::Pause(acknowledge))?;
     if acknowledged
         .recv_timeout(
             iteron_tunables::param_duration(
@@ -362,14 +558,14 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
     {
         // The reader may observe Pause after this timeout. Queue Resume before returning so it
         // cannot become stranded in the pause loop with exclusive ownership of stdin.
-        let _ = input_control.send(InputThreadControl::Resume);
+        let _ = try_input_control(input_control, InputThreadControl::Resume);
         return Ok(Err("terminal input reader did not pause in time".to_owned()));
     }
 
     let desired_mouse = match guard.suspend_for_external_editor() {
         Ok(state) => state,
         Err(error) => {
-            let _ = input_control.send(InputThreadControl::Resume);
+            let _ = try_input_control(input_control, InputThreadControl::Resume);
             return Err(format!(
                 "could not suspend the Core terminal for editing: {error}"
             ));
@@ -386,9 +582,24 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
     let resumed = guard
         .resume_after_external_editor(desired_mouse)
         .map_err(|error| format!("could not restore the Core terminal after editing: {error}"));
-    let _ = input_control.send(InputThreadControl::Resume);
+    let _ = try_input_control(input_control, InputThreadControl::Resume);
     resumed?;
     term.clear()
         .map_err(|error| format!("could not repaint after external editing: {error}"))?;
     Ok(edited)
+}
+
+#[cfg(test)]
+mod input_control_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_input_control_refuses_immediately_when_full() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        try_input_control(&sender, InputThreadControl::Resume).unwrap();
+        assert_eq!(
+            try_input_control(&sender, InputThreadControl::Resume).unwrap_err(),
+            "terminal input control queue is busy; retry the action"
+        );
+    }
 }

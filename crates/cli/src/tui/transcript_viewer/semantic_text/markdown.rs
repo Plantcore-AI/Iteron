@@ -15,6 +15,10 @@ pub(super) fn project(
     cancelled: &AtomicBool,
 ) -> Option<(String, bool)> {
     let mut out = BoundedMarkdown::new(max_bytes, cancelled);
+    if let Some(source) = document.exact_source() {
+        out.push(source);
+        return out.finish();
+    }
     for block in &document.blocks {
         if !out.active() {
             break;
@@ -130,6 +134,14 @@ pub(super) fn project(
                         out.push(" |");
                     }
                     out.push("\n");
+                }
+            }
+            MdBlock::StreamingPending { chunks, .. } => {
+                for chunk in chunks {
+                    if !out.active() {
+                        break;
+                    }
+                    out.push(chunk);
                 }
             }
         }

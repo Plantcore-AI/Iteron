@@ -7,8 +7,6 @@ const PROMPT_CACHE: &[CapabilityRequirement] = &[CapabilityRequirement::Provider
 const REQUEST_COMPRESSION: &[CapabilityRequirement] =
     &[CapabilityRequirement::ProviderRequestCompression];
 const PROVIDER_TRANSPORT: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderTransport];
-const PROVIDER_MODEL_METADATA: &[CapabilityRequirement] =
-    &[CapabilityRequirement::ProviderModelMetadata];
 const PROVIDER_REASONING_CONTROL: &[CapabilityRequirement] =
     &[CapabilityRequirement::ProviderReasoningControl];
 const PROVIDER_DISCOVERY: &[CapabilityRequirement] = &[CapabilityRequirement::ProviderDiscovery];
@@ -49,10 +47,6 @@ const CATALOG_AGENT: &[CapabilityRequirement] = &[
 ];
 const MULTIMODAL_CONTEXT: &[CapabilityRequirement] = &[
     CapabilityRequirement::ProviderMultimodal,
-    CapabilityRequirement::ContextRead,
-];
-const MODEL_METADATA_CONTEXT: &[CapabilityRequirement] = &[
-    CapabilityRequirement::ProviderModelMetadata,
     CapabilityRequirement::ContextRead,
 ];
 const REASONING_CONTROL_AGENT: &[CapabilityRequirement] = &[
@@ -307,10 +301,16 @@ const PROVIDER_REQUIREMENTS: [ProviderRequirement; crate::EXPECTED_FAMILY_COUNT]
 pub(crate) const fn requirements(ordinal: u16, domain: Domain) -> RequirementSpec {
     let capabilities = match ordinal {
         1 | 77 => PROVIDER_CATALOG,
-        2 | 19 => PROVIDER_MODEL_METADATA,
+        // An explicitly selected model needs an admitted inference route, not catalog metadata.
+        // Unknown metadata is handled by the conservative context-window fallback; requiring
+        // metadata here would reject valid custom model IDs before that fallback can run.
+        2 | 19 => INFERENCE,
         3 => PROVIDER_TRANSPORT,
         20 | 21 => PROVIDER_REASONING_CONTROL,
-        13 | 96 => MODEL_METADATA_CONTEXT,
+        // Both families have a conservative local ContextWindow owner for routes whose optional
+        // model metadata is absent. Metadata may narrow the values, but it is not an activation
+        // prerequisite for the executable fallback.
+        13 | 96 => CONTEXT,
         // The capability name identifies the external ceiling owner. ProviderRequirement::None
         // below deliberately keeps the outer bool active: an incapable route contributes the
         // exact clamp `false` instead of making the family inactive.

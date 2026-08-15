@@ -49,6 +49,10 @@ const DEFAULT_EGRESS_PORT: u16 = 443;
 /// Connect-phase bound for every egress client. Separate from the overall timeout so a black-holed
 /// host fails fast instead of consuming the whole request budget.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
+const BRAVE_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
+const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";
+const EXA_SEARCH_ENDPOINT: &str = "https://api.exa.ai/search";
+const ZHIPU_SEARCH_ENDPOINT: &str = "https://open.bigmodel.cn/api/paas/v4/web_search";
 /// Whether input that ends immediately after a close-tag name still closes the tag. Truncated
 /// markup has no byte left to inspect, and refusing the match there would drop the whole tail.
 const TRUNCATED_CLOSE_TAG_IS_BOUNDARY: bool = true;
@@ -383,24 +387,14 @@ async fn fetch_and_render_with_policy(
 
     // Reuse the workspace's HTTP stack (reqwest). Automatic redirects are OFF so we can enforce the
     // same-host policy ourselves. Overall + connect timeouts bound the call.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
-        ))
-        .timeout(std::time::Duration::from_secs(policy.timeout_seconds))
-        .user_agent(iteron_tunables::param_str(
-            "tools.web.user_agent",
-            USER_AGENT,
-        ))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+    let client = fetch_client()?;
 
     let mut current = start;
     let mut hops = 0usize;
     loop {
         let resp = client
             .get(current.clone())
+            .timeout(std::time::Duration::from_secs(policy.timeout_seconds))
             .send()
             .await
             .map_err(|e| format!("request `{current}`: {e}"))?;
@@ -468,6 +462,33 @@ async fn fetch_and_render_with_policy(
     }
 }
 
+/// Every web client that can ever carry a credential starts from this one redirect-disabled
+/// builder. A future backend cannot accidentally inherit reqwest's credential-forwarding redirect
+/// behavior merely by copying the timeout/user-agent setup.
+fn secure_web_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(
+            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
+        ))
+        .user_agent(iteron_tunables::param_str(
+            "tools.web.user_agent",
+            USER_AGENT,
+        ))
+}
+
+fn fetch_client() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            secure_web_client_builder()
+                .build()
+                .map_err(|error| format!("http client: {error}"))
+        })
+        .clone()
+}
+
 #[cfg(test)]
 async fn fetch_and_render(start: reqwest::Url, out_byte_cap: usize) -> Result<String, String> {
     fetch_and_render_with_policy(
@@ -518,25 +539,11 @@ fn cross_host_notice(from: &reqwest::Url, to: &reqwest::Url, status: u16) -> Str
 
 async fn brave_search(key: &str, query: &str, count: usize) -> Result<String, String> {
     let url = reqwest::Url::parse_with_params(
-        "https://api.search.brave.com/res/v1/web/search",
+        iteron_tunables::param_str("tools.web.brave_search_endpoint", BRAVE_SEARCH_ENDPOINT),
         &[("q", query), ("count", &count.to_string())],
     )
     .map_err(|e| format!("build query: {e}"))?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
-        ))
-        .timeout(std::time::Duration::from_secs(
-            crate::ObservationToolPolicy::default()
-                .web_fetch
-                .timeout_seconds,
-        ))
-        .user_agent(iteron_tunables::param_str(
-            "tools.web.user_agent",
-            USER_AGENT,
-        ))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+    let client = search_client()?;
     let resp = client
         .get(url)
         .header("X-Subscription-Token", key)
@@ -635,19 +642,21 @@ impl SearchBackend {
 
 /// A shared HTTP client for the search backends (same bounds as the fetch path).
 fn search_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
-        ))
-        .timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.search_timeout_secs", SEARCH_TIMEOUT_SECS),
-        ))
-        .user_agent(iteron_tunables::param_str(
-            "tools.web.user_agent",
-            USER_AGENT,
-        ))
-        .build()
-        .map_err(|e| format!("http client: {e}"))
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            secure_web_client_builder()
+                .timeout(std::time::Duration::from_secs(
+                    iteron_tunables::param_integer(
+                        "tools.web.search_timeout_secs",
+                        SEARCH_TIMEOUT_SECS,
+                    ),
+                ))
+                .build()
+                .map_err(|error| format!("http client: {error}"))
+        })
+        .clone()
 }
 
 /// Pick the strongest configured backend. `None` = nothing configured (the honest stub).
@@ -683,7 +692,10 @@ async fn tavily_search(key: &str, query: &str, count: usize) -> Result<String, S
         "search_depth": "basic",
     });
     let resp = client
-        .post("https://api.tavily.com/search")
+        .post(iteron_tunables::param_str(
+            "tools.web.tavily_search_endpoint",
+            TAVILY_SEARCH_ENDPOINT,
+        ))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&payload)
@@ -751,7 +763,10 @@ async fn exa_search(key: &str, query: &str, count: usize) -> Result<String, Stri
         "contents": { "text": { "maxCharacters": 400 } }
     });
     let resp = client
-        .post("https://api.exa.ai/search")
+        .post(iteron_tunables::param_str(
+            "tools.web.exa_search_endpoint",
+            EXA_SEARCH_ENDPOINT,
+        ))
         .header("x-api-key", key)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&payload)
@@ -820,26 +835,17 @@ fn parse_exa_results(json: &str, count: usize) -> Result<Vec<(String, String, St
 /// `(title, url, snippet)` triples. Covers Chinese and English on the same GLM credential the model
 /// provider already needs. Snippets are bounded so a long article body cannot blow the output cap.
 async fn zhipu_search(key: &str, query: &str, count: usize) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.connect_timeout_secs", CONNECT_TIMEOUT_SECS),
-        ))
-        .timeout(std::time::Duration::from_secs(
-            iteron_tunables::param_integer("tools.web.search_timeout_secs", SEARCH_TIMEOUT_SECS),
-        ))
-        .user_agent(iteron_tunables::param_str(
-            "tools.web.user_agent",
-            USER_AGENT,
-        ))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+    let client = search_client()?;
     let payload = serde_json::json!({
         "search_engine": "search_std",
         "search_query": query,
         "count": count,
     });
     let resp = client
-        .post("https://open.bigmodel.cn/api/paas/v4/web_search")
+        .post(iteron_tunables::param_str(
+            "tools.web.zhipu_search_endpoint",
+            ZHIPU_SEARCH_ENDPOINT,
+        ))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "application/json")
@@ -1349,6 +1355,52 @@ mod tests {
         let notice = cross_host_notice(&a, &cross, 302);
         assert!(notice.contains("not followed"));
         assert!(notice.contains("evil.example.net"));
+    }
+
+    #[tokio::test]
+    async fn credential_bearing_search_client_never_auto_follows_redirects() {
+        use std::io::{Read, Write};
+
+        let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let destination_url = format!(
+            "http://{}/credential-sink",
+            destination.local_addr().unwrap()
+        );
+        let source = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source_url = format!("http://{}/search", source.local_addr().unwrap());
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = source.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert!(request.contains("x-subscription-token: fixture"));
+            assert!(request.contains("x-api-key: fixture"));
+            assert!(request.contains("authorization: bearer fixture"));
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {destination_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+
+        let response = secure_web_client_builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(source_url)
+            .header("X-Subscription-Token", "fixture")
+            .header("x-api-key", "fixture")
+            .header(reqwest::header::AUTHORIZATION, "Bearer fixture")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        responder.join().unwrap();
+        assert!(matches!(
+            destination.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
     }
 
     #[test]

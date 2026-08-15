@@ -23,6 +23,7 @@ mod context_materialization;
 mod context_port;
 mod context_strategy;
 pub mod decision_store;
+mod incremental;
 pub mod instructions;
 pub mod memory;
 mod memory_runtime;
@@ -31,6 +32,7 @@ pub mod outline;
 mod runtime_policy;
 pub mod skills;
 pub mod source;
+mod token_calibration;
 mod token_estimator;
 
 pub use compact::{
@@ -57,6 +59,7 @@ pub use context_strategy::{
 pub use decision_store::{
     ContextLedgerSnapshot, ContextLedgerStore, MemoryTraceSnapshot, MemoryTraceStore,
 };
+pub(crate) use incremental::ResourceMetadataIndex;
 pub use instructions::{
     InstructionBundle, InstructionDiscoveryPolicy, InstructionRejection, InstructionSource,
     Instructions, MAX_INSTRUCTION_CONTENT_BYTES, MAX_MERGED_INSTRUCTION_BYTES, discover,
@@ -85,13 +88,17 @@ pub use runtime_policy::{
     ContextBudgetClass, ContextBudgetPolicy, ContextBudgetViolation, ContextComponentUsage,
     ContextMaterializationPolicy,
 };
+pub use token_calibration::{
+    CalibrationObservation, RouteTokenCalibration, TOKEN_CALIBRATION_SCHEMA_VERSION,
+    TokenCalibrationError, TokenCalibrationSnapshot, TokenCalibrationStore,
+};
 pub use token_estimator::{
     ROUTE_AWARE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
 };
 
 /// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; until a route
-/// is known this deliberately charges one token per UTF-8 byte and is labelled as an inexact,
-/// conservative fallback.
+/// is known this uses four bytes/token with a 15% admission reserve and a multilingual scalar
+/// floor. It remains explicitly inexact and can be reconciled with actual provider usage.
 pub fn estimate_tokens(text: &str) -> usize {
     TokenEstimatorProfile::GenericBytesPerToken35.estimate(text)
 }
@@ -101,9 +108,9 @@ mod tests {
     use super::*;
     #[test]
     fn token_estimate_biases_high() {
-        // The unidentified-route fallback is an explicit byte-level upper bound.
+        // The unidentified-route fallback is four bytes/token plus the bounded reserve.
         let n = estimate_tokens(&"x".repeat(3500));
-        assert_eq!(n, 3500);
-        assert_eq!(estimate_tokens("上下文"), "上下文".len());
+        assert_eq!(n, 1007);
+        assert_eq!(estimate_tokens("上下文"), 6);
     }
 }

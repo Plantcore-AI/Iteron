@@ -8,6 +8,7 @@
 #[cfg(unix)]
 mod capability;
 mod input;
+mod multiplex;
 mod policy;
 mod pool;
 mod projection;
@@ -124,18 +125,10 @@ enum LspToolError {
     OperationCancelled,
     #[error("language-server shutdown timed out")]
     ShutdownTimeout,
-    #[error("language-server closed before the matching response")]
-    UnexpectedEof,
     #[error("language-server JSON-RPC envelope is malformed")]
     MalformedEnvelope,
-    #[error("language-server returned a response for a non-live request")]
-    ForeignResponse,
     #[error("language-server returned JSON-RPC error code {code:?}")]
     ServerResponse { code: Option<i64> },
-    #[error("language-server interleaved output exceeds {limit} bytes")]
-    InterleavedOutputTooLarge { limit: usize },
-    #[error("language-server emitted more than {limit} interleaved messages")]
-    TooManyInterleavedMessages { limit: usize },
     #[error("language-server stderr exceeded {limit} observed bytes")]
     StderrLimit { limit: u64 },
     #[error("language-server response correlation was rejected")]
@@ -144,8 +137,6 @@ enum LspToolError {
     UnsupportedPositionEncoding,
     #[error("source changed while the language server computed the answer")]
     SourceChanged,
-    #[error("language-server emitted protocol output after exit")]
-    OutputAfterExit,
     #[error("language-server exited unsuccessfully")]
     ServerExitFailure,
     #[error("language-server lifecycle did not reach a verified terminal state")]

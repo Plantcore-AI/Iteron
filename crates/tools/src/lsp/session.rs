@@ -1,17 +1,19 @@
 use super::input::SourceDocument;
-use super::wire::{read_response, write_value};
+use super::multiplex::ResponseRouter;
+use super::wire::write_value;
 use super::{LspToolError, QueryKind};
+use iteron_lsp::ServerEpoch;
 use iteron_lsp::documents::DocumentStore;
 use iteron_lsp::intel::{Query, ensure_fresh};
 use iteron_lsp::lifecycle::{Event, RestartPolicy, Session, State};
 use iteron_lsp::pending::{PendingRequests, ReplyDisposition};
-use iteron_lsp::{ServerEpoch, framing};
 use iteron_sandbox::{ConfinedProcess, PersistentBackend};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex as AsyncMutex;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -45,24 +47,88 @@ impl RunFailure {
 }
 
 pub(super) struct Driver {
-    process: Option<ConfinedProcess>,
-    stdin: Option<tokio::process::ChildStdin>,
-    stdout: BufReader<tokio::process::ChildStdout>,
-    stderr_task: Option<tokio::task::JoinHandle<()>>,
+    process: AsyncMutex<Option<ConfinedProcess>>,
+    stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
+    responses: ResponseRouter,
+    stderr_task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
     stderr_limit_hit: Arc<AtomicBool>,
     backend: PersistentBackend,
     epoch: ServerEpoch,
-    lifecycle: Session,
-    pending: PendingRequests,
-    documents: DocumentStore,
+    lifecycle: Mutex<Session>,
+    pending: Mutex<PendingRequests>,
+    documents: Mutex<DocumentStore>,
     clock: Instant,
+}
+
+/// Cleans the request-local registries when the caller cancels the `execute` future. The response
+/// router independently drops its receiver and emits `$/cancelRequest`; this lease releases the
+/// logical admission slot and closes only this document, without touching server lifecycle state.
+struct RequestLease<'a> {
+    pending: &'a Mutex<PendingRequests>,
+    documents: &'a Mutex<DocumentStore>,
+    stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
+    clock: &'a Instant,
+    generation: u64,
+    id: u32,
+    uri: String,
+    server_document_open: bool,
+    armed: bool,
+}
+
+impl RequestLease<'_> {
+    fn note_server_document_open(&mut self) {
+        self.server_document_open = true;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RequestLease<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let now_ms = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let _ = lock(self.pending).cancel_and_release(self.generation, self.id, now_ms);
+        let _ = lock(self.documents).close(&self.uri);
+        if !self.server_document_open {
+            return;
+        }
+        let stdin = Arc::clone(&self.stdin);
+        let uri = self.uri.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let mut writer = stdin.lock().await;
+                if let Some(writer) = writer.as_mut() {
+                    let _ = write_value(
+                        writer,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/didClose",
+                            "params": {"textDocument": {"uri": uri}}
+                        }),
+                    )
+                    .await;
+                }
+            });
+        }
+    }
 }
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        drop(self.stdin.take());
-        drop(self.process.take());
-        if let Some(task) = self.stderr_task.take() {
+        self.responses.abort();
+        if let Ok(mut stdin) = self.stdin.try_lock() {
+            drop(stdin.take());
+        }
+        if let Ok(mut process) = self.process.try_lock() {
+            drop(process.take());
+        }
+        if let Ok(mut stderr_task) = self.stderr_task.try_lock()
+            && let Some(task) = stderr_task.take()
+        {
             task.abort();
         }
     }
@@ -81,28 +147,51 @@ impl Driver {
         let stderr_limit_hit = Arc::new(AtomicBool::new(false));
         let stderr_task = tokio::spawn(drain_stderr(stderr, Arc::clone(&stderr_limit_hit)));
         let epoch = ServerEpoch::new(epoch);
+        let stdin = Arc::new(AsyncMutex::new(Some(stdin)));
+        let responses = ResponseRouter::spawn(stdout, Arc::clone(&stdin));
         Ok(Self {
-            process: Some(process),
-            stdin: Some(stdin),
-            stdout: BufReader::new(stdout),
-            stderr_task: Some(stderr_task),
+            process: AsyncMutex::new(Some(process)),
+            stdin,
+            responses,
+            stderr_task: AsyncMutex::new(Some(stderr_task)),
             stderr_limit_hit,
             backend,
             epoch,
-            lifecycle: Session::new(RestartPolicy::default()),
-            pending: PendingRequests::new(epoch.generation()),
-            documents: DocumentStore::new(epoch),
+            lifecycle: Mutex::new(Session::new(RestartPolicy::default())),
+            pending: Mutex::new(PendingRequests::new(epoch.generation())),
+            documents: Mutex::new(DocumentStore::new(epoch)),
             clock: Instant::now(),
         })
     }
 
     pub(super) async fn execute(
-        &mut self,
+        &self,
         document: &SourceDocument,
         query: QueryKind,
         request_timeout: Duration,
     ) -> Result<Value, LspToolError> {
-        let snapshot = self.documents.open(document.uri(), 1)?;
+        lock(&self.lifecycle).guard_request()?;
+        let snapshot = lock(&self.documents).open(document.uri(), 1)?;
+        let wire_version = snapshot.wire_version();
+        let lsp_query = query.as_lsp_query();
+        let correlation = lock(&self.pending).issue_for_document(
+            lsp_query.method(),
+            snapshot,
+            self.now_ms(),
+            u64::try_from(request_timeout.as_millis()).unwrap_or(u64::MAX),
+        )?;
+        let mut lease = RequestLease {
+            pending: &self.pending,
+            documents: &self.documents,
+            stdin: Arc::clone(&self.stdin),
+            clock: &self.clock,
+            generation: self.epoch.generation(),
+            id: correlation.id(),
+            uri: document.uri().to_owned(),
+            server_document_open: false,
+            armed: true,
+        };
+        let response = self.responses.register(correlation.id()).await?;
         self.write(&json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -110,21 +199,13 @@ impl Driver {
                 "textDocument": {
                     "uri": document.uri(),
                     "languageId": document.adapter().language_id(),
-                    "version": snapshot.wire_version(),
+                    "version": wire_version,
                     "text": document.text()
                 }
             }
         }))
         .await?;
-
-        self.lifecycle.guard_request()?;
-        let lsp_query = query.as_lsp_query();
-        let correlation = self.pending.issue_for_document(
-            lsp_query.method(),
-            snapshot,
-            self.now_ms(),
-            u64::try_from(request_timeout.as_millis()).unwrap_or(u64::MAX),
-        )?;
+        lease.note_server_document_open();
         self.write(&json!({
             "jsonrpc": "2.0",
             "id": correlation.wire_id(),
@@ -132,25 +213,27 @@ impl Driver {
             "params": lsp_query.params(document.uri(), query.position())?
         }))
         .await?;
-        let value = self.read(correlation.id(), request_timeout).await?;
-        let completed = accepted(self.pending.resolve(
+        let value = tokio::time::timeout(request_timeout, response.receive())
+            .await
+            .map_err(|_| LspToolError::ResponseTimeout)??;
+        let completed = accepted(lock(&self.pending).resolve(
             self.epoch.generation(),
             correlation.id(),
             self.now_ms(),
         )?)?;
-        ensure_fresh(&self.documents, &completed)?;
+        ensure_fresh(&lock(&self.documents), &completed)?;
         document.recheck().await?;
-        self.lifecycle
-            .note_request_succeeded(&completed, self.now_ms())?;
+        lock(&self.lifecycle).note_request_succeeded(&completed, self.now_ms())?;
         self.write(&json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didClose",
             "params": {"textDocument": {"uri": document.uri()}}
         }))
         .await?;
-        if !self.documents.close(document.uri()) {
+        if !lock(&self.documents).close(document.uri()) {
             return Err(LspToolError::LifecycleIncomplete);
         }
+        lease.disarm();
         if self.stderr_limit_hit.load(Ordering::Acquire) {
             return Err(LspToolError::StderrLimit {
                 limit: iteron_tunables::param_integer(
@@ -163,17 +246,17 @@ impl Driver {
     }
 
     pub(super) async fn initialize(
-        &mut self,
+        &self,
         root_uri: &str,
         request_timeout: Duration,
     ) -> Result<(), LspToolError> {
-        self.lifecycle
-            .apply(Event::InitializeSent(self.epoch), self.now_ms())?;
-        let correlation = self.pending.issue(
+        lock(&self.lifecycle).apply(Event::InitializeSent(self.epoch), self.now_ms())?;
+        let correlation = lock(&self.pending).issue(
             "initialize",
             self.now_ms(),
             u64::try_from(request_timeout.as_millis()).unwrap_or(u64::MAX),
         )?;
+        let response = self.responses.register(correlation.id()).await?;
         self.write(&json!({
             "jsonrpc": "2.0",
             "id": correlation.wire_id(),
@@ -187,8 +270,10 @@ impl Driver {
             }
         }))
         .await?;
-        let result = self.read(correlation.id(), request_timeout).await?;
-        let completed = accepted(self.pending.resolve(
+        let result = tokio::time::timeout(request_timeout, response.receive())
+            .await
+            .map_err(|_| LspToolError::ResponseTimeout)??;
+        let completed = accepted(lock(&self.pending).resolve(
             self.epoch.generation(),
             correlation.id(),
             self.now_ms(),
@@ -203,32 +288,28 @@ impl Driver {
             "params": {}
         }))
         .await?;
-        self.lifecycle
-            .apply(Event::Initialized(self.epoch), self.now_ms())?;
+        lock(&self.lifecycle).apply(Event::Initialized(self.epoch), self.now_ms())?;
         Ok(())
     }
 
-    async fn write(&mut self, value: &Value) -> Result<(), LspToolError> {
-        let writer = self.stdin.as_mut().ok_or(LspToolError::Transport)?;
+    async fn write(&self, value: &Value) -> Result<(), LspToolError> {
+        let mut writer = self.stdin.lock().await;
+        let writer = writer.as_mut().ok_or(LspToolError::Transport)?;
         write_value(writer, value).await
     }
 
-    async fn read(&mut self, id: u32, timeout: Duration) -> Result<Value, LspToolError> {
-        let writer = self.stdin.as_mut().ok_or(LspToolError::Transport)?;
-        read_response(&mut self.stdout, writer, id, timeout).await
-    }
-
-    pub(super) async fn shutdown(&mut self) -> Result<&'static str, LspToolError> {
-        if self.lifecycle.state() != State::Ready {
+    pub(super) async fn shutdown(&self) -> Result<&'static str, LspToolError> {
+        if lock(&self.lifecycle).state() != State::Ready {
             return Err(LspToolError::LifecycleIncomplete);
         }
-        self.lifecycle.apply(Event::ShutdownSent, self.now_ms())?;
-        let correlation = self.pending.issue(
+        lock(&self.lifecycle).apply(Event::ShutdownSent, self.now_ms())?;
+        let correlation = lock(&self.pending).issue(
             "shutdown",
             self.now_ms(),
             iteron_tunables::param_duration("tools.lsp.session.shutdown_timeout", SHUTDOWN_TIMEOUT)
                 .as_millis() as u64,
         )?;
+        let response = self.responses.register(correlation.id()).await?;
         self.write(&json!({
             "jsonrpc": "2.0",
             "id": correlation.wire_id(),
@@ -236,38 +317,36 @@ impl Driver {
             "params": null
         }))
         .await?;
-        let _ = self
-            .read(
-                correlation.id(),
-                iteron_tunables::param_duration(
-                    "tools.lsp.session.shutdown_timeout",
-                    SHUTDOWN_TIMEOUT,
-                ),
-            )
-            .await?;
-        let _ = accepted(self.pending.resolve(
+        let _ = tokio::time::timeout(
+            iteron_tunables::param_duration("tools.lsp.session.shutdown_timeout", SHUTDOWN_TIMEOUT),
+            response.receive(),
+        )
+        .await
+        .map_err(|_| LspToolError::ShutdownTimeout)??;
+        let _ = accepted(lock(&self.pending).resolve(
             self.epoch.generation(),
             correlation.id(),
             self.now_ms(),
         )?)?;
         self.write(&json!({"jsonrpc":"2.0","method":"exit","params":null}))
             .await?;
-        self.lifecycle.apply(Event::ExitSent, self.now_ms())?;
-        drop(self.stdin.take());
+        lock(&self.lifecycle).apply(Event::ExitSent, self.now_ms())?;
+        drop(self.stdin.lock().await.take());
 
-        let eof = tokio::time::timeout(
+        tokio::time::timeout(
             iteron_tunables::param_duration("tools.lsp.session.shutdown_timeout", SHUTDOWN_TIMEOUT),
-            framing::read_message(&mut self.stdout),
+            self.responses.wait_closed(),
         )
         .await
-        .map_err(|_| LspToolError::ShutdownTimeout)?
-        .map_err(LspToolError::Protocol)?;
-        if eof.is_some() {
-            return Err(LspToolError::OutputAfterExit);
-        }
-        self.lifecycle.apply(Event::StreamClosed, self.now_ms())?;
+        .map_err(|_| LspToolError::ShutdownTimeout)?;
+        lock(&self.lifecycle).apply(Event::StreamClosed, self.now_ms())?;
 
-        let mut process = self.process.take().ok_or(LspToolError::CleanupUnknown)?;
+        let mut process = self
+            .process
+            .lock()
+            .await
+            .take()
+            .ok_or(LspToolError::CleanupUnknown)?;
         let status = match tokio::time::timeout(
             iteron_tunables::param_duration(
                 "tools.lsp.session.process_exit_timeout",
@@ -279,30 +358,30 @@ impl Driver {
         {
             Ok(Ok(status)) => status,
             Ok(Err(_)) => {
-                self.process = Some(process);
+                *self.process.lock().await = Some(process);
                 return Err(LspToolError::CleanupUnknown);
             }
             Err(_) => {
-                self.process = Some(process);
+                *self.process.lock().await = Some(process);
                 return Err(LspToolError::ShutdownTimeout);
             }
         };
         if !status.success() {
-            self.lifecycle.apply(Event::ProcessFailed, self.now_ms())?;
+            lock(&self.lifecycle).apply(Event::ProcessFailed, self.now_ms())?;
             return Err(LspToolError::ServerExitFailure);
         }
-        self.lifecycle
-            .apply(Event::ProcessExitedSuccessfully, self.now_ms())?;
+        lock(&self.lifecycle).apply(Event::ProcessExitedSuccessfully, self.now_ms())?;
         self.finish_stderr().await;
-        if self.lifecycle.state() != State::Exited {
+        if lock(&self.lifecycle).state() != State::Exited {
             return Err(LspToolError::LifecycleIncomplete);
         }
         Ok(self.backend.as_str())
     }
 
-    pub(super) async fn force_cleanup(&mut self) -> bool {
-        drop(self.stdin.take());
-        let process = self.process.take();
+    pub(super) async fn force_cleanup(&self) -> bool {
+        self.responses.abort();
+        drop(self.stdin.lock().await.take());
+        let process = self.process.lock().await.take();
         let process_cleanup = async move {
             if let Some(mut process) = process {
                 process.terminate_and_reap().await.is_some()
@@ -314,8 +393,8 @@ impl Driver {
         confirmed
     }
 
-    async fn finish_stderr(&mut self) {
-        let Some(mut task) = self.stderr_task.take() else {
+    async fn finish_stderr(&self) {
+        let Some(mut task) = self.stderr_task.lock().await.take() else {
             return;
         };
         if tokio::time::timeout(
@@ -387,6 +466,12 @@ fn accepted(
         ReplyDisposition::Accepted(completed) => Ok(completed),
         _ => Err(LspToolError::CorrelationRejected),
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn validate_position_encoding(result: &Value) -> Result<(), LspToolError> {

@@ -260,37 +260,43 @@ fn add_context_constraints(
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
     let (actual_window, execution_window, _) = super::context_owner_window(input)?;
-    let window_value = actual_window
-        .map(|value| super::value::i64u(value as u64, "context_window"))
-        .transpose()?
-        .map(int);
+    let effective_window = actual_window.unwrap_or(execution_window);
+    let window_value = int(super::value::i64u(
+        effective_window as u64,
+        "context_window",
+    )?);
     let execution_window_value = int(super::value::i64u(
         execution_window as u64,
         "context_window",
     )?);
-    if let Some(value) = &window_value {
-        super::value::domain_max(
-            builder,
+    let capability_max = actual_window.unwrap_or(10_000_000);
+    super::value::domain_max(
+        builder,
+        "context_window_override_reserve",
+        "model_window_tokens",
+        ExternalCeiling::ProviderCapability,
+        int(super::value::i64z(
+            capability_max,
             "context_window_override_reserve",
-            "model_window_tokens",
-            ExternalCeiling::ProviderCapability,
-            value.clone(),
-        )?;
-        report.constrained(
-            "context_window_override_reserve",
-            "model_window_tokens",
-            ExternalCeiling::ProviderCapability,
-        );
-    } else {
-        gap(
-            report,
-            96,
-            "context_window_override_reserve",
-            "model_window_tokens",
-            ExternalCeiling::ProviderCapability,
-            FactGapReason::RequiredOwnerFieldUnknown,
-        );
-    }
+        )?),
+    )?;
+    report.constrained(
+        "context_window_override_reserve",
+        "model_window_tokens",
+        ExternalCeiling::ProviderCapability,
+    );
+    upper(
+        builder,
+        "context_window_override_reserve",
+        "model_window_tokens",
+        ExternalCeiling::ContextWindow,
+        window_value.clone(),
+    )?;
+    report.constrained(
+        "context_window_override_reserve",
+        "model_window_tokens",
+        ExternalCeiling::ContextWindow,
+    );
     for family in [
         "system_prefix_budget",
         "conversation_history_budget",
@@ -305,37 +311,40 @@ fn add_context_constraints(
         )?;
         report.constrained(family, "$", ExternalCeiling::ContextWindow);
     }
-    if let Some(value) = &window_value {
-        upper(
+    upper(
+        builder,
+        "multimodal_token_budget",
+        "$",
+        ExternalCeiling::ContextWindow,
+        window_value.clone(),
+    )?;
+    report.constrained(
+        "multimodal_token_budget",
+        "$",
+        ExternalCeiling::ContextWindow,
+    );
+    if input.model_capabilities.image_input == Some(true) {
+        // Image support attests admission to the numeric multimodal domain; ContextWindow remains
+        // the independent budget authority that clamps the requested value. When the provider also
+        // publishes a model window we can narrow the capability domain to it. Otherwise the
+        // capability admits the registry domain and the conservative local ContextWindow ceiling
+        // above provides the effective numeric bound.
+        let capability_max = actual_window.unwrap_or(10_000_000);
+        super::value::domain_max(
             builder,
             "multimodal_token_budget",
             "$",
-            ExternalCeiling::ContextWindow,
-            value.clone(),
+            ExternalCeiling::ProviderCapability,
+            int(super::value::i64z(
+                capability_max,
+                "multimodal_token_budget",
+            )?),
         )?;
         report.constrained(
             "multimodal_token_budget",
             "$",
-            ExternalCeiling::ContextWindow,
+            ExternalCeiling::ProviderCapability,
         );
-    }
-    if input.model_capabilities.image_input == Some(true) {
-        if let Some(value) = &window_value {
-            // Provider image support attests the numeric multimodal domain; it is not another
-            // budget authority. The separate ContextWindow evidence above owns the clamp.
-            super::value::domain_max(
-                builder,
-                "multimodal_token_budget",
-                "$",
-                ExternalCeiling::ProviderCapability,
-                value.clone(),
-            )?;
-            report.constrained(
-                "multimodal_token_budget",
-                "$",
-                ExternalCeiling::ProviderCapability,
-            );
-        }
     } else {
         super::value::domain(
             builder,

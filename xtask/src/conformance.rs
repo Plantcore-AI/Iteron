@@ -217,6 +217,7 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
 /// graph. This is the single build-plane conformance entry point used both directly and by every
 /// boundaries command.
 pub fn validate(root: &Path) -> Result<()> {
+    crate::uiux_conformance::validate(root)?;
     validate_read_only_registry(root)?;
     validate_tool_policy_registry(root)?;
     // Bootstrap fixtures and older trusted bases predate this W1 seam. The direct iteron-ctx build

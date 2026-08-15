@@ -367,7 +367,10 @@ mod unix {
             .search_tools("", 1, &McpCancellation::new())
             .await
             .unwrap_err();
-        assert!(matches!(error, McpError::InvalidUtf8));
+        assert!(
+            matches!(error, McpError::InvalidUtf8),
+            "malformed frame must retain its typed terminal error, got {error:?}"
+        );
         assert_eq!(server.status().phase, LifecyclePhase::Failed);
         assert_eq!(server.status().reconnect_attempts, 0);
         let pid: u32 = std::fs::read_to_string(&pid_path)

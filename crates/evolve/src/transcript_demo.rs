@@ -21,10 +21,12 @@ use std::path::Path;
 const RECORDED_FIXTURE: &[u8] = include_bytes!("../tests/fixtures/recorded-run-clean-v1.json");
 const ROLLOUT_DIGEST: &str = "0722b7c0b2b2f35b340557421165459ab748e6bfa1355d30e398ebc9270439f9";
 
-pub(crate) fn run(
+pub(crate) fn run_with_cancel(
     root: &Path,
     config: &OfflineTranscriptConfig,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<OfflineTranscriptResult, TranscriptRunError> {
+    ensure_not_cancelled(cancelled)?;
     if std::fs::symlink_metadata(root).is_ok() {
         return Err(TranscriptRunError::OutputAlreadyExists(root.to_path_buf()));
     }
@@ -57,6 +59,7 @@ pub(crate) fn run(
         run_id: registered.envelope.run_id.0.clone(),
         registry_address: registered.address.to_string(),
     });
+    ensure_not_cancelled(cancelled)?;
     // From this point onward the projected value is intentionally shadowed by the envelope loaded
     // through `get_by_run`, whose scan re-verifies the registry chain and evidence bindings.
     let private_tenant = registered.envelope.tenant_id.clone();
@@ -84,6 +87,7 @@ pub(crate) fn run(
         digest: verified_dataset.digest().into(),
         members: verified_dataset.members().len(),
     });
+    ensure_not_cancelled(cancelled)?;
 
     let suite = demo::evaluation_suite();
     let (baseline_policy, baseline) = demo::baseline()?;
@@ -133,6 +137,7 @@ pub(crate) fn run(
     events.push(TranscriptEvent::BaselineBootstrapped {
         bundle_digest: baseline.bundle().digest.clone(),
     });
+    ensure_not_cancelled(cancelled)?;
 
     let admission = demo::admission(&baseline_policy);
     let promotion_parties = BTreeSet::from([demo::PROMOTION_PARTY.to_owned()]);
@@ -258,6 +263,7 @@ pub(crate) fn run(
         target_gate_eligible: true,
         target_evaluation_fixture: crate::transcript_target_fixture::TARGET_OBSERVATION_ID.into(),
     });
+    ensure_not_cancelled(cancelled)?;
     let transferred_manifest = transferred
         .output
         .checkpoint
@@ -446,6 +452,7 @@ pub(crate) fn run(
         &primary_checkpoint.bundle().bundle_id,
         &secondary_checkpoint.bundle().bundle_id,
     )?);
+    ensure_not_cancelled(cancelled)?;
 
     let final_active = demo::require_restored_baseline(&mut authority, &baseline)?;
     let promotion_journal_path = authority.journal_path().to_path_buf();
@@ -456,6 +463,7 @@ pub(crate) fn run(
         target_promotion_journal: "promotion-target/promotion-authority.jsonl".into(),
         final_active_bundle_digest: final_active.bundle().digest.clone(),
     });
+    ensure_not_cancelled(cancelled)?;
 
     let transcript_path = root.join("offline-transcript.jsonl");
     write_transcript(&transcript_path, &events)?;
@@ -467,6 +475,14 @@ pub(crate) fn run(
         event_count: events.len(),
         final_active_bundle_digest: final_active.bundle().digest.clone(),
     })
+}
+
+fn ensure_not_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), TranscriptRunError> {
+    if cancelled() {
+        Err(TranscriptRunError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn push_produced(

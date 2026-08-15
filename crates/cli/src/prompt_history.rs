@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) const MAX_ENTRIES: usize = 200;
 const MAX_ENTRY_BYTES: usize = 64 * 1024;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
+const FINISH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 const LEGACY_STATE_VERSION: u32 = 1;
 const UNLINEAGED_STATE_VERSION: u32 = 2;
 const STATE_VERSION: u32 = 3;
@@ -34,6 +35,51 @@ pub(crate) fn source_run_from_rollout(path: &Path) -> Option<RunId> {
         .and_then(std::ffi::OsStr::to_str)
         .filter(|run| !run.is_empty())
         .map(|run| RunId(run.to_owned()))
+}
+
+/// Result of the cancel-safe startup hydration worker. Moving this whole value through one bounded
+/// channel keeps filesystem and content-store locks out of the first-frame/input path.
+pub(crate) struct Bootstrap {
+    pub(crate) store: Option<Store>,
+    pub(crate) state: Option<State>,
+    pub(crate) warning: Option<String>,
+}
+
+pub(crate) fn bootstrap(
+    mode: PromptHistoryMode,
+    config_home: Option<PathBuf>,
+    workspace: &Path,
+    runs_dir: Option<PathBuf>,
+    active_run: Option<RunId>,
+) -> Bootstrap {
+    let mut warning = None;
+    let store = match (config_home, runs_dir) {
+        (Some(config_home), Some(runs_dir)) => {
+            match Store::resolve_with_runs_dir(mode, config_home, workspace, runs_dir) {
+                Ok(store) => store,
+                Err(error) => {
+                    warning = Some(format!("prompt history disabled for this session: {error}"));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let state = store
+        .as_ref()
+        .zip(active_run.as_ref())
+        .and_then(|(store, active_run)| match store.load(active_run) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                warning = Some(format!("prompt history could not be restored: {error}"));
+                None
+            }
+        });
+    Bootstrap {
+        store,
+        state,
+        warning,
+    }
 }
 
 mod private_storage;
@@ -85,8 +131,10 @@ struct SourceBinding {
 
 #[derive(Clone, Debug, Default)]
 struct LineageState {
-    history: Vec<(String, SourceBinding)>,
-    draft: Option<(String, SourceBinding)>,
+    /// Last published entries retained by slot. Unchanged text+lineage reuses the derivative
+    /// handle, so a draft keystroke stages only the changed draft rather than all 200 prompts.
+    history: Vec<(String, PersistedEntry)>,
+    draft: Option<(String, PersistedEntry)>,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +150,8 @@ pub(crate) struct Store {
     tenant: TenantId,
     source_seq_base: u64,
     lineage: Arc<Mutex<LineageState>>,
+    #[cfg(test)]
+    stage_writes: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -177,6 +227,8 @@ impl Store {
             tenant,
             source_seq_base,
             lineage: Arc::new(Mutex::new(LineageState::default())),
+            #[cfg(test)]
+            stage_writes: Arc::new(AtomicU64::new(0)),
         }))
     }
 
@@ -303,6 +355,11 @@ impl Store {
     fn path(&self) -> &Path {
         &self.path
     }
+
+    #[cfg(test)]
+    fn take_stage_writes(&self) -> u64 {
+        self.stage_writes.swap(0, Ordering::Relaxed)
+    }
 }
 
 struct PreparedState {
@@ -314,8 +371,13 @@ struct PreparedState {
 /// One fixed-depth background writer. Keystrokes never wait for an fsync; when its single pending
 /// slot is full, the newer snapshot is skipped and the normal-exit flush still writes final state.
 pub(crate) struct Writer {
-    sender: Option<std::sync::mpsc::SyncSender<(State, RunId)>>,
+    sender: Option<std::sync::mpsc::SyncSender<WriterCommand>>,
     task: Option<std::thread::JoinHandle<()>>,
+}
+
+enum WriterCommand {
+    Save(State, RunId),
+    Finish(State, RunId, std::sync::mpsc::SyncSender<()>),
 }
 
 impl Writer {
@@ -326,10 +388,43 @@ impl Writer {
                 task: None,
             };
         };
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<(State, RunId)>(1);
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<WriterCommand>(1);
         let task = std::thread::spawn(move || {
-            while let Ok((state, active_run)) = receiver.recv() {
-                let _ = store.save(state, &active_run);
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    WriterCommand::Save(mut state, mut active_run) => {
+                        // Keystroke snapshots are deliberately coalesced. Besides avoiding an
+                        // fsync per key, this lets a normal-exit Finish supersede a queued stale
+                        // draft instead of making shutdown wait for two durable publications.
+                        let debounce = std::time::Duration::from_millis(10);
+                        loop {
+                            match receiver.recv_timeout(debounce) {
+                                Ok(WriterCommand::Save(next, next_run)) => {
+                                    state = next;
+                                    active_run = next_run;
+                                }
+                                Ok(WriterCommand::Finish(next, next_run, acknowledged)) => {
+                                    let _ = store.save(next, &next_run);
+                                    let _ = acknowledged.try_send(());
+                                    return;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    let _ = store.save(state, &active_run);
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    let _ = store.save(state, &active_run);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    WriterCommand::Finish(state, active_run, acknowledged) => {
+                        let _ = store.save(state, &active_run);
+                        let _ = acknowledged.try_send(());
+                        break;
+                    }
+                }
             }
         });
         Self {
@@ -340,18 +435,48 @@ impl Writer {
 
     pub(crate) fn schedule(&self, state: State, active_run: RunId) {
         if let Some(sender) = &self.sender {
-            let _ = sender.try_send((state, active_run));
+            let _ = sender.try_send(WriterCommand::Save(state, active_run));
         }
     }
 
-    pub(crate) fn finish(mut self, state: State, active_run: RunId) {
-        if let Some(sender) = self.sender.take() {
-            let _ = sender.send((state, active_run));
-            drop(sender);
+    /// Request one final coalesced snapshot without allowing slow storage to hold terminal restore
+    /// indefinitely. `false` is visible shutdown debt; the worker is detached, never force-killed.
+    pub(crate) fn finish_bounded(mut self, state: State, active_run: RunId) -> bool {
+        let Some(sender) = self.sender.take() else {
+            return true;
+        };
+        let (acknowledged, ack) = std::sync::mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.prompt_history.finish_deadline",
+                // One final content-addressed publication includes file and directory fsync. A
+                // two-second hard budget remains responsive while surviving ordinary workspace
+                // test/build I/O contention; the TUI already labels this finalizing phase.
+                FINISH_DEADLINE,
+            )
+            .min(FINISH_DEADLINE);
+        let mut command = WriterCommand::Finish(state, active_run, acknowledged);
+        loop {
+            match sender.try_send(command) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                    if std::time::Instant::now() >= deadline {
+                        drop(sender);
+                        return false;
+                    }
+                    command = returned;
+                    std::thread::park_timeout(std::time::Duration::from_millis(5));
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+            }
         }
-        if let Some(task) = self.task.take() {
+        drop(sender);
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let completed = ack.recv_timeout(remaining).is_ok();
+        if completed && let Some(task) = self.task.take() {
             let _ = task.join();
         }
+        completed
     }
 }
 
@@ -569,6 +694,38 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_history_slots_reuse_derivatives_and_only_stage_the_delta() {
+        let home = scratch("delta-home");
+        let repo = scratch("delta-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        let run = source_run("delta");
+        let initial = State::new(vec!["one".into(), "two".into()], Some("draft-a".into()));
+        store.save(initial.clone(), &run).unwrap();
+        assert_eq!(store.take_stage_writes(), 3);
+
+        store.save(initial, &run).unwrap();
+        assert_eq!(
+            store.take_stage_writes(),
+            0,
+            "an unchanged snapshot must not restage all retained entries"
+        );
+
+        store
+            .save(
+                State::new(vec!["one".into(), "two".into()], Some("draft-b".into())),
+                &run,
+            )
+            .unwrap();
+        assert_eq!(
+            store.take_stage_writes(),
+            1,
+            "a keystroke snapshot stages only the changed draft"
+        );
+    }
+
+    #[test]
     fn background_writer_preserves_order_and_normal_exit_flushes_the_final_draft() {
         let home = scratch("writer-home");
         let repo = scratch("writer-repo");
@@ -580,13 +737,13 @@ mod tests {
             State::new(vec!["first".into()], Some("stale".into())),
             source_run("writer"),
         );
-        writer.finish(
+        assert!(writer.finish_bounded(
             State::new(
                 vec!["first".into(), "second".into()],
                 Some("final 多行\ndraft".into()),
             ),
             source_run("writer"),
-        );
+        ));
 
         let loaded = store.load(&source_run("writer")).unwrap();
         assert_eq!(loaded.history, vec!["first", "second"]);

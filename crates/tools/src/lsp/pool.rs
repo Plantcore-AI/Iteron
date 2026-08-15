@@ -19,7 +19,7 @@ struct PoolKey {
 
 #[derive(Default)]
 struct ServerSlot {
-    driver: Option<Driver>,
+    driver: Option<Arc<Driver>>,
     consecutive_failures: u32,
     total_restarts: u32,
     next_restart: Option<tokio::time::Instant>,
@@ -114,14 +114,14 @@ impl Launcher {
     ) -> Result<LiveResult, RunFailure> {
         self.activated.store(true, Ordering::Release);
         let policy = self.policy();
-        let slot = self
+        let slot_handle = self
             .slot(&document)
             .map_err(|error| RunFailure::new(error, false))?;
         let mut slot = tokio::select! {
             biased;
             _ = &mut cancelled => return Err(RunFailure::new(LspToolError::OperationCancelled, false)),
             _ = tokio::time::sleep_until(deadline) => return Err(RunFailure::new(LspToolError::OperationTimeout, false)),
-            slot = slot.lock() => slot,
+            slot = slot_handle.lock() => slot,
         };
 
         let reused_server = slot.driver.is_some();
@@ -147,7 +147,7 @@ impl Launcher {
             .await
             {
                 Ok(driver) => {
-                    slot.driver = Some(driver);
+                    slot.driver = Some(Arc::new(driver));
                     if restarting {
                         slot.total_restarts = slot.total_restarts.saturating_add(1);
                     }
@@ -169,41 +169,71 @@ impl Launcher {
                     .unwrap_or(u64::MAX),
             ),
         );
-        let result = {
-            let driver = slot
-                .driver
-                .as_mut()
-                .expect("a pooled slot has a driver after successful admission");
-            tokio::select! {
-                biased;
-                _ = &mut cancelled => Err(LspToolError::OperationCancelled),
-                _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
-                result = driver.execute(&document, query, request_timeout) => result,
-            }
+        let driver = Arc::clone(
+            slot.driver
+                .as_ref()
+                .expect("a pooled slot has a driver after successful admission"),
+        );
+        let restart_count = slot.total_restarts;
+        drop(slot);
+        let result = tokio::select! {
+            biased;
+            _ = &mut cancelled => Err(LspToolError::OperationCancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
+            result = driver.execute(&document, query, request_timeout) => result,
         };
         match result {
             Ok(value) => {
-                slot.consecutive_failures = 0;
-                slot.next_restart = None;
-                let driver = slot
+                let mut slot = slot_handle.lock().await;
+                if slot
                     .driver
                     .as_ref()
-                    .expect("successful query retains driver");
+                    .is_some_and(|active| Arc::ptr_eq(active, &driver))
+                {
+                    slot.consecutive_failures = 0;
+                    slot.next_restart = None;
+                }
                 Ok(LiveResult {
                     value,
                     server_epoch: driver.epoch(),
                     backend: driver.backend(),
                     reused_server,
-                    restart_count: slot.total_restarts,
+                    restart_count,
                     server_id: document.server_id().to_owned(),
                 })
             }
             Err(error) => {
-                let mut driver = slot.driver.take().expect("failed query owned a driver");
+                if matches!(
+                    &error,
+                    LspToolError::OperationCancelled
+                        | LspToolError::OperationTimeout
+                        | LspToolError::ResponseTimeout
+                        | LspToolError::ServerResponse { .. }
+                        | LspToolError::SourceChanged
+                ) {
+                    // Request-local failure: its response receiver, pending slot, and document are
+                    // retired by `Driver::execute`. Keep this healthy server available to other
+                    // concurrent calls instead of turning one cancellation into pool-wide HOL.
+                    let outcome_unknown = matches!(
+                        &error,
+                        LspToolError::OperationCancelled
+                            | LspToolError::OperationTimeout
+                            | LspToolError::ResponseTimeout
+                    );
+                    return Err(RunFailure::new(error, outcome_unknown));
+                }
                 let _cleanup_confirmed = driver.force_cleanup().await;
+                let mut slot = slot_handle.lock().await;
                 // The request crossed the server boundary but produced no accepted response.
                 // Whether cleanup itself reconciled does not make that request outcome known.
                 slot.unknown_outcome = true;
+                if slot
+                    .driver
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, &driver))
+                {
+                    slot.driver.take();
+                }
                 note_failure(&mut slot, policy.recovery);
                 // A spawned CodeExecuting peer may have performed workspace effects even though an
                 // LSP request is logically read-only. Never retry this unknown attempt in-place.
@@ -248,12 +278,13 @@ impl Launcher {
             .collect::<Vec<_>>();
         let mut retired = Vec::with_capacity(slots.len());
         for (server_id, slot) in slots {
-            let mut slot = slot.lock().await;
-            let confirmed = if let Some(mut driver) = slot.driver.take() {
+            let driver = slot.lock().await.driver.take();
+            let confirmed = if let Some(driver) = driver {
                 driver.shutdown().await.is_ok() || driver.force_cleanup().await
             } else {
                 true
             };
+            let mut slot = slot.lock().await;
             slot.unknown_outcome |= !confirmed;
             retired.push((server_id, confirmed));
         }
@@ -267,10 +298,14 @@ impl Launcher {
         let mut restart_count = 0_u64;
         let mut unknown_slots = 0;
         for slot in &slots {
-            let slot = slot.lock().await;
-            running_servers += usize::from(slot.driver.is_some());
-            restart_count = restart_count.saturating_add(u64::from(slot.total_restarts));
-            unknown_slots += usize::from(slot.unknown_outcome);
+            // Health is observational and must never queue behind spawn/restart admission. Query
+            // execution does not hold this lifecycle mutex; an initializing slot is reported as
+            // not-yet-running until the next snapshot.
+            if let Ok(slot) = slot.try_lock() {
+                running_servers += usize::from(slot.driver.is_some());
+                restart_count = restart_count.saturating_add(u64::from(slot.total_restarts));
+                unknown_slots += usize::from(slot.unknown_outcome);
+            }
         }
         LspHealth {
             schema_version: 1,
@@ -315,7 +350,7 @@ async fn spawn_initialized(
             return Err(RunFailure::new(LspToolError::SpawnOutcomeUnknown, true));
         }
     };
-    let mut driver = Driver::new(process, epoch).await?;
+    let driver = Driver::new(process, epoch).await?;
     let timeout = Duration::from_millis(timeout_milliseconds);
     let root_uri = document
         .root_uri()

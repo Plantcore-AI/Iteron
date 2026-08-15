@@ -462,7 +462,11 @@ pub fn params() -> &'static [Param] {
 
 /// Look one up by its addressing id.
 pub fn param(id: &str) -> Option<&'static Param> {
-    params().iter().find(|param| param.id == id)
+    let params = params();
+    params
+        .binary_search_by(|param| param.id.as_str().cmp(id))
+        .ok()
+        .map(|index| &params[index])
 }
 
 /// Digest over the exact catalog bytes. A profile pins this the way it pins the family registry

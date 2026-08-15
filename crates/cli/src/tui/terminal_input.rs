@@ -14,131 +14,83 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 mod windows_query;
 
-const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
+pub(super) const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 const OSC11_TIMEOUT: Duration = Duration::from_millis(80);
 const MAX_OSC11_BODY_CHARS: usize = 48;
-const MAX_STARTUP_REPLAY_EVENTS: usize = 256;
 const CANDIDATE_TIMEOUT: Duration = Duration::from_millis(40);
-#[cfg(any(windows, test))]
-const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
-#[cfg(any(windows, test))]
+/// Fixed terminal-protocol bytes, not trainer-controlled presentation policy.
+pub(super) const KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY: &[u8] = b"\x1b[?u\x1b[c";
+#[cfg(test)]
 const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
-/// Verdict when the terminal gives no usable answer about progressive keyboard enhancement. It is
-/// fail-closed: assuming support the terminal lacks would turn its replies into operator keystrokes.
-#[cfg(unix)]
-const KEYBOARD_ENHANCEMENT_UNKNOWN: bool = false;
 const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
-/// Operator escape hatch for the blocking progressive-keyboard probe. Any value other than empty
-/// or `0` skips the query outright and keeps the portable Ctrl-J path.
+/// Operator escape hatch for progressive-keyboard negotiation. Any value other than empty or `0`
+/// skips the query outright and keeps the portable Ctrl-J path.
 pub(crate) const NO_KEYBOARD_ENHANCEMENT_ENV: &str = "ITERON_NO_KBD_ENHANCEMENT";
 
 #[derive(Debug, Default)]
 pub(crate) struct TerminalInput {
     queued: VecDeque<Event>,
+    probe_updates: VecDeque<ProbeUpdate>,
     keyboard: KeyboardResponseDemux,
     osc11: Osc11Demux,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeUpdate {
+    KeyboardEnhancement,
+    Background(BackgroundTone),
+}
+
+#[derive(Debug)]
+pub(crate) enum ReadResult {
+    Event(Event),
+    Probe(ProbeUpdate),
+}
+
 impl TerminalInput {
-    /// Probe progressive keyboard enhancement through the currently supported terminal backend.
-    ///
-    /// The probe writes a query and then BLOCKS waiting for a reply, so it is only worth paying for
-    /// on a terminal the environment already says can answer an interactive query. It shares the
-    /// OSC 11 gate (`interactive_query_supported` excludes `TERM=dumb`, tmux and screen, which
-    /// multiplex the reply away) plus the console/isatty pair check, and an operator can disable it
-    /// outright with `ITERON_NO_KBD_ENHANCEMENT`.
-    ///
-    /// Crossterm answers the Windows case with a hard-coded `false`, so Windows runs the query
-    /// natively instead: the query bytes and the primary device-attributes sentinel share one
-    /// bounded wait, unrelated startup events are replayed in exact order, and a late terminal
-    /// response stays armed for suppression instead of becoming input.
-    pub(crate) fn supports_keyboard_enhancement(&mut self, environment: &Environment) -> bool {
+    /// Arm both capability probes without reading a single input event. The caller queues each
+    /// exact frame on the terminal's unique output owner before moving this armed demultiplexer to
+    /// the input thread. Normal keys keep flowing through [`Self::read`], exact replies become typed
+    /// [`ProbeUpdate`] values, and an Esc that only resembles a CSI prefix is replayed after the
+    /// 40 ms candidate bound rather than stolen from cancellation.
+    pub(crate) fn start_probes(
+        &mut self,
+        environment: &Environment,
+        mut enqueue: impl FnMut(&[u8]) -> std::io::Result<()>,
+    ) {
         if !keyboard_enhancement_probe_allowed(
             environment.interactive_query_supported,
             terminal_pair_is_supported(),
             std::env::var_os(NO_KEYBOARD_ENHANCEMENT_ENV).as_deref(),
-        ) {
-            return false;
-        }
-        #[cfg(windows)]
+        ) || !keyboard_enhancement_likely()
         {
-            let Some(deadline) = self.begin_keyboard_query(windows_query::write_keyboard_query)
-            else {
-                return false;
-            };
-
-            let mut supported = false;
-            for _ in 0..iteron_tunables::param_integer(
-                "cli.tui.terminal_input.max_startup_replay_events",
-                MAX_STARTUP_REPLAY_EVENTS,
-            ) {
-                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                    return supported;
-                };
-                let Ok(true) = event::poll(remaining) else {
-                    return supported;
-                };
-                let Ok(incoming) = event::read() else {
-                    return supported;
-                };
-                match self.route_all(incoming).keyboard {
-                    Some(KeyboardResponse::Enhancement) => supported = true,
-                    Some(KeyboardResponse::DeviceAttributes) => return supported,
-                    None => {}
-                }
-            }
-            supported
+            // Fail closed, while still allowing the independent background query below.
+        } else {
+            // Arm before enqueueing the query. The input owner parses the exact bounded CSI reply;
+            // the TUI task never calls Crossterm's synchronous two-second detector and therefore
+            // cannot hold input readiness or an initial submission behind capability negotiation.
+            self.keyboard.arm();
+            let _ = enqueue(KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY);
+            // Crossterm does not expose its internal capability reply through public `Event`s. A
+            // closed family allowlist is therefore the non-blocking authority; the query remains
+            // ordered through the one terminal writer and the demux swallows any public-form reply.
+            self.probe_updates
+                .push_back(ProbeUpdate::KeyboardEnhancement);
         }
-        #[cfg(unix)]
-        {
-            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(
-                iteron_tunables::param_bool(
-                    "cli.tui.terminal_input.keyboard_enhancement_unknown",
-                    KEYBOARD_ENHANCEMENT_UNKNOWN,
-                ),
-            )
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            false
-        }
-    }
-
-    /// Query only when automatic background selection is active. The write and reply wait share one
-    /// deadline; normal events observed during the probe are replayed in exact event order.
-    pub(crate) fn query_background(&mut self, environment: &Environment) -> Option<BackgroundTone> {
-        if !environment.wants_background_query() || !terminal_pair_is_supported() {
-            return None;
-        }
-
-        let deadline = self.begin_query(write_query_until)?;
-
-        loop {
-            if self.queued.len()
-                >= iteron_tunables::param_integer(
-                    "cli.tui.terminal_input.max_startup_replay_events",
-                    MAX_STARTUP_REPLAY_EVENTS,
-                )
-            {
-                return None;
-            }
-            let remaining = deadline.checked_duration_since(Instant::now())?;
-            if !event::poll(remaining).ok()? {
-                return None;
-            }
-            let incoming = event::read().ok()?;
-            if let Some(tone) = self.route(incoming) {
-                return Some(tone);
-            }
+        if environment.wants_background_query() && terminal_pair_is_supported() {
+            let _ = self.begin_query(|_| enqueue(OSC11_QUERY));
         }
     }
 
     /// Read the next operator event while suppressing a matching late OSC 11 response. A partial
     /// candidate is held for at most 40 ms; if it is not the terminal response, it is replayed.
-    pub(crate) fn read(&mut self, timeout: Duration) -> std::io::Result<Option<Event>> {
+    pub(crate) fn read(&mut self, timeout: Duration) -> std::io::Result<Option<ReadResult>> {
+        if let Some(update) = self.probe_updates.pop_front() {
+            return Ok(Some(ReadResult::Probe(update)));
+        }
         if let Some(event) = self.queued.pop_front() {
-            return Ok(Some(event));
+            return Ok(Some(ReadResult::Event(event)));
         }
 
         let deadline = Instant::now() + timeout;
@@ -146,7 +98,7 @@ impl TerminalInput {
             self.expire_keyboard_candidate(Instant::now());
             self.osc11.expire(Instant::now(), &mut self.queued);
             if let Some(event) = self.queued.pop_front() {
-                return Ok(Some(event));
+                return Ok(Some(ReadResult::Event(event)));
             }
 
             let remaining = deadline
@@ -157,12 +109,27 @@ impl TerminalInput {
             if !event::poll(wait)? {
                 self.expire_keyboard_candidate(Instant::now());
                 self.osc11.expire(Instant::now(), &mut self.queued);
-                return Ok(self.queued.pop_front());
+                return Ok(self
+                    .probe_updates
+                    .pop_front()
+                    .map(ReadResult::Probe)
+                    .or_else(|| self.queued.pop_front().map(ReadResult::Event)));
             }
             let incoming = event::read()?;
-            let _late_tone = self.route(incoming);
+            let routed = self.route_all(incoming);
+            if matches!(routed.keyboard, Some(KeyboardResponse::Enhancement)) {
+                self.probe_updates
+                    .push_back(ProbeUpdate::KeyboardEnhancement);
+            }
+            if let Some(background) = routed.background {
+                self.probe_updates
+                    .push_back(ProbeUpdate::Background(background));
+            }
+            if let Some(update) = self.probe_updates.pop_front() {
+                return Ok(Some(ReadResult::Probe(update)));
+            }
             if let Some(event) = self.queued.pop_front() {
-                return Ok(Some(event));
+                return Ok(Some(ReadResult::Event(event)));
             }
             if Instant::now() >= deadline
                 && !self.keyboard.has_candidate()
@@ -171,10 +138,6 @@ impl TerminalInput {
                 return Ok(None);
             }
         }
-    }
-
-    fn route(&mut self, event: Event) -> Option<BackgroundTone> {
-        self.route_all(event).background
     }
 
     fn route_all(&mut self, event: Event) -> RoutedResponses {
@@ -214,22 +177,40 @@ impl TerminalInput {
         write(deadline).ok().map(|()| deadline)
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn begin_keyboard_query(
         &mut self,
         write: impl FnOnce(Instant) -> std::io::Result<()>,
     ) -> Option<Instant> {
         self.keyboard.arm();
-        let deadline = Instant::now() + KEYBOARD_QUERY_TIMEOUT;
+        let deadline = Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.tui.terminal_input.keyboard_query_timeout",
+                KEYBOARD_QUERY_TIMEOUT,
+            );
         // A timeout or short write can still have emitted a query prefix. Keep the demux armed so
         // every corresponding late response stays out of the operator input stream.
         write(deadline).ok().map(|()| deadline)
     }
 }
 
+fn keyboard_enhancement_likely() -> bool {
+    let bounded = |name| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| value.len() <= 128)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let term = bounded("TERM");
+    let program = bounded("TERM_PROGRAM");
+    ["kitty", "wezterm", "ghostty", "foot", "alacritty"]
+        .iter()
+        .any(|known| term.contains(known) || program.contains(known))
+}
+
 #[derive(Debug, Default)]
 struct RoutedResponses {
-    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     keyboard: Option<KeyboardResponse>,
     background: Option<BackgroundTone>,
 }
@@ -254,7 +235,6 @@ struct KeyboardCandidate {
 }
 
 impl KeyboardResponseDemux {
-    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     fn arm(&mut self) {
         self.armed = true;
         self.candidate = None;
@@ -602,8 +582,8 @@ fn terminal_pair_is_supported() -> bool {
     false
 }
 
-/// Decide whether the blocking progressive-keyboard query may run at all. Kept free of I/O so the
-/// exact gate — not an approximation of it — is what the tests pin.
+/// Decide whether progressive-keyboard negotiation may run at all. Kept free of I/O so the exact
+/// gate — not an approximation of it — is what the tests pin.
 fn keyboard_enhancement_probe_allowed(
     interactive_query_supported: bool,
     terminal_pair_supported: bool,
@@ -710,97 +690,17 @@ impl KeyboardQueryRequest {
 
 #[cfg(any(windows, test))]
 fn exact_keyboard_query_write(written: usize) -> std::io::Result<()> {
-    if written == KEYBOARD_ENHANCEMENT_QUERY.len() {
+    if written == KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.len() {
         Ok(())
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::WriteZero,
             format!(
                 "keyboard capability query wrote {written} of {} bytes",
-                KEYBOARD_ENHANCEMENT_QUERY.len()
+                KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.len()
             ),
         ))
     }
-}
-
-#[cfg(unix)]
-fn write_query_until(deadline: Instant) -> std::io::Result<()> {
-    let descriptor = libc::STDOUT_FILENO;
-    // SAFETY: fcntl reads flags from the valid process-owned stdout descriptor.
-    let original_flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    if original_flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    struct RestoreFlags(i32);
-    impl Drop for RestoreFlags {
-        fn drop(&mut self) {
-            // SAFETY: restoring flags on stdout is best-effort during scope exit.
-            let _ = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_SETFL, self.0) };
-        }
-    }
-    let _restore = RestoreFlags(original_flags);
-    // SAFETY: setting O_NONBLOCK changes only stdout's file status flags for this bounded scope.
-    if unsafe { libc::fcntl(descriptor, libc::F_SETFL, original_flags | libc::O_NONBLOCK) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut written = 0;
-    while written < OSC11_QUERY.len() {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "OSC 11 write timed out")
-            })?;
-        let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
-        let mut pollfd = libc::pollfd {
-            fd: descriptor,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        // SAFETY: pollfd points to one initialized descriptor for this call.
-        let ready = unsafe { libc::poll(&mut pollfd, 1, millis) };
-        if ready < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if ready == 0 || pollfd.revents & libc::POLLOUT == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "OSC 11 write timed out",
-            ));
-        }
-        // SAFETY: the remaining query slice is live and its exact byte length bounds the write.
-        let count = unsafe {
-            libc::write(
-                descriptor,
-                OSC11_QUERY[written..].as_ptr().cast(),
-                OSC11_QUERY.len() - written,
-            )
-        };
-        if count < 0 {
-            let error = std::io::Error::last_os_error();
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
-            ) {
-                continue;
-            }
-            return Err(error);
-        }
-        written += count as usize;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_query_until(_deadline: Instant) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "OSC 11 query transport is not enabled on this platform",
-    ))
 }
 
 #[cfg(test)]
@@ -858,8 +758,8 @@ mod tests {
 
     #[test]
     fn keyboard_probe_is_refused_without_interactive_query_evidence_or_by_the_escape_hatch() {
-        // The probe blocks for up to 2000 ms with no reply, so every negative gate must hold
-        // BEFORE the query is written; a terminal that cannot answer must cost nothing.
+        // Every negative gate holds before the query is written. A terminal that cannot answer
+        // keeps the portable path while the input demux continues servicing ordinary keys.
         assert!(keyboard_enhancement_probe_allowed(true, true, None));
         assert!(keyboard_enhancement_probe_allowed(
             true,
@@ -1030,9 +930,9 @@ mod tests {
 
     #[test]
     fn keyboard_query_write_requires_the_exact_frame() {
-        assert!(exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len()).is_ok());
+        assert!(exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.len()).is_ok());
         assert_eq!(
-            exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len() - 1)
+            exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.len() - 1)
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::WriteZero
@@ -1047,7 +947,7 @@ mod tests {
             input
                 .begin_keyboard_query(|deadline| {
                     assert!(deadline > Instant::now());
-                    partial_write.extend_from_slice(&KEYBOARD_ENHANCEMENT_QUERY[..3]);
+                    partial_write.extend_from_slice(&KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY[..3]);
                     Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "injected partial keyboard-query write",
@@ -1055,7 +955,7 @@ mod tests {
                 })
                 .is_none()
         );
-        assert_eq!(partial_write, &KEYBOARD_ENHANCEMENT_QUERY[..3]);
+        assert_eq!(partial_write, &KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY[..3]);
         assert!(input.keyboard.armed);
 
         for event in csi_response("1;2", 'c') {
@@ -1070,10 +970,10 @@ mod tests {
         let mut input = TerminalInput::default();
         input.osc11.arm();
         let typed = key('x', KeyModifiers::NONE);
-        assert_eq!(input.route(typed.clone()), None);
+        assert_eq!(input.route_all(typed.clone()).background, None);
         let mut tone = None;
         for event in response("rgb:ffff/ffff/ffff") {
-            tone = input.route(event).or(tone);
+            tone = input.route_all(event).background.or(tone);
         }
         assert_eq!(tone, Some(BackgroundTone::Light));
         assert_eq!(input.queued.pop_front(), Some(typed));
@@ -1086,20 +986,20 @@ mod tests {
         input.osc11.arm();
         let false_prefix = [key(']', KeyModifiers::ALT), key('x', KeyModifiers::NONE)];
         for event in false_prefix.clone() {
-            assert_eq!(input.route(event), None);
+            assert_eq!(input.route_all(event).background, None);
         }
         assert_eq!(input.queued.pop_front(), Some(false_prefix[0].clone()));
         assert_eq!(input.queued.pop_front(), Some(false_prefix[1].clone()));
 
         for event in response("#000000") {
-            let _ = input.route(event);
+            let _ = input.route_all(event);
         }
         assert!(
             input.queued.is_empty(),
             "late OSC bytes must not reach the operator input queue"
         );
         let typed = key('z', KeyModifiers::NONE);
-        let _ = input.route(typed.clone());
+        let _ = input.route_all(typed.clone());
         assert_eq!(input.queued.pop_front(), Some(typed));
     }
 
@@ -1122,7 +1022,7 @@ mod tests {
         assert!(input.osc11.armed);
 
         for event in response("#ffffff") {
-            let _ = input.route(event);
+            let _ = input.route_all(event);
         }
         assert!(input.queued.is_empty());
         assert!(!input.osc11.armed);

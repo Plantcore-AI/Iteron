@@ -1144,25 +1144,42 @@ impl Agent {
         );
     }
 
-    pub(super) fn observe_context_usage(&self, turn: TurnId, usage: Usage) {
+    pub(super) fn observe_context_usage(&mut self, turn: TurnId, usage: Usage) {
         use iteron_ctx::{ContextObservation, ContextObserver};
         let actual_input_tokens = usage
             .input
             .saturating_add(usage.cache_read)
             .saturating_add(usage.cache_creation);
-        let estimated_input_tokens = self
+        let matching_ledger = self
             .context_ledgers
             .snapshot()
             .ledgers
             .into_iter()
-            .find(|ledger| ledger.turn_id == turn)
+            .find(|ledger| ledger.turn_id == turn);
+        let estimated_input_tokens = matching_ledger
+            .as_ref()
             .map(|ledger| ledger.totals.estimated_tokens);
-        self.context_ledgers.observe(
-            turn,
-            ContextObservation::ProviderUsage {
-                actual_input_tokens,
-            },
-        );
+        let uncalibrated_input_tokens = self.take_token_estimate_baseline(turn);
+        if let Some(mut ledger) = matching_ledger {
+            // Provider usage is the first authority that can distinguish an actual cache hit,
+            // cache population, and uncached prefill. Replace the pre-dispatch estimate in the
+            // same bounded turn slot instead of leaving those three public counters at zero.
+            ledger.totals.actual_input_tokens = Some(actual_input_tokens);
+            ledger.cache.cache_read_tokens = usage.cache_read;
+            ledger.cache.cache_write_tokens = usage.cache_creation;
+            ledger.cache.uncached_tokens = usage.input;
+            self.context_ledgers.publish(ledger);
+        } else {
+            self.context_ledgers.observe(
+                turn,
+                ContextObservation::ProviderUsage {
+                    actual_input_tokens,
+                    cache_read_tokens: usage.cache_read,
+                    cache_write_tokens: usage.cache_creation,
+                    uncached_tokens: usage.input,
+                },
+            );
+        }
         self.lifecycle_event(
             "context.tokenizer.actual_observed",
             Some(turn),
@@ -1172,6 +1189,12 @@ impl Agent {
             },
         );
         if let Some(estimated) = estimated_input_tokens {
+            let (provider_id, model_id) = self.token_calibration_route();
+            let calibration = uncalibrated_input_tokens.and_then(|baseline| {
+                self.token_calibration
+                    .observe_actual_input(provider_id, model_id, baseline, actual_input_tokens)
+                    .ok()
+            });
             self.lifecycle_event(
                 "context.tokenizer.error_calculated",
                 Some(turn),
@@ -1188,6 +1211,34 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
+            match calibration {
+                Some(observation) => self.lifecycle_event(
+                    "context.tokenizer.error_calculated",
+                    Some(turn),
+                    LifecyclePayload {
+                        magnitude: Some(observation.error_ppm),
+                        outcome_code: Some(
+                            if observation.drifted {
+                                "drifted_conservative"
+                            } else {
+                                "ewma_updated"
+                            }
+                            .into(),
+                        ),
+                        count: Some(observation.ratio_ppm),
+                        reason_code: Some("calibration_updated".into()),
+                        ..LifecyclePayload::default()
+                    },
+                ),
+                None => self.lifecycle_event(
+                    "context.tokenizer.error_calculated",
+                    Some(turn),
+                    LifecyclePayload {
+                        outcome_code: Some("calibration_rejected".into()),
+                        ..LifecyclePayload::default()
+                    },
+                ),
+            }
         }
         self.lifecycle_event(
             "context.request.usage_reconciled",

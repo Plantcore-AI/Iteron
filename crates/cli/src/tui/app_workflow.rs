@@ -18,6 +18,7 @@ impl App {
             } => {
                 if output_chars > 0 || thinking_chars > 0 {
                     self.awaiting_first_token_since = None;
+                    self.provider_accepted = false;
                 }
                 self.status = match (output_chars, thinking_chars) {
                     (0, 0) => kind.label().to_string(),
@@ -80,12 +81,12 @@ impl App {
                     .map(|title| crate::workflow::ui_safe_label(title)),
             );
         }
-        if let Some(block) =
-            block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
-        {
+        let changed_index =
+            block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
+        if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
             Arc::make_mut(block).touch();
         }
-        self.mark_transcript_changed();
+        self.mark_transcript_changed_from(changed_index.unwrap_or(0));
         self.autoscroll();
     }
 
@@ -156,12 +157,12 @@ impl App {
         };
         if changed {
             let block_id = self.workflow_monitor.block_id(run_id);
-            if let Some(block) =
-                block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
-            {
+            let changed_index =
+                block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
+            if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
                 Arc::make_mut(block).touch();
             }
-            self.mark_transcript_changed();
+            self.mark_transcript_changed_from(changed_index.unwrap_or(0));
         }
         self.autoscroll();
     }
@@ -177,12 +178,12 @@ impl App {
             false
         };
         if changed {
-            if let Some(block) =
-                block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
-            {
+            let changed_index =
+                block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
+            if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
                 Arc::make_mut(block).touch();
             }
-            self.mark_transcript_changed();
+            self.mark_transcript_changed_from(changed_index.unwrap_or(0));
         }
         // Settling ends the live binding: the card stays in the transcript, but events for this run
         // no longer land on it.
@@ -232,7 +233,7 @@ impl App {
             };
             if changed {
                 b.touch();
-                self.mark_transcript_changed();
+                self.mark_transcript_changed_from(i);
             }
         }
     }

@@ -6,12 +6,26 @@ use crate::git_harness::{
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const FILTER_CONFIG_LIMIT: usize = 64 * 1024;
 pub(crate) const MAX_FILTER_DRIVERS: usize = 128;
 const MAX_FILTER_DRIVER_BYTES: usize = 4 * 1024;
 const FILTER_CONFIG_PATTERN: &str = r"^filter\..*\.(clean|smudge|process|required)$";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilterCacheKey {
+    git_dir: PathBuf,
+    config_sha256: String,
+    pattern: String,
+    source_limit: usize,
+}
+
+type FilterCacheEntry = Option<(FilterCacheKey, Vec<String>)>;
+
+static FILTER_CACHE: OnceLock<Mutex<FilterCacheEntry>> = OnceLock::new();
 
 /// Parse `git config --null --name-only` into `filter.<driver>` prefixes under count and byte
 /// ceilings, preventing repository config from expanding the command line without bound.
@@ -84,25 +98,37 @@ pub(crate) async fn discover_filter_drivers_bounded(
     timeout: Duration,
     output_max_bytes: usize,
 ) -> Result<Vec<String>, String> {
+    let pattern = iteron_tunables::param_str(
+        "tools.git_filters.filter_config_pattern",
+        FILTER_CONFIG_PATTERN,
+    );
+    let source_limit = output_max_bytes.min(iteron_tunables::param_integer(
+        "tools.git_filters.filter_config_limit",
+        FILTER_CONFIG_LIMIT,
+    ));
+    let before = filter_cache_key(repository, pattern, source_limit);
+    if let Some(key) = before.as_ref()
+        && let Some((cached_key, drivers)) = FILTER_CACHE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        && cached_key == key
+    {
+        return Ok(drivers.clone());
+    }
     let operation = [
         "config",
         "--null",
         "--name-only",
         "--includes",
         "--get-regexp",
-        iteron_tunables::param_str(
-            "tools.git_filters.filter_config_pattern",
-            FILTER_CONFIG_PATTERN,
-        ),
+        pattern,
     ]
     .into_iter()
     .map(OsString::from);
     let args = hardened_args(&[], operation);
     let mut command = hardened_git_command(git, repository, &args);
-    let source_limit = output_max_bytes.min(iteron_tunables::param_integer(
-        "tools.git_filters.filter_config_limit",
-        FILTER_CONFIG_LIMIT,
-    ));
     let captured = run_command_bounded(
         &mut command,
         timeout,
@@ -112,10 +138,8 @@ pub(crate) async fn discover_filter_drivers_bounded(
     .await
     .map_err(|error| format!("could not inspect Git filter config: {error}"))?;
 
-    if captured.status.code() == Some(1) && captured.stdout.total == 0 {
-        return Ok(Vec::new());
-    }
-    if !captured.status.success() {
+    let no_matches = captured.status.code() == Some(1) && captured.stdout.total == 0;
+    if !no_matches && !captured.status.success() {
         return Err(format!(
             "could not inspect Git filter config (exit {}): {}",
             captured.status.code().unwrap_or(-1),
@@ -127,5 +151,69 @@ pub(crate) async fn discover_filter_drivers_bounded(
             "Git filter config exceeded the {source_limit}-byte inspection limit"
         ));
     }
-    parse_filter_drivers(&captured.stdout.retained_bytes())
+    let drivers = if no_matches {
+        Vec::new()
+    } else {
+        parse_filter_drivers(&captured.stdout.retained_bytes())?
+    };
+    if let Some(before) = before
+        && filter_cache_key(repository, pattern, source_limit).as_ref() == Some(&before)
+    {
+        *FILTER_CACHE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((before, drivers.clone()));
+    }
+    Ok(drivers)
+}
+
+/// Fingerprint only the local configuration Git is allowed to read. Includes deliberately bypass
+/// the memo because their transitive origins may live outside the repository; executing the
+/// bounded inspection again is cheaper and safer than guessing an incomplete invalidation set.
+fn filter_cache_key(
+    repository: &RepositoryLayout,
+    pattern: &str,
+    source_limit: usize,
+) -> Option<FilterCacheKey> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"iteron-git-filter-config-v1\0");
+    for name in ["config", "config.worktree"] {
+        let path = repository.git_dir.join(name);
+        digest.update(name.as_bytes());
+        match read_cacheable_config(&path, source_limit)? {
+            Some(bytes) => {
+                let lower = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+                if lower.contains("[include") {
+                    return None;
+                }
+                digest.update((bytes.len() as u64).to_be_bytes());
+                digest.update(bytes);
+            }
+            None => digest.update(0_u64.to_be_bytes()),
+        }
+    }
+    Some(FilterCacheKey {
+        git_dir: repository.git_dir.clone(),
+        config_sha256: format!("{:x}", digest.finalize()),
+        pattern: pattern.to_owned(),
+        source_limit,
+    })
+}
+
+fn read_cacheable_config(path: &Path, source_limit: usize) -> Option<Option<Vec<u8>>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > source_limit as u64
+    {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() <= source_limit).then_some(Some(bytes))
 }

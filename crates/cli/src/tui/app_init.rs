@@ -23,6 +23,7 @@ impl App {
             transcript: vec![Arc::new(welcome)],
             transcript_viewer: transcript_viewer::Viewer::default(),
             transcript_revision: 0,
+            transcript_dirty_from: Some(0),
             next_id: 1,
             tool_index: std::collections::HashMap::new(),
             pending_tools: VecDeque::new(),
@@ -38,12 +39,14 @@ impl App {
             render_cache: std::collections::HashMap::new(),
             render_cache_width: 0,
             render_cache_theme_epoch: 0,
+            transcript_layout: transcript_layout::HeightIndex::default(),
             editor: Editor::new(),
             status: "idle".into(),
             last_result: None,
             running: false,
             interrupting: false,
             force_cancelling: false,
+            cancel_requested_at: None,
             draining: false,
             bottom_offset: 0,
             follow_tail: true,
@@ -54,10 +57,13 @@ impl App {
             keymap_status: "keys:standard".into(),
             vim_anchor: None,
             cur_text: String::new(),
+            assistant_stream_authority: String::new(),
+            assistant_turn_block_ids: Vec::new(),
             cur_text_revision: 0,
             cur_doc_revision: 0,
             cur_doc: None,
             cur_doc_parse: crate::markdown::StreamingParse::default(),
+            live_markdown_layout: Default::default(),
             text_scrubber: crate::output::StreamingScrubber::default(),
             cur_think: String::new(),
             thinking_scrubber: crate::output::StreamingScrubber::default(),
@@ -76,11 +82,30 @@ impl App {
             pending: None,
             approval_choice: ApprovalChoice::Deny,
             completion: None,
+            completion_due: None,
+            completion_generation: 0,
+            completion_job: None,
             picker: None,
+            session_picker_job: None,
+            session_picker_backing: None,
+            session_picker_generation: 0,
+            session_preview_job: None,
+            session_preview_generation: 0,
+            session_adoption_job: None,
+            workspace_command_job: None,
+            attachment_job: None,
+            attachment_generation: 0,
+            attachment_progress: None,
+            attachment_effect_state: AttachmentEffectState::Idle,
+            activities: std::collections::BTreeMap::new(),
+            retired_activity_ids: VecDeque::new(),
             resume_handoff: None,
             run_started: None,
+            last_run_latency: None,
+            workspace_dirty: None,
             retryable_task: None,
             awaiting_first_token_since: None,
+            provider_accepted: false,
             active_tools: VecDeque::new(),
             spin: 0,
             row_map: Vec::new(),
@@ -92,6 +117,7 @@ impl App {
             steer_previews: VecDeque::new(),
             next_submission_seq: 0,
             pending_turn_receipt: None,
+            #[cfg(test)]
             refused_image_paths: HashSet::new(),
         }
     }
@@ -99,44 +125,67 @@ impl App {
     /// Recompute the autocomplete menu from the current editor state (called after each edit while
     /// idle or while composing a queued follow-up). Sets `self.completion` to a slash menu, a file
     /// menu, or None. A running agent must not degrade the editor into a text-only field.
+    #[cfg(test)]
     pub(super) fn refresh_completion(&mut self, repo: &std::path::Path) {
-        self.completion = None;
         let text = self.editor.text();
-        if text.contains('\n') {
-            return; // no menu in multi-line mode
-        }
-        // slash-command menu
-        if let Some(prefix) = commands::slash_prefix(&text) {
-            let items: Vec<(String, String)> = commands::complete_slash(prefix)
-                .into_iter()
-                .map(|c| (c.name.to_string(), format!("{}  {}", c.args, c.help)))
-                .collect();
-            if !items.is_empty() {
-                self.completion = Some(Completion {
-                    items,
-                    sel: 0,
-                    token_start: 1,
-                    lead: '/',
-                });
-            }
-            return;
-        }
-        // @file menu (path completion at the cursor)
-        let cursor_bytes = byte_index(&text, self.editor.cursor());
-        if let Some((at, partial)) = commands::at_mention_at(&text, cursor_bytes) {
-            let matches = complete_path(repo, partial);
-            if !matches.is_empty() {
-                let items = matches.into_iter().map(|p| (p, String::new())).collect();
-                self.completion = Some(Completion {
-                    items,
-                    sel: 0,
-                    token_start: at + 1,
-                    lead: '@',
-                });
-            }
-        }
+        self.completion = build_completion(&text, self.editor.cursor(), repo);
     }
 
+    pub(super) fn schedule_completion(&mut self) {
+        self.completion_generation = self.completion_generation.wrapping_add(1);
+        self.completion_due = Some(
+            Instant::now()
+                + iteron_tunables::param_duration(
+                    "cli.tui.completion_debounce",
+                    std::time::Duration::from_millis(75),
+                ),
+        );
+        self.completion = None;
+    }
+}
+
+pub(super) fn build_completion(
+    text: &str,
+    cursor_chars: usize,
+    repo: &std::path::Path,
+) -> Option<Completion> {
+    if text.contains('\n') {
+        return None; // no menu in multi-line mode
+    }
+    // slash-command menu
+    if let Some(prefix) = commands::slash_prefix(text) {
+        let items: Vec<(String, String)> = commands::complete_slash(prefix)
+            .into_iter()
+            .map(|c| (c.name.to_string(), format!("{}  {}", c.args, c.help)))
+            .collect();
+        if !items.is_empty() {
+            return Some(Completion {
+                items,
+                sel: 0,
+                token_start: 1,
+                lead: '/',
+            });
+        }
+        return None;
+    }
+    // @file menu (path completion at the cursor)
+    let cursor_bytes = byte_index(text, cursor_chars);
+    if let Some((at, partial)) = commands::at_mention_at(text, cursor_bytes) {
+        let matches = complete_path(repo, partial);
+        if !matches.is_empty() {
+            let items = matches.into_iter().map(|p| (p, String::new())).collect();
+            return Some(Completion {
+                items,
+                sel: 0,
+                token_start: at + 1,
+                lead: '@',
+            });
+        }
+    }
+    None
+}
+
+impl App {
     /// Accept the selected completion: replace the WHOLE token (from `token_start` to the next
     /// whitespace or end — not just up to the cursor) with the chosen item + a single trailing
     /// space, and place the cursor right after it. Replacing the whole token fixes corruption when

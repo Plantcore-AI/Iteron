@@ -103,6 +103,21 @@ impl Agent {
                 }));
                 *slot = Some(EngineAgentTerminal { state, error });
             }
+            iteron_workflow::ProgressEvent::AgentCancelling {
+                index,
+                cleanup_deadline_ms,
+            } => {
+                let Some(task) = index.checked_sub(1).and_then(|index| tasks.get(index)) else {
+                    return Err(KernelError::WorkflowEngine(
+                        "built-in workflow emitted an invalid cancelling index".into(),
+                    ));
+                };
+                self.ui(UiEvent::Workflow(WorkflowUiEvent::AgentActivity {
+                    run_id: workflow_run_id.to_string(),
+                    agent_id: task.id,
+                    activity: format!("cancelling · cleanup deadline {cleanup_deadline_ms}ms"),
+                }));
+            }
             iteron_workflow::ProgressEvent::Phase { .. }
             | iteron_workflow::ProgressEvent::Log { .. }
             | iteron_workflow::ProgressEvent::AgentQueued { .. }

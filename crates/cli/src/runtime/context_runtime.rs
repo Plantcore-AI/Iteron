@@ -1,5 +1,48 @@
 use super::*;
 
+const TOKEN_CALIBRATION_FILE: &str = "token-calibration-v1.json";
+const TOKEN_CALIBRATION_MAX_BYTES: u64 = 64 * 1024;
+
+fn token_calibration_max_bytes() -> u64 {
+    iteron_tunables::param_integer(
+        "cli.runtime.context_runtime.token_calibration_max_bytes",
+        TOKEN_CALIBRATION_MAX_BYTES,
+    )
+    .clamp(1, TOKEN_CALIBRATION_MAX_BYTES)
+}
+
+pub(super) fn load_token_calibration(
+    runtime_state_dir: &std::path::Path,
+) -> iteron_ctx::TokenCalibrationStore {
+    if runtime_state_dir.as_os_str().is_empty() {
+        return iteron_ctx::TokenCalibrationStore::default();
+    }
+    let path = runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return iteron_ctx::TokenCalibrationStore::default();
+    };
+    if !metadata.file_type().is_file() || metadata.len() > token_calibration_max_bytes() {
+        return iteron_ctx::TokenCalibrationStore::default();
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return iteron_ctx::TokenCalibrationStore::default();
+    };
+    serde_json::from_slice::<iteron_ctx::TokenCalibrationSnapshot>(&bytes)
+        .ok()
+        .and_then(|snapshot| iteron_ctx::TokenCalibrationStore::restore(snapshot).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AdvertisedToolSpecsCache {
+    revision: u64,
+    task: String,
+    admitted_names: std::collections::BTreeSet<String>,
+    eager_limit: Option<usize>,
+    authority_visible: usize,
+    prepared: PreparedToolSchemas,
+}
+
 /// Active-task token count charged when the transcript holds no user text message to attribute.
 const NO_ACTIVE_TASK_TOKENS: usize = 0;
 
@@ -7,6 +50,142 @@ const NO_ACTIVE_TASK_TOKENS: usize = 0;
 const NO_ATTACHMENT_TOKENS: usize = 0;
 
 impl Agent {
+    pub(super) fn token_calibration_route(&self) -> (&str, &str) {
+        self.selected_route.as_ref().map_or_else(
+            || {
+                (
+                    self.provider.provider_instance_id().unwrap_or("unbound"),
+                    self.model.as_str(),
+                )
+            },
+            |selected| {
+                (
+                    selected.route.provider_id.as_str(),
+                    selected.route.model_id.as_str(),
+                )
+            },
+        )
+    }
+
+    pub(super) fn calibrated_context_estimate(
+        &self,
+        mut estimate: ContextEstimate,
+    ) -> ContextEstimate {
+        let (provider_id, model_id) = self.token_calibration_route();
+        let conservative = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
+        let calibrated =
+            self.token_calibration
+                .calibrated_estimate(provider_id, model_id, conservative);
+        let calibrated = usize::try_from(calibrated).unwrap_or(usize::MAX);
+        let baseline = estimate.total_tokens;
+        if baseline == 0 || calibrated == baseline {
+            return estimate;
+        }
+        let scale = |value: usize| {
+            value
+                .saturating_mul(calibrated)
+                .saturating_add(baseline.saturating_sub(1))
+                / baseline
+        };
+        estimate.system_tokens = scale(estimate.system_tokens);
+        estimate.tool_tokens = scale(estimate.tool_tokens);
+        estimate.conversation_tokens = scale(estimate.conversation_tokens);
+        estimate.tool_result_tokens = scale(estimate.tool_result_tokens);
+        estimate.lsp_result_tokens = scale(estimate.lsp_result_tokens);
+        estimate.transcript_tokens = estimate
+            .conversation_tokens
+            .saturating_add(estimate.tool_result_tokens)
+            .saturating_add(estimate.lsp_result_tokens);
+        estimate.framing_tokens = scale(estimate.framing_tokens);
+        estimate.total_tokens = estimate
+            .system_tokens
+            .saturating_add(estimate.tool_tokens)
+            .saturating_add(estimate.transcript_tokens)
+            .saturating_add(estimate.framing_tokens);
+        estimate
+    }
+
+    pub(super) fn remember_token_estimate_baseline(&mut self, turn: TurnId, tokens: usize) {
+        if let Some(existing) = self
+            .token_estimate_baselines
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == turn)
+        {
+            existing.1 = u64::try_from(tokens).unwrap_or(u64::MAX);
+            return;
+        }
+        const MAX_PENDING_BASELINES: usize = 64;
+        if self.token_estimate_baselines.len()
+            == iteron_tunables::param_integer(
+                "cli.runtime.context_runtime.max_pending_baselines",
+                MAX_PENDING_BASELINES,
+            )
+            .clamp(1, MAX_PENDING_BASELINES)
+        {
+            self.token_estimate_baselines.pop_front();
+        }
+        self.token_estimate_baselines
+            .push_back((turn, u64::try_from(tokens).unwrap_or(u64::MAX)));
+    }
+
+    pub(super) fn take_token_estimate_baseline(&mut self, turn: TurnId) -> Option<u64> {
+        let index = self
+            .token_estimate_baselines
+            .iter()
+            .position(|(candidate, _)| *candidate == turn)?;
+        self.token_estimate_baselines
+            .remove(index)
+            .map(|(_, tokens)| tokens)
+    }
+
+    pub(super) fn persist_token_calibration(&self) -> bool {
+        use std::io::Write as _;
+
+        if self.runtime_state_dir.as_os_str().is_empty() {
+            return false;
+        }
+        let Ok(bytes) = serde_json::to_vec(&self.token_calibration.snapshot()) else {
+            return false;
+        };
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes()
+            || std::fs::create_dir_all(&self.runtime_state_dir).is_err()
+        {
+            return false;
+        }
+        let target = self.runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temporary = self.runtime_state_dir.join(format!(
+            ".token-calibration-v1.{}.{}.tmp",
+            std::process::id(),
+            nonce
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let Ok(mut file) = options.open(&temporary) else {
+            return false;
+        };
+        let written = file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .is_ok();
+        drop(file);
+        if !written || std::fs::rename(&temporary, &target).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return false;
+        }
+        std::fs::File::open(&self.runtime_state_dir)
+            .and_then(|directory| directory.sync_all())
+            .is_ok()
+    }
+
     /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
     /// owned by this admitted request. The source evidence was captured when the immutable
     /// injection was materialized; the active task and attachment evidence belong to this one
@@ -202,17 +381,14 @@ impl Agent {
     /// rare operator action; carrying an unusable schema block on every turn of a read-only session
     /// is not.
     #[cfg(test)]
-    pub(super) fn advertised_tool_specs(&self) -> Vec<iteron_protocol::ToolSpec> {
+    pub(super) fn advertised_tool_specs(&mut self) -> PreparedToolSchemas {
         self.advertised_tool_specs_for_task("")
     }
 
-    pub(super) fn advertised_tool_specs_for_task(
-        &self,
-        task: &str,
-    ) -> Vec<iteron_protocol::ToolSpec> {
+    pub(super) fn advertised_tool_specs_for_task(&mut self, task: &str) -> PreparedToolSchemas {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
-        let all = self.registry.specs();
-        let total = all.len();
+        let base = self.registry.spec_snapshot();
+        let total = base.specs().len();
         self.lifecycle_event(
             "context.tool_catalog.discovered",
             Some(TurnId(self.seq_turn)),
@@ -221,8 +397,9 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let authority_visible = all
-            .into_iter()
+        let admitted_names = base
+            .specs()
+            .iter()
             .filter(|spec| {
                 let reachable = admitted.contains(spec.capability)
                     || (spec.capability == Capability::ReversibleLocal
@@ -231,16 +408,49 @@ impl Agent {
                     && (spec.capability == Capability::ReadOnly
                         || self.permission_mode != PermissionMode::Plan)
             })
-            .collect::<Vec<_>>();
-        let admitted_names = authority_visible
-            .iter()
             .map(|spec| spec.name.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        let visible =
-            self.registry
-                .specs_for_task(&admitted_names, task, self.deferred_tool_eager_limit);
-        let authority_filtered = total.saturating_sub(authority_visible.len());
-        let relevance_deferred = authority_visible.len().saturating_sub(visible.len());
+        let authority_visible = admitted_names.len();
+        let cached = self.advertised_tool_specs_cache.as_ref().filter(|cached| {
+            cached.revision == base.revision()
+                && cached.task == task
+                && cached.admitted_names == admitted_names
+                && cached.eager_limit == self.deferred_tool_eager_limit
+        });
+        let cache_hit = cached.is_some();
+        let (visible, schema_tokens) = if let Some(cached) = cached {
+            debug_assert_eq!(cached.authority_visible, authority_visible);
+            debug_assert!(
+                !cached.prepared.canonical_json().is_empty() || cached.prepared.is_empty()
+            );
+            (cached.prepared.clone(), cached.prepared.estimated_tokens())
+        } else {
+            let snapshot = self.registry.specs_for_task_snapshot(
+                &admitted_names,
+                task,
+                self.deferred_tool_eager_limit,
+            );
+            let specs: std::sync::Arc<[iteron_protocol::ToolSpec]> =
+                snapshot.iter().cloned().collect::<Vec<_>>().into();
+            let schema_tokens = snapshot.estimated_tokens();
+            let prepared = PreparedToolSchemas::new(
+                specs,
+                std::sync::Arc::clone(snapshot.serialized_json()),
+                schema_tokens,
+                snapshot.revision(),
+            );
+            self.advertised_tool_specs_cache = Some(AdvertisedToolSpecsCache {
+                revision: snapshot.revision(),
+                task: task.to_owned(),
+                admitted_names: admitted_names.clone(),
+                eager_limit: self.deferred_tool_eager_limit,
+                authority_visible,
+                prepared: prepared.clone(),
+            });
+            (prepared, schema_tokens)
+        };
+        let authority_filtered = total.saturating_sub(authority_visible);
+        let relevance_deferred = authority_visible.saturating_sub(visible.len());
         let filtered = authority_filtered;
         if filtered > 0 {
             let payload = LifecyclePayload {
@@ -298,11 +508,23 @@ impl Agent {
                 },
             );
         }
+        self.lifecycle_event(
+            "context.tool_schema.admitted",
+            Some(TurnId(self.seq_turn)),
+            LifecyclePayload {
+                count: Some(u64::try_from(visible.len()).unwrap_or(u64::MAX)),
+                magnitude: Some(u64::try_from(schema_tokens).unwrap_or(u64::MAX)),
+                outcome_code: Some("snapshot_resolved".into()),
+                reason_code: Some(if cache_hit { "cache_hit" } else { "cache_miss" }.into()),
+                ..LifecyclePayload::default()
+            },
+        );
         visible
     }
 
     pub fn set_deferred_tool_eager_limit(&mut self, limit: Option<usize>) {
         self.deferred_tool_eager_limit = limit.filter(|limit| *limit > 0);
+        self.advertised_tool_specs_cache = None;
     }
 
     pub fn set_context_runtime_policy(
@@ -365,7 +587,9 @@ impl Agent {
         // only memory/skills in `text`; combine it with the live proposal once, append an upgraded
         // event before provider admission, and use that event on every later resume.
         let recorded = self.recorded_context_history()?;
-        if let Some((context_text, context_trust, durable_instructions)) = recorded.injection {
+        if !self.context_refresh_requested
+            && let Some((context_text, context_trust, durable_instructions)) = recorded.injection
+        {
             if let Some(instructions) = durable_instructions {
                 let (text, trust) = iteron_ctx::assemble_recorded_context(
                     &instructions,
@@ -407,8 +631,11 @@ impl Agent {
             return Ok(());
         }
 
-        let durable_instructions =
-            self.proposed_durable_frontend_context(recorded.genesis_environment.as_ref());
+        let durable_instructions = self.proposed_durable_frontend_context(
+            (!self.context_refresh_requested)
+                .then_some(recorded.genesis_environment.as_ref())
+                .flatten(),
+        );
         let mut context_text = String::new();
         let mut context_sources = Vec::with_capacity(2);
 
@@ -525,7 +752,9 @@ impl Agent {
                 // Non-empty bytes without provenance are a bug, never Trusted by default.
                 Trust::Untrusted
             });
-        let should_record = durable_instructions.is_some() || !context_text.is_empty();
+        let should_record = self.context_refresh_requested
+            || durable_instructions.is_some()
+            || !context_text.is_empty();
         if should_record {
             self.emit_durable(
                 turn,
@@ -549,6 +778,7 @@ impl Agent {
         };
         self.injected = Some(text);
         self.injected_trust = trust;
+        self.context_refresh_requested = false;
         self.clear_frontend_context_proposals();
         Ok(())
     }

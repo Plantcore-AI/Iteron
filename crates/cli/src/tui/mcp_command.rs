@@ -4,7 +4,13 @@ use super::*;
 
 const USAGE: &str = "usage: /mcp [status] | /mcp restart|stop|cancel <server>";
 
-pub(super) async fn handle(app: &mut App, session: &mut Session, argument: &str) {
+pub(super) fn queue(
+    app: &mut App,
+    session: &Session,
+    effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
+    argument: &str,
+) {
     let mut words = argument.split_whitespace();
     let action = words.next().unwrap_or("status");
     let server = words.next();
@@ -36,15 +42,19 @@ pub(super) async fn handle(app: &mut App, session: &mut Session, argument: &str)
         }
     };
 
-    match session.control(app_server::Control::Mcp(control)).await {
-        Some(app_server::ControlReply::Mcp(reply)) => render_reply(app, *reply),
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the session-owned MCP runtime is no longer reachable",
-        ),
+    let request = transcript_effect::Request::Control {
+        sender: session.control_sender(),
+        control: app_server::Control::Mcp(control),
+        interrupt: interrupt.clone(),
+        kind: transcript_effect::ControlKind::Mcp,
+    };
+    if effects.start(request).is_ok() {
+        app.status = "MCP control pending…".into();
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "MCP control not queued: another local effect is pending",
+        );
     }
 }
 

@@ -13,13 +13,42 @@
 
 use crate::{Registry, ShellPolicy, ToolError, ToolExecution, effectfut};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
-use iteron_sandbox::{Confinement, RunOutput, Sandbox, SandboxError, platform_sandbox};
+use iteron_sandbox::Confinement;
+#[cfg(test)]
+use iteron_sandbox::{RunOutput, Sandbox, SandboxError, platform_sandbox};
 use std::fmt::Write as _;
 
 const MIN_OUTPUT_BYTES_PER_STREAM: usize = 4 * 1024;
 // `RunOutput` may append one fixed truncation marker after retaining the configured source-byte
 // ceiling. This allowance is framing, not an additional source-output budget.
 const UPSTREAM_MARKER_ALLOWANCE_BYTES: usize = 160;
+
+fn minimum_output_bytes_per_stream() -> usize {
+    iteron_tunables::param_usize(
+        "tools.shell.min_output_bytes_per_stream",
+        MIN_OUTPUT_BYTES_PER_STREAM,
+    )
+    .clamp(1, MIN_OUTPUT_BYTES_PER_STREAM)
+}
+
+fn maximum_output_bytes_per_stream() -> usize {
+    iteron_tunables::param_usize(
+        "tools.shell.max_per_stream_bytes",
+        ShellOutputBudget::MAX_PER_STREAM_BYTES,
+    )
+    .clamp(
+        minimum_output_bytes_per_stream(),
+        ShellOutputBudget::MAX_PER_STREAM_BYTES,
+    )
+}
+
+fn upstream_marker_allowance_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "tools.shell.upstream_marker_allowance_bytes",
+        UPSTREAM_MARKER_ALLOWANCE_BYTES,
+    )
+    .min(UPSTREAM_MARKER_ALLOWANCE_BYTES)
+}
 
 /// One typed budget is used for both sandbox capture and tool-result rendering. Keeping these
 /// values inseparable prevents a second presentation-only ceiling from silently throwing away
@@ -37,9 +66,21 @@ impl ShellOutputBudget {
     fn from_policy(policy: ShellPolicy, input: &serde_json::Value) -> Result<Self, String> {
         let mut budget = Self {
             timeout_seconds: policy.timeout_seconds,
-            stdout_bytes: policy.stdout_max_bytes,
-            stderr_bytes: policy.stderr_max_bytes,
+            stdout_bytes: policy.stdout_max_bytes.min(Self::MAX_PER_STREAM_BYTES),
+            stderr_bytes: policy.stderr_max_bytes.min(Self::MAX_PER_STREAM_BYTES),
         };
+        if let Some(requested) = input.get("timeout_seconds") {
+            let requested = requested
+                .as_u64()
+                .ok_or_else(|| "timeout_seconds must be an integer".to_owned())?;
+            if requested == 0 || requested > policy.timeout_seconds {
+                return Err(format!(
+                    "timeout_seconds must be between 1 and the session ceiling of {}",
+                    policy.timeout_seconds
+                ));
+            }
+            budget.timeout_seconds = requested;
+        }
         let Some(requested) = input.get("max_output_bytes") else {
             return Ok(budget);
         };
@@ -50,28 +91,15 @@ impl ShellOutputBudget {
         let requested = usize::try_from(requested).map_err(|_| {
             format!(
                 "max_output_bytes exceeds the fixed per-stream maximum of {}",
-                iteron_tunables::param_integer(
-                    "tools.shell.max_per_stream_bytes",
-                    Self::MAX_PER_STREAM_BYTES,
-                )
+                maximum_output_bytes_per_stream()
             )
         })?;
-        if !(iteron_tunables::param_integer(
-            "tools.shell.min_output_bytes_per_stream",
-            MIN_OUTPUT_BYTES_PER_STREAM,
-        )
-            ..=iteron_tunables::param_integer(
-                "tools.shell.max_per_stream_bytes",
-                Self::MAX_PER_STREAM_BYTES,
-            ))
+        if !(minimum_output_bytes_per_stream()..=maximum_output_bytes_per_stream())
             .contains(&requested)
         {
             return Err(format!(
                 "max_output_bytes must be between {MIN_OUTPUT_BYTES_PER_STREAM} and {} per stream",
-                iteron_tunables::param_integer(
-                    "tools.shell.max_per_stream_bytes",
-                    Self::MAX_PER_STREAM_BYTES,
-                )
+                maximum_output_bytes_per_stream()
             ));
         }
         // A call may narrow the immutable checkpoint, never widen it.
@@ -80,6 +108,7 @@ impl ShellOutputBudget {
         Ok(budget)
     }
 
+    #[cfg(test)]
     fn apply_to(self, confinement: &mut Confinement) {
         confinement.timeout_secs = self.timeout_seconds;
         // The sandbox has one capture ceiling. Capture the wider pinned stream, then apply each
@@ -98,10 +127,13 @@ impl Default for ShellOutputBudget {
     }
 }
 
-pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
-    let sensitive_env_names = r.sensitive_env_names_handle();
+pub(crate) fn register(
+    r: &mut Registry,
+    supervisor: std::sync::Arc<crate::process::Supervisor>,
+) -> Result<(), ToolError> {
     let confine_execution = r.confine_execution_handle();
     let observation_policy = r.observation_tool_policy_handle();
+    let process_launch_policy = r.process_launch_policy_handle();
     r.register_external_effect(
         ToolSpec {
             name: "bash".into(),
@@ -118,14 +150,27 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     "command":{"type":"string"},
                     "max_output_bytes":{
                         "type":"integer",
-                        "minimum":iteron_tunables::param_integer("tools.shell.min_output_bytes_per_stream", MIN_OUTPUT_BYTES_PER_STREAM),
+                        "minimum":minimum_output_bytes_per_stream(),
                         "description":format!(
                             "Optional retained bytes per stdout/stderr stream; capped at {}.",
-                            iteron_tunables::param_integer(
-                                "tools.shell.max_per_stream_bytes",
-                                ShellOutputBudget::MAX_PER_STREAM_BYTES,
-                            )
+                            maximum_output_bytes_per_stream()
                         )
+                    },
+                    "yield_time_ms":{
+                        "type":"integer",
+                        "minimum":250,
+                        "description":"Return a session_id plus partial output after this wait; runtime-enforced maximum 30000ms, default 10000ms."
+                    },
+                    "timeout_seconds":{
+                        "type":"integer",
+                        "minimum":1,
+                        "description":"Optional wall-clock deadline; runtime-enforced maximum 86400s and it may narrow but never widen the installed session policy (default 120s)."
+                    },
+                    "writes":{
+                        "type":"array",
+                        "maxItems":64,
+                        "items":{"type":"string"},
+                        "description":"Optional declared workspace-relative write set for runtime conflict isolation; declaration does not grant write authority."
                     }
                 },
                 "required":["command"]
@@ -134,9 +179,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             capability: Capability::CodeExecuting,
         },
         move |call, root| {
-            let sensitive_env_names = sensitive_env_names.clone();
             let confine_execution = confine_execution.clone();
             let observation_policy = observation_policy.clone();
+            let process_launch_policy = process_launch_policy.clone();
+            let supervisor = std::sync::Arc::clone(&supervisor);
             effectfut::box_it(async move {
                 let id = call.id.clone();
                 let Some(shell_policy) = observation_policy.get().copied().map(|p| p.shell) else {
@@ -160,12 +206,100 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         return ToolExecution::Definite(tool_result(id, error, true));
                     }
                 };
-                let sensitive_env_names = sensitive_env_names.lock().unwrap().clone();
                 let confine = confine_execution.load(std::sync::atomic::Ordering::Relaxed);
-                run_bash_budgeted(&root, cmd, id, sensitive_env_names, budget, confine).await
+                let Some(launch_policy) = process_launch_policy.get().cloned() else {
+                    return ToolExecution::Definite(tool_result(
+                        id,
+                        "bash refused: immutable process launch policy was not installed".into(),
+                        true,
+                    ));
+                };
+                let yield_ms = call
+                    .input
+                    .get("yield_time_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(crate::process::default_exec_yield_milliseconds)
+                    .clamp(250, 30_000);
+                match supervisor
+                    .exec_yield(
+                        &root,
+                        cmd,
+                        launch_policy,
+                        confine,
+                        std::time::Duration::from_millis(yield_ms),
+                        budget.timeout_seconds,
+                    )
+                    .await
+                {
+                    Ok(receipt) => finish_streaming_exec(id, receipt, budget),
+                    Err(crate::process::ActionError::Definite(error)) => {
+                        ToolExecution::Definite(tool_result(id, error, true))
+                    }
+                    Err(crate::process::ActionError::Unknown(error)) => {
+                        ToolExecution::Unknown(tool_result(id, error, true))
+                    }
+                }
             })
         },
     )
+}
+
+fn finish_streaming_exec(
+    tool_use_id: String,
+    receipt: crate::process::StreamingExecReceipt,
+    budget: ShellOutputBudget,
+) -> ToolExecution {
+    let stdout = frame_stream(
+        &receipt.stdout,
+        receipt.stdout_incomplete || receipt.stdout.len() > budget.stdout_bytes,
+        budget.stdout_bytes,
+    );
+    let stderr = frame_stream(
+        &receipt.stderr,
+        receipt.stderr_incomplete || receipt.stderr.len() > budget.stderr_bytes,
+        budget.stderr_bytes,
+    );
+    let mut framed = String::with_capacity(
+        budget
+            .stdout_bytes
+            .saturating_add(budget.stderr_bytes)
+            .saturating_add(1024),
+    );
+    let needs_lossless_frames = receipt.yielded || stdout.is_incomplete || stderr.is_incomplete;
+    if receipt.yielded {
+        let _ = writeln!(
+            framed,
+            "[running session_id={}; stdout_cursor={}; stderr_cursor={}; terminal={}]",
+            receipt.job_id, receipt.stdout_cursor, receipt.stderr_cursor, receipt.terminal
+        );
+    } else if receipt.is_error {
+        let _ = writeln!(framed, "[failed state={}]", receipt.state_json);
+    } else {
+        framed.push_str("[done]\n");
+    }
+    if needs_lossless_frames {
+        if !stdout.content.is_empty() || stdout.is_incomplete {
+            append_stream_frame(&mut framed, "stdout", &stdout, budget.stdout_bytes);
+        }
+        if !stderr.content.is_empty() || stderr.is_incomplete {
+            append_stream_frame(&mut framed, "stderr", &stderr, budget.stderr_bytes);
+        }
+    } else {
+        append_complete_stream(&mut framed, "stdout", &stdout.content);
+        append_complete_stream(&mut framed, "stderr", &stderr.content);
+    }
+    ToolExecution::Definite(tool_result(tool_use_id, framed, receipt.is_error))
+}
+
+fn append_complete_stream(output: &mut String, name: &str, content: &str) {
+    if content.is_empty() {
+        return;
+    }
+    let _ = writeln!(output, "[{name}]");
+    output.push_str(content);
+    if !content.ends_with('\n') {
+        output.push('\n');
+    }
 }
 
 /// Run a bash command with the operator's own authority, or — when `confine` is set by
@@ -189,6 +323,7 @@ async fn run_bash(
     .await
 }
 
+#[cfg(test)]
 async fn run_bash_budgeted(
     root: &std::path::Path,
     command: &str,
@@ -210,6 +345,7 @@ async fn run_bash_budgeted(
     .await
 }
 
+#[cfg(test)]
 async fn run_bash_with_budget(
     sb: &dyn Sandbox,
     root: &std::path::Path,
@@ -223,6 +359,7 @@ async fn run_bash_with_budget(
     finish_sandbox_run_with_budget(tool_use_id, sb.run(command, &conf).await, budget)
 }
 
+#[cfg(test)]
 fn bash_confinement(
     root: &std::path::Path,
     sensitive_env_names: Vec<String>,
@@ -249,6 +386,7 @@ fn finish_sandbox_run(
     finish_sandbox_run_with_budget(tool_use_id, outcome, ShellOutputBudget::default())
 }
 
+#[cfg(test)]
 fn finish_sandbox_run_with_budget(
     tool_use_id: String,
     outcome: Result<RunOutput, SandboxError>,
@@ -299,10 +437,8 @@ fn frame_stream(content: &str, upstream_incomplete: bool, budget_bytes: usize) -
     // A conforming sandbox retains at most the source-byte budget plus its fixed marker. Keep a
     // defensive head/tail bound here for injected/alternate backends so one violated contract can
     // never make ToolResult unbounded. Per-stream elision retains each stream's final diagnostics.
-    let maximum_with_upstream_marker = budget_bytes.saturating_add(iteron_tunables::param_integer(
-        "tools.shell.upstream_marker_allowance_bytes",
-        UPSTREAM_MARKER_ALLOWANCE_BYTES,
-    ));
+    let maximum_with_upstream_marker =
+        budget_bytes.saturating_add(upstream_marker_allowance_bytes());
     let exceeds_budget = if upstream_incomplete {
         observed_bytes > maximum_with_upstream_marker
     } else {
@@ -341,6 +477,7 @@ fn append_stream_frame(
     let _ = writeln!(framed, "[/stream {name}]");
 }
 
+#[cfg(test)]
 fn frame_output(out: &RunOutput, budget: ShellOutputBudget) -> String {
     let stdout = frame_stream(&out.stdout, out.stdout_truncated, budget.stdout_bytes);
     let stderr = frame_stream(&out.stderr, out.stderr_truncated, budget.stderr_bytes);
@@ -364,7 +501,10 @@ fn frame_output(out: &RunOutput, budget: ShellOutputBudget) -> String {
 fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResult {
     ToolResult {
         tool_use_id,
-        content,
+        content: crate::process::bound_model_visible_result(
+            content,
+            "for a running session call process_poll with the session_id and returned byte cursors; for a completed command redirect output to a workspace file and read it with bounded offset/limit",
+        ),
         is_error,
         trust: Trust::Workspace,
         latency_ms: 0,
@@ -399,7 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn d4_14_g1_live_large_build_retains_head_middle_tail_and_final_error() {
+    async fn d4_14_g1_live_large_build_bounds_model_view_but_retains_head_and_final_error() {
         let dir = std::env::temp_dir();
         let command = "i=0; printf 'compile: first-unit\\n'; \
                        while [ \"$i\" -lt 2500 ]; do \
@@ -416,15 +556,15 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.starts_with("[exit 73]\n"));
         assert!(result.content.contains("compile: first-unit"));
-        assert!(
-            result.content.contains("compile-unit-1250"),
-            "the old combined 20K elision discarded this middle diagnostic"
-        );
-        assert!(result.content.contains("compile: FINAL SUMMARY"));
         assert!(result.content.contains("error: FINAL LINK FAILURE"));
         assert!(result.content.contains("[stream stdout;"));
         assert!(result.content.contains("[stream stderr;"));
-        assert!(result.content.contains("isIncomplete=false"));
+        assert!(result.content.contains("model-visible output omitted"));
+        assert!(result.content.contains("resumeHint:"));
+        assert!(
+            result.content.len() <= crate::process::model_visible_result_bytes(),
+            "model context and retained process evidence have independent ceilings"
+        );
     }
 
     #[tokio::test]

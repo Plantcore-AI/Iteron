@@ -18,6 +18,7 @@ mod def;
 mod planner;
 mod policy;
 mod reduce;
+mod snapshot;
 mod stage;
 
 pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
@@ -40,6 +41,7 @@ pub use reduce::{
     Summary, SummaryOutcome, join_reduce_policy, reduce, reduce_checked,
     reduce_checked_with_profile, reduce_with_profile,
 };
+pub use snapshot::AgentCatalogSnapshot;
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,
     WorkflowPlan,

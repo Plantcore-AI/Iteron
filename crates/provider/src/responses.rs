@@ -70,7 +70,7 @@ impl OpenAiResponses {
         Self::with_client(key, root, client)
     }
 
-    fn with_client(
+    pub(crate) fn with_client(
         key: String,
         root: ApiRoot,
         client: crate::catalog::RuntimeHttpClient,
@@ -132,20 +132,6 @@ fn request_body(
     error_profile: ErrorProfile,
     route_scope: &str,
 ) -> Result<serde_json::Value, ProviderError> {
-    let tools: Vec<serde_json::Value> = request
-        .tools
-        .iter()
-        .map(|tool| {
-            serde_json::json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema,
-                "strict": false,
-            })
-        })
-        .collect();
-
     let mut body = serde_json::json!({
         "model": request.model,
         "instructions": request.system,
@@ -162,8 +148,8 @@ fn request_body(
         "stream": true,
         "store": false,
     });
-    if !tools.is_empty() {
-        body["tools"] = serde_json::Value::Array(tools);
+    if !request.tools.is_empty() {
+        body["tools"] = request.tools.openai_responses().as_ref().clone();
     }
     if let Some(effort) =
         responses_reasoning_effort(error_profile, &request.model, request.reasoning_effort)
@@ -366,6 +352,7 @@ struct WireFrame {
 #[derive(Default)]
 struct SseDecoder {
     pending: Vec<u8>,
+    cursor: usize,
     total_bytes: usize,
 }
 
@@ -388,7 +375,7 @@ impl SseDecoder {
         }
         self.pending.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some((boundary, separator_len)) = frame_boundary(&self.pending) {
+        while let Some((boundary, separator_len)) = frame_boundary(&self.pending[self.cursor..]) {
             if boundary
                 > iteron_tunables::param_integer(
                     "provider.responses.max_sse_frame_bytes",
@@ -399,13 +386,15 @@ impl SseDecoder {
                     "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
                 )));
             }
-            let block = self.pending[..boundary].to_vec();
-            self.pending.drain(..boundary + separator_len);
+            let frame_start = self.cursor;
+            let frame_end = frame_start.saturating_add(boundary);
+            let block = self.pending[frame_start..frame_end].to_vec();
+            self.cursor = frame_end.saturating_add(separator_len);
             if let Some(frame) = parse_wire_frame(&block)? {
                 frames.push(frame);
             }
         }
-        if self.pending.len()
+        if self.pending.len().saturating_sub(self.cursor)
             > iteron_tunables::param_integer(
                 "provider.responses.max_sse_frame_bytes",
                 MAX_SSE_FRAME_BYTES,
@@ -415,11 +404,18 @@ impl SseDecoder {
                 "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
             )));
         }
+        if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
+            self.pending.drain(..self.cursor);
+            self.cursor = 0;
+        }
         Ok(frames)
     }
 
     fn finish(&self) -> Result<(), ProviderError> {
-        if self.pending.iter().all(u8::is_ascii_whitespace) {
+        if self.pending[self.cursor..]
+            .iter()
+            .all(u8::is_ascii_whitespace)
+        {
             Ok(())
         } else {
             Err(ProviderError::Decode(
@@ -433,10 +429,11 @@ impl SseDecoder {
     /// byte-for-byte prefix of its legal SSE encoding; arbitrary post-terminal bytes still fail
     /// closed.
     fn finish_after_terminal(&self) -> Result<(), ProviderError> {
-        if self.pending.iter().all(u8::is_ascii_whitespace)
+        let pending = &self.pending[self.cursor..];
+        if pending.iter().all(u8::is_ascii_whitespace)
             || DONE_FRAME_ENCODINGS
                 .iter()
-                .any(|encoding| encoding.starts_with(&self.pending))
+                .any(|encoding| encoding.starts_with(pending))
         {
             Ok(())
         } else {
@@ -1596,12 +1593,28 @@ impl Provider for OpenAiResponses {
                 "provider.responses.response_header_timeout",
                 RESPONSE_HEADER_TIMEOUT,
             ),
-            "response headers",
         )?;
         let response = tokio::time::timeout(header_timeout, request.send())
             .await
-            .map_err(|_| ProviderError::Http("Responses response headers timed out".into()))?
-            .map_err(|error| ProviderError::Http(error.to_string()))?;
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ResponseHeaders,
+            })?
+            .map_err(|error| {
+                if error.is_connect() {
+                    ProviderError::ConnectFailed
+                } else if error.is_timeout() {
+                    ProviderError::Timeout {
+                        stage: crate::ProviderTimeoutStage::DnsConnect,
+                    }
+                } else {
+                    ProviderError::Http(error.to_string())
+                }
+            })?;
+        if self.client.observe_response_version(response.version()) {
+            on_item(StreamItem::CompatibilityNotice(
+                "provider transport negotiated below required HTTP/2; continuing with explicit compatibility evidence",
+            ));
+        }
         if !response.status().is_success() {
             return Err(tokio::time::timeout(
                 remaining_timeout(
@@ -1610,7 +1623,6 @@ impl Provider for OpenAiResponses {
                         "provider.responses.error_response_timeout",
                         ERROR_RESPONSE_TIMEOUT,
                     ),
-                    "error response body",
                 )?,
                 crate::api_error_from_response(
                     response,
@@ -1619,11 +1631,14 @@ impl Provider for OpenAiResponses {
                 ),
             )
             .await
-            .map_err(|_| ProviderError::Http("Responses error response body timed out".into()))?);
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ErrorBody,
+            })?);
         }
 
         let response_retry_after = crate::retry_after_from_headers(response.headers());
         let response_request_id = crate::request_id_from_headers(response.headers());
+        on_item(StreamItem::Accepted);
         // Quota state is on the success headers, so it is knowable here — before a single token
         // has arrived and long before the 429 that used to be its first symptom (I-53).
         if let Some(snapshot) = crate::rate_limit_from_headers(response.headers()) {
@@ -1638,22 +1653,19 @@ impl Provider for OpenAiResponses {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(ProviderError::Http(
-                    "Responses stream exceeded total deadline".into(),
-                ));
+                return Err(ProviderError::Timeout {
+                    stage: crate::ProviderTimeoutStage::RequestTotal,
+                });
             }
             let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
-                .map_err(|_| {
-                    if wait == remaining {
-                        ProviderError::Http("Responses stream exceeded total deadline".into())
+                .map_err(|_| ProviderError::Timeout {
+                    stage: if wait == remaining {
+                        crate::ProviderTimeoutStage::RequestTotal
                     } else {
-                        ProviderError::Http(format!(
-                            "Responses stream stalled: no bytes for {}s",
-                            transport.stream_idle.as_secs()
-                        ))
-                    }
+                        crate::ProviderTimeoutStage::StreamIdle
+                    },
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|error| ProviderError::Http(error.to_string()))?;
@@ -1703,13 +1715,15 @@ impl Provider for OpenAiResponses {
 fn remaining_timeout(
     deadline: Instant,
     operation_timeout: Duration,
-    operation: &str,
 ) -> Result<Duration, ProviderError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return Err(ProviderError::Http(format!(
-            "Responses turn deadline expired before {operation}"
-        )));
+        // This check precedes polling `request.send()`, but classifying the exact-zero edge as an
+        // unobservable request-total timeout is deliberately fail-closed. It cannot license a
+        // second paid attempt, and avoids making the authority flip between 0ns and 1ns left.
+        return Err(ProviderError::Timeout {
+            stage: crate::ProviderTimeoutStage::RequestTotal,
+        });
     }
     Ok(remaining.min(operation_timeout))
 }
@@ -1722,6 +1736,19 @@ mod tests {
     };
 
     const TEST_SCOPE: &str = "provider-openai-test";
+
+    #[test]
+    fn exhausted_request_total_is_typed_before_phase_timeout() {
+        assert!(matches!(
+            remaining_timeout(
+                Instant::now() - Duration::from_millis(1),
+                Duration::from_secs(60)
+            ),
+            Err(ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::RequestTotal
+            })
+        ));
+    }
 
     fn request() -> TurnRequest {
         TurnRequest {
@@ -1767,7 +1794,8 @@ mod tests {
                 }),
                 purity: Purity::Pure,
                 capability: Capability::ReadOnly,
-            }],
+            }]
+            .into(),
             max_tokens: 12_345,
             cache_system: true,
             thinking_budget: 9_000,

@@ -18,7 +18,7 @@ pub(crate) fn path_is_required_integer(domain: crate::StructuredValueDomain, pat
 
 /// Stable identities retired because they duplicate another semantic family.
 const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth", "workflow_spawn_cap"];
-const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 196;
+const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 197;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {

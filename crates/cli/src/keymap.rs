@@ -435,27 +435,81 @@ enum FileStamp {
     },
 }
 
-/// Cheap config watcher polled immediately before each key is routed. This preserves the TUI's
-/// zero-idle-poll contract while ensuring the first key after an atomic config rewrite sees the
-/// new map (or the safe built-in fallback).
+/// Background config watcher. The input hot path reads one atomic snapshot; filesystem metadata
+/// never sits between a keypress and editor mutation/render.
 pub(crate) struct Watcher {
+    changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    #[cfg(test)]
     path: Option<PathBuf>,
+    #[cfg(test)]
     stamp: FileStamp,
 }
 
 impl Watcher {
     pub(crate) fn new(path: Option<PathBuf>) -> Self {
-        let stamp = stamp(path.as_deref());
-        Self { path, stamp }
+        // The configured map is already cached by the caller. Its filesystem stamp is rebuildable
+        // watcher state, so the first metadata read belongs on this worker rather than the startup
+        // thread. A present file produces one harmless refresh after the first 100 ms tick.
+        let initial = FileStamp::Missing;
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let changed_worker = changed.clone();
+        let stop_worker = stop.clone();
+        let worker_path = path.clone();
+        let worker_initial = initial.clone();
+        let worker = std::thread::Builder::new()
+            .name("iteron-keymap-watch".into())
+            .spawn(move || {
+                let mut previous = worker_initial;
+                while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::park_timeout(std::time::Duration::from_millis(100));
+                    if stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let next = stamp(worker_path.as_deref());
+                    if next != previous {
+                        previous = next;
+                        changed_worker.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+            })
+            .ok();
+        Self {
+            changed,
+            stop,
+            worker,
+            #[cfg(test)]
+            path,
+            #[cfg(test)]
+            stamp: initial,
+        }
     }
 
     pub(crate) fn changed(&mut self) -> bool {
-        let next = stamp(self.path.as_deref());
-        if next == self.stamp {
-            return false;
+        #[cfg(test)]
+        {
+            let next = stamp(self.path.as_deref());
+            if next != self.stamp {
+                self.stamp = next;
+                self.changed
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
         }
-        self.stamp = next;
-        true
+        self.changed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
     }
 }
 

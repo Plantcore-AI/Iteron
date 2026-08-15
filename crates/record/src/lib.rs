@@ -13,11 +13,12 @@
 //! — that reconciliation ("immutable + hash-chained" does not mean "unpurgeable") is the
 //! whole point.
 //!
-//! What is implemented here (vertical slice): the append-only hash-chained rollout with
-//! write-ahead durability (intent before effect), replay of the event stream, and the
-//! chain-verify. What is stubbed with a pointer: content-addressed tombstonable blobs for
-//! GDPR crypto-shred (ADR-008 §1) — the interface is present, the blob store is a TODO.
+//! The crate implements append-only hash-chained rollouts, write-ahead effect durability,
+//! verified replay, content-addressed private derivatives, tombstones, owner leases, retention,
+//! and erasure receipts. Public documentation describes only executable contracts; future work is
+//! tracked outside the source API rather than presented as a live stub.
 
+mod append_actor;
 pub mod checkpoint;
 pub mod content_store;
 pub mod erasure;
@@ -31,6 +32,7 @@ pub mod session;
 // call sites.
 pub type ContentReferenceSurface = content_store::ContentReferenceSurface;
 pub type ContentStoreError = content_store::ContentStoreError;
+use append_actor::RolloutAppendActor;
 pub type PrivateContentClass = content_store::PrivateContentClass;
 pub type PrivateContentDerivativeStore = content_store::PrivateContentDerivativeStore;
 pub type PrivateContentHandle = content_store::PrivateContentHandle;
@@ -53,9 +55,9 @@ pub use checkpoint::{
     checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
 };
 pub use session::{
-    DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, delete, fork,
-    list, load_forked, load_forked_scoped, meta, meta_with_pricing, most_recent, reindex,
-    replay_run_timed,
+    DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, SessionPage,
+    SessionPageCursor, delete, fork, list, load_forked, load_forked_scoped, meta,
+    meta_with_pricing, most_recent, page, reindex, replay_run_timed,
 };
 
 /// A registry-driven resolved tunable set for other crates' tests. Feature-gated, never in a
@@ -222,44 +224,31 @@ pub(crate) fn set_append_sync_fault_at(ordinal: Option<usize>) {
     APPEND_SYNC_FAULT_AT.with(|target| target.set(ordinal));
 }
 
-/// Deterministically model a crash that loses the line currently waiting on its durability
-/// barrier while preserving the previously confirmed prefix. This seam exists only in unit-test
-/// builds; production append I/O remains the platform write + fsync path below.
 #[cfg(test)]
-fn inject_append_sync_fault(file: &File) -> std::io::Result<()> {
+fn take_append_sync_fault() -> bool {
     let ordinal = APPEND_SYNC_ORDINAL.with(|seen| {
         let ordinal = seen.get().saturating_add(1);
         seen.set(ordinal);
         ordinal
     });
     let should_fail = APPEND_SYNC_FAULT_AT.with(|target| target.get() == Some(ordinal));
-    if !should_fail {
-        return Ok(());
+    if should_fail {
+        APPEND_SYNC_FAULT_AT.with(|target| target.set(None));
     }
-    APPEND_SYNC_FAULT_AT.with(|target| target.set(None));
+    should_fail
+}
 
-    let current_bytes = file.metadata()?.len();
-    let scan_bytes = current_bytes.min((MAX_RECORD_LINE_BYTES + 2) as u64);
-    let scan_start = current_bytes.saturating_sub(scan_bytes);
-    let mut reader = file.try_clone()?;
-    reader.seek(SeekFrom::Start(scan_start))?;
-    let mut tail = vec![0; usize::try_from(scan_bytes).unwrap_or(MAX_RECORD_LINE_BYTES + 2)];
-    reader.read_exact(&mut tail)?;
-    if tail.last() != Some(&b'\n') {
-        return Err(std::io::Error::other(
-            "injected sync fault expected a complete current record line",
-        ));
-    }
-    let durable_prefix_bytes = tail[..tail.len().saturating_sub(1)]
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map(|offset| scan_start + offset as u64 + 1)
-        .unwrap_or(0);
+/// Deterministically model a crash that loses the whole semantic batch currently waiting on its
+/// one durability barrier while preserving the previously confirmed prefix. The decision is made
+/// on the calling test thread and carried with the writer command, so moving physical I/O into the
+/// per-run actor does not turn this into a process-global, cross-test fault seam.
+#[cfg(test)]
+fn inject_append_sync_fault(file: &File, durable_prefix_bytes: u64) -> std::io::Result<()> {
     file.set_len(durable_prefix_bytes)?;
     file.sync_all()?;
-    Err(std::io::Error::other(format!(
-        "injected append sync fault at barrier {ordinal}"
-    )))
+    Err(std::io::Error::other(
+        "injected append sync fault at semantic-batch barrier",
+    ))
 }
 
 /// How hard one append pushes its line toward the platter.
@@ -302,8 +291,6 @@ fn barrier_for(kind: &EventKind) -> Barrier {
 /// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
 #[cfg(unix)]
 fn sync_line(file: &File) -> std::io::Result<()> {
-    #[cfg(test)]
-    inject_append_sync_fault(file)?;
     // Fully qualified rather than a `use`: this file is a managed schema source whose import
     // fingerprint is pinned, and a platform fd accessor is not a schema change.
     let fd = <File as std::os::unix::io::AsRawFd>::as_raw_fd(file);
@@ -322,8 +309,6 @@ fn sync_line(file: &File) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn sync_line(file: &File) -> std::io::Result<()> {
-    #[cfg(test)]
-    inject_append_sync_fault(file)?;
     file.sync_data()
 }
 
@@ -381,6 +366,8 @@ pub enum RecordError {
     /// fork the chain, so the writer fails closed until it is dropped and reopened/recovered.
     #[error("rollout writer is poisoned after an append I/O failure; close and reopen the run")]
     WriterPoisoned,
+    #[error("invalid bounded append batch: {reason}")]
+    InvalidAppendBatch { reason: &'static str },
     /// A physical rollout and every edge in a fork chain are single-tenant boundaries. Tenant is
     /// retained outside the legacy line hash for on-disk compatibility, so it is checked
     /// explicitly on every read/open boundary.
@@ -1024,7 +1011,10 @@ enum SessionProjectionState {
 /// while different run files remain independently writable.
 pub struct Rollout {
     path: PathBuf,
-    file: File,
+    /// The sole owner of the append descriptor and its exclusive OS lock. Keeping this inside the
+    /// façade makes every production `Rollout::append[_batch]` cross one bounded per-run writer
+    /// protocol while preserving the synchronous durability contract exposed to callers.
+    append_actor: RolloutAppendActor,
     run: RunId,
     tenant: TenantId,
     seq: Seq,
@@ -1158,10 +1148,10 @@ impl Rollout {
         policy_bundle::policy_bundle_checkpoint_from_events(&events).map_err(RecordError::from)
     }
 
-    /// Durably append a fresh root `RunStart` and its immutable resolved-set companion without an
-    /// opportunity for another event to interleave. Success means both lines passed their fsync
-    /// barriers. A crash or I/O error between them leaves an unpinned record that every checked
-    /// operation rejects under [`LegacyTunablesPolicy::RejectUnpinned`]; no migration is invented.
+    /// Durably append a fresh root `RunStart` and its immutable resolved-set companion as one
+    /// semantic batch without an opportunity for another event to interleave. Success means both
+    /// lines passed the batch's single durability barrier; a failed barrier preserves the prior
+    /// confirmed prefix and no partial genesis is acknowledged.
     pub fn append_fresh_genesis_with_tunables(
         &mut self,
         run_start: &Event,
@@ -1261,9 +1251,14 @@ impl Rollout {
         let mut genesis = session::tunables::GenesisTunablesState::default();
         genesis.observe(0, &run_start.kind)?;
         genesis.observe(1, &snapshot_event.kind)?;
-        let start_seq = self.append(run_start)?;
-        let snapshot_seq = self.append(&snapshot_event)?;
-        Ok((start_seq, snapshot_seq))
+        let genesis = [run_start.clone(), snapshot_event];
+        let sequences = self.append_batch(&genesis)?;
+        let [start_seq, snapshot_seq] = sequences.as_slice() else {
+            return Err(RecordError::InvalidAppendBatch {
+                reason: "genesis semantic batch did not return two sequences",
+            });
+        };
+        Ok((*start_seq, *snapshot_seq))
     }
 
     fn open_with_create(
@@ -1309,9 +1304,11 @@ impl Rollout {
             replay(&path)?;
         }
         let durable_bytes = file.metadata()?.len();
+        let opened_at = std::time::Instant::now();
+        let append_actor = RolloutAppendActor::spawn(file, run).map_err(RecordError::from)?;
         Ok(Rollout {
             path,
-            file,
+            append_actor,
             run: run.clone(),
             tenant,
             seq,
@@ -1323,7 +1320,7 @@ impl Rollout {
             session_projection: SessionProjectionState::Uninitialized,
             // The segment origin. A resumed run reaches here again in a new process, which is
             // precisely why `ts_us` restarts and why the reader treats that drop as a seam.
-            opened_at: std::time::Instant::now(),
+            opened_at,
             #[cfg(test)]
             barriers_taken: (0, 0),
         })
@@ -1440,143 +1437,12 @@ impl Rollout {
     /// poisoned; only a successful durability barrier clears it. An I/O error therefore requires
     /// close + reopen, where tail recovery establishes the authoritative chain head.
     pub fn append(&mut self, event: &Event) -> Result<Seq, RecordError> {
-        if self.poisoned {
-            return Err(RecordError::WriterPoisoned);
-        }
-        if self.event_count
-            >= iteron_tunables::param_integer("record.lib.max_rollout_events", MAX_ROLLOUT_EVENTS)
-        {
-            return Err(RecordError::TooManyEvents {
-                max: iteron_tunables::param_integer(
-                    "record.lib.max_rollout_events",
-                    MAX_ROLLOUT_EVENTS,
-                ),
-            });
-        }
-        if self.physical_line_count
-            >= iteron_tunables::param_integer(
-                "record.lib.max_rollout_physical_lines",
-                MAX_ROLLOUT_PHYSICAL_LINES,
-            )
-        {
-            return Err(RecordError::TooManyRecordLines {
-                max: iteron_tunables::param_integer(
-                    "record.lib.max_rollout_physical_lines",
-                    MAX_ROLLOUT_PHYSICAL_LINES,
-                ),
-            });
-        }
-        if matches!(&event.kind, EventKind::PolicyBundleSnapshot { .. }) && self.seq != Seq(2) {
-            return Err(policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
-                "policy checkpoint must be physical sequence two",
-            )
-            .into());
-        }
-        event
-            .kind
-            .validate_compatibility_tag()
-            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
-        validate_terminal_identity(&event.kind)
-            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
-        validate_event_bounds(event)?;
-        // Scrub known-secret shapes from tool output before it enters the durable record
-        // (ADR-008 §1). The caller's live copy (the model context) is untouched.
-        let mut event = redact::redact_event(event);
-        validate_event_bounds(&event)?;
-        // Stamp the authoritative seq into the payload before hashing so the on-disk record is
-        // self-consistent going forward (the caller emits a placeholder seq; see `replay`). The
-        // hash then covers the true seq. `replay` still overwrites from the chain line, so legacy
-        // rollouts written before this fix remain correct.
-        event.seq = self.seq;
-        let event = &event;
-        let mut payload = serde_json::to_value(event)?;
-        let runs_dir = self.path.parent().ok_or_else(|| {
-            RecordError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "rollout path has no runs directory",
-            ))
-        })?;
-        content_store::externalize_event_payload(
-            runs_dir,
-            &self.tenant,
-            &self.run,
-            self.seq,
-            &mut payload,
-        )?;
-        let seq = self.seq;
-        let hash = hash_line(&self.last_hash, seq.0, &payload);
-        let cl = ChainLine {
-            seq: seq.0,
-            tenant: self.tenant.0.clone(),
-            prev: self.last_hash.clone(),
-            hash: hash.clone(),
-            // Read AFTER hashing and BEFORE the write, so the stamp is as close to the durable
-            // write as the sequence allows without being inside it. It is deliberately not part of
-            // `hash`: see `ChainLine::ts_us`.
-            ts_us: Some(u64::try_from(self.opened_at.elapsed().as_micros()).unwrap_or(u64::MAX)),
-            payload,
-        };
-        let mut line = serde_json::to_string(&cl)?;
-        line.push('\n');
-        ensure_record_line_size(line.len())?;
-        let current_bytes = self.file.metadata()?.len();
-        if current_bytes != self.durable_bytes {
-            self.poisoned = true;
-            return Err(RecordError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "rollout length changed outside the active writer",
-            )));
-        }
-        let next_bytes =
-            current_bytes
-                .checked_add(line.len() as u64)
-                .ok_or(RecordError::RolloutTooLarge {
-                    bytes: u64::MAX,
-                    max: iteron_tunables::param_integer(
-                        "record.lib.max_rollout_bytes",
-                        MAX_ROLLOUT_BYTES,
-                    ),
-                })?;
-        ensure_rollout_size(next_bytes)?;
-        // After this point an error is ambiguous: write(2) may have committed any prefix and an
-        // fsync error may still follow a complete line. Fail-stop until a fresh scan recovers the
-        // descriptor and chain head.
-        self.poisoned = true;
-        self.file.write_all(line.as_bytes())?;
-        // Durable BEFORE we advance state, at the tier this event's position earns (see `Barrier`).
-        let barrier = barrier_for(&event.kind);
-        match barrier {
-            Barrier::Line => sync_line(&self.file)?,
-            Barrier::Turn => self.file.sync_data()?,
-        }
-        #[cfg(test)]
-        self.observe_barrier(barrier);
-        // Only now, after the line is on disk, advance the chain.
-        self.last_hash = hash.clone();
-        self.seq = seq.next();
-        self.event_count = self.event_count.saturating_add(1);
-        self.physical_line_count = self.physical_line_count.saturating_add(1);
-        self.durable_bytes = next_bytes;
-        self.poisoned = false;
-        if let SessionProjectionState::Ready(projection) = &mut self.session_projection
-            && projection.observe_committed(event, seq, &hash).is_err()
-        {
-            self.session_projection = SessionProjectionState::Disabled;
-        }
-        if matches!(&event.kind, EventKind::TurnStart) {
-            // Loading after this append means the initial replay already contains this exact
-            // redacted, seq-stamped line. Do not observe it a second time.
-            let _ = self.ensure_session_projection();
-        }
-        if matches!(
-            &event.kind,
-            EventKind::TurnEnd { .. } | EventKind::Done { .. }
-        ) {
-            // Cache writes are rebuildable and must never turn a successful authoritative append
-            // into a reported failure. Explicit refresh callers can inspect the error if needed.
-            let _ = self.refresh_session_cache();
-        }
-        Ok(seq)
+        self.append_batch(std::slice::from_ref(event))?
+            .into_iter()
+            .next()
+            .ok_or(RecordError::InvalidAppendBatch {
+                reason: "a one-event append produced no sequence",
+            })
     }
 
     /// Refresh the rebuildable session sidecars from the record-owned incremental projection.
@@ -1639,15 +1505,6 @@ impl Rollout {
 
     pub fn tenant(&self) -> &TenantId {
         &self.tenant
-    }
-}
-
-impl Drop for Rollout {
-    fn drop(&mut self) {
-        // OS locks are also released when `File` is dropped. Unlock explicitly so the ownership
-        // rule is visible and testable as RAII, while still relying on descriptor close if this
-        // best-effort call itself fails during teardown.
-        let _ = self.file.unlock();
     }
 }
 
@@ -2250,7 +2107,7 @@ mod tests {
         let run = RunId("event-ceiling".into());
         let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
         rollout.event_count = MAX_ROLLOUT_EVENTS;
-        let before_len = rollout.file.metadata().unwrap().len();
+        let before_len = std::fs::metadata(rollout.path()).unwrap().len();
         let before_seq = rollout.seq;
 
         assert!(matches!(
@@ -2259,7 +2116,7 @@ mod tests {
                 max: MAX_ROLLOUT_EVENTS,
             })
         ));
-        assert_eq!(rollout.file.metadata().unwrap().len(), before_len);
+        assert_eq!(std::fs::metadata(rollout.path()).unwrap().len(), before_len);
         assert_eq!(rollout.seq, before_seq);
         drop(rollout);
         let _ = std::fs::remove_dir_all(dir);
@@ -2957,22 +2814,17 @@ mod tests {
         rollout.append(&ev(0)).unwrap();
         let path = rollout.path().to_path_buf();
 
-        // Inject a deterministic write failure without a production-only fault-injection seam:
-        // replace the private descriptor with a read-only one. The first append reaches I/O and
-        // poisons the object.
-        rollout.file = File::open(&path).unwrap();
+        // The decision stays thread-local to this test, then travels with the actor command. The
+        // first append reaches writer I/O and poisons both the worker and its public façade.
+        set_append_sync_fault_at(Some(1));
         let first_error = rollout
             .append(&ev(0))
-            .expect_err("writing through a read-only descriptor must fail");
+            .expect_err("the injected semantic barrier must fail");
+        set_append_sync_fault_at(None);
         assert!(matches!(first_error, RecordError::Io(_)));
 
-        // Give the object a writable descriptor. It must still fail-stop instead of trusting its
-        // pre-error in-memory hash head and continuing the journal.
-        rollout.file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&path)
-            .unwrap();
+        // The live worker must fail-stop instead of trusting its pre-error in-memory hash head and
+        // continuing the journal.
         assert!(matches!(
             rollout.append(&ev(0)),
             Err(RecordError::WriterPoisoned)

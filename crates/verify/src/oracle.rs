@@ -198,6 +198,7 @@ pub struct TestOracle {
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
     output_tail_bytes: usize,
+    output_observer: Option<iteron_sandbox::OutputObserver>,
 }
 
 impl TestOracle {
@@ -209,6 +210,7 @@ impl TestOracle {
             timeout_secs: 300,
             sensitive_env_names: Vec::new(),
             output_tail_bytes: crate::VerificationFeedbackTailPolicy::default().oracle_output_bytes,
+            output_observer: None,
         }
     }
 
@@ -233,6 +235,14 @@ impl TestOracle {
         self.output_tail_bytes = output_tail_bytes.min(1_048_576);
         self
     }
+
+    /// Project bounded, non-authoritative stdout/stderr progress while preserving the terminal
+    /// [`RunOutput`] as the sole verification result. Observer saturation never blocks the child;
+    /// its independent terminal channel still reports timeout, cancellation, and truncation.
+    pub fn with_output_observer(mut self, output_observer: iteron_sandbox::OutputObserver) -> Self {
+        self.output_observer = Some(output_observer);
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -245,6 +255,9 @@ impl Oracle for TestOracle {
         let mut conf = Confinement::egress_off(&self.workspace);
         conf.timeout_secs = self.timeout_secs;
         conf.sensitive_env_names = self.sensitive_env_names.clone();
+        if let Some(observer) = &self.output_observer {
+            conf = conf.with_output_observer(observer.clone());
+        }
         match self.sandbox.run(&self.command, &conf).await {
             Ok(out) => {
                 let outcome = if out.timed_out {

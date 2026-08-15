@@ -1,5 +1,397 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AttachmentFollowup {
+    None,
+    SubmitComposer,
+    QueueRunningDraft,
+}
+
+#[derive(Debug)]
+pub(super) enum AttachmentOrigin {
+    Clipboard,
+    Dropped {
+        original: String,
+    },
+    DroppedFile {
+        original: String,
+    },
+    ContextFile,
+    #[cfg(not(test))]
+    Bare {
+        original: String,
+        start: usize,
+        end: usize,
+        draft_revision: u64,
+        dropped_shape: bool,
+        followup: AttachmentFollowup,
+    },
+    ComposerSubmission {
+        raw: String,
+        draft_revision: u64,
+        image_mentions: Vec<image_input::ImageMention>,
+        file_mentions: Vec<file_input::FileMention>,
+    },
+}
+
+#[derive(Debug)]
+pub(super) enum AttachmentWorkerOutput {
+    Prepared(image_input::PreparedImage),
+    PreparedFile(file_input::PreparedFile),
+    PreparedSubmission {
+        images: Vec<image_input::PreparedImage>,
+        files: Vec<file_input::PreparedFile>,
+    },
+    PreparedContextDiff {
+        label: String,
+        document: String,
+    },
+    EmptyClipboard,
+}
+
+pub(super) fn queue_context_diff_effect(app: &mut App, workspace: PathBuf, scope: String) {
+    if let Some(previous) = app.attachment_job.take() {
+        previous.abort();
+        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+    }
+    app.attachment_generation = app.attachment_generation.wrapping_add(1);
+    let generation = app.attachment_generation;
+    app.attachment_effect_state = AttachmentEffectState::Queued;
+    app.attachment_job = Some(tokio::spawn(async move {
+        let result =
+            context_chips::diff_document(&workspace, &scope)
+                .await
+                .map(
+                    |(label, document)| AttachmentWorkerOutput::PreparedContextDiff {
+                        label,
+                        document,
+                    },
+                );
+        AttachmentEffectResult {
+            generation,
+            origin: AttachmentOrigin::ContextFile,
+            result,
+        }
+    }));
+}
+
+#[derive(Debug)]
+pub(super) struct AttachmentEffectResult {
+    pub(super) generation: u64,
+    pub(super) origin: AttachmentOrigin,
+    pub(super) result: Result<AttachmentWorkerOutput, String>,
+}
+
+/// Replace the one bounded attachment job. Cancellation is explicit state; its detached blocking
+/// read remains contained by `image_input`'s process-wide single-flight gate.
+pub(super) fn queue_image_path_effect(app: &mut App, path: PathBuf, origin: AttachmentOrigin) {
+    if let Some(previous) = app.attachment_job.take() {
+        previous.abort();
+        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+    }
+    app.attachment_generation = app.attachment_generation.wrapping_add(1);
+    let generation = app.attachment_generation;
+    let preflight = app.editor.attachments().preflight_path(&path);
+    let preparer = app.editor.attachments().preparer();
+    app.attachment_effect_state = AttachmentEffectState::Queued;
+    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
+        let result = preflight
+            .and_then(|()| preparer.prepare_path(&path))
+            .map(AttachmentWorkerOutput::Prepared)
+            .map_err(|error| error.to_string());
+        AttachmentEffectResult {
+            generation,
+            origin,
+            result,
+        }
+    }));
+}
+
+pub(super) fn queue_clipboard_image_effect(app: &mut App) {
+    if let Some(previous) = app.attachment_job.take() {
+        previous.abort();
+        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+    }
+    app.attachment_generation = app.attachment_generation.wrapping_add(1);
+    let generation = app.attachment_generation;
+    let preflight = app.editor.attachments().preflight_label("clipboard.png");
+    let preparer = app.editor.attachments().preparer();
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(2);
+    app.attachment_progress = Some(progress_rx);
+    app.attachment_effect_state = AttachmentEffectState::Queued;
+    app.attachment_job = Some(tokio::spawn(async move {
+        if let Err(error) = preflight {
+            return AttachmentEffectResult {
+                generation,
+                origin: AttachmentOrigin::Clipboard,
+                result: Err(error.to_string()),
+            };
+        }
+        let _ = progress_tx.send(AttachmentEffectState::Reading).await;
+        let result = match clipboard_image_bytes().await {
+            Ok(Some(bytes)) => {
+                let _ = progress_tx.send(AttachmentEffectState::Decoding).await;
+                tokio::task::spawn_blocking(move || {
+                    preparer
+                        .prepare_bytes("clipboard.png", &bytes)
+                        .map(AttachmentWorkerOutput::Prepared)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("clipboard decoder worker failed: {error}")))
+            }
+            Ok(None) => Ok(AttachmentWorkerOutput::EmptyClipboard),
+            Err(error) => Err(error.to_owned()),
+        };
+        AttachmentEffectResult {
+            generation,
+            origin: AttachmentOrigin::Clipboard,
+            result,
+        }
+    }));
+}
+
+pub(super) fn queue_file_path_effect(
+    app: &mut App,
+    kind: file_input::ContextKind,
+    workspace: PathBuf,
+    path: PathBuf,
+    origin: AttachmentOrigin,
+) {
+    if let Some(previous) = app.attachment_job.take() {
+        previous.abort();
+        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+    }
+    app.attachment_generation = app.attachment_generation.wrapping_add(1);
+    let generation = app.attachment_generation;
+    let preparer = app.editor.files().preparer();
+    app.attachment_effect_state = AttachmentEffectState::Queued;
+    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
+        let result = preparer
+            .prepare_typed_path(kind, &workspace, &path)
+            .map(AttachmentWorkerOutput::PreparedFile)
+            .map_err(|error| error.to_string());
+        AttachmentEffectResult {
+            generation,
+            origin,
+            result,
+        }
+    }));
+}
+
+/// Apply only the actor's prepared value on the TUI thread. No path read, decoder, HEIC helper, or
+/// base64 encoder is reachable from this function.
+pub(super) fn finish_attachment_effect(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    effect: AttachmentEffectResult,
+) {
+    if effect.generation != app.attachment_generation {
+        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+        return;
+    }
+    let AttachmentEffectResult { origin, result, .. } = effect;
+    match result {
+        Ok(AttachmentWorkerOutput::PreparedContextDiff { label, document }) => {
+            match app
+                .editor
+                .attach_context(file_input::ContextKind::Diff, &label, document)
+            {
+                Ok(chip) => {
+                    let summary = (
+                        chip.display_name().to_owned(),
+                        chip.id(),
+                        chip.text_bytes(),
+                        chip.digest().get(..12).unwrap_or(chip.digest()).to_owned(),
+                    );
+                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "attached {} context as [File #{}] · {} bytes · sha256:{}",
+                            summary.0, summary.1, summary.2, summary.3
+                        ),
+                    );
+                }
+                Err(error) => {
+                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("diff context refused: {error}"),
+                    );
+                }
+            }
+        }
+        Ok(AttachmentWorkerOutput::PreparedFile(prepared)) => {
+            let name = prepared.display_name().to_owned();
+            let text_bytes = prepared.text_bytes();
+            match app.editor.admit_prepared_file(prepared) {
+                Ok(attachment) => {
+                    let attachment_id = attachment.id();
+                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "attached {name} ({text_bytes} bytes) as [File #{}] — deleting the tag removes its chip",
+                            attachment_id
+                        ),
+                    );
+                }
+                Err(error) => {
+                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("file attachment refused: {error}"),
+                    );
+                }
+            }
+        }
+        Ok(AttachmentWorkerOutput::PreparedSubmission { images, files }) => {
+            let AttachmentOrigin::ComposerSubmission {
+                raw,
+                draft_revision,
+                image_mentions,
+                file_mentions,
+            } = origin
+            else {
+                app.attachment_effect_state = AttachmentEffectState::Failed;
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "attachment worker returned a mismatched submission result",
+                );
+                return;
+            };
+            if app.editor.persistence_revision() != draft_revision || app.editor.text() != raw {
+                app.attachment_effect_state = AttachmentEffectState::Cancelled;
+                app.note(
+                    block::NoticeLevel::Info,
+                    "attachments finished after the draft changed; submission kept for review",
+                );
+                return;
+            }
+            app.attachment_effect_state = AttachmentEffectState::Ready;
+            submit_prepared_composer(
+                app,
+                session,
+                notifier,
+                raw,
+                image_mentions,
+                file_mentions,
+                images,
+                files,
+            );
+        }
+        Ok(AttachmentWorkerOutput::Prepared(prepared)) => {
+            let prepared_summary = (
+                prepared.display_name().to_owned(),
+                prepared.media_type(),
+                prepared.file_bytes(),
+            );
+            let followup = match &origin {
+                #[cfg(not(test))]
+                AttachmentOrigin::Bare {
+                    start,
+                    end,
+                    original,
+                    draft_revision,
+                    followup,
+                    ..
+                } => {
+                    if app.editor.persistence_revision() != *draft_revision
+                        || app.editor.span(*start, *end) != *original
+                    {
+                        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "image finished after the draft changed; path kept as text",
+                        );
+                        return;
+                    }
+                    app.editor.delete_span(*start, *end);
+                    app.editor.set_cursor(*start);
+                    *followup
+                }
+                _ => AttachmentFollowup::None,
+            };
+            match app.editor.admit_prepared_image(prepared) {
+                Ok(attachment) => {
+                    let attachment_id = attachment.id();
+                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    let (name, media_type, file_bytes) = prepared_summary;
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "attached {name} ({}, {file_bytes} bytes) as [Image #{}] at the cursor",
+                            media_type.as_str(),
+                            attachment_id
+                        ),
+                    );
+                    match followup {
+                        AttachmentFollowup::None => {}
+                        AttachmentFollowup::SubmitComposer => {
+                            submit_composer(app, session, notifier);
+                        }
+                        AttachmentFollowup::QueueRunningDraft => {
+                            queue_draft_with_chips(app);
+                        }
+                    }
+                }
+                Err(error) => {
+                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    #[cfg(not(test))]
+                    if let AttachmentOrigin::Bare {
+                        start, original, ..
+                    } = origin
+                    {
+                        app.editor.set_cursor(start);
+                        app.editor.insert_str(&original);
+                    }
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("image attachment refused: {error}"),
+                    );
+                }
+            }
+        }
+        Ok(AttachmentWorkerOutput::EmptyClipboard) => {
+            app.attachment_effect_state = AttachmentEffectState::Failed;
+            app.note(
+                block::NoticeLevel::Info,
+                "no supported clipboard image adapter found; paste or drag an image path instead",
+            );
+        }
+        Err(error) => {
+            app.attachment_effect_state = AttachmentEffectState::Failed;
+            match origin {
+                AttachmentOrigin::Dropped { original, .. } => {
+                    app.editor.insert_str(&original);
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("image attachment refused: {error} — the path is still in the composer as text"),
+                    );
+                }
+                AttachmentOrigin::DroppedFile { original } => {
+                    app.editor.insert_str(&original);
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("file attachment refused: {error} — the path is still in the composer as text"),
+                    );
+                }
+                #[cfg(not(test))]
+                AttachmentOrigin::Bare {
+                    dropped_shape,
+                    ..
+                } if dropped_shape => app.note(
+                    block::NoticeLevel::Warn,
+                    format!("image attachment refused: {error} — the path is still in the composer as text"),
+                ),
+                _ => app.note(block::NoticeLevel::Warn, error),
+            }
+        }
+    }
+}
+
 /// Resolve explicit `@path.png` mentions into the same bounded attachment collection used by
 /// drag/drop, then submit one legacy or multimodal SQ operation. Work is staged against a clone:
 /// an invalid file or a saturated SQ leaves the operator's draft and chips intact.
@@ -70,35 +462,48 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
             } else {
                 workspace.join(path)
             };
-            let attached = app.editor.attach_image_path(&image_path).map(|attachment| {
-                (
-                    attachment.id(),
-                    attachment.display_name().to_owned(),
-                    attachment.media_type(),
-                    attachment.file_bytes(),
-                )
-            });
-            match attached {
-                Ok((id, name, media_type, file_bytes)) => app.note(
-                    block::NoticeLevel::Ok,
-                    format!(
-                        "attached {} ({}, {} bytes) as [Image #{id}] at the cursor \
-                         — deleting the tag removes its chip; alt+backspace removes the last chip",
-                        name,
-                        media_type.as_str(),
-                        file_bytes
+            #[cfg(test)]
+            {
+                let attached = app.editor.attach_image_path(&image_path).map(|attachment| {
+                    (
+                        attachment.id(),
+                        attachment.display_name().to_owned(),
+                        attachment.media_type(),
+                        attachment.file_bytes(),
+                    )
+                });
+                match attached {
+                    Ok((id, name, media_type, file_bytes)) => app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "attached {name} ({}, {file_bytes} bytes) as [Image #{id}] at the cursor",
+                            media_type.as_str()
+                        ),
                     ),
-                ),
-                Err(error) => {
-                    // The path goes into the draft even though it did not attach. A refusal that
-                    // also swallows what the operator dropped leaves them with nothing to retry,
-                    // nothing to correct, and nothing to show anyone — and an ephemeral screenshot
-                    // temp file that has already been deleted is exactly the case that gets here.
-                    app.editor.insert_str(pasted);
-                    note_image_refusal(app, &image_path, &error);
+                    Err(error) => {
+                        app.editor.insert_str(pasted);
+                        note_image_refusal(app, &image_path, &error);
+                    }
                 }
+                app.completion = None;
             }
-            app.completion = None;
+            #[cfg(not(test))]
+            queue_image_path_effect(
+                app,
+                image_path.clone(),
+                AttachmentOrigin::Dropped {
+                    original: pasted.to_owned(),
+                },
+            );
+            #[cfg(not(test))]
+            app.note(
+                block::NoticeLevel::Info,
+                "image queued · reading and decoding in background · you can keep typing",
+            );
+            #[cfg(not(test))]
+            {
+                app.completion = None;
+            }
         }
         Ok(None) => {
             // Not an image. A whole-input paste that is an absolute path already
@@ -110,29 +515,19 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
             // send it to the composer as raw path text instead.
             match file_input::parse_dropped_file_path(workspace, pasted) {
                 Some(dropped) => {
-                    let attached =
-                        app.editor
-                            .attach_file_path(workspace, &dropped)
-                            .map(|attachment| {
-                                (
-                                    attachment.id(),
-                                    attachment.display_name().to_owned(),
-                                    attachment.text_bytes(),
-                                )
-                            });
-                    match attached {
-                        Ok((id, name, text_bytes)) => app.note(
-                            block::NoticeLevel::Ok,
-                            format!(
-                                "attached {name} ({text_bytes} bytes) as [File #{id}] — deleting \
-                                 the tag removes its chip"
-                            ),
-                        ),
-                        Err(error) => app.note(
-                            block::NoticeLevel::Warn,
-                            format!("file attachment refused: {error}"),
-                        ),
-                    }
+                    queue_file_path_effect(
+                        app,
+                        file_input::ContextKind::File,
+                        workspace.to_path_buf(),
+                        dropped,
+                        AttachmentOrigin::DroppedFile {
+                            original: pasted.to_owned(),
+                        },
+                    );
+                    app.note(
+                        block::NoticeLevel::Info,
+                        "file queued · reading in background · you can keep typing",
+                    );
                     app.completion = None;
                 }
                 // A paste too big to read is held aside as one tag rather than
@@ -157,7 +552,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                             format!("paste refused: {error}"),
                         ),
                     }
-                    app.refresh_completion(workspace);
+                    app.schedule_completion();
                 }
                 _ => {
                     app.editor.insert_str(pasted);
@@ -167,7 +562,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                     // and nothing else was ever going to look at it, because the keystroke hook
                     // fires on `KeyCode::Char` and a paste is not one.
                     attach_bare_image_paths(app, workspace);
-                    app.refresh_completion(workspace);
+                    app.schedule_completion();
                 }
             }
         }
@@ -283,9 +678,46 @@ pub(super) fn decode_dropped_escapes(token: &str) -> Option<String> {
 /// picture did not become one, and the operator has to be able to find out why. Silence here is how
 /// a screenshot whose ephemeral temp file had already been deleted looked identical to a feature
 /// that does not exist.
-pub(super) fn attach_bare_image_paths(app: &mut App, workspace: &Path) {
+pub(super) fn attach_bare_image_paths(app: &mut App, workspace: &Path) -> bool {
+    queue_bare_image_path(app, workspace, AttachmentFollowup::None)
+}
+
+pub(super) fn queue_bare_image_path(
+    app: &mut App,
+    workspace: &Path,
+    followup: AttachmentFollowup,
+) -> bool {
     let spans = bare_image_path_spans(&app.editor.text());
-    for (start, end, path) in spans.into_iter().rev() {
+    #[cfg(test)]
+    {
+        let _ = followup;
+        let mut attached_any = false;
+        for (start, end, path) in spans.into_iter().rev() {
+            let dropped_shape = path.is_absolute();
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                workspace.join(path)
+            };
+            let original = app.editor.span(start, end);
+            let before = app.editor.chip_count();
+            app.editor.delete_span(start, end);
+            app.editor.set_cursor(start);
+            match app.editor.attach_image_path(&absolute) {
+                Ok(_) => attached_any = true,
+                Err(error) => {
+                    debug_assert_eq!(app.editor.chip_count(), before);
+                    app.editor.insert_str(&original);
+                    if dropped_shape {
+                        note_image_refusal(app, &absolute, &error);
+                    }
+                }
+            }
+        }
+        attached_any
+    }
+    #[cfg(not(test))]
+    if let Some((start, end, path)) = spans.into_iter().next_back() {
         // A terminal always writes an ABSOLUTE path when a file is dropped, so an absolute token
         // that fails to attach is a drop that went wrong and is worth saying so. A relative one is
         // far more likely to be prose — `see report.png` — and warning about every file name in a
@@ -296,35 +728,28 @@ pub(super) fn attach_bare_image_paths(app: &mut App, workspace: &Path) {
         } else {
             workspace.join(path)
         };
-        // Captured BEFORE the span is removed: after the delete these indices address different
-        // characters, and reading them then is how a failed attach put the wrong words back.
         let original = app.editor.span(start, end);
-        let before = app.editor.chip_count();
-        app.editor.delete_span(start, end);
-        app.editor.set_cursor(start);
-        let attached = app.editor.attach_image_path(&absolute).map(|attachment| {
-            (
-                attachment.id(),
-                attachment.display_name().to_owned(),
-                attachment.file_bytes(),
-            )
-        });
-        match attached {
-            Ok((id, name, bytes)) => app.note(
-                block::NoticeLevel::Ok,
-                format!("attached {name} ({bytes} bytes) as [Image #{id}]"),
-            ),
-            Err(error) => {
-                // Put the words back exactly as they were. `delete_span` took them out on the
-                // assumption this would attach; it did not, so the draft owes the operator its text.
-                debug_assert_eq!(app.editor.chip_count(), before);
-                app.editor.insert_str(&original);
-                if dropped_shape {
-                    note_image_refusal(app, &absolute, &error);
-                }
-            }
-        }
+        let draft_revision = app.editor.persistence_revision();
+        queue_image_path_effect(
+            app,
+            absolute.clone(),
+            AttachmentOrigin::Bare {
+                original,
+                start,
+                end,
+                draft_revision,
+                dropped_shape,
+                followup,
+            },
+        );
+        app.note(
+            block::NoticeLevel::Info,
+            "image queued · reading and decoding in background",
+        );
+        return true;
     }
+    #[cfg(not(test))]
+    false
 }
 
 /// Say — once per distinct path — that something shaped like a dropped image did not attach.
@@ -332,6 +757,7 @@ pub(super) fn attach_bare_image_paths(app: &mut App, workspace: &Path) {
 /// Deduplicated because [`attach_bare_image_paths`] rescans the whole draft on every keystroke: one
 /// unreadable path left in the composer would otherwise push a notice per character typed. Only the
 /// notice is suppressed, never the attempt, so a file that appears later still becomes a chip.
+#[cfg(test)]
 pub(super) fn note_image_refusal(app: &mut App, path: &Path, error: &image_input::ImageInputError) {
     if !app.refused_image_paths.insert(path.to_path_buf()) {
         return;

@@ -28,6 +28,15 @@ pub(crate) enum StartupPhase {
     ProviderDiscover,
     /// Interactive terminal capability queries (keyboard enhancement, OSC 11).
     TerminalProbe,
+    AgentDiscovery,
+    HistoryHydrate,
+    Title,
+    FirstFrame,
+    InitialSubmission,
+    RequestSent,
+    AnswerComplete,
+    Finalization,
+    InputReady,
 }
 
 impl StartupPhase {
@@ -38,6 +47,15 @@ impl StartupPhase {
             Self::ToolServer => "tool_server",
             Self::ProviderDiscover => "provider_discover",
             Self::TerminalProbe => "terminal_probe",
+            Self::AgentDiscovery => "agent_discovery",
+            Self::HistoryHydrate => "history_hydrate",
+            Self::Title => "title",
+            Self::FirstFrame => "first_frame",
+            Self::InitialSubmission => "initial_submission",
+            Self::RequestSent => "request_sent",
+            Self::AnswerComplete => "answer_complete",
+            Self::Finalization => "finalization",
+            Self::InputReady => "input_ready",
         }
     }
 }
@@ -87,6 +105,17 @@ impl StartupTiming {
             iteron_obs::duration_ms_ceil(now.duration_since(previous)),
         ));
         self.previous = Some(now);
+    }
+
+    /// Record a concurrently measured phase without charging time spent in another worker to it.
+    /// Background hydration and protocol Activity spans call this with their own start/end delta;
+    /// foreground composition continues to use [`Self::mark`].
+    pub(crate) fn mark_duration(&mut self, phase: StartupPhase, duration: std::time::Duration) {
+        if self.origin.is_none() || self.spans.iter().any(|(recorded, _)| *recorded == phase) {
+            return;
+        }
+        self.spans
+            .push((phase, iteron_obs::duration_ms_ceil(duration)));
     }
 
     /// Render the one line this instrument emits, or `None` when it is off or nothing was marked.

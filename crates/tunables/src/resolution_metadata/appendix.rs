@@ -123,7 +123,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     literal_default!(enum_value!("parent_mediated")),    // 145
     derived_default!("task_retry_reassignment_policy"),  // 146
     literal_default!(list_value!(enum_value!("stdio"))), // 147 mcp_transport_selection
-    literal_default!(integer_value!(12)),                // 148 deferred_discovery_threshold
+    literal_default!(integer_value!(4)),                 // 148 deferred_discovery_threshold
     derived_default!("mcp_reconnect_backoff"),           // 149
     derived_default!("per_server_startup_deadline"),     // 150
     derived_default!("per_tool_mcp_deadline"),           // 151

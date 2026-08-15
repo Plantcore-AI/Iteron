@@ -225,6 +225,7 @@ impl WorkflowRunCard {
                 label,
                 phase,
                 model,
+                ..
             } => {
                 let phase_index = self.resolve_phase(phase);
                 let agent = self.agent_mut(index);
@@ -246,6 +247,16 @@ impl WorkflowRunCard {
                 if last_tool_summary.is_some() {
                     agent.last_tool_summary = last_tool_summary;
                 }
+            }
+            ProgressEvent::AgentCancelling {
+                index,
+                cleanup_deadline_ms,
+            } => {
+                let agent = self.agent_mut(index);
+                agent.state = WorkflowState::Running;
+                agent.last_tool_summary = Some(format!(
+                    "cancelling · cleanup deadline {cleanup_deadline_ms}ms"
+                ));
             }
             ProgressEvent::AgentFinished {
                 index,

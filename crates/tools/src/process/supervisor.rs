@@ -5,9 +5,9 @@ use super::policy::{
 };
 use super::types::{
     ActionError, JobId, JobShared, JobState, ProcessHealth, ProcessSnapshot, ProcessSummary,
-    WriteReceipt, lock,
+    StreamingExecReceipt, WriteReceipt, lock,
 };
-use super::{CONTROL_RESPONSE_SECS, ProcessLifecycleObserver};
+use super::{ProcessLifecycleObserver, ProcessOutputObserver};
 use futures_util::future::join_all;
 use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyProcess, ConfinedPtyResize, Confinement, PersistentBackend,
@@ -29,12 +29,13 @@ struct SupervisorState {
     jobs: BTreeMap<JobId, Arc<Job>>,
 }
 
-pub(super) struct Supervisor {
+pub(crate) struct Supervisor {
     instance: u64,
     state: Mutex<SupervisorState>,
     start_gate: AsyncMutex<()>,
     policy: Mutex<ProcessRuntimePolicy>,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
+    output_observer: Arc<Mutex<Option<ProcessOutputObserver>>>,
 }
 
 impl Supervisor {
@@ -51,6 +52,7 @@ impl Supervisor {
             start_gate: AsyncMutex::new(()),
             policy: Mutex::new(ProcessRuntimePolicy::default()),
             lifecycle_observer: Arc::new(Mutex::new(None)),
+            output_observer: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -82,6 +84,10 @@ impl Supervisor {
         *lock(&self.lifecycle_observer) = Some(observer);
     }
 
+    pub(super) fn bind_output_observer(&self, observer: ProcessOutputObserver) {
+        *lock(&self.output_observer) = Some(observer);
+    }
+
     pub(super) async fn start(
         &self,
         root: &Path,
@@ -90,20 +96,143 @@ impl Supervisor {
         cols: u16,
         launch: InstalledProcessLaunchPolicy,
     ) -> Result<ProcessSnapshot, ActionError> {
+        let policy = self.policy();
+        self.start_with_mode(
+            root,
+            command,
+            rows,
+            cols,
+            launch,
+            policy,
+            true,
+            super::max_job_runtime_secs(),
+        )
+        .await
+    }
+
+    pub(crate) async fn exec_yield(
+        &self,
+        root: &Path,
+        command: &str,
+        launch: InstalledProcessLaunchPolicy,
+        confine: bool,
+        yield_after: Duration,
+        timeout_seconds: u64,
+    ) -> Result<StreamingExecReceipt, ActionError> {
+        let base = self.policy();
+        let runtime_policy = ProcessRuntimePolicy::new(
+            PersistentBackendSelection::OneShot,
+            base.max_background_jobs.max(1),
+            base.idle_stall_milliseconds,
+            base.stdin_wait,
+        )
+        .map_err(|error| ActionError::Definite(error.to_string()))?;
+        let mut snapshot = self
+            .start_with_mode(
+                root,
+                command,
+                super::DEFAULT_PTY_ROWS,
+                super::DEFAULT_PTY_COLS,
+                launch,
+                runtime_policy,
+                confine,
+                timeout_seconds,
+            )
+            .await?;
+        let job_id = snapshot.job_id.clone();
+        // `exec_yield` is polled inside the runtime's interrupt race. Dropping that future must
+        // therefore cancel the physical process, not merely abandon the polling client while the
+        // retained actor keeps running. A deliberate yielded receipt transfers ownership back to
+        // the process table and disarms this guard.
+        let mut cancellation_guard = ExecYieldCancellationGuard {
+            job: self.lookup(&job_id)?,
+            armed: true,
+        };
+        let started = tokio::time::Instant::now();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut stdout_incomplete = false;
+        let mut stderr_incomplete = false;
+        let mut deltas = 0usize;
+        loop {
+            stdout.push_str(&snapshot.stdout.text);
+            stderr.push_str(&snapshot.stderr.text);
+            stdout_incomplete |= snapshot.stdout.gap;
+            stderr_incomplete |= snapshot.stderr.gap;
+            let stdout_cursor = snapshot.stdout.next_cursor;
+            let stderr_cursor = snapshot.stderr.next_cursor;
+            deltas = deltas.saturating_add(1);
+            let terminal = snapshot.state.is_terminal()
+                && !snapshot.stdout.has_more
+                && !snapshot.stderr.has_more;
+            let elapsed = started.elapsed();
+            let yielded =
+                !terminal && (elapsed >= yield_after || deltas >= super::max_exec_deltas());
+            if terminal || yielded {
+                let is_error = terminal
+                    && !matches!(
+                        snapshot.state,
+                        JobState::Exited {
+                            exit_code: Some(0),
+                            signal: None
+                        }
+                    );
+                let receipt = StreamingExecReceipt {
+                    job_id,
+                    stdout,
+                    stderr,
+                    stdout_cursor,
+                    stderr_cursor,
+                    stdout_incomplete,
+                    stderr_incomplete,
+                    yielded,
+                    is_error,
+                    terminal,
+                    state_json: serde_json::to_string(&snapshot.state)
+                        .unwrap_or_else(|_| "{\"kind\":\"unknown\"}".into()),
+                };
+                cancellation_guard.armed = false;
+                return Ok(receipt);
+            }
+            let remaining = yield_after.saturating_sub(elapsed);
+            let wait_ms = u64::try_from(remaining.as_millis())
+                .unwrap_or(u64::MAX)
+                .clamp(1, 250);
+            snapshot = self
+                .poll(&job_id, stdout_cursor, stderr_cursor, wait_ms)
+                .await?;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_mode(
+        &self,
+        root: &Path,
+        command: &str,
+        rows: u16,
+        cols: u16,
+        launch: InstalledProcessLaunchPolicy,
+        policy: ProcessRuntimePolicy,
+        confine: bool,
+        timeout_seconds: u64,
+    ) -> Result<ProcessSnapshot, ActionError> {
         let _start = self.start_gate.lock().await;
         launch
             .policy
             .validate_root(root)
             .map_err(|error| ActionError::Definite(error.to_string()))?;
-        let policy = self.policy();
         if policy.backend == PersistentBackendSelection::Disabled {
             return Err(ActionError::Definite(
                 "process backend is disabled by the immutable session policy".into(),
             ));
         }
         let id = self.reserve_id(policy.max_background_jobs)?;
-        let mut confinement = Confinement::egress_off(&launch.policy.cwd.initial_cwd);
-        confinement.timeout_secs = crate::process::max_job_runtime_secs();
+        let mut confinement = if confine {
+            Confinement::egress_off(&launch.policy.cwd.initial_cwd)
+        } else {
+            Confinement::unconfined(&launch.policy.cwd.initial_cwd)
+        };
+        confinement.timeout_secs = timeout_seconds;
         confinement.child_environment = Some(launch.child_environment);
         let window = WindowSize::new(rows, cols)
             .map_err(|error| ActionError::Definite(error.to_string()))?;
@@ -115,7 +244,9 @@ impl Supervisor {
             command.to_owned(),
             process,
             policy,
+            timeout_seconds,
             Arc::clone(&self.lifecycle_observer),
+            Arc::clone(&self.output_observer),
         )
         .await?;
         let snapshot = job.snapshot(0, 0)?;
@@ -294,6 +425,21 @@ impl Supervisor {
     }
 }
 
+struct ExecYieldCancellationGuard {
+    job: Arc<Job>,
+    armed: bool,
+}
+
+impl Drop for ExecYieldCancellationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Force-kill closes the operator-visible cancellation race immediately; the actor's
+            // bounded Cleanup path remains the sole owner of reap and terminal state evidence.
+            self.job.abort_after_unknown();
+        }
+    }
+}
+
 fn spawn_error(error: SandboxError) -> ActionError {
     match error {
         SandboxError::Unsupported | SandboxError::Profile(_) => {
@@ -331,7 +477,9 @@ impl Job {
         command: String,
         mut process: ConfinedPtyProcess,
         runtime_policy: ProcessRuntimePolicy,
+        timeout_seconds: u64,
         lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
+        output_observer: Arc<Mutex<Option<ProcessOutputObserver>>>,
     ) -> Result<Arc<Self>, ActionError> {
         let backend = process.backend();
         let process_control = process.control();
@@ -351,15 +499,17 @@ impl Job {
             awaiting_stdin: AtomicBool::new(false),
             revision,
         });
-        let channels = spawn_actor(
-            id,
+        let channels = spawn_actor(super::actor::ActorLaunch {
+            job_id: id,
             process,
             stdin,
             stdout,
-            Arc::clone(&shared),
+            shared: Arc::clone(&shared),
             runtime_policy,
+            timeout_seconds,
             lifecycle_observer,
-        );
+            output_observer,
+        });
         #[cfg(all(test, target_os = "linux"))]
         let actor_abort = channels.task.abort_handle();
         // Dropping a JoinHandle detaches the actor. Its own exit guard owns state truth and group
@@ -462,10 +612,7 @@ impl Job {
             .try_send(WriteControl { bytes, eof, reply })
             .map_err(|error| send_error(self.id, error))?;
         let delivered = match tokio::time::timeout(
-            Duration::from_secs(iteron_tunables::param_integer(
-                "tools.process.mod.control_response_secs",
-                CONTROL_RESPONSE_SECS,
-            )),
+            Duration::from_secs(super::control_response_secs()),
             response,
         )
         .await
@@ -534,10 +681,7 @@ impl Job {
             return self.wait_for_terminal("closed stop controller").await;
         }
         let authoritative = match tokio::time::timeout(
-            Duration::from_secs(iteron_tunables::param_integer(
-                "tools.process.mod.control_response_secs",
-                CONTROL_RESPONSE_SECS,
-            )),
+            Duration::from_secs(super::control_response_secs()),
             response,
         )
         .await
@@ -580,10 +724,7 @@ impl Job {
             }
         };
         tokio::time::timeout(
-            Duration::from_secs(iteron_tunables::param_integer(
-                "tools.process.mod.control_response_secs",
-                CONTROL_RESPONSE_SECS,
-            )),
+            Duration::from_secs(super::control_response_secs()),
             terminal,
         )
         .await

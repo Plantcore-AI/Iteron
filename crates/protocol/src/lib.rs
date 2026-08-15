@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 #[doc(hidden)]
 pub use iteron_tunables::param_integer;
 
+pub mod activity;
 pub mod artifact;
 pub mod bundle;
 pub mod capability_set;
@@ -45,6 +46,11 @@ pub mod home;
 pub mod input;
 pub mod text;
 
+pub use activity::{
+    ACTIVITY_SCHEMA_VERSION, ActivityCancelability, ActivityDetailCode, ActivityEvent,
+    ActivityKind, ActivityOwner, ActivityProgress, ActivityState, ActivityValidationError,
+    MAX_ACTIVITY_ATTEMPTS, MAX_ACTIVITY_ID_BYTES, MAX_ACTIVITY_PROGRESS_UNITS,
+};
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
 pub use erasure::ids::{
     ErasureAuthorityId, ErasureContentDigest, ErasureOperationId, ErasureScopeId, ErasureTargetId,

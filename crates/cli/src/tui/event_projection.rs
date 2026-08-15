@@ -29,10 +29,14 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             diff,
         } => app.tool_end(&id, ok, exit_code, output, diff),
         UiEvent::Phase(p) => {
-            // Entering the model phase starts the first-token clock; every other phase stops it,
-            // because only a model request can be waiting on a provider's first byte (I-64).
-            app.awaiting_first_token_since =
-                (p == iteron_protocol::Phase::Model).then(Instant::now);
+            // Durable Phase is not transport authority. Local request assembly and admission also
+            // happen under Model, so TTFT begins only when the RequestSent activity arrives.
+            app.awaiting_first_token_since = None;
+            app.provider_accepted = false;
+            if p == iteron_protocol::Phase::Model {
+                app.assistant_stream_authority.clear();
+                app.assistant_turn_block_ids.clear();
+            }
             app.status = p.label().into();
         }
         UiEvent::TurnEnd {
@@ -47,7 +51,9 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             // A provider turn is a semantic token boundary. Release the last held word only after
             // scrubbing the complete token; keep it in the live block until Done/tool framing.
             if let Some(pending) = app.text_scrubber.finish() {
-                app.cur_text.push_str(&ui_safe_text(&pending));
+                let pending = ui_safe_text(&pending);
+                app.cur_text.push_str(&pending);
+                app.assistant_stream_authority.push_str(&pending);
                 app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
             }
             if let Some(pending) = app.thinking_scrubber.finish() {
@@ -61,7 +67,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             app.compaction_trigger_tokens = compaction_trigger_tokens;
             app.effort_application = Some(effort);
             app.turns = app.turns.saturating_add(1);
-            app.status = "running…".into();
+            app.status = "answer complete · finalizing run record…".into();
         }
         UiEvent::Workflow(event) => app.workflow_event(event),
         UiEvent::SteerApplied { count } => {
@@ -98,6 +104,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         }
         UiEvent::Done(o) => {
             app.flush_text(); // finalize any in-flight answer/reasoning into blocks
+            app.status = "finalizing · recording outcome…".into();
             let _ = o; // the reclaimed run publishes the human outcome in the active shelf
         }
     }

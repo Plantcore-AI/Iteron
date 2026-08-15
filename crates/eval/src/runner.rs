@@ -5,7 +5,10 @@ use crate::attempts::{
 };
 use crate::contract::parse_final_result;
 use crate::corpus::{CorpusManifest, CorpusTask};
-use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
+use crate::process::{
+    ProcessCancellation, ProcessOutput, ProcessSpec, find_core, run_process,
+    scope_process_cancellation,
+};
 use crate::report::{aggregate, compare, selection_summaries};
 use crate::types::{
     CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
@@ -205,6 +208,10 @@ pub enum RunnerError {
     AttemptLedger(#[from] AttemptLedgerError),
     #[error(transparent)]
     Attestation(#[from] crate::attestation::AttestationError),
+    #[error(transparent)]
+    Activity(#[from] iteron_evolve::ActivityError),
+    #[error("evaluation cancelled by operator")]
+    Cancelled,
 }
 
 pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest, RunnerError> {
@@ -272,6 +279,15 @@ impl PhysicalAttempt<'_> {
 
 pub async fn run_evaluation_parallel(
     options: &ParallelEvalOptions,
+) -> Result<EvaluationManifest, RunnerError> {
+    run_evaluation_parallel_with_activity(options, None).await
+}
+
+/// The normal evaluator with an optional bounded publisher for the same ActivityEvent contract
+/// used by interactive runs. This path stays entirely offline and is never called at startup.
+pub async fn run_evaluation_parallel_with_activity(
+    options: &ParallelEvalOptions,
+    activity: Option<&iteron_evolve::ActivityPublisher>,
 ) -> Result<EvaluationManifest, RunnerError> {
     validate_parallel_options(options)?;
     let corpus = CorpusManifest::load(&options.corpus_path)?;
@@ -345,6 +361,17 @@ pub async fn run_evaluation_parallel(
             "evaluation expands to {total_cells} cells; maximum is {MAX_EVAL_CELLS}"
         )));
     }
+    if let Some(activity) = activity {
+        let _ = activity.stage(
+            "eval.run",
+            iteron_evolve::ActivityState::Running,
+            Some(iteron_evolve::ActivityProgress {
+                completed: 0,
+                total: total_cells as u64,
+            }),
+            iteron_evolve::ActivityDetailCode::Verification,
+        );
+    }
 
     let mut pending = std::collections::VecDeque::with_capacity(total_cells);
     for task in tasks {
@@ -361,9 +388,33 @@ pub async fn run_evaluation_parallel(
         &crate::attempts::sidecar_path(&options.output_path),
     )?));
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(options.workers));
+    let process_cancellation = ProcessCancellation::default();
     let mut running = tokio::task::JoinSet::new();
     let mut cells = Vec::with_capacity(total_cells);
     while !pending.is_empty() || !running.is_empty() {
+        if activity.is_some_and(|activity| activity.cancellation().is_cancelled()) {
+            // Wake every active `run_process` first. Each child owns the process group and proves
+            // terminate+reap before its worker returns; task abort is only a bounded fallback for
+            // code that is not currently inside a physical process boundary.
+            process_cancellation.cancel();
+            let cleanup = async { while running.join_next().await.is_some() {} };
+            if tokio::time::timeout(Duration::from_secs(5), cleanup)
+                .await
+                .is_err()
+            {
+                running.abort_all();
+                while running.join_next().await.is_some() {}
+            }
+            if let Some(activity) = activity {
+                let _ = activity.stage(
+                    "eval.run",
+                    iteron_evolve::ActivityState::Cancelled,
+                    None,
+                    iteron_evolve::ActivityDetailCode::Verification,
+                );
+            }
+            return Err(RunnerError::Cancelled);
+        }
         while running.len() < options.workers {
             let Some((task, config, seed)) = pending.pop_front() else {
                 break;
@@ -374,61 +425,87 @@ pub async fn run_evaluation_parallel(
             let legacy_options = std::sync::Arc::clone(&legacy_options);
             let semaphore = std::sync::Arc::clone(&semaphore);
             let attempt_ledger = std::sync::Arc::clone(&attempt_ledger);
-            running.spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .expect("evaluation semaphore is owned until all workers join");
-                let directory = cell_directory(&task, config, seed);
-                let mut final_cell = None;
-                for attempt in 1..=options.max_attempts {
-                    let key = AttemptKey {
-                        task: task.id.clone(),
-                        config: config.name.into(),
-                        seed,
-                        attempt,
-                    };
-                    append_attempt(&attempt_ledger, AttemptEvent::Planned { key: key.clone() })?;
-                    append_attempt(&attempt_ledger, AttemptEvent::Started { key: key.clone() })?;
-                    let attempt_directory = format!("{directory}-attempt-{attempt}");
-                    let cell_root = run_root.join(&attempt_directory);
-                    let oracle_root = run_root.join(format!("{attempt_directory}-oracle"));
-                    let mut cell = PhysicalAttempt {
-                        core: &core,
-                        cell_root: &cell_root,
-                        oracle_root: &oracle_root,
-                        run_root: &run_root,
-                        task: &task,
-                        config,
-                        seed,
-                        legacy_options: &legacy_options,
-                        options: &options,
+            let worker_cancellation = process_cancellation.clone();
+            running.spawn(scope_process_cancellation(
+                worker_cancellation,
+                async move {
+                    let _permit = semaphore
+                        .acquire_owned()
+                        .await
+                        .expect("evaluation semaphore is owned until all workers join");
+                    let directory = cell_directory(&task, config, seed);
+                    let mut final_cell = None;
+                    for attempt in 1..=options.max_attempts {
+                        let key = AttemptKey {
+                            task: task.id.clone(),
+                            config: config.name.into(),
+                            seed,
+                            attempt,
+                        };
+                        append_attempt(
+                            &attempt_ledger,
+                            AttemptEvent::Planned { key: key.clone() },
+                        )?;
+                        append_attempt(
+                            &attempt_ledger,
+                            AttemptEvent::Started { key: key.clone() },
+                        )?;
+                        let attempt_directory = format!("{directory}-attempt-{attempt}");
+                        let cell_root = run_root.join(&attempt_directory);
+                        let oracle_root = run_root.join(format!("{attempt_directory}-oracle"));
+                        let mut cell = PhysicalAttempt {
+                            core: &core,
+                            cell_root: &cell_root,
+                            oracle_root: &oracle_root,
+                            run_root: &run_root,
+                            task: &task,
+                            config,
+                            seed,
+                            legacy_options: &legacy_options,
+                            options: &options,
+                        }
+                        .execute()
+                        .await;
+                        cell.benchmark = benchmark_reference(&task);
+                        append_attempt(
+                            &attempt_ledger,
+                            AttemptEvent::Finished {
+                                key,
+                                run_status: cell.run_status,
+                                failure_phase: cell.failure_phase.clone(),
+                            },
+                        )?;
+                        let retryable =
+                            matches!(cell.run_status, RunStatus::Errored | RunStatus::TimedOut);
+                        final_cell = Some(cell);
+                        if !retryable {
+                            break;
+                        }
                     }
-                    .execute()
-                    .await;
-                    cell.benchmark = benchmark_reference(&task);
-                    append_attempt(
-                        &attempt_ledger,
-                        AttemptEvent::Finished {
-                            key,
-                            run_status: cell.run_status,
-                            failure_phase: cell.failure_phase.clone(),
-                        },
-                    )?;
-                    let retryable =
-                        matches!(cell.run_status, RunStatus::Errored | RunStatus::TimedOut);
-                    final_cell = Some(cell);
-                    if !retryable {
-                        break;
-                    }
-                }
-                Ok::<CellResult, RunnerError>(
-                    final_cell.expect("validated max_attempts always executes at least once"),
-                )
-            });
+                    Ok::<CellResult, RunnerError>(
+                        final_cell.expect("validated max_attempts always executes at least once"),
+                    )
+                },
+            ));
         }
-        if let Some(joined) = running.join_next().await {
+        let joined = tokio::select! {
+            joined = running.join_next() => joined,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)),
+                if activity.is_some() => continue,
+        };
+        if let Some(joined) = joined {
             cells.push(joined.map_err(|error| RunnerError::WorkerJoin(error.to_string()))??);
+            if let Some(activity) = activity {
+                let _ = activity.stage(
+                    "eval.run",
+                    iteron_evolve::ActivityState::Running,
+                    Some(iteron_evolve::ActivityProgress {
+                        completed: cells.len() as u64,
+                        total: total_cells as u64,
+                    }),
+                    iteron_evolve::ActivityDetailCode::Verification,
+                );
+            }
         }
     }
     cells.sort_by(|left, right| {
@@ -524,6 +601,18 @@ pub async fn run_evaluation_parallel(
         &attestation,
         &crate::attestation::sidecar_path(&options.output_path),
     )?;
+    if let Some(activity) = activity {
+        let _ = activity.evidence("eval.run", &manifest.run_id);
+        let _ = activity.stage(
+            "eval.run",
+            iteron_evolve::ActivityState::Succeeded,
+            Some(iteron_evolve::ActivityProgress {
+                completed: total_cells as u64,
+                total: total_cells as u64,
+            }),
+            iteron_evolve::ActivityDetailCode::Verification,
+        );
+    }
     Ok(manifest)
 }
 

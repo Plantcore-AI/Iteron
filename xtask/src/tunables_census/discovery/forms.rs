@@ -204,6 +204,69 @@ pub(super) fn source_invariant_disposition(
     let value = value.to_ascii_lowercase();
     let invariant = |kind, rationale| SourceInvariantDisposition { kind, rationale };
 
+    if identity.contains("crates/cli/src/providers.rs")
+        && identity.contains("eager_discovery_budget")
+    {
+        return Some(invariant(
+            InvariantKind::HardBudget,
+            "the zero pre-paint network budget is a host-owned latency ceiling, not a trainable provider policy",
+        ));
+    }
+    if identity.contains("crates/record/src/session.rs")
+        && identity.contains("sessiondeltahardlimits")
+    {
+        return Some(invariant(
+            InvariantKind::Durability,
+            "the session-delta hard envelope bounds crash recovery and index compaction",
+        ));
+    }
+    if ((identity.contains("crates/tools/src/process/supervisor.rs")
+        && identity.contains("supervisor::exec_yield"))
+        || identity.contains("tools.process.supervisor.supervisor.exec.yield"))
+        && value.contains("persistentbackendselection :: oneshot")
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "the one-shot execution entry point cannot acquire persistent-process authority",
+        ));
+    }
+    if identity.contains("crates/cli/src/providers.rs")
+        && identity.contains("last_success_route_version")
+    {
+        return Some(invariant(
+            InvariantKind::WireCompatibility,
+            "the persisted last-success route version is the decoder's wire identity",
+        ));
+    }
+    if identity.contains("crates/cli/src/runtime/deferred_tools.rs")
+        && identity.contains("bash_write_domain")
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "the bash wildcard names the host-owned effect authority domain",
+        ));
+    }
+    if identity.contains("crates/tools/src/tool_search.rs") && identity.contains("core_eager_tools")
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "the core eager tool set is the host-owned minimum capability surface",
+        ));
+    }
+    if (identity.contains("crates/ctx/src/context_port.rs") && identity.contains("skill_cache"))
+        || (identity.contains("crates/tools/src/git_filters.rs")
+            && identity.contains("filter_cache"))
+        || (identity.contains("crates/tools/src/git_harness.rs")
+            && identity.contains("git_executable_cache"))
+        || (identity.contains("crates/tools/src/web.rs")
+            && ((identity.contains("fetch_client") || identity.contains("search_client"))
+                && identity.contains("client")))
+    {
+        return Some(invariant(
+            InvariantKind::NonValueStructural,
+            "the declaration is process-local memoized runtime state, not an optimization value",
+        ));
+    }
     if identity.contains("eval.runner.hermetic.max_hermetic_manifest_bytes")
         || identity.contains("subagent_budget_ceiling")
         || (identity.contains("ultracode_planner")

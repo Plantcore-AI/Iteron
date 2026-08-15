@@ -5,6 +5,68 @@ use super::*;
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
 
 impl Agent {
+    /// Admit the compatibility Stop hook to the session-owned observer without putting arbitrary
+    /// operator code between AnswerComplete and RunEnded/InputReady. The activity start is emitted
+    /// synchronously before this method returns; execution and terminal diagnostics are owned by
+    /// the resident AppServer worker.
+    pub(super) fn queue_stop_hook(&mut self, turn: TurnId, context_json: &str) {
+        let (dispatch, identity) = self.hooks.dispatch_stop(turn, context_json);
+        match (dispatch, identity) {
+            (hooks::StopHookDispatch::Queued, Some(identity)) => {
+                self.activity
+                    .emit(identity.activity(iteron_protocol::ActivityState::Running));
+                self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
+                self.lifecycle_event(
+                    "hook.started",
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some("compatibility_stop_observer".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+            (hooks::StopHookDispatch::Disabled, None) => {}
+            (reason, _) => {
+                let reason_code = match reason {
+                    hooks::StopHookDispatch::Saturated => "stop_observer_queue_saturated",
+                    hooks::StopHookDispatch::Closed => "stop_observer_closed",
+                    hooks::StopHookDispatch::ContextTooLarge => "stop_context_too_large",
+                    hooks::StopHookDispatch::Disabled | hooks::StopHookDispatch::Queued => {
+                        "stop_observer_invalid_receipt"
+                    }
+                };
+                self.lifecycle_event(
+                    "hook.failed",
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some(reason_code.into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                let notice_visible = self.ui(UiEvent::Notice(format!(
+                    "Stop hook observer did not start ({reason_code}); the completed answer is unaffected"
+                )));
+                if !notice_visible {
+                    // Stop is observational and is deliberately admitted only after the answer's
+                    // durable terminal. It cannot retroactively fail that answer. Consume the
+                    // generic structural latch here and leave explicit lifecycle evidence instead,
+                    // so this post-terminal notice cannot poison the next operator turn.
+                    let _ = self.frontend_saturation.take_structural_refusal();
+                    self.lifecycle_event(
+                        "queue.overflow",
+                        Some(turn),
+                        LifecyclePayload {
+                            count: Some(1),
+                            reason_code: Some("post_terminal_stop_notice_refused".into()),
+                            outcome_code: Some("answer_unaffected".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     pub(super) fn emit(&mut self, turn: TurnId, kind: EventKind) {
         // The rollout assigns the real Seq on write; the placeholder here is overwritten.
         // A durable-append failure is NOT swallowed (code review): it sets record_failed, which
@@ -62,6 +124,49 @@ impl Agent {
         kind: EventKind,
     ) -> Result<(), KernelError> {
         self.emit_durable_seq(turn, kind).map(|_| ())
+    }
+
+    /// Commit the final visible phase and run terminal as one semantic batch. `Done` is last by
+    /// construction, so `Rollout::append_batch` takes exactly one full terminal barrier and the UI
+    /// cannot observe Idle without the authoritative terminal in the same confirmed prefix.
+    pub(super) fn emit_durable_run_terminal(
+        &mut self,
+        turn: TurnId,
+        outcome: String,
+    ) -> Result<(), KernelError> {
+        let events = [
+            Event {
+                seq: Seq::ZERO,
+                turn,
+                kind: EventKind::Phase { phase: Phase::Idle },
+            },
+            Event {
+                seq: Seq::ZERO,
+                turn,
+                kind: EventKind::Done { outcome },
+            },
+        ];
+        let fsync_started = Instant::now();
+        let appended = self.rollout.append_batch(&events);
+        self.ledger
+            .record_fsync_latency_us(elapsed_us(fsync_started));
+        match appended {
+            Ok(sequences) if sequences.len() == events.len() => Ok(()),
+            Ok(_) => {
+                self.record_failed = true;
+                self.diagnostic_record_append_failed();
+                Err(KernelError::Record(
+                    iteron_record::RecordError::InvalidAppendBatch {
+                        reason: "run terminal batch returned an incomplete sequence receipt",
+                    },
+                ))
+            }
+            Err(error) => {
+                self.record_failed = true;
+                self.diagnostic_record_append_failed();
+                Err(KernelError::Record(error))
+            }
+        }
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow
@@ -259,8 +364,14 @@ impl Agent {
         ticket: effects::EffectTicket,
         settlement: effects::Settlement,
     ) -> Result<(), KernelError> {
+        let became_unknown = matches!(&settlement, effects::Settlement::Unknown(..));
         match effects::settle_effect(&mut self.rollout, ticket, settlement) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if became_unknown {
+                    self.live_unresolved_effects = self.live_unresolved_effects.saturating_add(1);
+                }
+                Ok(())
+            }
             Err(error) => Err(self.effect_boundary_failed(error)),
         }
     }
@@ -306,8 +417,26 @@ impl Agent {
                 "hook command journal is unavailable; command was not started".into(),
             )
         })?;
-        self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
-        self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
+        let matched = u64::try_from(self.hooks.commands(event).len()).unwrap_or(u64::MAX);
+        self.lifecycle_event(
+            "hook.matched",
+            Some(turn),
+            LifecyclePayload {
+                count: Some(matched),
+                ..LifecyclePayload::default()
+            },
+        );
+        self.lifecycle_event(
+            "hook.started",
+            Some(turn),
+            LifecyclePayload {
+                count: Some(matched),
+                ..LifecyclePayload::default()
+            },
+        );
+        let hook_activity = self
+            .activity
+            .span(activity::ActivityStage::Hook, Some(turn));
         let class = effect_class::EffectClass::Hook;
         let ordinal = self.next_effect_ordinal(turn, class);
         let effect = KernelEffect {
@@ -331,7 +460,7 @@ impl Agent {
                 effects::EffectDisposition::Definite {
                     terminal: effect_done_terminal(turn, class, ordinal),
                     value: hooks
-                        .run_cancellable_journaled(
+                        .run_cancellable_journaled_report(
                             event,
                             context_json,
                             hook_cancel.as_deref(),
@@ -345,19 +474,36 @@ impl Agent {
         .await;
         match outcome {
             Ok(outcome) => {
-                let decision = outcome.into_value();
+                let report = outcome.into_value();
+                let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
+                    "hook.blocked"
+                } else if report.timed_out > 0 {
+                    "hook.timed_out"
+                } else if report.failed > 0 {
+                    "hook.failed"
+                } else {
+                    "hook.completed"
+                };
                 self.lifecycle_event(
-                    if matches!(decision, hooks::HookDecision::Deny(_)) {
-                        "hook.blocked"
-                    } else {
-                        "hook.completed"
-                    },
+                    terminal,
                     Some(turn),
-                    LifecyclePayload::default(),
+                    LifecyclePayload {
+                        count: Some(u64::from(report.completed)),
+                        magnitude: Some(u64::from(report.timed_out)),
+                        ..LifecyclePayload::default()
+                    },
                 );
-                Ok(decision)
+                if report.failed > 0 || report.timed_out > 0 {
+                    hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
+                } else {
+                    hook_activity.complete();
+                }
+                Ok(report.decision)
             }
-            Err(error) => Err(self.effect_boundary_failed(error)),
+            Err(error) => {
+                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
+                Err(self.effect_boundary_failed(error))
+            }
         }
     }
 
@@ -465,6 +611,9 @@ impl Agent {
         };
         self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
         self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
+        let hook_activity = self
+            .activity
+            .span(activity::ActivityStage::Hook, Some(turn));
         let context = serde_json::json!({
             "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
             "event_id": event_id,
@@ -507,7 +656,10 @@ impl Agent {
             Ok(result) => result
                 .into_value()
                 .map_err(|reason| KernelError::ContextResolution(reason.to_owned()))?,
-            Err(error) => return Err(self.effect_boundary_failed(error)),
+            Err(error) => {
+                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
+                return Err(self.effect_boundary_failed(error));
+            }
         };
         let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
             "hook.blocked"
@@ -526,6 +678,11 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
+        if report.failed > 0 || report.timed_out > 0 {
+            hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
+        } else {
+            hook_activity.complete();
+        }
         Ok(report)
     }
 
@@ -539,8 +696,10 @@ impl Agent {
     /// recovery refuses to replay -- a retried export would duplicate spans, and a duplicated span
     /// is a wrong dashboard rather than a missing one.
     ///
-    /// The payload is a PROJECTION: `iteron_obs::otel::project` reads events the record already
-    /// holds and measures nothing, so the exporter cannot disagree with the audit log it exports.
+    /// The payload is the run-local lifecycle projector's consumed incremental batch. Export never
+    /// rereads the rollout: replay on every turn made finalization O(run age), and retrying a drained
+    /// batch after an ambiguous POST would duplicate telemetry. Durable record remains authority;
+    /// this observer has explicit at-most-once/no-replay semantics.
     pub(super) async fn brokered_telemetry_export(
         &mut self,
         turn: TurnId,
@@ -549,28 +708,55 @@ impl Agent {
             return Ok(());
         };
         self.lifecycle_event("exporter.started", Some(turn), LifecyclePayload::default());
-        self.lifecycle_event("replay.started", Some(turn), LifecyclePayload::default());
-        let Ok(timed) = iteron_record::replay_timed(self.rollout.path()) else {
-            // A rollout that will not replay is an audit problem, not a telemetry problem, and it
-            // is already reported by every other reader. Exporting a partial projection from bytes
-            // the audit path rejected is the one thing this must not do.
+        let Some(lifecycle_telemetry) = self.lifecycle_telemetry.clone() else {
+            self.lifecycle_event(
+                "exporter.batch_dropped",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(1),
+                    reason_code: Some("incremental_projection_unavailable_no_replay".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            self.ui(UiEvent::Notice(
+                "telemetry export skipped: incremental projection unavailable; rollout replay is intentionally disabled"
+                    .into(),
+            ));
             return Ok(());
         };
-        self.lifecycle_event(
-            "replay.completed",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(timed.len()).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        let events: Vec<&iteron_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
-        let timeline = iteron_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
-        let mut payload = iteron_obs::otel::project(&self.rollout.run_id().0, &events, &timeline);
-        payload.lifecycle = self
-            .lifecycle_telemetry
-            .as_ref()
-            .map(iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::snapshot);
+        let lifecycle = match tokio::task::spawn_blocking(move || {
+            lifecycle_telemetry.take_snapshot()
+        })
+        .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                self.lifecycle_event(
+                    "exporter.batch_dropped",
+                    Some(turn),
+                    LifecyclePayload {
+                        count: Some(1),
+                        reason_code: Some("incremental_snapshot_failed_no_replay".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                self.ui(UiEvent::Notice(
+                    "telemetry export skipped: incremental snapshot failed; drained data will not be replayed"
+                        .into(),
+                ));
+                return Ok(());
+            }
+        };
+        let dropped = lifecycle
+            .dropped_logs
+            .saturating_add(lifecycle.dropped_spans)
+            .saturating_add(lifecycle.dropped_open_spans);
+        let payload = iteron_obs::otel::Export {
+            run_id: self.rollout.run_id().0.clone(),
+            lifecycle: Some(lifecycle),
+            dropped,
+            ..iteron_obs::otel::Export::default()
+        };
         if payload.dropped > 0 {
             // Counted, never silent. A consumer that saw the cap and no drop count would believe
             // it had seen the whole run.
@@ -686,6 +872,20 @@ impl Agent {
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
     pub(super) fn guard_unresolved_effects(&mut self) -> Result<(), KernelError> {
+        // An in-process follow-up retains both the authoritative working transcript and every
+        // unknown registry effect observed since this Agent was constructed. Re-hashing the full
+        // append-only rollout here made normal interactive turns linear in session age. A fresh
+        // process, explicit resume, or missing working set still performs the complete recovery
+        // fold below; that is the only time memory is not an adequate gate.
+        if !self.recovery_effect_replay_required {
+            return if self.live_unresolved_effects == 0 {
+                Ok(())
+            } else {
+                Err(KernelError::UnknownEffects {
+                    count: self.live_unresolved_effects,
+                })
+            };
+        }
         let events = replay_logical_rollout(self.rollout.path())?;
         let journal = effects::EffectJournal::replay(&events)?;
         // At-most-once has to survive the process boundary, not just the turn loop: a resumed run
@@ -726,6 +926,8 @@ impl Agent {
                 .filter(|pending| effect_journal::kind_blocks_resume(&pending.tool))
                 .count(),
         );
+        self.live_unresolved_effects = count;
+        self.recovery_effect_replay_required = false;
         if count > 0 {
             return Err(KernelError::UnknownEffects { count });
         }

@@ -56,6 +56,20 @@ impl Backend {
     fn snapshot(&self) -> super::Snapshot {
         self.0.dag().snapshot()
     }
+
+    fn submit_batch(&mut self, commands: Vec<(CommandId, Command)>) -> Result<(), DagError> {
+        self.0.submit_batch(commands).map(|_| ())
+    }
+
+    fn task_states(&self, ids: &[TaskId]) -> Option<Vec<TaskState>> {
+        ids.iter()
+            .map(|id| self.0.dag().task(*id).map(|task| task.state.clone()))
+            .collect()
+    }
+
+    fn attempt(&self, id: AttemptId) -> Option<super::Attempt> {
+        self.0.dag().attempt(id).cloned()
+    }
 }
 
 #[derive(Clone)]
@@ -267,6 +281,30 @@ impl ExecutionLedger {
         .map_err(|error| format!("task DAG append task failed: {error}"))?
     }
 
+    async fn submit_batch(&self, commands: Vec<Command>) -> Result<(), String> {
+        if commands.is_empty() || commands.len() > 16 {
+            return Err("task DAG command batch must contain 1..=16 entries".into());
+        }
+        let count = u64::try_from(commands.len()).map_err(|_| "command batch is too large")?;
+        let first = self.next_command.fetch_add(count, Ordering::SeqCst);
+        let commands = commands
+            .into_iter()
+            .enumerate()
+            .map(|(offset, command)| (CommandId(first.saturating_add(offset as u64)), command))
+            .collect();
+        let backend = self.backend.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut backend = backend
+                .lock()
+                .map_err(|_| "task DAG owner lock was poisoned".to_string())?;
+            backend
+                .submit_batch(commands)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("task DAG append task failed: {error}"))?
+    }
+
     /// Durably admit one declaration-order task. `dependency_indices` are earlier declaration
     /// indices from the explicit workflow call; dependencies must already have a durable terminal
     /// so a JS scheduling race cannot manufacture or wait forever on an implicit edge.
@@ -301,29 +339,25 @@ impl ExecutionLedger {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
+        let mut failed_dependency = None;
         if !dependencies.is_empty() {
-            let snapshot = self.snapshot().await?;
-            for dependency in &dependencies {
-                let state = snapshot
-                    .tasks
-                    .iter()
-                    .find(|task| task.spec.id == *dependency)
-                    .map(|task| &task.state)
-                    .ok_or_else(|| {
-                        "task dependency disappeared from the durable DAG".to_string()
-                    })?;
+            let states = self.task_states(dependencies.clone()).await?;
+            for (dependency, state) in dependencies.iter().zip(states.iter()) {
                 if !state.is_terminal() {
                     return Err(
                         "task dependency must reach a durable terminal before dependent admission"
                             .into(),
                     );
                 }
+                if !state.succeeded() && failed_dependency.is_none() {
+                    failed_dependency = Some(*dependency);
+                }
             }
         }
         let id = TaskId(self.next_task.fetch_add(1, Ordering::SeqCst));
         let declaration_index =
             u32::try_from(index).map_err(|_| "task declaration index exceeded u32".to_string())?;
-        self.submit(Command::CreateTask {
+        let create = Command::CreateTask {
             actor: Actor::Controller,
             spec: TaskSpec {
                 id,
@@ -333,57 +367,48 @@ impl ExecutionLedger {
                 label: format!("workflow-agent-{index}"),
                 budget: self.task_budget,
             },
-        })
+        };
+        if let Some(dependency) = failed_dependency {
+            self.submit(create).await?;
+            self.declaration_tasks
+                .lock()
+                .map_err(|_| "task declaration index lock was poisoned".to_string())?
+                .insert(index, id);
+            return Ok(TaskAdmission::SkippedDependency {
+                task: id,
+                dependency,
+            });
+        }
+
+        let message = MessageId(self.next_message.fetch_add(1, Ordering::SeqCst));
+        self.submit_batch(vec![
+            create,
+            Command::SendMessage {
+                actor: Actor::Controller,
+                message: TaskMessage {
+                    id: message,
+                    from: crate::AgentMessagingTopology::owner().durable_sender(),
+                    to: id,
+                    kind: MessageKind::Instruction,
+                    payload: format!("input_sha256:{input_digest}"),
+                    delivery: DeliveryState::Pending,
+                },
+            },
+            Command::AcknowledgeMessage {
+                actor: Actor::Controller,
+                message,
+            },
+            Command::StartTask {
+                actor: Actor::Controller,
+                task: id,
+            },
+        ])
         .await?;
         self.declaration_tasks
             .lock()
             .map_err(|_| "task declaration index lock was poisoned".to_string())?
             .insert(index, id);
 
-        let state = self
-            .snapshot()
-            .await?
-            .tasks
-            .into_iter()
-            .find(|task| task.spec.id == id)
-            .map(|task| task.state)
-            .ok_or_else(|| "new task disappeared from the durable DAG".to_string())?;
-        if let TaskState::SkippedDependency { dependency } = state {
-            return Ok(TaskAdmission::SkippedDependency {
-                task: id,
-                dependency,
-            });
-        }
-        if !matches!(state, TaskState::Ready) {
-            return Err("new task did not become ready after terminal dependencies".into());
-        }
-
-        // The assignment envelope is content-free but binds a durable message identity to the
-        // exact task input. Controller acknowledgement means admission consumed the assignment;
-        // it does not pretend a model saw prompt text outside its own child record.
-        let message = MessageId(self.next_message.fetch_add(1, Ordering::SeqCst));
-        self.submit(Command::SendMessage {
-            actor: Actor::Controller,
-            message: TaskMessage {
-                id: message,
-                from: crate::AgentMessagingTopology::owner().durable_sender(),
-                to: id,
-                kind: MessageKind::Instruction,
-                payload: format!("input_sha256:{input_digest}"),
-                delivery: DeliveryState::Pending,
-            },
-        })
-        .await?;
-        self.submit(Command::AcknowledgeMessage {
-            actor: Actor::Controller,
-            message,
-        })
-        .await?;
-        self.submit(Command::StartTask {
-            actor: Actor::Controller,
-            task: id,
-        })
-        .await?;
         Ok(TaskAdmission::Ready(id))
     }
 
@@ -401,14 +426,9 @@ impl ExecutionLedger {
         // so neither transient prompt text nor unverifiable schema diagnostics can stand in for
         // the evidence that actually survived a restart.
         let prior_evidence_digest = if let Some(prior_id) = retry.retry_of {
-            let snapshot = self.snapshot().await?;
-            let prior = snapshot
-                .attempts
-                .iter()
-                .find(|attempt| attempt.spec.id == prior_id)
-                .ok_or_else(|| {
-                    format!("retry predecessor attempt {} does not exist", prior_id.0)
-                })?;
+            let prior = self.attempt(prior_id).await?.ok_or_else(|| {
+                format!("retry predecessor attempt {} does not exist", prior_id.0)
+            })?;
             Some(
                 digest_json(&prior.state)
                     .map_err(|error| format!("retry predecessor digest failed: {error}"))?,
@@ -417,28 +437,29 @@ impl ExecutionLedger {
             None
         };
         let id = AttemptId(self.next_attempt.fetch_add(1, Ordering::SeqCst));
-        self.submit(Command::RegisterAttempt {
-            actor: Actor::Controller,
-            attempt: AttemptSpec {
-                id,
-                task,
-                retry_ordinal: u32::try_from(retry_ordinal)
-                    .map_err(|_| "retry ordinal exceeded u32".to_string())?,
-                sibling_ordinal: u32::try_from(sibling_ordinal)
-                    .map_err(|_| "sibling ordinal exceeded u32".to_string())?,
-                lineage_version: 1,
-                retry_of: retry.retry_of,
-                assignment,
-                retry_cause: retry.retry_cause,
-                prior_evidence_digest,
-                input_digest: input_digest.to_owned(),
+        self.submit_batch(vec![
+            Command::RegisterAttempt {
+                actor: Actor::Controller,
+                attempt: AttemptSpec {
+                    id,
+                    task,
+                    retry_ordinal: u32::try_from(retry_ordinal)
+                        .map_err(|_| "retry ordinal exceeded u32".to_string())?,
+                    sibling_ordinal: u32::try_from(sibling_ordinal)
+                        .map_err(|_| "sibling ordinal exceeded u32".to_string())?,
+                    lineage_version: 1,
+                    retry_of: retry.retry_of,
+                    assignment,
+                    retry_cause: retry.retry_cause,
+                    prior_evidence_digest,
+                    input_digest: input_digest.to_owned(),
+                },
             },
-        })
-        .await?;
-        self.submit(Command::StartAttempt {
-            actor: Actor::Controller,
-            attempt: id,
-        })
+            Command::StartAttempt {
+                actor: Actor::Controller,
+                attempt: id,
+            },
+        ])
         .await?;
         Ok(id)
     }
@@ -456,38 +477,38 @@ impl ExecutionLedger {
         if !valid_digest(result_digest) {
             return Err("speculative winner digest must be exactly 64 hexadecimal bytes".into());
         }
-        let snapshot = self.snapshot().await?;
-        let candidate = snapshot
-            .attempts
-            .iter()
-            .find(|candidate| candidate.spec.id == attempt)
+        let candidate = self
+            .attempt(attempt)
+            .await?
             .ok_or_else(|| "speculative winner attempt is not durable".to_string())?;
         if candidate.spec.task != task || !matches!(candidate.state, super::AttemptState::Running) {
             return Err("speculative winner is not a running attempt of this task".into());
         }
         let message = MessageId(self.next_message.fetch_add(1, Ordering::SeqCst));
-        self.submit(Command::SendMessage {
-            actor: Actor::Controller,
-            message: TaskMessage {
-                id: message,
-                from: crate::AgentMessagingTopology::owner().durable_sender(),
-                to: task,
-                kind: MessageKind::Control,
-                payload: format!(
-                    "speculative_winner:attempt={}:result_sha256={result_digest}",
-                    attempt.0
-                ),
-                delivery: DeliveryState::Pending,
+        self.submit_batch(vec![
+            Command::SendMessage {
+                actor: Actor::Controller,
+                message: TaskMessage {
+                    id: message,
+                    from: crate::AgentMessagingTopology::owner().durable_sender(),
+                    to: task,
+                    kind: MessageKind::Control,
+                    payload: format!(
+                        "speculative_winner:attempt={}:result_sha256={result_digest}",
+                        attempt.0
+                    ),
+                    delivery: DeliveryState::Pending,
+                },
             },
-        })
-        .await?;
-        self.submit(Command::AcknowledgeMessage {
-            actor: Actor::Controller,
-            message,
-        })
+            Command::AcknowledgeMessage {
+                actor: Actor::Controller,
+                message,
+            },
+        ])
         .await
     }
 
+    #[cfg(test)]
     async fn snapshot(&self) -> Result<super::Snapshot, String> {
         let backend = self.backend.clone();
         tokio::task::spawn_blocking(move || {
@@ -500,6 +521,31 @@ impl ExecutionLedger {
         .map_err(|error| format!("task DAG snapshot task failed: {error}"))?
     }
 
+    async fn task_states(&self, ids: Vec<TaskId>) -> Result<Vec<TaskState>, String> {
+        let backend = self.backend.clone();
+        tokio::task::spawn_blocking(move || {
+            backend
+                .lock()
+                .map_err(|_| "task DAG owner lock was poisoned".to_string())?
+                .task_states(&ids)
+                .ok_or_else(|| "task dependency disappeared from the durable DAG".to_string())
+        })
+        .await
+        .map_err(|error| format!("task DAG task lookup failed: {error}"))?
+    }
+
+    async fn attempt(&self, id: AttemptId) -> Result<Option<super::Attempt>, String> {
+        let backend = self.backend.clone();
+        tokio::task::spawn_blocking(move || {
+            backend
+                .lock()
+                .map_err(|_| "task DAG owner lock was poisoned".to_string())
+                .map(|backend| backend.attempt(id))
+        })
+        .await
+        .map_err(|error| format!("task DAG attempt lookup failed: {error}"))?
+    }
+
     pub(crate) async fn finish_attempt(
         &self,
         task: TaskId,
@@ -508,17 +554,6 @@ impl ExecutionLedger {
         elapsed_ms: u64,
         terminal: AttemptTerminal,
     ) -> Result<(), String> {
-        self.submit(Command::ChargeBudget {
-            actor: Actor::Controller,
-            task,
-            delta: BudgetUsage {
-                turns: 1,
-                tokens,
-                cost_microusd: 0,
-                wall_ms: elapsed_ms,
-            },
-        })
-        .await?;
         let (completion, disposition, result_digest, code, detail) = match terminal {
             AttemptTerminal::Succeeded {
                 result_digest,
@@ -549,15 +584,27 @@ impl ExecutionLedger {
                 Some(bounded_reason(&reason)),
             ),
         };
-        self.submit(Command::CompleteAttempt {
-            actor: Actor::Controller,
-            attempt,
-            completion,
-            disposition,
-            result_digest,
-            code,
-            detail,
-        })
+        self.submit_batch(vec![
+            Command::ChargeBudget {
+                actor: Actor::Controller,
+                task,
+                delta: BudgetUsage {
+                    turns: 1,
+                    tokens,
+                    cost_microusd: 0,
+                    wall_ms: elapsed_ms,
+                },
+            },
+            Command::CompleteAttempt {
+                actor: Actor::Controller,
+                attempt,
+                completion,
+                disposition,
+                result_digest,
+                code,
+                detail,
+            },
+        ])
         .await
     }
 

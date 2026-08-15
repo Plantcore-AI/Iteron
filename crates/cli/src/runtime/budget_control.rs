@@ -135,7 +135,7 @@ impl Agent {
 
     /// Install the inbound approvals channel (the TUI's answer path). When set, an `Ask` verdict
     /// prompts the operator and blocks (interrupt-bounded) for the answer; without it, `Ask` denies.
-    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::UnboundedReceiver<SqEnvelope>) {
+    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
         self.approvals_rx = Some(rx);
     }
 

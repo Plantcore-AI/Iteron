@@ -33,6 +33,7 @@ pub(crate) mod hyperlink;
 mod inline_shell;
 mod jobs;
 mod keyboard_enhancement;
+mod live_markdown;
 mod mcp_command;
 mod mouse_capture;
 mod notification;
@@ -47,12 +48,14 @@ mod terminal_input;
 mod terminal_lifecycle;
 pub(crate) mod transcript_effect;
 mod transcript_export;
+mod transcript_layout;
 mod transcript_viewer;
 mod tunables_view;
 mod workflow_panel_projection;
 mod workflow_region;
 mod workflow_rehydrate;
 mod workflows_panel;
+mod workspace_command;
 
 pub(crate) mod headless;
 use crate::app_server;
@@ -69,6 +72,7 @@ use crate::runtime::{
 };
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
+use app_init::build_completion;
 use block::spinner;
 use command_surfaces::*;
 use composer_images::*;
@@ -76,8 +80,8 @@ use control_submission::*;
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-pub(crate) use driver_support::char_width;
 use driver_support::*;
+pub(crate) use driver_support::{char_width, text_width};
 use event_actions::*;
 use event_projection::*;
 use iteron_ctx::ContextEstimate;
@@ -97,7 +101,9 @@ use ratatui::widgets::{
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use session_adoption::*;
 use session_picker::*;
-use std::collections::{HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -418,29 +424,6 @@ impl Session {
         self.client.submit_identified(op)
     }
 
-    /// Make one control request and wait for its answer.
-    ///
-    /// Returns `None` when the server is gone. The round trip is what makes the answer trustworthy:
-    /// the frontend renders the state the runtime actually reached, not the state it asked for.
-    pub(crate) async fn control(
-        &mut self,
-        control: app_server::Control,
-    ) -> Option<app_server::ControlReply> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.control
-            .send(app_server::ControlRequest {
-                control,
-                reply: reply_tx,
-            })
-            .await
-            .ok()?;
-        let reply = reply_rx.await.ok()?;
-        if let app_server::ControlReply::State(snapshot) = &reply {
-            self.state = (**snapshot).clone();
-        }
-        Some(reply)
-    }
-
     pub(crate) fn control_sender(&self) -> tokio::sync::mpsc::Sender<app_server::ControlRequest> {
         self.control.clone()
     }
@@ -632,6 +615,22 @@ struct Completion {
     token_start: usize,
     /// The prefix char ('/' for slash, '@' for file) — kept for the accepted replacement.
     lead: char,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentEffectState {
+    Idle,
+    Queued,
+    Reading,
+    Decoding,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+struct PresentedActivity {
+    event: iteron_protocol::ActivityEvent,
+    observed_at: Instant,
 }
 
 /// What applying a picked item does. An enum (not a boxed closure) because the TUI is single-threaded
@@ -1009,6 +1008,35 @@ fn input_destination(running: bool, interrupting: bool, text: &str) -> InputDest
     }
 }
 
+/// Filesystem-free destination used by paint and ordinary key routing. Ambiguous `/tmp`-shaped
+/// drafts are conservatively shown as after-turn controls; only Enter performs the one disk check
+/// needed to decide whether they are actually dropped paths.
+fn cached_input_destination(
+    running: bool,
+    interrupting: bool,
+    shape: crate::editor::DraftShape,
+) -> InputDestination {
+    if !running {
+        InputDestination::StartTurn
+    } else if matches!(
+        shape,
+        crate::editor::DraftShape::Slash {
+            immediate_while_running: true
+        }
+    ) {
+        InputDestination::ImmediateCommand
+    } else if interrupting
+        || matches!(
+            shape,
+            crate::editor::DraftShape::Slash { .. } | crate::editor::DraftShape::Shell
+        )
+    {
+        InputDestination::AfterTurn
+    } else {
+        InputDestination::SteerCurrentRun
+    }
+}
+
 #[derive(Clone)]
 struct PendingInput {
     seq: u64,
@@ -1077,10 +1105,10 @@ struct PendingToolProjection {
 }
 
 /// How long a model request may go without a first token before the interface stops calling it
-/// ordinary, and before it stops calling it merely slow. Both sit well inside the 60s response
-/// header deadline and the 120s stream idle deadline, which is the point: the operator learns
+/// ordinary, and before it stops calling it merely slow. Both sit well inside the 45s provider
+/// inactivity deadline, which is the point: the operator learns
 /// which failure they are watching while the request is still open (I-64).
-const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 /// The one-keystroke retry offer printed under a failed run (I-39).
 const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
 recorded as an interrupted message, so a retry continues from it rather than from nothing.";
@@ -1088,7 +1116,7 @@ recorded as an interrupted message, so a retry continues from it rather than fro
 fn retry_hint() -> &'static str {
     iteron_tunables::param_str("cli.tui.retry_hint", RETRY_HINT)
 }
-const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(12);
 
 /// Row a list falls back to when the selected item is not in the visible window. The first row,
 /// so a filtered view opens on something rather than on nothing.
@@ -1115,15 +1143,24 @@ enum FirstTokenState {
 struct FirstTokenStall {
     state: FirstTokenState,
     waited: std::time::Duration,
+    accepted: bool,
 }
 
 impl FirstTokenStall {
     fn label(self) -> String {
         let seconds = self.waited.as_secs();
-        match self.state {
-            FirstTokenState::Slow => format!("waiting for the first token · {seconds}s"),
-            FirstTokenState::Stalled => format!(
-                "no response for {seconds}s · the connection may be stalled · esc to interrupt"
+        match (self.accepted, self.state) {
+            (false, FirstTokenState::Slow) => {
+                format!("request sent · waiting for provider response · {seconds}s")
+            }
+            (false, FirstTokenState::Stalled) => {
+                format!("request sent · no provider response for {seconds}s · esc to interrupt")
+            }
+            (true, FirstTokenState::Slow) => {
+                format!("accepted · model generating · waiting for first token · {seconds}s")
+            }
+            (true, FirstTokenState::Stalled) => format!(
+                "accepted · no token for {seconds}s · provider may be stalled · esc to interrupt"
             ),
         }
     }
@@ -1143,6 +1180,9 @@ struct App {
     /// Monotonic notification for semantic transcript insertions, mutations, clears, and eviction.
     /// This is the O(1) stable-frame seam for the fullscreen viewer.
     transcript_revision: u64,
+    /// Lowest transcript block whose retained geometry may have changed. `None` means the height
+    /// index is current; appends and card updates splice only this suffix on the next paint.
+    transcript_dirty_from: Option<usize>,
     /// Monotonic block-id source; a `ToolEnd` mutates its card by id, never by Vec position (R2).
     next_id: u64,
     /// Revealed tool_use id -> the block id of its card, so a late `ToolEnd` finds its originating
@@ -1183,6 +1223,9 @@ struct App {
     render_cache: std::collections::HashMap<u64, (u64, crate::render::RenderedLines)>,
     render_cache_width: u16,
     render_cache_theme_epoch: u64,
+    /// Prefix-sum geometry retained across frames. An unchanged 1,200-block transcript is located
+    /// with two binary searches instead of being walked for every spinner tick.
+    transcript_layout: transcript_layout::HeightIndex,
     editor: Editor,
     status: String,
     /// The canonical result-v5 object from the most recently terminalized run.
@@ -1194,6 +1237,7 @@ struct App {
     running: bool,
     interrupting: bool,
     force_cancelling: bool,
+    cancel_requested_at: Option<Instant>,
     draining: bool,
     /// Rows scrolled UP from the bottom (0 = pinned to the newest line).
     bottom_offset: u16,
@@ -1211,12 +1255,21 @@ struct App {
     vim_anchor: Option<usize>,
     // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
     cur_text: String,
+    /// Exact safe assistant bytes projected for the current model turn. `RunEnded` reconciles this
+    /// with its terminal authority; it is not display markdown and is never inferred from blocks.
+    assistant_stream_authority: String,
+    /// Assistant blocks belonging to that same model turn. A terminal rewrite can replace only
+    /// these ids atomically while preserving prior turns and intervening tool cards.
+    assistant_turn_block_ids: Vec<u64>,
     cur_text_revision: u64,
     cur_doc_revision: u64,
     cur_doc: Option<crate::markdown::MarkdownDoc>,
     /// How much of `cur_doc` is settled, so a delta re-parses only the tail it changed. Reset with
     /// `cur_doc` on every stream boundary.
     cur_doc_parse: crate::markdown::StreamingParse,
+    /// Retained layout of the active assistant answer. Only appended source is processed; frames
+    /// materialize visible rows instead of cloning the entire unfinished answer.
+    live_markdown_layout: live_markdown::LiveMarkdownLayout,
     // Hold the unfinished token across arbitrary provider deltas so a split credential cannot be
     // rendered for one frame before the complete token becomes recognizable.
     text_scrubber: crate::output::StreamingScrubber,
@@ -1254,23 +1307,51 @@ struct App {
     approval_choice: ApprovalChoice,
     /// The open autocomplete menu, if any.
     completion: Option<Completion>,
+    completion_due: Option<Instant>,
+    completion_generation: u64,
+    completion_job: Option<tokio::task::JoinHandle<(u64, String, Option<Completion>)>>,
     /// The open selection picker, if any (owns the keyboard while open).
     picker: Option<Picker>,
+    /// One cancel-on-replacement session-page worker. Opening the modal is immediate; disk/index
+    /// enumeration never runs in the key/command branch.
+    session_picker_job: Option<tokio::task::JoinHandle<SessionPageResult>>,
+    session_picker_backing: Option<SessionPickerBacking>,
+    session_picker_generation: u64,
+    session_preview_job: Option<tokio::task::JoinHandle<SessionPreviewResult>>,
+    session_preview_generation: u64,
+    session_adoption_job: Option<tokio::task::JoinHandle<PreparedAdoptionResult>>,
+    /// At most one disk/process-heavy slash command. Completion carries bounded semantic actions;
+    /// the key/render loop never awaits Git, record traversal, or workspace mutation.
+    workspace_command_job: Option<tokio::task::JoinHandle<Vec<workspace_command::Action>>>,
+    attachment_job: Option<tokio::task::JoinHandle<AttachmentEffectResult>>,
+    attachment_generation: u64,
+    attachment_progress: Option<tokio::sync::mpsc::Receiver<AttachmentEffectState>>,
+    attachment_effect_state: AttachmentEffectState,
+    activities: std::collections::BTreeMap<String, PresentedActivity>,
+    /// Recently terminalized activity ids. A late cosmetic event cannot resurrect an old-turn
+    /// spinner after the authoritative RunEnded boundary, even if a new turn has already started.
+    retired_activity_ids: VecDeque<String>,
     /// Exact restart command prepared by a session selection. It is display/copy state only: an
     /// unchanged handoff is never submitted to the model or executed inside this process.
     resume_handoff: Option<String>,
     /// When the current run started (for the elapsed/spinner indicator).
     run_started: Option<Instant>,
+    /// Cached after a terminal run boundary; rendering never asks the runtime or record store.
+    last_run_latency: Option<Duration>,
+    /// Best-effort workspace dirtiness sampled after first paint on the hydration worker.
+    workspace_dirty: Option<bool>,
     /// The text of the last plain-text turn, retained only while a failed run offers to re-send
     /// it. A mid-stream failure is not retried automatically — only 429/529 are, and a bare
     /// transport error says nothing about whether the provider already billed the request — so
     /// the operator is the idempotency key, and this makes saying yes one keystroke (I-39).
     retryable_task: Option<String>,
     /// When the model phase began without a token yet arriving, and `None` again the instant one
-    /// does. The response-header deadline is 60s and the stream idle deadline 120s, so without
+    /// does. The provider inactivity deadline is 45s, so without
     /// this a dead connection and a slow prefill looked identical for a full minute (I-64). It is
     /// the frontend end of the same first-token instrumentation `TurnEnd.ttft_ms` records.
     awaiting_first_token_since: Option<Instant>,
+    /// True only after provider response authority, never merely because a request was sent.
+    provider_accepted: bool,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
     active_tools: VecDeque<(String, String)>,
@@ -1299,16 +1380,17 @@ struct App {
     pending_turn_receipt: Option<PendingTurnReceipt>,
     /// Dropped image paths this session has already refused out loud.
     ///
-    /// The draft is rescanned for bare paths on every keystroke, so an unreadable path sitting in
-    /// the composer would otherwise emit one notice per character typed and bury the transcript the
-    /// warning was meant to be read in. Bounded and cleared wholesale on overflow: a set keyed by
-    /// operator input with no ceiling is a leak, and forgetting a refusal only costs one repeated
-    /// notice, never a missed attachment — the attach itself is always retried.
+    /// Bare-path admission runs only at paste/drop/submit boundaries, but an unreadable path may be
+    /// retried at more than one of those boundaries. Bounded and cleared wholesale on overflow: a
+    /// set keyed by operator input with no ceiling is a leak, and forgetting a refusal only costs
+    /// one repeated notice, never a missed attachment — the attach itself is always retried.
+    #[cfg(test)]
     refused_image_paths: HashSet<PathBuf>,
 }
 
 /// How many distinct refused paths are remembered before the set is dropped and rebuilt. Sized for
 /// "the operator is fighting with one screenshot", not for a corpus.
+#[cfg(test)]
 const MAX_REFUSED_IMAGE_PATHS: usize = 32;
 
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
@@ -1329,6 +1411,13 @@ pub(crate) struct RunConfig {
     pub(crate) keymap: Option<keymap::Config>,
     pub(crate) external_editor: Option<Vec<String>>,
     pub(crate) sensitive_env_names: Vec<String>,
+    /// Structured, content-free diagnostics emitted before alternate-screen attachment. They are
+    /// replayed as notices only after the input-ready shell has painted, so startup evidence is not
+    /// hidden on the primary screen.
+    pub(crate) initial_diagnostics: Vec<iteron_kernel::diagnostics::KernelDiagnostic>,
+    /// Human-readable, credential-free startup posture lines printed before attachment. The
+    /// alternate screen hides the primary transcript, so replay them after first paint as well.
+    pub(crate) initial_notices: Vec<String>,
 }
 
 pub async fn run(
@@ -1345,11 +1434,9 @@ pub async fn run(
         keymap: keymap_config,
         external_editor: mut external_editor_command,
         sensitive_env_names,
+        initial_diagnostics,
+        initial_notices,
     } = config;
-    eprintln!(
-        "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
-        attached.handle.client.negotiated_version()
-    );
     let app_server::Attached {
         handle,
         task: server_task,
@@ -1358,44 +1445,52 @@ pub async fn run(
         interrupt,
         drain,
     } = attached;
-    // Resolve and read operator-owned prompt state before entering raw mode. Persistence is
-    // fail-soft: an unavailable or malformed history file cannot prevent an interactive session,
-    // but its diagnostic is retained for the first rendered transcript.
-    let mut history_warning = None;
+    // History/content-store hydration is independent of input readiness. Resolve it on one bounded
+    // worker and adopt the result only after the shell has painted; 10,000 sessions therefore cost
+    // the first frame exactly the same as an empty store.
     let history_source_run = prompt_history::source_run_from_rollout(&facts.rollout_path);
-    let history_store_result = match (
-        crate::config::config_home(),
-        facts
-            .rollout_path
-            .parent()
-            .map(std::path::Path::to_path_buf),
-    ) {
-        (Some(config_home), Some(runs_dir)) => prompt_history::Store::resolve_with_runs_dir(
+    let (history_tx, mut history_rx) = tokio::sync::mpsc::channel(1);
+    let history_workspace = facts.workspace.clone();
+    let history_runs_dir = facts
+        .rollout_path
+        .parent()
+        .map(std::path::Path::to_path_buf);
+    let history_config_home = crate::config::config_home();
+    let history_bootstrap_run = history_source_run.clone();
+    let title_rollout = facts.rollout_path.clone();
+    let workflow_hydrate_dir = facts
+        .rollout_path
+        .parent()
+        .map(|state_dir| state_dir.join("subagents").join("workflows"));
+    tokio::task::spawn_blocking(move || {
+        let hyperlink_policy = hyperlink::Policy::detect(&history_workspace);
+        let history_started = Instant::now();
+        let hydrated = prompt_history::bootstrap(
             history_mode,
-            config_home,
-            &facts.workspace,
-            runs_dir,
-        ),
-        _ => Ok(None),
-    };
-    let history_store = match history_store_result {
-        Ok(store) => store,
-        Err(error) => {
-            history_warning = Some(format!("prompt history disabled for this session: {error}"));
-            None
-        }
-    };
-    let history_state = history_store
-        .as_ref()
-        .zip(history_source_run.as_ref())
-        .and_then(|(store, active_run)| match store.load(active_run) {
-            Ok(state) => Some(state),
-            Err(error) => {
-                history_warning = Some(format!("prompt history could not be restored: {error}"));
-                None
-            }
-        });
-    let history_writer = prompt_history::Writer::new(history_store);
+            history_config_home,
+            &history_workspace,
+            history_runs_dir,
+            history_bootstrap_run,
+        );
+        let history_elapsed = history_started.elapsed();
+        let title_started = Instant::now();
+        let title = session_display_name(&title_rollout);
+        let title_elapsed = title_started.elapsed();
+        let mut workflow_monitor = workflow_region::WorkflowMonitor::default();
+        workflow_monitor.rehydrate(workflow_hydrate_dir.as_deref());
+        let workspace_dirty = cached_workspace_dirty(&history_workspace);
+        let _ = history_tx.blocking_send((
+            hydrated,
+            title,
+            workflow_monitor,
+            workspace_dirty,
+            hyperlink_policy,
+            history_elapsed,
+            title_elapsed,
+        ));
+    });
+    let mut history_writer = prompt_history::Writer::new(None);
+    let mut history_open = true;
     let (mut active_keymap, initial_keymap_warning) =
         match keymap::Keymap::from_config(keymap_config.as_ref()) {
             Ok(keymap) => (keymap, None),
@@ -1405,13 +1500,21 @@ pub async fn run(
             ),
         };
     let mut vim = keymap::Vim::default();
-    let mut keymap_watcher = keymap::Watcher::new(crate::config::user_config_path());
     // Drain is a runtime/session control and never depends on Git availability.
     let drain_available = true;
     let terminal_capabilities = iteron_statusline::Capabilities::detect(|name| {
         std::env::var(name).ok().filter(|value| value.len() <= 128)
     });
-    let initial_session_name = session_display_name(&facts.rollout_path);
+    // The exact title is a cache, not a reason to enumerate every session before paint. New runs
+    // acquire their title from the first accepted prompt; resumed runs use their O(1) rollout id
+    // until a background/session-picker projection provides a friendlier label.
+    let initial_session_name = facts
+        .rollout_path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("New session")
+        .to_owned();
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
     let mut guard = TermGuard::new()?;
     let _ = guard.set_title(
@@ -1441,7 +1544,6 @@ pub async fn run(
     }
     // Retain one sender so unsupported platforms do not observe an immediately closed channel.
     let _termination_tx = termination_tx;
-    let mut terminal_input = terminal_input::TerminalInput::default();
     // BOTH capability probes are deliberately deferred until after the first frame. The
     // progressive-keyboard query blocks up to 2000 ms and OSC 11 another 80 ms; running them here,
     // between raw-mode entry and the first draw, is exactly how a terminal that never answers held
@@ -1482,17 +1584,10 @@ pub async fn run(
     } else if !terminal_capabilities.may_use_color() {
         app.set_theme(theme::Theme::mono());
     }
-    if let Some(state) = history_state {
-        app.editor.restore_persisted(state.history, state.draft);
-    }
-    if let Some(warning) = history_warning {
-        app.note(block::NoticeLevel::Warn, warning);
-    }
     if let Some(warning) = initial_keymap_warning {
         app.note(block::NoticeLevel::Warn, warning);
     }
     update_keymap_status(&mut app, &active_keymap, &vim);
-    app.hyperlink_policy = hyperlink::Policy::detect(&repo);
     // The same derivation the kernel uses (`Agent::runtime_state_dir` is the rollout's parent), so
     // the runs this frontend restores are exactly the runs this session's own workflows land in.
     app.workflows_dir = facts
@@ -1505,22 +1600,43 @@ pub async fn run(
     app.model_context_window = facts.initial_model_context_window;
     app.route = route;
 
-    // Paint before probing. Everything the first frame needs is already resolved, and a terminal
-    // that answers neither query must not be able to delay it.
-    term.draw(|f| draw(f, &mut app))?;
-    // The query is fail-soft: terminals that do not implement the protocol keep the portable
-    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
-    // negotiation so even an exit during startup can restore an already-pushed stack frame.
-    let _ = guard.negotiate_keyboard(&mut terminal_input, &environment);
-    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
-    // events, replays unrelated startup input, and remains armed to swallow a late reply.
-    if let Some(background) = terminal_input.query_background(&environment) {
-        let probed = theme::Theme::detect_with(environment, Some(background));
-        app.adopt_detected_theme(probed);
-    }
-    startup.mark(startup::StartupPhase::TerminalProbe);
-    startup.flush();
+    // Arm the response demultiplexer before the query exists, then enqueue both exact query frames
+    // on the same writer Ratatui owns. `LiveTerminalWriter::flush` emits the retained shell first
+    // and only then these frames, so no worker races stdout or changes its file-status flags.
+    let mut terminal_input = terminal_input::TerminalInput::default();
+    terminal_input.start_probes(&environment, |sequence| {
+        notification_writer.admit_probe(sequence)
+    });
 
+    // Paint before probing. Everything the first frame needs is already resolved, and a terminal
+    // that answers neither query must not be able to delay it. The probes are appended at this
+    // frame's flush boundary, after the shell bytes are visible.
+    term.draw(|f| draw(f, &mut app))?;
+    startup.mark(startup::StartupPhase::FirstFrame);
+    // The watcher takes its first metadata snapshot on its worker. Starting it after paint keeps
+    // both thread startup and every filesystem query outside the first-frame path.
+    let mut keymap_watcher = keymap::Watcher::new(crate::config::user_config_path());
+    for diagnostic in initial_diagnostics {
+        match diagnostic {
+            iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {} => app.note(
+                block::NoticeLevel::Err,
+                "durable record append failed before the interface attached; review /status before continuing",
+            ),
+            iteron_kernel::diagnostics::KernelDiagnostic::ResumeRedactionDegraded {
+                redacted_tool_results,
+                count_saturated,
+            } => app.note(
+                block::NoticeLevel::Warn,
+                format!(
+                    "resumed context used redacted tool results ({redacted_tool_results}{}); the reconstructed model context differs from the original live turn",
+                    if count_saturated { "+" } else { "" }
+                ),
+            ),
+        }
+    }
+    for notice in initial_notices {
+        app.note(block::NoticeLevel::Info, notice);
+    }
     let mut session = Session::new(
         handle.client,
         handle.control,
@@ -1529,8 +1645,27 @@ pub async fn run(
         initial_state,
         facts,
     );
+    // Provider discovery is a presentation enrichment, never an input-path prerequisite.  A clone
+    // owns the deferred join after the first frame and publishes one settled immutable directory;
+    // `/model` remains immediately usable with the eager/cache-backed catalog meanwhile.
+    let (provider_directory_tx, mut provider_directory_rx) = tokio::sync::mpsc::channel(1);
+    // Cross the post-paint boundary synchronously before the initial task can be submitted. This
+    // starts no pre-paint network and prevents route admission from racing a merely scheduled
+    // settler that has not yet moved Dormant discovery to Pending.
+    let _ = providers.begin_settle_after_paint();
+    let mut settling_providers = providers.clone();
+    tokio::spawn(async move {
+        settling_providers.settle().await;
+        let _ = provider_directory_tx.send(settling_providers).await;
+    });
+    let mut provider_directory_open = true;
     let mut events = handle.events;
     let mut last_event_seq = 0;
+    let startup_waits_for_initial_answer = initial_task
+        .as_deref()
+        .is_some_and(|task| !task.trim().is_empty());
+    let mut startup_initial_finalized = !startup_waits_for_initial_answer;
+    let mut startup_history_ready = false;
     let mut first_task = initial_task;
     let mut redraw = true;
 
@@ -1539,8 +1674,12 @@ pub async fn run(
     // the queue, so a delta batch landing 1 ms into a poll waited out the other 99 ms — and an idle
     // session sat in a 1 s poll hole. The demultiplexer moves with the reader, so a late OSC 11 or
     // keyboard-enhancement reply is still swallowed instead of becoming synthetic operator input.
-    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<std::io::Result<CEvent>>(256);
-    let (input_control_tx, input_control_rx) = std::sync::mpsc::channel::<InputThreadControl>();
+    let (input_tx, mut input_rx) =
+        tokio::sync::mpsc::channel::<std::io::Result<terminal_input::ReadResult>>(256);
+    // Pause/resume is a two-command protocol. Capacity two admits one complete round trip even if
+    // the reader is between terminal reads, while `try_send` keeps the TUI thread non-blocking.
+    let (input_control_tx, input_control_rx) =
+        std::sync::mpsc::sync_channel::<InputThreadControl>(2);
     std::thread::spawn(move || {
         loop {
             if input_tx.is_closed() {
@@ -1563,6 +1702,8 @@ pub async fn run(
             }
         }
     });
+    startup.mark(startup::StartupPhase::TerminalProbe);
+    startup.mark(startup::StartupPhase::InputReady);
     // A runtime event observed by the wait is handed back to the drain at the top of the loop, so
     // the EQ still has exactly one consumer and one ordering check.
     let mut pending_event = None;
@@ -1573,8 +1714,16 @@ pub async fn run(
     let mut persisted_revision = app.editor.persistence_revision();
     let mut persisted_history_len = app.editor.history_len();
     let mut transcript_effects = transcript_effect::Supervisor::default();
+    // Physical-key dispatch never waits for provider/control/filesystem work. Commands enter this
+    // small FIFO after an immediate chip/status acknowledgement and are serviced one at a time.
+    // The queue is deliberately tiny: an operator can always keep the unaccepted text in the
+    // composer rather than creating an unbounded hidden command backlog.
+    let mut pending_slash_commands: VecDeque<(String, Option<String>)> = VecDeque::new();
     let mut termination_exit = None;
     let mut terminal_session_name = app.session_name.clone();
+    let mut catch_up = CatchUp::default();
+    let mut eq_backlog_since: Option<Instant> = None;
+    let mut resize_due: Option<Instant> = None;
 
     // All interactive-loop exits, including draw/input/editor/dispatch errors, flow through this
     // result boundary. Cleanup below therefore awaits the effect supervisor before the function can
@@ -1585,6 +1734,7 @@ pub async fn run(
         if let Some(task) = first_task.take()
             && !task.trim().is_empty()
         {
+            startup.mark(startup::StartupPhase::InitialSubmission);
             submit_turn(&mut app, &session, &mut notifier, task);
             redraw = true;
         }
@@ -1592,7 +1742,18 @@ pub async fn run(
         // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
         // frontend used to create and retire a receiver per run, which is why there was no event
         // stream at all while idle and why the join had to double as a drain barrier.
-        for _ in eq_tick_slots() {
+        let eq_depth = events.len().saturating_add(usize::from(pending_event.is_some()));
+        let now = Instant::now();
+        if eq_depth == 0 {
+            eq_backlog_since = None;
+        } else {
+            eq_backlog_since.get_or_insert(now);
+        }
+        let eq_age = eq_backlog_since
+            .map(|since| now.saturating_duration_since(since))
+            .unwrap_or_default();
+        catch_up.update(eq_depth, eq_age, now);
+        for _ in catch_up.slots() {
             let Some(envelope) = pending_event.take().or_else(|| events.try_recv().ok()) else {
                 break;
             };
@@ -1622,6 +1783,35 @@ pub async fn run(
                     break;
                 }
             };
+            if let app_server::ServerEvent::Activity(activity) = &event {
+                let measured = Duration::from_millis(
+                    activity
+                        .updated_at_unix_ms
+                        .saturating_sub(activity.started_at_unix_ms),
+                );
+                match activity.detail_code {
+                    Some(iteron_protocol::ActivityDetailCode::RequestSent) => {
+                        startup.mark_duration(startup::StartupPhase::RequestSent, measured);
+                    }
+                    Some(iteron_protocol::ActivityDetailCode::AnswerComplete)
+                        if activity.state.is_terminal() =>
+                    {
+                        startup.mark_duration(startup::StartupPhase::AnswerComplete, measured);
+                    }
+                    Some(iteron_protocol::ActivityDetailCode::Finalizing)
+                        if activity.state.is_terminal() =>
+                    {
+                        startup.mark_duration(startup::StartupPhase::Finalization, measured);
+                        startup_initial_finalized = true;
+                        if startup_history_ready {
+                            // End the responsiveness trace at initial-answer finalization. Waiting
+                            // until TUI exit mislabeled the operator's entire session as startup.
+                            startup.flush();
+                        }
+                    }
+                    _ => {}
+                }
+            }
             apply_server_event(
                 &mut app,
                 &mut session,
@@ -1631,6 +1821,241 @@ pub async fn run(
                 &interrupt,
                 &drain,
             );
+            redraw = true;
+        }
+        if app
+            .session_picker_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .session_picker_job
+                .take()
+                .expect("finished session picker job was present");
+            if let Ok(mut page) = job.await
+                && page.generation == app.session_picker_generation
+                && app
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.title == "Sessions · resume here")
+            {
+                if let Some(warning) = page.warning.take() {
+                    app.note(block::NoticeLevel::Info, warning);
+                }
+                if page.replace {
+                    if page.items.is_empty() {
+                        let mut empty = PickItem::flat(
+                            "No sessions recorded yet",
+                            "start a prompt to create one",
+                            false,
+                            PickAction::Info,
+                        );
+                        empty.enabled = false;
+                        page.items.push(empty);
+                    }
+                    if let Some(picker) = app.picker.as_mut() {
+                        picker.sel = initial_picker_selection(&page.items);
+                        picker.items = page.items;
+                    }
+                    app.session_picker_backing = Some(SessionPickerBacking {
+                        runs: page.runs,
+                        current_run: page.current_run,
+                        next_cursor: page.next_cursor,
+                        has_more: page.has_more,
+                        generation: page.generation,
+                    });
+                } else if let Some(backing) = app.session_picker_backing.as_mut()
+                    && backing.generation == page.generation
+                {
+                    backing.next_cursor = page.next_cursor;
+                    backing.has_more = page.has_more;
+                    if let Some(picker) = app.picker.as_mut() {
+                        picker.items.extend(page.items);
+                    }
+                }
+                maybe_prefetch_session_page(&mut app);
+                redraw = true;
+            }
+        }
+        if app
+            .session_preview_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .session_preview_job
+                .take()
+                .expect("finished session preview job was present");
+            if let Ok(preview) = job.await
+                && preview.generation == app.session_preview_generation
+            {
+                match preview.result {
+                    Ok(preview) => {
+                        let mut rows = vec![
+                            kv("run", &preview.run),
+                            kv("title", &preview.title),
+                            kv("turns", &preview.turns.to_string()),
+                            kv("state", preview.state),
+                            kv(
+                                "transcript",
+                                &block::plural(preview.total_blocks, "visible block"),
+                            ),
+                        ];
+                        rows.extend(preview.blocks.iter().map(|text| {
+                            block::PanelRow::Note(one_line_preview(text, 160))
+                        }));
+                        app.panel("◫", "session preview", rows);
+                        app.status = "idle · session preview ready".into();
+                    }
+                    Err(error) => {
+                        app.note(block::NoticeLevel::Err, error);
+                        app.status = "idle · session preview failed".into();
+                    }
+                }
+                redraw = true;
+            }
+        }
+        if app
+            .session_adoption_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .session_adoption_job
+                .take()
+                .expect("finished session adoption job was present");
+            match job.await {
+                Ok(PreparedAdoptionResult::Ready(prepared)) => {
+                    let PreparedAdoption {
+                        fresh,
+                        control,
+                        run_id,
+                        events,
+                        selection,
+                        substituted,
+                        context_window_tokens,
+                    } = prepared;
+                    let request = transcript_effect::Request::Control {
+                        sender: session.control_sender(),
+                        control,
+                        interrupt: interrupt.clone(),
+                        kind: transcript_effect::ControlKind::Adopt {
+                            fresh,
+                            run_id,
+                            events,
+                            selection,
+                            substituted,
+                            context_window_tokens,
+                        },
+                    };
+                    if transcript_effects.start(request).is_err() {
+                        app.note(
+                            block::NoticeLevel::Warn,
+                            "session adoption not started: another local effect is pending",
+                        );
+                    }
+                }
+                Ok(PreparedAdoptionResult::Failed {
+                    message,
+                    handoff_run,
+                }) => {
+                    app.note(block::NoticeLevel::Err, message);
+                    if let Some(run_id) = handoff_run {
+                        app.prepare_resume_handoff(&run_id);
+                    }
+                }
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("session adoption worker failed: {error}"),
+                ),
+            }
+            redraw = true;
+        }
+        if app
+            .completion_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .completion_job
+                .take()
+                .expect("finished completion job was present");
+            if let Ok((generation, source, completion)) = job.await
+                && generation == app.completion_generation
+                && source == app.editor.text()
+            {
+                app.completion = completion;
+                redraw = true;
+            }
+        }
+        if app
+            .workspace_command_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .workspace_command_job
+                .take()
+                .expect("finished workspace command job was present");
+            match job.await {
+                Ok(actions) => workspace_command::apply(&mut app, &session, &providers, actions),
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("workspace command worker failed: {error}"),
+                ),
+            }
+            redraw = true;
+        }
+        if app.completion_job.is_none()
+            && app.completion_due.is_some_and(|due| due <= Instant::now())
+        {
+            app.completion_due = None;
+            let source = app.editor.text();
+            let cursor = app.editor.cursor();
+            let generation = app.completion_generation;
+            let completion_repo = repo.clone();
+            app.completion_job = Some(tokio::task::spawn_blocking(move || {
+                let completion = build_completion(&source, cursor, &completion_repo);
+                (generation, source, completion)
+            }));
+        }
+        if app.attachment_job.is_some()
+            && app.attachment_effect_state == AttachmentEffectState::Queued
+        {
+            app.attachment_effect_state = AttachmentEffectState::Reading;
+            redraw = true;
+        }
+        if let Some(progress) = app.attachment_progress.as_mut() {
+            while let Ok(state) = progress.try_recv() {
+                app.attachment_effect_state = state;
+                redraw = true;
+            }
+        }
+        if app
+            .attachment_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let job = app
+                .attachment_job
+                .take()
+                .expect("finished attachment job was present");
+            app.attachment_progress = None;
+            match job.await {
+                Ok(effect) => finish_attachment_effect(&mut app, &session, &mut notifier, effect),
+                Err(error) if error.is_cancelled() => {
+                    app.attachment_effect_state = AttachmentEffectState::Cancelled;
+                }
+                Err(error) => {
+                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!("attachment worker failed: {error}"),
+                    );
+                }
+            }
             redraw = true;
         }
         if app.transcript_viewer.is_open()
@@ -1651,6 +2076,22 @@ pub async fn run(
             redraw = true;
         }
         if app.advance_tool_presentations(Instant::now()) {
+            redraw = true;
+        }
+
+        if let Some((command, restore)) = pending_slash_commands.pop_front() {
+            app.status = format!("running /{command}…");
+            dispatch_slash_command(
+                &mut app,
+                &mut session,
+                &providers,
+                &mut transcript_effects,
+                &interrupt,
+                &command,
+            )?;
+            if let Some(draft) = restore {
+                app.editor.insert_str(&draft);
+            }
             redraw = true;
         }
 
@@ -1681,17 +2122,12 @@ pub async fn run(
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = slash_command_body(&q) {
-                    settle_providers_for(&mut providers, cmd).await;
-                    dispatch_slash_command(
-                        &mut term,
-                        &mut app,
-                        &mut session,
-                        &providers,
-                        &mut transcript_effects,
-                        &interrupt,
-                        cmd,
-                    )
-                    .await?;
+                    if pending_slash_commands.len() < 8 {
+                        pending_slash_commands.push_back((cmd.to_owned(), None));
+                    } else {
+                        app.queued.push_front(item);
+                    }
+                    break;
                 } else if let Some(bash) = q.strip_prefix('!') {
                     // The runtime is resident, so these are always the live values. The old fallback to
                     // `(app.mode, PermissionRules::new())` ran `!bash` against DEFAULT-EMPTY rules
@@ -1734,13 +2170,29 @@ pub async fn run(
             notifier.emit_transport(&mut notification_writer, trigger);
         }
 
-        // Active animation targets a 100 ms cadence off its own clock: the loop now wakes once per
-        // delta, so riding the wait's timeout would spin the animation at the token rate. Idle is
-        // event-driven and does not repaint at all.
+        // Active animation owns a small cadence clock: 50 ms before first token makes accepted/
+        // waiting state feel live, then 80 ms while streaming. Event-driven redraws remain
+        // immediate; idle schedules no animation wake at all.
         let now = Instant::now();
-        if !app.running {
+        let activity_animation = app.running || !app.activities.is_empty();
+        let spinner_tick = if app.awaiting_first_token_since.is_some() {
+            iteron_tunables::param_duration(
+                "cli.tui.driver_support.first_token_spinner_tick",
+                FIRST_TOKEN_SPINNER_TICK,
+            )
+        } else {
+            iteron_tunables::param_duration(
+                "cli.tui.driver_support.spinner_tick",
+                SPINNER_TICK,
+            )
+        };
+        if resize_due.is_some_and(|due| now >= due) {
+            resize_due = None;
+            redraw = true;
+        }
+        if !activity_animation {
             last_spin = now;
-        } else if now.duration_since(last_spin) >= SPINNER_TICK {
+        } else if now.duration_since(last_spin) >= spinner_tick {
             app.spin = app.spin.wrapping_add(1);
             last_spin = now;
             redraw = true;
@@ -1775,17 +2227,24 @@ pub async fn run(
         // the TUI neither executes it synchronously nor polls it in a hot loop.
         let viewer_work_notification = app.transcript_viewer.work_notification();
         let viewer_work_active = viewer_work_notification.is_some();
-        let wake = if app.transcript_viewer.is_open() && app.transcript_viewer.work_ready() {
+        let mut wake = if app.transcript_viewer.is_open() && app.transcript_viewer.work_ready() {
             Some(Instant::now())
         } else {
             next_wake(
                 redraw,
                 next_frame_at,
-                app.running,
+                activity_animation,
                 last_spin,
                 app.next_tool_reveal(),
+                spinner_tick,
             )
         };
+        if let Some(completion_due) = app.completion_due {
+            wake = Some(wake.map_or(completion_due, |scheduled| scheduled.min(completion_due)));
+        }
+        if let Some(due) = resize_due {
+            wake = Some(wake.map_or(due, |scheduled| scheduled.min(due)));
+        }
         let mut next_input = None;
         let effect_active = transcript_effects.is_active();
         tokio::select! {
@@ -1800,12 +2259,87 @@ pub async fn run(
             },
             effect = transcript_effects.recv(), if effect_active => {
                 if let Some(effect) = effect {
-                    apply_transcript_effect_event(&mut app, &mut session, effect);
+                    apply_transcript_effect_event(&mut app, &mut session, &providers, effect);
+                    redraw = true;
+                }
+            },
+            hydrated = history_rx.recv(), if history_open => {
+                history_open = false;
+                startup_history_ready = true;
+                if let Some((
+                    hydrated,
+                    hydrated_title,
+                    hydrated_workflows,
+                    workspace_dirty,
+                    hyperlink_policy,
+                    history_elapsed,
+                    title_elapsed,
+                )) = hydrated {
+                    startup.mark_duration(startup::StartupPhase::HistoryHydrate, history_elapsed);
+                    startup.mark_duration(startup::StartupPhase::Title, title_elapsed);
+                    let current_draft = app.editor.text();
+                    let has_live_chips = app.editor.chip_count() > 0;
+                    if let Some(state) = hydrated.state {
+                        if has_live_chips {
+                            app.note(
+                                block::NoticeLevel::Info,
+                                "prompt history became ready after attachments were added; the live draft was preserved",
+                            );
+                        } else {
+                            app.editor.restore_persisted(state.history, state.draft);
+                            if !current_draft.is_empty() {
+                                app.editor.replace_text(&current_draft);
+                            }
+                            persisted_revision = app.editor.persistence_revision();
+                            persisted_history_len = app.editor.history_len();
+                        }
+                    }
+                    if let Some(warning) = hydrated.warning {
+                        app.note(block::NoticeLevel::Warn, warning);
+                    }
+                    history_writer = prompt_history::Writer::new(hydrated.store);
+                    if hydrated_title != "New session" && !hydrated_title.trim().is_empty() {
+                        app.session_name = hydrated_title;
+                    }
+                    if app.workflow_monitor.live_count() == 0 {
+                        app.workflow_monitor = hydrated_workflows;
+                    }
+                    app.workspace_dirty = workspace_dirty;
+                    app.hyperlink_policy = hyperlink_policy;
+                    app.render_cache.clear();
+                    app.live_markdown_layout = Default::default();
+                    app.mark_transcript_changed();
+                    redraw = true;
+                }
+                if startup_initial_finalized {
+                    startup.flush();
+                }
+            },
+            settled = provider_directory_rx.recv(), if provider_directory_open => {
+                provider_directory_open = false;
+                if let Some(settled) = settled {
+                    providers = settled;
+                    app.note(block::NoticeLevel::Info, "provider catalog ready");
                     redraw = true;
                 }
             },
             result = input_rx.recv(), if input_open => match result {
-                Some(Ok(event)) => next_input = Some(event),
+                Some(Ok(terminal_input::ReadResult::Event(event))) => next_input = Some(event),
+                Some(Ok(terminal_input::ReadResult::Probe(update))) => {
+                    match update {
+                        terminal_input::ProbeUpdate::KeyboardEnhancement => {
+                            let _ = guard.enable_keyboard_enhancement();
+                        }
+                        terminal_input::ProbeUpdate::Background(background) => {
+                            let probed = theme::Theme::detect_with(
+                                environment.clone(),
+                                Some(background),
+                            );
+                            app.adopt_detected_theme(probed);
+                        }
+                    }
+                    redraw = true;
+                }
                 Some(Err(error)) => return Err(error.into()),
                 None => input_open = false,
             },
@@ -1824,8 +2358,19 @@ pub async fn run(
             break;
         }
         if let Some(input_event) = next_input {
-            redraw = true;
+            if !matches!(input_event, CEvent::Resize(_, _)) {
+                redraw = true;
+            }
             match input_event {
+                CEvent::Resize(_, _) => {
+                    resize_due = Some(
+                        Instant::now()
+                            + iteron_tunables::param_duration(
+                                "cli.tui.driver_support.resize_debounce",
+                                RESIZE_DEBOUNCE,
+                            ),
+                    );
+                }
                 CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
                     app.transcript_viewer.handle_paste(
                         &pasted,
@@ -1923,7 +2468,13 @@ pub async fn run(
                         if let Some(action) =
                             app.workflows_panel.key(k.code, k.modifiers, &runs)
                         {
-                            apply_workflows_panel_action(&mut app, &mut session, action).await;
+                            queue_workflows_panel_action(
+                                &mut app,
+                                &session,
+                                &mut transcript_effects,
+                                &interrupt,
+                                action,
+                            );
                         }
                         continue;
                     }
@@ -1974,39 +2525,11 @@ pub async fn run(
                     // capture lands as a chip on the draft, and a draft with chips is queued behind
                     // the turn rather than steered into it.
                     if k.code == KeyCode::Char('v') && ctrl {
-                        match clipboard_image_bytes().await {
-                            Ok(Some(bytes)) => {
-                                let attached = app
-                                    .editor
-                                    .attach_image_bytes("clipboard.png", &bytes)
-                                    .map(|attachment| {
-                                        (
-                                            attachment.id(),
-                                            attachment.display_name().to_owned(),
-                                            attachment.media_type(),
-                                            attachment.file_bytes(),
-                                        )
-                                    });
-                                match attached {
-                                    Ok((id, name, media_type, file_bytes)) => app.note(
-                                        block::NoticeLevel::Ok,
-                                        format!(
-                                            "attached {name} ({}, {file_bytes} bytes) as [Image #{id}] at the cursor — deleting the tag removes its chip; alt+backspace removes the last chip",
-                                            media_type.as_str()
-                                        ),
-                                    ),
-                                    Err(error) => app.note(
-                                        block::NoticeLevel::Warn,
-                                        format!("clipboard image refused: {error}"),
-                                    ),
-                                }
-                            }
-                            Ok(None) => app.note(
-                                block::NoticeLevel::Info,
-                                "no supported clipboard image adapter found; paste or drag an image path instead",
-                            ),
-                            Err(error) => app.note(block::NoticeLevel::Warn, error),
-                        }
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "clipboard image queued · you can keep typing",
+                        );
+                        queue_clipboard_image_effect(&mut app);
                         continue;
                     }
 
@@ -2042,9 +2565,54 @@ pub async fn run(
                     // An open picker OWNS the keyboard (C6): route the key to it, apply on accept
                     // (take-then-apply, C5), and fully consume — no fall-through to editor/history/mode.
                     if app.picker.is_some() {
-                        match app.picker_key_with_modifiers(k.code, k.modifiers) {
-                            Some(PickerEvent::Accept(action)) => {
-                                apply_action(&mut app, &mut session, &providers, action).await
+                        let picker_event = app.picker_key_with_modifiers(k.code, k.modifiers);
+                        maybe_prefetch_session_page(&mut app);
+                        match picker_event {
+                            Some(PickerEvent::Accept(PickAction::SetEffort(effort))) => queue_effort(
+                                &mut app,
+                                &session,
+                                &mut transcript_effects,
+                                &interrupt,
+                                effort,
+                            ),
+                            Some(PickerEvent::Accept(PickAction::SetMode(mode))) => {
+                                queue_permission_mode(
+                                    &mut app,
+                                    &session,
+                                    &mut transcript_effects,
+                                    &interrupt,
+                                    mode,
+                                )
+                            }
+                            Some(PickerEvent::Accept(PickAction::SetCap(capability, verdict))) => {
+                                queue_permission_capability(
+                                    &mut app,
+                                    &session,
+                                    &mut transcript_effects,
+                                    &interrupt,
+                                    capability,
+                                    verdict,
+                                )
+                            }
+                            Some(PickerEvent::Accept(PickAction::SetModel(selection))) => {
+                                queue_model_selection(
+                                    &mut app,
+                                    &session,
+                                    &providers,
+                                    &mut transcript_effects,
+                                    &interrupt,
+                                    selection,
+                                )
+                            }
+                            Some(PickerEvent::Accept(PickAction::InspectTunable(detail))) => {
+                                show_tunable_detail(&mut app, detail)
+                            }
+                            Some(PickerEvent::Accept(PickAction::SetTheme(theme))) => {
+                                apply_theme_selection(&mut app, theme)
+                            }
+                            Some(PickerEvent::Accept(PickAction::Info)) => {}
+                            Some(PickerEvent::Accept(PickAction::AdoptRun(run_id))) => {
+                                start_adopt_session(&mut app, &session, &providers, run_id)
                             }
                             Some(PickerEvent::Cancel) | Some(PickerEvent::Consumed) | None => {}
                         }
@@ -2122,7 +2690,7 @@ pub async fn run(
                                                 edited.len()
                                             ),
                                         );
-                                        app.refresh_completion(&repo);
+                                        app.schedule_completion();
                                     }
                                     Ok(Err(error)) => app.note(block::NoticeLevel::Warn, error),
                                     Err(error) => return Err(anyhow::anyhow!(error)),
@@ -2145,7 +2713,7 @@ pub async fn run(
                             keymap::Action::RestoreDraft if !app.running => {
                                 if app.editor.restore_recently_cleared() {
                                     app.resume_handoff = None;
-                                    app.refresh_completion(&repo);
+                                    app.schedule_completion();
                                 }
                                 continue;
                             }
@@ -2158,7 +2726,7 @@ pub async fn run(
                                 } else if !app.editor.reverse_search_previous() {
                                     app.status = "no older matching prompt".into();
                                 }
-                                app.refresh_completion(&repo);
+                                app.schedule_completion();
                                 continue;
                             }
                             keymap::Action::RestoreDraft | keymap::Action::ReverseSearch => {
@@ -2182,7 +2750,7 @@ pub async fn run(
                     {
                         apply_vim_action(&mut app, action);
                         update_keymap_status(&mut app, &active_keymap, &vim);
-                        app.refresh_completion(&repo);
+                        app.schedule_completion();
                         continue;
                     }
 
@@ -2191,9 +2759,13 @@ pub async fn run(
                         KeyCode::Char('c') if ctrl => {
                             if transcript_effects.is_active() {
                                 let _ = transcript_effects.cancel();
-                                app.note(block::NoticeLevel::Warn, "cancelling local effect…");
+                                cancel_local_effect_then_turn(
+                                    &mut app,
+                                    &session,
+                                    &interrupt,
+                                );
                             } else if app.running {
-                                if interrupt.load(Ordering::Relaxed) {
+                                if app.interrupting {
                                     // Second Ctrl-C: the cooperative interrupt did not land.
                                     //
                                     // This used to `abort()` the task that held the `Agent`,
@@ -2204,7 +2776,7 @@ pub async fn run(
                                     force_cancel_turn(&mut app, &session);
                                 } else {
                                     request_interrupt(&mut app, &session, &interrupt);
-                                    app.push(bold(Color::Yellow), "interrupting now… (Ctrl-C again to force-cancel)");
+                                    app.push(bold(Color::Yellow), "interrupting now… (Ctrl-C again for stronger cancellation)");
                                 }
                             } else if app.editor.has_submission() {
                                 app.editor.clear_recoverable();
@@ -2226,9 +2798,13 @@ pub async fn run(
                         }
                         KeyCode::BackTab if !app.running => {
                             let next = session.permission_mode().next();
-                            if commit_permission_mode(&mut app, &mut session, next).await {
-                                app.push(fg(Color::Cyan), format!("mode: {}", next.label()));
-                            }
+                            queue_permission_mode(
+                                &mut app,
+                                &session,
+                                &mut transcript_effects,
+                                &interrupt,
+                                next,
+                            );
                         }
                         // ---- completion menu navigation (menu open) ----
                         KeyCode::Down if menu_open => {
@@ -2275,17 +2851,16 @@ pub async fn run(
                                 let trimmed = line.trim();
                                 app.completion = None;
                                 if let Some(cmd) = trimmed.strip_prefix('/') {
-                                    settle_providers_for(&mut providers, cmd).await;
-                                    dispatch_slash_command(
-                                        &mut term,
-                                        &mut app,
-                                        &mut session,
-                                        &providers,
-                                        &mut transcript_effects,
-                                        &interrupt,
-                                        cmd,
-                                    )
-                                    .await?;
+                                    if pending_slash_commands.len() < 8 {
+                                        pending_slash_commands.push_back((cmd.to_owned(), None));
+                                        app.status = format!("queued /{cmd}");
+                                    } else {
+                                        app.note(
+                                            block::NoticeLevel::Warn,
+                                            "command queue is full; draft restored",
+                                        );
+                                        app.editor.insert_str(&line);
+                                    }
                                 }
                             } else {
                                 refresh = true;
@@ -2405,19 +2980,16 @@ pub async fn run(
                                     let restore =
                                         commands::parse(cmd).is_err().then(|| line.clone());
                                     let _ = app.editor.take_submit();
-                                    settle_providers_for(&mut providers, cmd).await;
-                                    dispatch_slash_command(
-                                        &mut term,
-                                        &mut app,
-                                        &mut session,
-                                        &providers,
-                                        &mut transcript_effects,
-                                        &interrupt,
-                                        cmd,
-                                    )
-                                    .await?;
-                                    if let Some(draft) = restore {
-                                        app.editor.insert_str(&draft);
+                                    if pending_slash_commands.len() < 8 {
+                                        pending_slash_commands
+                                            .push_back((cmd.to_owned(), restore));
+                                        app.status = format!("queued /{cmd}");
+                                    } else {
+                                        app.note(
+                                            block::NoticeLevel::Warn,
+                                            "command queue is full; draft restored",
+                                        );
+                                        app.editor.insert_str(&line);
                                     }
                                 } else if !has_attachments
                                     && let Some(bash) = trimmed.strip_prefix('!')
@@ -2461,98 +3033,108 @@ pub async fn run(
                             // the attachment the operator just watched land. The chips are taken out
                             // of the composer WITH the text, because `take_submit` clears the stores
                             // and anything left behind would ride the next, unrelated message.
-                            attach_bare_image_paths(&mut app, &repo);
+                            if queue_bare_image_path(
+                                &mut app,
+                                &repo,
+                                AttachmentFollowup::QueueRunningDraft,
+                            ) {
+                                continue;
+                            }
                             if app.editor.chip_count() > 0 {
                                 // Refusal (queue bound or byte ceiling) leaves the draft, its pasted
                                 // blocks and its chips exactly where they are, with the reason in
                                 // the transcript.
                                 queue_draft_with_chips(&mut app);
                             } else {
-                            let text = app.editor.take_submit();
-                            match input_destination(app.running, app.interrupting, &text) {
-                                InputDestination::ImmediateCommand => {
-                                    let command = slash_command_body(&text)
-                                        .expect("the destination admitted a slash command");
-                                    dispatch_slash_command(
-                                        &mut term,
-                                        &mut app,
-                                        &mut session,
-                                        &providers,
-                                        &mut transcript_effects,
-                                        &interrupt,
-                                        command,
-                                    )
-                                    .await?;
-                                }
-                                InputDestination::AfterTurn => {
-                                    if let Err(text) = app.queue_after_turn(text) {
-                                        app.editor.insert_str(&text);
+                                let text = app.editor.take_submit();
+                                match input_destination(app.running, app.interrupting, &text) {
+                                    InputDestination::ImmediateCommand => {
+                                        let command = slash_command_body(&text)
+                                            .expect("the destination admitted a slash command");
+                                        if pending_slash_commands.len() < 8 {
+                                            pending_slash_commands
+                                                .push_back((command.to_owned(), None));
+                                            app.status = format!("queued /{command}");
+                                        } else if let Err(text) = app.queue_after_turn(text) {
+                                            app.editor.insert_str(&text);
+                                        }
                                     }
-                                }
-                                InputDestination::SteerCurrentRun => {
-                                    match app.steer_admission(&text) {
-                                        SubmissionAdmission::Accept => {
-                                            if session
-                                                .submit(Op::Steer { text: text.clone() })
-                                                .is_ok()
-                                            {
-                                                app.track_steer(text);
-                                            } else {
-                                                // Receiver disappeared at the run boundary:
-                                                // preserve the words as an ordered follow-up.
-                                                if let Err(text) = app.queue_after_turn(text) {
-                                                    app.editor.insert_str(&text);
+                                    InputDestination::AfterTurn => {
+                                        if let Err(text) = app.queue_after_turn(text) {
+                                            app.editor.insert_str(&text);
+                                        }
+                                    }
+                                    InputDestination::SteerCurrentRun => {
+                                        match app.steer_admission(&text) {
+                                            SubmissionAdmission::Accept => {
+                                                if session
+                                                    .submit(Op::Steer { text: text.clone() })
+                                                    .is_ok()
+                                                {
+                                                    app.track_steer(text);
+                                                } else {
+                                                    // Receiver disappeared at the run boundary:
+                                                    // preserve the words as an ordered follow-up.
+                                                    if let Err(text) = app.queue_after_turn(text) {
+                                                        app.editor.insert_str(&text);
+                                                    }
                                                 }
                                             }
+                                            SubmissionAdmission::IgnoreEmpty => {}
+                                            SubmissionAdmission::Reject => {
+                                                app.editor.insert_str(&text)
+                                            }
                                         }
-                                        SubmissionAdmission::IgnoreEmpty => {}
-                                        SubmissionAdmission::Reject => app.editor.insert_str(&text),
                                     }
+                                    InputDestination::StartTurn => unreachable!(
+                                        "the running Enter branch cannot resolve to StartTurn"
+                                    ),
                                 }
-                                InputDestination::StartTurn => unreachable!(
-                                    "the running Enter branch cannot resolve to StartTurn"
-                                ),
-                            }
                             }
                             app.completion = None;
                         }
                         // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
                         KeyCode::Tab if app.running && !app.editor.is_empty() => {
-                            attach_bare_image_paths(&mut app, &repo);
+                            if queue_bare_image_path(
+                                &mut app,
+                                &repo,
+                                AttachmentFollowup::QueueRunningDraft,
+                            ) {
+                                continue;
+                            }
                             if app.editor.chip_count() > 0 {
                                 queue_draft_with_chips(&mut app);
                             } else {
-                            let text = app.editor.take_submit();
-                            if let Err(text) = app.queue_after_turn(text) {
-                                app.editor.insert_str(&text);
-                            }
+                                let text = app.editor.take_submit();
+                                if let Err(text) = app.queue_after_turn(text) {
+                                    app.editor.insert_str(&text);
+                                }
                             }
                             app.completion = None;
                         }
                         // Esc while running interrupts at the next safe point (like the leading agent).
                         KeyCode::Esc if app.running => {
-                            if app.interrupting {
+                            if transcript_effects.is_active() {
+                                let _ = transcript_effects.cancel();
+                                cancel_local_effect_then_turn(
+                                    &mut app,
+                                    &session,
+                                    &interrupt,
+                                );
+                            } else if app.interrupting {
                                 force_cancel_turn(&mut app, &session);
                             } else {
                                 request_interrupt(&mut app, &session, &interrupt);
                                 app.push(
                                     bold(Color::Yellow),
-                                    "interrupting now… (Esc again to force-cancel)",
+                                    "interrupting now… (Esc again for stronger cancellation)",
                                 );
                             }
                         }
                         KeyCode::Char('?')
                             if !app.running && !app.editor.has_submission() && !menu_open =>
                         {
-                            command_dispatch::handle_registered_command(
-                                &mut app,
-                                &mut session,
-                                &providers,
-                                &mut transcript_effects,
-                                SlashCommand::Help,
-                                "",
-                            )
-                            .await;
+                            command_dispatch::show_help(&mut app);
                         }
                         // ordinary typing works in both idle and running composer states.
                         KeyCode::Char(c) if !ctrl && !alt => {
@@ -2564,20 +3146,9 @@ pub async fn run(
                         _ => {}
                     }
                     if refresh {
-                        // A drop that the terminal replays as keystrokes finishes on the LAST
-                        // character of the path, and nothing else announces it. Convert as soon as
-                        // the draft holds a readable image path, so the chip appears when the file
-                        // lands rather than at submit time — the chip is the operator's only
-                        // evidence the picture is attached, and evidence that arrives after the
-                        // decision is not evidence.
-                        //
-                        // Cheap by construction: the scan is string work, and the one file read it
-                        // can trigger happens once, because a converted path is replaced by its
-                        // anchor and is no longer a path the next keystroke can find.
-                        if app.editor.chip_count() < iteron_protocol::input::MAX_INPUT_IMAGES {
-                            attach_bare_image_paths(&mut app, &repo);
-                        }
-                        app.refresh_completion(&repo);
+                        // File/image discovery is deliberately not performed per key. Paste/drop
+                        // and submit boundaries enqueue attachment work; typing stays pure memory.
+                        app.schedule_completion();
                     }
                 } // end CEvent::Key
                 _ => {} // resize etc. -> next draw handles it
@@ -2602,9 +3173,22 @@ pub async fn run(
             persisted_history_len = history_len;
         }
     }
+    if let Some(job) = app.session_picker_job.take() {
+        job.abort();
+    }
+    if let Some(job) = app.session_preview_job.take() {
+        job.abort();
+    }
+    if let Some(job) = app.session_adoption_job.take() {
+        job.abort();
+    }
+    if let Some(job) = app.workspace_command_job.take() {
+        job.abort();
+    }
     Ok(())
     }
     .await;
+    startup.flush();
 
     // teardown (the guard also restores on drop; show_cursor is the only extra step).
     let tui_result = transcript_effects.finish(tui_result).await;
@@ -2612,11 +3196,13 @@ pub async fn run(
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    if let Some(active_run) = prompt_history::source_run_from_rollout(session.rollout_path()) {
-        history_writer.finish(app.editor.persistence_state(), active_run);
-    } else {
-        drop(history_writer);
-    }
+    let history_flushed =
+        if let Some(active_run) = prompt_history::source_run_from_rollout(session.rollout_path()) {
+            history_writer.finish_bounded(app.editor.persistence_state(), active_run)
+        } else {
+            drop(history_writer);
+            true
+        };
     if let Some(exit_code) = termination_exit {
         drop(session);
         // A catchable termination still gives the server its shutdown: that is where a live
@@ -2636,6 +3222,11 @@ pub async fn run(
         .and_then(|joined| joined.ok())
         .unwrap_or_default();
         restore_terminal(&guard.keyboard_restorer());
+        if !history_flushed {
+            eprintln!(
+                "prompt history is still finalizing in the background; shutdown did not wait past 250ms"
+            );
+        }
         report_stopped_workflows(&stopped);
         std::process::exit(exit_code);
     }
@@ -2648,6 +3239,11 @@ pub async fn run(
     // The terminal modes go back to normal BEFORE this prints. A run the operator was never told
     // about is the failure this report exists to prevent, so cleanup and reporting stay ordered.
     drop(guard);
+    if !history_flushed {
+        eprintln!(
+            "prompt history is still finalizing in the background; terminal shutdown did not wait past 250ms"
+        );
+    }
     report_stopped_workflows(&stopped);
     tui_result
 }
@@ -2954,8 +3550,7 @@ fn fmt_mmss(d: Duration) -> String {
 fn pad_line_to(spans: &mut Vec<Span<'static>>, width: u16, fill: Style) {
     let w: u16 = spans
         .iter()
-        .flat_map(|s| s.content.chars())
-        .map(char_width)
+        .map(|span| text_width(span.content.as_ref()))
         .fold(0u16, |a, x| a.saturating_add(x));
     if w < width {
         spans.push(Span::styled(" ".repeat((width - w) as usize), fill));
@@ -3273,10 +3868,6 @@ fn popup_detail_lines(
     rows
 }
 
-fn text_width(text: &str) -> u16 {
-    text.chars().map(char_width).fold(0u16, u16::saturating_add)
-}
-
 fn spans_width(spans: &[Span<'_>]) -> u16 {
     spans
         .iter()
@@ -3319,12 +3910,12 @@ pub(crate) fn clip_text(text: &str, width: u16) -> String {
     let budget = width - 1;
     let mut used = 0u16;
     let mut out = String::new();
-    for ch in text.chars() {
-        let cw = char_width(ch);
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let cw = grapheme_width(grapheme);
         if used.saturating_add(cw) > budget {
             break;
         }
-        out.push(ch);
+        out.push_str(grapheme);
         used = used.saturating_add(cw);
     }
     out.push('…');
@@ -3334,6 +3925,31 @@ pub(crate) fn clip_text(text: &str, width: u16) -> String {
 fn one_line_preview(text: &str, width: u16) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     clip_text(&collapsed, width)
+}
+
+/// Sample one cached status bit after first paint without ever retaining an unbounded `git status`
+/// result. Reading a single porcelain byte includes tracked, staged, and untracked changes; the
+/// child is stopped immediately once dirtiness is proven.
+fn cached_workspace_dirty(repo: &std::path::Path) -> Option<bool> {
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut first = [0_u8; 1];
+    let read = child.stdout.take()?.read(&mut first).ok()?;
+    if read > 0 {
+        let _ = child.kill();
+    }
+    let status = child.wait().ok()?;
+    (read > 0 || status.success()).then_some(read > 0)
 }
 
 fn render_lr_line(f: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Vec<Span<'static>>) {
@@ -3363,6 +3979,76 @@ fn effort_status_accent(app: &App) -> status_line::Accent {
         ) => status_line::Accent::Warning,
         _ => status_line::Accent::Model,
     }
+}
+
+/// Build the factual portion of the footer through the public status-line contract. Runtime/UI
+/// activity affordances remain separate groups, but model/tokens/cost/context/session have one
+/// renderer and one unknown-value policy across the product.
+fn canonical_statusline(app: &App) -> String {
+    let tokens = app.last_turn_usage.map(|usage| {
+        usage
+            .input
+            .saturating_add(usage.output)
+            .saturating_add(usage.cache_creation)
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.thinking)
+    });
+    canonical_statusline_with_tokens(app, tokens)
+}
+
+fn canonical_statusline_with_tokens(app: &App, tokens: Option<u64>) -> String {
+    use iteron_statusline::{Field, StatusLine, StatusSnapshot, Value};
+    use std::sync::OnceLock;
+
+    static LINE: OnceLock<StatusLine> = OnceLock::new();
+    let line = LINE.get_or_init(|| {
+        StatusLine::from_names(["model", "tokens", "cost", "context", "session"])
+            .expect("the built-in status fields are closed and valid")
+    });
+    let model = route_label(app);
+    let context = app
+        .model_context_window
+        .filter(|window| *window > 0)
+        .map(|window| {
+            let used = app
+                .last_context
+                .map(|context| context.total_tokens as u64)
+                .or_else(|| app.last_turn_usage.map(request_input_tokens))
+                .unwrap_or_default()
+                .saturating_add(u64::from(app.reserved_output_tokens.unwrap_or_default()));
+            let left = window.saturating_sub(used).saturating_mul(100) / window;
+            u8::try_from(left.min(100)).unwrap_or(100)
+        });
+    let cost_milli = app
+        .cost
+        .usd()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| (value * 1_000.0).round() as u64);
+    let snapshot = StatusSnapshot::new(
+        app.transcript_revision,
+        [
+            (
+                Field::Model,
+                if model.is_empty() {
+                    Value::Unknown
+                } else {
+                    Value::Text(model)
+                },
+            ),
+            (Field::Tokens, tokens.map_or(Value::Unknown, Value::Count)),
+            (
+                Field::CostUsd,
+                cost_milli.map_or(Value::Unknown, Value::Milli),
+            ),
+            (
+                Field::ContextPercent,
+                context.map_or(Value::Unknown, Value::Percent),
+            ),
+            (Field::SessionId, Value::Text(app.session_name.clone())),
+        ],
+    )
+    .expect("the frontend supplies each closed status field once with its declared type");
+    line.render_snapshot(&snapshot)
 }
 
 fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line::Group> {
@@ -3398,21 +4084,28 @@ fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line:
             Accent::Progress,
         ));
     }
-    groups.push(Group::single(
-        format!("◫ {}", app.session_name),
-        Accent::Metadata,
-    ));
-    // Economics is drill-down information and the first metadata dropped under pressure. Keep it
-    // off the standard surface; `/cost` remains the authoritative full-run view.
-    if density == surface::Density::Wide
-        && let Some(cost_usd) = app.cost.usd().filter(|value| *value > 0.0)
-    {
-        groups.push(Group::single(format!("${cost_usd:.2}"), Accent::Usage));
-    }
     if density == surface::Density::Wide && app.turns > 0 {
         groups.push(Group::single(
             format!("turn {}", app.turns),
             Accent::Metadata,
+        ));
+    }
+    if density == surface::Density::Wide && app.workspace_dirty == Some(true) {
+        groups.push(Group::single("dirty", Accent::Warning));
+    }
+    if density == surface::Density::Wide
+        && let Some(latency) = app.last_run_latency
+    {
+        groups.push(Group::single(
+            format!("last {}", fmt_mmss(latency)),
+            Accent::Metadata,
+        ));
+    }
+    if app.running && !app.assistant_stream_authority.is_empty() {
+        let approximate_tokens = app.assistant_stream_authority.chars().count().div_ceil(4);
+        groups.push(Group::single(
+            format!("~{approximate_tokens} tok"),
+            Accent::Usage,
         ));
     }
     if density != surface::Density::Compact
@@ -3422,28 +4115,6 @@ fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line:
             format!("cache {:.0}%", usage.cache_hit_ratio() * 100.0),
             Accent::Usage,
         ));
-        let used = app
-            .last_context
-            .map(|context| context.total_tokens as u64)
-            .unwrap_or_else(|| request_input_tokens(usage));
-        if let Some(window) = app.model_context_window.filter(|window| *window > 0) {
-            let admitted =
-                used.saturating_add(u64::from(app.reserved_output_tokens.unwrap_or_default()));
-            let left = window.saturating_sub(admitted) as f64 / window as f64 * 100.0;
-            groups.push(Group::single(
-                format!("ctx {left:.0}% left"),
-                if left <= 20.0 {
-                    Accent::Warning
-                } else {
-                    Accent::Usage
-                },
-            ));
-        } else {
-            groups.push(Group::single(
-                format!("ctx {} used", fmt_token_count(used)),
-                Accent::Usage,
-            ));
-        }
     }
     if app.mode != PermissionMode::Default {
         groups.push(Group::single(app.mode.label(), Accent::Mode));
@@ -3455,21 +4126,12 @@ fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line:
             Accent::Progress,
         ));
     }
-    // Route and effective effort are one high-priority identity unit. Keeping them last means the
-    // progressive truncation loop drops economics/context first and never leaves a naked model with
-    // a hidden effort level.
-    let route = route_label(app);
+    // The canonical renderer owns model/tokens/cost/context/session and their unknown semantics.
+    // Keep it near the high-priority end, while effort remains an Iteron-specific semantic beside
+    // it rather than being smuggled into the model field.
+    groups.push(Group::single(canonical_statusline(app), Accent::Metadata));
     let effort = effort_status_label(app);
-    if route.is_empty() {
-        groups.push(Group::single(effort, effort_status_accent(app)));
-    } else {
-        groups.push(Group::pair(
-            route,
-            Accent::Model,
-            effort,
-            effort_status_accent(app),
-        ));
-    }
+    groups.push(Group::single(effort, effort_status_accent(app)));
     groups
 }
 
@@ -3479,6 +4141,79 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
         .iter()
         .map(status_line::Group::text)
         .collect()
+}
+
+fn activity_label(event: &iteron_protocol::ActivityEvent) -> &'static str {
+    use iteron_protocol::ActivityDetailCode as Detail;
+    match event.detail_code {
+        Some(Detail::Boot) => "starting Iteron",
+        Some(Detail::Config) => "loading configuration",
+        Some(Detail::AgentDiscovery) => "discovering agents",
+        Some(Detail::PluginVerification) => "verifying plugins",
+        Some(Detail::ProviderRefresh) => "refreshing providers",
+        Some(Detail::FirstPaint) => "painting interface",
+        Some(Detail::HistoryHydrate) => "loading prompt history",
+        Some(Detail::SessionIndex) => "indexing sessions",
+        Some(Detail::WorkflowRehydrate) => "restoring workflows",
+        Some(Detail::SubmissionAdmission) => "admitting submission",
+        Some(Detail::ContextAssembly) => "assembling context",
+        Some(Detail::HookGate) => "running hook gate",
+        Some(Detail::RoutePermit) => "waiting for route permit",
+        Some(Detail::RequestSerialization) => "building request",
+        Some(Detail::TransportConnect) => "connecting to provider",
+        Some(Detail::RequestSent) => "request sent · waiting for provider",
+        Some(Detail::WaitingFirstByte) => "request sent · waiting for first byte",
+        Some(Detail::WaitingFirstToken) => "accepted · waiting for first token",
+        Some(Detail::Reasoning) if event.kind.is_reasoning() => "thinking",
+        Some(Detail::Reasoning) => "reasoning activity",
+        Some(Detail::Responding) => "responding",
+        Some(Detail::ToolProposed) => "tool proposed",
+        Some(Detail::ToolHook) => "running tool hook",
+        Some(Detail::ToolApproval) => "waiting for tool approval",
+        Some(Detail::ToolQueued) => "tool queued",
+        Some(Detail::ToolRunning) => "tool running",
+        Some(Detail::ToolPostProcessing) => "processing tool result",
+        Some(Detail::RetryBackoff) => "retry backoff",
+        Some(Detail::RouteFailover) => "switching provider route",
+        Some(Detail::Compaction) => "compacting context",
+        Some(Detail::Verification) => "verifying result",
+        Some(Detail::Checkpoint) => "writing checkpoint",
+        Some(Detail::RecordCommit) => "committing run record",
+        Some(Detail::StopHooks) => "running stop hooks",
+        Some(Detail::WorkflowResultPersist) => "saving workflow result",
+        Some(Detail::AnswerComplete) => "answer complete",
+        Some(Detail::Finalizing) => "finalizing",
+        Some(Detail::InputReady) => "input ready",
+        None => match event.kind {
+            iteron_protocol::ActivityKind::ProviderReasoning => "thinking",
+            iteron_protocol::ActivityKind::ModelRequest => "model request",
+            iteron_protocol::ActivityKind::Tool => "tool activity",
+            iteron_protocol::ActivityKind::Workflow => "workflow activity",
+            iteron_protocol::ActivityKind::Attachment => "attachment",
+            iteron_protocol::ActivityKind::Completion => "completion",
+            iteron_protocol::ActivityKind::HistoryHydration => "prompt history",
+            iteron_protocol::ActivityKind::SessionIndex => "session index",
+            iteron_protocol::ActivityKind::WorkflowHydration => "workflow restore",
+            iteron_protocol::ActivityKind::TerminalProbe => "terminal probe",
+            iteron_protocol::ActivityKind::Verification => "verification",
+            iteron_protocol::ActivityKind::Persistence => "persistence",
+            iteron_protocol::ActivityKind::Finalization => "finalizing",
+            iteron_protocol::ActivityKind::Cancellation => "cancelling",
+            iteron_protocol::ActivityKind::Startup => "starting",
+        },
+    }
+}
+
+fn visible_activity(app: &App) -> Option<(&PresentedActivity, Duration)> {
+    if app.first_token_stall().is_some() {
+        return None;
+    }
+    let activity = app
+        .activities
+        .values()
+        .max_by_key(|activity| activity.event.updated_at_unix_ms)?;
+    let elapsed = activity.observed_at.elapsed();
+    (elapsed >= Duration::from_millis(250)).then_some((activity, elapsed))
 }
 
 fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App) {
@@ -3500,7 +4235,7 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
     } else if app.force_cancelling {
         vec![
             Span::styled("◆ ", error),
-            Span::styled("force-cancelling turn", error),
+            Span::styled("stronger cancellation requested", error),
         ]
     } else if app.pending.is_some() {
         vec![
@@ -3522,6 +4257,40 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             format!("↑ reading history{unread} · ctrl+end to follow"),
             Style::default().fg(th.warn),
         )]
+    } else if let Some((activity, elapsed)) = visible_activity(app) {
+        let mut label = activity_label(&activity.event).to_owned();
+        if elapsed >= Duration::from_secs(1) {
+            label.push_str(&format!(" · {}", fmt_mmss(elapsed)));
+        }
+        if activity.event.limit > 1 {
+            label.push_str(&format!(
+                " · attempt {}/{}",
+                activity.event.attempt, activity.event.limit
+            ));
+        }
+        if let Some(progress) = activity.event.progress {
+            if activity.event.detail_code == Some(iteron_protocol::ActivityDetailCode::ToolQueued) {
+                label.push_str(&format!(
+                    " · {}/{} permits",
+                    progress.completed, progress.total
+                ));
+            } else {
+                label.push_str(&format!(" · {}/{}", progress.completed, progress.total));
+            }
+        }
+        if elapsed >= Duration::from_secs(2) {
+            label.push_str(match activity.event.cancelability {
+                iteron_protocol::ActivityCancelability::None => " · /status for remedy",
+                _ => " · Esc to cancel",
+            });
+        }
+        vec![
+            Span::styled(
+                format!("{} ", spinner()[app.spin % spinner().len()]),
+                accent,
+            ),
+            Span::styled(label, accent),
+        ]
     } else if let Some(stall) = app.first_token_stall() {
         // A dead connection and a slow prefill are the same picture for a full minute unless the
         // interface says which one it is looking at, and it knows: no token has arrived yet
@@ -4138,7 +4907,7 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
     } else if app.running && !text.is_empty() {
-        match input_destination(true, app.interrupting, &text) {
+        match cached_input_destination(true, app.interrupting, app.editor.draft_shape()) {
             InputDestination::ImmediateCommand if density == surface::Density::Compact => {
                 "enter control · ctrl+j newline · esc stop"
             }
@@ -4202,7 +4971,10 @@ fn ensure_stream_doc(app: &mut App) -> bool {
     // delta batch is quadratic in answer length, which is why long answers visibly slowed down as
     // they streamed.
     if app.cur_doc.is_none() {
-        app.cur_doc = Some(crate::markdown::MarkdownDoc { blocks: Vec::new() });
+        app.cur_doc = Some(crate::markdown::MarkdownDoc {
+            blocks: Vec::new(),
+            source: None,
+        });
         app.cur_doc_parse = crate::markdown::StreamingParse::default();
     }
     let doc = app.cur_doc.as_mut().expect("just ensured a live document");
@@ -4216,8 +4988,8 @@ fn ensure_stream_doc(app: &mut App) -> bool {
 /// and streaming pieces point into this frame's `live` arena, and a gap is pure geometry.
 enum TranscriptRows {
     Blank,
-    Cached(u64),
     Live(usize),
+    LiveAssistant,
 }
 
 /// Copy one already-rendered run's `[from, to)` rows into the frame's viewport buffers. Hyperlink
@@ -4247,6 +5019,35 @@ fn push_viewport_rows(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn push_live_markdown_rows(
+    layout: &live_markdown::LiveMarkdownLayout,
+    theme: &theme::Theme,
+    width: u16,
+    running: bool,
+    caret_on: bool,
+    segment_start: usize,
+    from: usize,
+    to: usize,
+    lines: &mut Vec<Line<'static>>,
+    row_map: &mut Vec<usize>,
+    hyperlinks: &mut Vec<crate::render::HyperlinkRegion>,
+) {
+    let last = layout.len().saturating_sub(1);
+    for row in from..to {
+        let Some(mut line) = layout.line(row, theme) else {
+            continue;
+        };
+        if running && caret_on && row == last && crate::render::line_width(&line) < width {
+            line.spans
+                .push(Span::styled("▋", Style::default().fg(theme.role_assistant)));
+        }
+        lines.push(line);
+        row_map.push(usize::MAX);
+    }
+    hyperlinks.extend(layout.visible_hyperlinks(from, to, segment_start));
+}
+
 /// The largest number of rows the workflow region may ask for on a frame this tall.
 ///
 /// The region is pinned chrome, not the conversation. A fan of forty investigators renders a tree
@@ -4265,11 +5066,8 @@ fn workflow_region_cap(frame_height: u16) -> u16 {
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
-    // Rebuild the workflow region's store from disk before the first frame reads it, and again on
-    // the first frame after an adoption (which resets the store, and with it the once-flag). One
-    // call site rather than two triggers: any second entry point is a path that can be forgotten.
-    // Every later frame pays one bool test — `rehydrate` returns before touching the filesystem.
-    app.workflow_monitor.rehydrate(app.workflows_dir.as_deref());
+    // Durable workflow inventory is fetched only when `/workflows` is opened. Rendering — including
+    // the first frame — is a pure projection and never scans sidecars.
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
     if app.pending.is_some() {
@@ -4376,61 +5174,107 @@ fn draw(f: &mut Frame, app: &mut App) {
     // at 10 fps for the caret/activity animation, but unchanged deltas do not repeatedly rebuild
     // the semantic document.
     ensure_stream_doc(app);
-    // A frame no longer materialises the whole transcript. Pass one renders only what is missing —
-    // into the per-block cache, or into `live` for the animated cards that must not be cached — and
-    // records how many rows each piece occupies. Pass two adds the counts up to place the viewport.
-    // Pass three copies ONLY the rows the viewport shows. The old walk cloned every cached
-    // `RenderedLines` and extended one flat vector with them, so a settled session paid for its
-    // whole history on every single frame.
-    let mut live: Vec<crate::render::RenderedLines> = Vec::new();
-    let mut plan: Vec<(TranscriptRows, usize, usize)> = Vec::new();
-    let mut total_rows: usize = 0;
-    {
+    if !app.cur_text.trim().is_empty() {
+        let App {
+            live_markdown_layout,
+            cur_doc,
+            cur_doc_parse,
+            cur_text,
+            theme,
+            theme_epoch,
+            hyperlink_policy,
+            ..
+        } = app;
+        live_markdown_layout.update(
+            cur_doc
+                .as_ref()
+                .expect("non-empty streaming text has a parsed document"),
+            cur_doc_parse,
+            cur_text,
+            live_markdown::LiveMarkdownRenderContext {
+                width: inner_w,
+                theme_epoch: *theme_epoch,
+                theme,
+                hyperlinks: hyperlink_policy,
+            },
+        );
+    }
+    // Rebuild retained block geometry only when its semantic key changes. Ordinary spinner and
+    // streaming frames reuse the prefix sums below and locate their viewport with two binary
+    // searches; they never walk all 1,200 retained blocks.
+    let full_layout_rebuild =
+        !app.transcript_layout
+            .matches(inner_w, app.theme_epoch, region_block);
+    let dirty_from = full_layout_rebuild
+        .then_some(0)
+        .or(app.transcript_dirty_from);
+    if let Some(dirty_from) = dirty_from {
+        let mut entries = Vec::new();
         let theme = &app.theme;
         let spin = app.spin;
         let hyperlink_policy = &app.hyperlink_policy;
         let render_cache = &mut app.render_cache;
-        // The gap is measured against the previous VISIBLE block, not the previous block. A run the
-        // region is drawing occupies no transcript rows at all, so charging the conversation for
-        // the blank line in front of it would leave a hole where the card is not.
-        let mut previous: Option<&block::BlockKind> = None;
-        for (bi, b) in app.transcript.iter().enumerate() {
-            if Some(b.id) == region_block {
+        let mut previous: Option<&block::BlockKind> = app.transcript[..dirty_from]
+            .iter()
+            .rev()
+            .find(|block| Some(block.id) != region_block)
+            .map(|block| &block.kind);
+        for (block_index, block) in app.transcript.iter().enumerate().skip(dirty_from) {
+            if Some(block.id) == region_block {
                 continue;
             }
             if let Some(previous) = previous {
-                // Variable rhythm (critique P1): a bigger gap at real turn boundaries, none between
-                // adjacent tool cards / notices / dividers, so structure is scannable, not monotone.
-                let gap = usize::from(block::gap_before(previous, &b.kind));
+                let gap = usize::from(block::gap_before(previous, &block.kind));
                 if gap > 0 {
-                    plan.push((TranscriptRows::Blank, gap, usize::MAX));
-                    total_rows += gap;
+                    entries.push(transcript_layout::Entry::blank(gap, block_index));
                 }
             }
-            previous = Some(&b.kind);
-            let rows = if b.cacheable() {
-                if render_cache.get(&b.id).map(|(revision, _)| *revision) != Some(b.revision) {
-                    let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
-                    render_cache.insert(b.id, (b.revision, rendered));
+            previous = Some(&block.kind);
+            if block.cacheable() {
+                if render_cache.get(&block.id).map(|(revision, _)| *revision)
+                    != Some(block.revision)
+                {
+                    let rendered =
+                        block.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                    render_cache.insert(block.id, (block.revision, rendered));
                 }
-                let count = render_cache
-                    .get(&b.id)
+                let rows = render_cache
+                    .get(&block.id)
                     .map_or(0, |(_, rendered)| rendered.lines.len());
-                plan.push((TranscriptRows::Cached(b.id), count, bi));
-                count
+                entries.push(transcript_layout::Entry::cached(
+                    block.id,
+                    block_index,
+                    rows,
+                ));
             } else {
-                let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
-                let count = rendered.lines.len();
-                plan.push((TranscriptRows::Live(live.len()), count, bi));
-                live.push(rendered);
-                count
-            };
-            total_rows += rows;
+                let rows = block
+                    .render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy)
+                    .lines
+                    .len();
+                entries.push(transcript_layout::Entry::live(block_index, rows));
+            }
         }
-        // live streaming blocks (reasoning, then the in-flight answer) through the SAME render path
+        if full_layout_rebuild {
+            app.transcript_layout
+                .rebuild(inner_w, app.theme_epoch, region_block, entries);
+        } else {
+            app.transcript_layout.rebuild_suffix(dirty_from, entries);
+        }
+        app.transcript_dirty_from = None;
+    }
+
+    // The two in-flight projections are not retained transcript blocks. Their plan is bounded to
+    // four entries (gap + thinking + gap + answer) and is appended after the indexed geometry.
+    let mut live: Vec<crate::render::RenderedLines> = Vec::new();
+    let mut tail_plan: Vec<(TranscriptRows, usize, usize)> = Vec::new();
+    let retained_rows = app.transcript_layout.total_rows();
+    let mut total_rows = retained_rows;
+    {
+        let theme = &app.theme;
+        let spin = app.spin;
         if !app.cur_think.trim().is_empty() {
             if total_rows > 0 {
-                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                tail_plan.push((TranscriptRows::Blank, 1, usize::MAX));
                 total_rows += 1;
             }
             let tb = block::Block::new(
@@ -4442,35 +5286,17 @@ fn draw(f: &mut Frame, app: &mut App) {
             );
             let rendered = crate::render::RenderedLines::plain(tb.render(inner_w, theme, spin));
             let count = rendered.lines.len();
-            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
+            tail_plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
             live.push(rendered);
             total_rows += count;
         }
         if !app.cur_text.trim().is_empty() {
             if total_rows > 0 {
-                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                tail_plan.push((TranscriptRows::Blank, 1, usize::MAX));
                 total_rows += 1;
             }
-            let mut rendered = block::render_assistant_doc_with_hyperlinks(
-                app.cur_doc
-                    .as_ref()
-                    .expect("non-empty streaming text has a parsed document"),
-                inner_w,
-                theme,
-                hyperlink_policy,
-            );
-            // blinking caret on the last row while streaming
-            if app.running
-                && (app.spin / 4).is_multiple_of(2)
-                && let Some(last) = rendered.lines.last_mut()
-                && crate::render::line_width(last) < inner_w
-            {
-                last.spans
-                    .push(Span::styled("▋", Style::default().fg(theme.role_assistant)));
-            }
-            let count = rendered.lines.len();
-            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
-            live.push(rendered);
+            let count = app.live_markdown_layout.len();
+            tail_plan.push((TranscriptRows::LiveAssistant, count, usize::MAX));
             total_rows += count;
         }
     }
@@ -4511,8 +5337,63 @@ fn draw(f: &mut Frame, app: &mut App) {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(window);
     let mut row_map: Vec<usize> = Vec::with_capacity(window); // block index per VISIBLE row (usize::MAX = spacer/stream)
     let mut hyperlink_regions = Vec::new();
-    let mut cursor = 0usize;
-    for (rows, count, bi) in &plan {
+    let retained_visible = app
+        .transcript_layout
+        .visible_range(first_row, last_row.min(retained_rows));
+    for entry_index in retained_visible {
+        let Some(entry) = app.transcript_layout.entry(entry_index).copied() else {
+            continue;
+        };
+        let segment_start = app.transcript_layout.row_start(entry_index);
+        let segment_end = segment_start.saturating_add(entry.rows);
+        let from = first_row.max(segment_start) - segment_start;
+        let to = last_row.min(segment_end) - segment_start;
+        match entry.source {
+            transcript_layout::Source::Blank => {
+                for _ in from..to {
+                    lines.push(Line::from(""));
+                    row_map.push(usize::MAX);
+                }
+            }
+            transcript_layout::Source::Cached(id) => {
+                if let Some((_, rendered)) = app.render_cache.get(&id) {
+                    push_viewport_rows(
+                        rendered,
+                        entry.block_index,
+                        segment_start,
+                        from,
+                        to,
+                        &mut lines,
+                        &mut row_map,
+                        &mut hyperlink_regions,
+                    );
+                }
+            }
+            transcript_layout::Source::LiveBlock(block_index) => {
+                if let Some(block) = app.transcript.get(block_index) {
+                    let rendered = block.render_with_hyperlinks(
+                        inner_w,
+                        &app.theme,
+                        app.spin,
+                        &app.hyperlink_policy,
+                    );
+                    push_viewport_rows(
+                        &rendered,
+                        entry.block_index,
+                        segment_start,
+                        from,
+                        to.min(rendered.lines.len()),
+                        &mut lines,
+                        &mut row_map,
+                        &mut hyperlink_regions,
+                    );
+                }
+            }
+        }
+    }
+
+    let mut cursor = retained_rows;
+    for (rows, count, block_index) in &tail_plan {
         let segment_start = cursor;
         cursor = cursor.saturating_add(*count);
         if cursor <= first_row || segment_start >= last_row {
@@ -4527,23 +5408,22 @@ fn draw(f: &mut Frame, app: &mut App) {
                     row_map.push(usize::MAX);
                 }
             }
-            TranscriptRows::Cached(id) => {
-                if let Some((_, rendered)) = app.render_cache.get(id) {
-                    push_viewport_rows(
-                        rendered,
-                        *bi,
-                        segment_start,
-                        from,
-                        to,
-                        &mut lines,
-                        &mut row_map,
-                        &mut hyperlink_regions,
-                    );
-                }
-            }
             TranscriptRows::Live(index) => push_viewport_rows(
                 &live[*index],
-                *bi,
+                *block_index,
+                segment_start,
+                from,
+                to,
+                &mut lines,
+                &mut row_map,
+                &mut hyperlink_regions,
+            ),
+            TranscriptRows::LiveAssistant => push_live_markdown_rows(
+                &app.live_markdown_layout,
+                &app.theme,
+                inner_w,
+                app.running,
+                (app.spin / 4).is_multiple_of(2),
                 segment_start,
                 from,
                 to,

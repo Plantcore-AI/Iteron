@@ -1,7 +1,7 @@
 //! Stable one-shot output contracts.
 //!
 //! Every format consumes frontend `UiEvent`s; the kernel never writes model content directly.
-//! Human `text` remains streaming but passes through one bounded cross-delta scrubber:
+//! Human `text` remains streaming but passes through one bounded sensitive-prefix scrubber:
 //! - `json` emits exactly one final result object;
 //! - `stream-json` emits one JSON object per UI event, followed by the same final result object.
 //!
@@ -25,10 +25,9 @@ pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
 pub const EXIT_STUCK: u8 = 4;
 pub const EXIT_INTERRUPTED: u8 = 130;
-/// A provider can split one credential-shaped token across arbitrarily many deltas. Hold the
-/// unfinished token until a delimiter arrives so per-delta scrubbing cannot leak its prefix. A
-/// malicious delimiter-free token is replaced at this ceiling rather than growing without bound.
-const MAX_PENDING_STREAM_TOKEN_BYTES: usize = 16 * 1024;
+/// A provider can split one credential-shaped token across arbitrarily many deltas. Only a suffix
+/// that still matches a sensitive token prefix is retained; ordinary unfinished prose is emitted
+/// immediately. A malicious delimiter-free sensitive token is replaced at this ceiling.
 const MAX_STDERR_NOTICE_BYTES: usize = 4 * 1024;
 
 /// The stdout contract for a one-shot run.
@@ -178,44 +177,106 @@ fn is_token_boundary(c: char) -> bool {
     c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')' | ';')
 }
 
-/// Stateful redaction for model deltas. The ordinary scrubber is token-oriented, so invoking it on
-/// each transport chunk is unsafe: `sk-ant-...` may arrive as `"sk-an"`, `"t-..."`. This buffer
-/// emits only complete tokens and preserves concatenated ordinary text exactly.
+/// Prefixes whose token body must remain private until its delimiter arrives. This is intentionally
+/// the same closed credential family vocabulary recognized by the record scrubber; ordinary words
+/// are not delayed merely because the provider has not emitted whitespace yet.
+const SENSITIVE_STREAM_PREFIXES: &[&str] = &[
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",
+    "AIza",
+    "eyJ",
+    "-----BEGIN",
+];
+
+fn potentially_sensitive_token(token: &str) -> bool {
+    !token.is_empty()
+        && SENSITIVE_STREAM_PREFIXES
+            .iter()
+            .any(|prefix| prefix.starts_with(token) || token.starts_with(prefix))
+}
+
+/// Stateful redaction for model deltas. `sk-ant-...` may arrive as `"sk-an"`, `"t-..."`, but a
+/// normal trailing word must not make the last visible token wait for a later event.
 #[derive(Default)]
 pub(crate) struct StreamingScrubber {
     pending: String,
+    redacting_token: bool,
 }
 
 impl StreamingScrubber {
     pub(crate) fn push(&mut self, delta: &str) -> Option<String> {
+        let mut output = String::new();
+        let mut delta = delta;
+        if self.redacting_token {
+            let (boundary, character) = delta
+                .char_indices()
+                .find(|(_, character)| is_token_boundary(*character))?;
+            let after_boundary = boundary + character.len_utf8();
+            // The placeholder was emitted as soon as the sensitive prefix became conclusive.
+            // Suppress only the remainder of that token, retain its delimiter, then resume normal
+            // streaming for every later byte in the same provider delta.
+            output.push_str(&delta[boundary..after_boundary]);
+            delta = &delta[after_boundary..];
+            self.redacting_token = false;
+        }
+
         self.pending.push_str(delta);
-        let split = self
+        let last_boundary = self
             .pending
             .char_indices()
             .filter(|(_, c)| is_token_boundary(*c))
             .map(|(index, c)| index + c.len_utf8())
             .next_back();
 
-        let mut output = split.map(|split| {
-            let complete = self.pending[..split].to_string();
-            self.pending.drain(..split);
-            scrub(&complete)
-        });
-        if self.pending.len() > MAX_PENDING_STREAM_TOKEN_BYTES {
-            self.pending.clear();
-            output
-                .get_or_insert_with(String::new)
-                .push_str("[REDACTED:oversized-stream-token]");
+        let trailing_start = last_boundary.unwrap_or(0);
+        let trailing = &self.pending[trailing_start..];
+        let confirmed_sensitive = SENSITIVE_STREAM_PREFIXES
+            .iter()
+            .any(|prefix| trailing.starts_with(prefix));
+        let hold_from = if potentially_sensitive_token(trailing) {
+            trailing_start
+        } else {
+            self.pending.len()
+        };
+        if hold_from > 0 {
+            let stable = self.pending[..hold_from].to_owned();
+            self.pending.drain(..hold_from);
+            output.push_str(&scrub(&stable));
         }
-        output.filter(|value| !value.is_empty())
+        if confirmed_sensitive {
+            // Do not retain an arbitrarily long delimiter-free credential while waiting for its
+            // suffix. Emit an explicit redaction at the first conclusive prefix and enter a
+            // constant-memory suppression state until the delimiter arrives. A transport failure
+            // therefore leaves a visible redaction, never a silently missing 16 KiB tail.
+            self.pending.clear();
+            self.redacting_token = true;
+            output.push_str("[REDACTED:stream-token]");
+        }
+        (!output.is_empty()).then_some(output)
     }
 
     pub(crate) fn finish(&mut self) -> Option<String> {
+        if self.redacting_token {
+            self.redacting_token = false;
+            return None;
+        }
         if self.pending.is_empty() {
             return None;
         }
         let pending = std::mem::take(&mut self.pending);
-        Some(scrub(&pending))
+        if potentially_sensitive_token(&pending) {
+            // The transport ended before the held prefix became either an ordinary token or a
+            // complete credential. Exposing the prefix is unnecessary and silently discarding it
+            // makes the final UI look truncated, so close the stream with an explicit marker.
+            Some("[REDACTED:stream-token]".into())
+        } else {
+            Some(scrub(&pending))
+        }
     }
 }
 
@@ -1418,24 +1479,55 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn streaming_scrubber_holds_a_secret_split_across_deltas() {
+    fn streaming_scrubber_redacts_a_secret_split_across_deltas_before_transport_can_fail() {
         let mut stream = StreamingScrubber::default();
-        assert!(stream.push("answer sk-ant-api03-AbCd").is_some());
+        let prefix = stream
+            .push("answer sk-ant-api03-AbCd")
+            .expect("a conclusive secret prefix is redacted immediately");
+        assert_eq!(prefix, "answer [REDACTED:stream-token]");
         assert!(stream.push("EfGhIjKlMnOpQrStUvWx").is_none());
         let tail = stream.push(" done").expect("delimiter completes the token");
         assert!(!tail.contains("AbCdEfGhIjKlMnOpQrStUvWx"));
-        assert!(tail.contains("[REDACTED"));
-        assert_eq!(stream.finish(), Some("done".into()));
+        assert_eq!(tail, " done");
+        assert_eq!(stream.finish(), None);
+    }
+
+    #[test]
+    fn streaming_scrubber_does_not_hold_an_ordinary_terminal_word() {
+        let mut stream = StreamingScrubber::default();
+        assert_eq!(
+            stream.push("the answer is complete"),
+            Some("the answer is complete".into())
+        );
+        assert_eq!(stream.finish(), None);
+        assert_eq!(
+            stream.push("s"),
+            None,
+            "a real secret prefix remains unstable"
+        );
+        assert_eq!(stream.push("afe"), Some("safe".into()));
+    }
+
+    #[test]
+    fn streaming_scrubber_marks_a_held_prefix_when_transport_ends_without_authority() {
+        let mut stream = StreamingScrubber::default();
+        assert_eq!(
+            stream.push("sk-"),
+            Some("[REDACTED:stream-token]".into()),
+            "a recognized credential prefix is redacted immediately"
+        );
+        assert_eq!(stream.finish(), None);
     }
 
     #[test]
     fn streaming_scrubber_bounds_a_delimiter_free_adversarial_token() {
         let mut stream = StreamingScrubber::default();
-        let oversized = "A".repeat(MAX_PENDING_STREAM_TOKEN_BYTES + 1);
+        let oversized = format!("sk-{}", "A".repeat(1024 * 1024));
         let output = stream
             .push(&oversized)
-            .expect("oversized token is replaced");
-        assert_eq!(output, "[REDACTED:oversized-stream-token]");
+            .expect("sensitive token is redacted at its prefix");
+        assert_eq!(output, "[REDACTED:stream-token]");
+        assert!(!output.contains(&"A".repeat(128)));
         assert!(stream.finish().is_none());
     }
 

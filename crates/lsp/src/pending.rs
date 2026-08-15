@@ -1,8 +1,9 @@
 //! Bounded in-flight request registry: allocation, correlation, cancellation, and expiry.
 //!
 //! Request ids are monotonic within one explicit host/session generation and never recycle.
-//! Cancellation stays charged until reply or expiry because `$/cancelRequest` does not suppress
-//! the response.
+//! Ordinary cancellation stays charged until reply or expiry because `$/cancelRequest` does not
+//! suppress the response. A transport router that deliberately discards late responses can use
+//! `cancel_and_release` to retire the slot immediately.
 use crate::{
     LspError, MAX_IN_FLIGHT, MAX_JSONRPC_NUMERIC_ID, MAX_REQUEST_TIMEOUT_MS,
     MIN_REQUEST_TIMEOUT_MS, ServerEpoch, documents::DocumentSnapshot,
@@ -142,6 +143,7 @@ pub enum CancelDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetiredKind {
     Replied,
+    Cancelled,
     TimedOut { issued_ms: u64 },
 }
 
@@ -424,6 +426,51 @@ impl PendingRequests {
         })
     }
 
+    /// Cancel a request and immediately release its admission slot.
+    ///
+    /// This is only sound when the transport has independently removed the response receiver, so
+    /// a later wire reply cannot be accepted as a live completion. The returned disposition tells
+    /// the caller whether it still needs to emit `$/cancelRequest`.
+    pub fn cancel_and_release(
+        &mut self,
+        reader_generation: u64,
+        id: u32,
+        now_ms: u64,
+    ) -> Result<CancelDisposition, LspError> {
+        if reader_generation != self.server_epoch.generation() {
+            return Ok(CancelDisposition::ForeignGeneration {
+                expected: self.server_epoch.generation(),
+                received: reader_generation,
+                id,
+            });
+        }
+        self.observe_clock(now_ms)?;
+        let Some(entry) = self.entries.remove(&id) else {
+            return Ok(if self.was_issued(id) {
+                CancelDisposition::Retired {
+                    generation: reader_generation,
+                    id,
+                }
+            } else {
+                CancelDisposition::Unknown
+            });
+        };
+        if entry.deadline_ms <= now_ms {
+            let expired = expired(&entry, now_ms);
+            self.timed_out = self.timed_out.saturating_add(1);
+            self.remember(
+                entry.correlation,
+                RetiredKind::TimedOut {
+                    issued_ms: entry.issued_ms,
+                },
+            );
+            return Ok(CancelDisposition::TimedOut(expired));
+        }
+        self.cancelled = self.cancelled.saturating_add(1);
+        self.remember(entry.correlation, RetiredKind::Cancelled);
+        Ok(CancelDisposition::CancellationRequested(entry.correlation))
+    }
+
     /// Remove everything whose deadline has passed, in stable id order.
     pub fn expire(&mut self, now_ms: u64) -> Result<Vec<Expired>, LspError> {
         self.observe_clock(now_ms)?;
@@ -462,6 +509,7 @@ impl PendingRequests {
         {
             return match tombstone.kind {
                 RetiredKind::Replied => ReplyDisposition::Duplicate(tombstone.correlation),
+                RetiredKind::Cancelled => ReplyDisposition::Cancelled(tombstone.correlation),
                 RetiredKind::TimedOut { issued_ms } => ReplyDisposition::Late(Expired {
                     generation: tombstone.correlation.generation(),
                     id,

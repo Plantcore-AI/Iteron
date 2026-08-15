@@ -128,7 +128,15 @@ impl ContextObserver for ContextLedgerStore {
             ContextObservation::Compaction(evidence) => ledger.compaction = Some(evidence),
             ContextObservation::ProviderUsage {
                 actual_input_tokens,
-            } => ledger.totals.actual_input_tokens = Some(actual_input_tokens),
+                cache_read_tokens,
+                cache_write_tokens,
+                uncached_tokens,
+            } => {
+                ledger.totals.actual_input_tokens = Some(actual_input_tokens);
+                ledger.cache.cache_read_tokens = cache_read_tokens;
+                ledger.cache.cache_write_tokens = cache_write_tokens;
+                ledger.cache.uncached_tokens = uncached_tokens;
+            }
         }
     }
 }
@@ -234,5 +242,36 @@ mod tests {
         let snapshot = store.snapshot();
         assert_eq!(snapshot.ledgers.len(), MAX_DECISION_TURNS);
         assert_eq!(snapshot.dropped_oldest, 1);
+    }
+
+    #[test]
+    fn provider_usage_records_real_cache_read_write_and_uncached_tokens() {
+        let store = ContextLedgerStore::default();
+        let turn = TurnId(7);
+        store.publish(ContextLedger::new(
+            turn,
+            TokenizerIdentity {
+                catalog_id: "heuristic".into(),
+                version: 1,
+                exact: false,
+            },
+        ));
+
+        store.observe(
+            turn,
+            ContextObservation::ProviderUsage {
+                actual_input_tokens: 1_000,
+                cache_read_tokens: 700,
+                cache_write_tokens: 100,
+                uncached_tokens: 200,
+            },
+        );
+
+        let snapshot = store.snapshot();
+        let ledger = snapshot.ledgers.last().unwrap();
+        assert_eq!(ledger.totals.actual_input_tokens, Some(1_000));
+        assert_eq!(ledger.cache.cache_read_tokens, 700);
+        assert_eq!(ledger.cache.cache_write_tokens, 100);
+        assert_eq!(ledger.cache.uncached_tokens, 200);
     }
 }

@@ -22,8 +22,12 @@ fn decode_inner(
     view: &EffectiveTunablesView,
 ) -> Result<ResolvedProviderGovernorConfig, EffectiveCoreError> {
     let fallback_routes = list_enums(view, "model_fallback_chain")?;
+    // Provider request admission has its own stable physical tunable. It must not inherit the
+    // workflow investigator ceiling: changing fan-out is not authority to multiply paid requests
+    // on one provider route.
+    let max_in_flight_per_route = GovernorPolicy::default().max_in_flight_per_route;
     let policy = GovernorPolicy {
-        max_in_flight_per_route: usizev(view.integer("fan_concurrency")?, "fan_concurrency")?,
+        max_in_flight_per_route,
         objectives: decode_objectives(view)?,
         failover: decode_failover(view)?,
         circuit: decode_circuit(view)?,
@@ -352,8 +356,4 @@ fn u32v(value: i64, family: &'static str) -> Result<u32, EffectiveCoreError> {
 
 fn u64v(value: i64, family: &'static str) -> Result<u64, EffectiveCoreError> {
     u64::try_from(value).map_err(|_| EffectiveCoreError::Range { family })
-}
-
-fn usizev(value: i64, family: &'static str) -> Result<usize, EffectiveCoreError> {
-    usize::try_from(value).map_err(|_| EffectiveCoreError::Range { family })
 }

@@ -10,21 +10,25 @@ use crate::{
 };
 use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout};
+use tokio::io::AsyncWriteExt;
+use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
 mod content;
 mod discovery;
 mod lifecycle;
 mod managed_connect;
+mod multiplex;
 mod transport;
 pub(crate) use content::{render_extension_content, render_tool_content};
 use lifecycle::OwnedProcess;
+use multiplex::ResponseRouter;
 #[cfg(test)]
-use transport::read_frame;
-use transport::{ResponseLimits, read_matching_response};
+use tokio::io::BufReader;
+#[cfg(test)]
+use transport::{ResponseLimits, read_frame, read_matching_response};
 
 /// A `tools/call` result that omits `isError` is a success: the field is optional in the protocol
 /// and absence must not be read as failure.
@@ -59,11 +63,8 @@ enum CallOutcome {
 /// A connected MCP server. Owns the child process and its stdio.
 pub struct McpClient {
     process: Option<OwnedProcess>,
-    stdin: Mutex<ChildStdin>,
-    stdout: Mutex<BufReader<ChildStdout>>,
-    /// Serialize the complete write/read exchange. Separate stdin/stdout locks are insufficient:
-    /// two callers could otherwise consume and discard each other's response IDs.
-    calls: Mutex<()>,
+    stdin: Arc<Mutex<ChildStdin>>,
+    responses: ResponseRouter,
     next_id: std::sync::atomic::AtomicU64,
     request_timeout: Duration,
     deadlines: crate::McpTransportDeadlines,
@@ -296,12 +297,14 @@ impl McpClient {
     }
 
     pub(crate) async fn terminate(&mut self) {
+        self.responses.abort();
         if let Some(mut process) = self.process.take() {
             process.terminate_and_reap().await;
         }
     }
 
     pub(crate) fn terminate_sync(&mut self) {
+        self.responses.abort();
         if let Some(mut process) = self.process.take() {
             process.force_cleanup_sync();
         }
@@ -436,12 +439,15 @@ impl McpClient {
         params: Value,
         dispatch_clock: &DispatchClock,
     ) -> CallOutcome {
-        let _call = self.calls.lock().await;
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let line = match request(id, method, params) {
             Ok(line) => line,
+            Err(error) => return CallOutcome::Completed(Err(error), None),
+        };
+        let response = match self.responses.register(id).await {
+            Ok(response) => response,
             Err(error) => return CallOutcome::Completed(Err(error), None),
         };
         if let Err(error) = self.send_line_tracking_dispatch(line, dispatch_clock).await {
@@ -452,8 +458,7 @@ impl McpClient {
                     .expect("the writer marks dispatch before its first fallible write"),
             );
         }
-        let mut reader = self.stdout.lock().await;
-        match read_matching_response(&mut *reader, id, ResponseLimits::default()).await {
+        match response.receive().await {
             Ok(value) => CallOutcome::Completed(Ok(value), dispatch_clock.elapsed_ms()),
             // A matching JSON-RPC error response is an authoritative remote terminal. Every
             // framing/EOF/parse failure after the write remains unknown.
@@ -1029,17 +1034,17 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn single_flight_wait_is_excluded_from_attributed_dispatch_latency() {
+    async fn concurrent_slow_and_fast_calls_have_no_same_server_head_of_line_blocking() {
         let args = vec![
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; ",
-                "IFS= read -r slow; sleep 0.20; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"slow\"}]}}'; ",
-                "IFS= read -r fast; ",
+                "IFS= read -r slow; IFS= read -r fast; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fast\"}]}}'; ",
+                "sleep 0.20; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"slow\"}]}}'; ",
                 "exec sleep 60"
             )
             .to_string(),
@@ -1090,7 +1095,10 @@ mod tests {
         assert_eq!(fast_evidence.server_name, "latency-server");
         assert_eq!(fast_evidence.tool_name, "fast-tool");
         assert!(slow_evidence.dispatch_to_terminal_ms.get() >= 150);
-        assert!(fast_total_ms >= 150, "fixture did not create queue wait");
+        assert!(
+            fast_total_ms < 150,
+            "fast call was head-of-line blocked: {fast_total_ms}ms"
+        );
         assert!(
             fast_evidence.dispatch_to_terminal_ms.get() < 100,
             "single-flight queue wait leaked into dispatch latency: total={fast_total_ms}ms evidence={}ms",

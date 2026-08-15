@@ -17,7 +17,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "compaction_trigger",
         object_value!(
             "mode" => enum_value!("adaptive"),
-            "usable_window_ratio" => decimal_value!(8, 1),
+            "usable_window_ratio" => decimal_value!(1, 0),
             "fallback_trigger_tokens" => integer_value!(120_000),
             "output_reserve_tokens" => integer_value!(8_192),
         )
@@ -35,12 +35,12 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default_with_value!(
         "compaction_adaptive",
         object_value!(
-            "usable_window_ratio" => decimal_value!(8, 1),
-            "keep_recent_messages" => integer_value!(6),
+            "usable_window_ratio" => decimal_value!(1, 0),
+            "keep_recent_messages" => integer_value!(0),
             "output_reserve_tokens" => integer_value!(8_192),
         )
     ), // 24 compaction_adaptive
-    derived_default_with_value!("compaction_keep_recent", integer_value!(6)), // 25 compaction_keep_recent
+    derived_default_with_value!("compaction_keep_recent", integer_value!(0)), // 25 compaction_keep_recent
     derived_default!("token_estimator"),                                      // 26 token_estimator
     derived_default!("summary_profile"),                                      // 27 summary_profile
     derived_default!("compaction_failure"), // 28 compaction_failure
@@ -55,7 +55,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("failed_action_dedup"), // 37 failed_action_dedup
     derived_default!("pure_memo_cache"),     // 38 pure_memo_cache
     literal_default!(object_value!(
-        "timeout_seconds" => integer_value!(3_600),
+        "timeout_seconds" => integer_value!(120),
         "stdout_max_bytes" => integer_value!(8_388_608),
         "stderr_max_bytes" => integer_value!(8_388_608),
     )), // 39 shell_timeout_output
@@ -86,7 +86,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("join_reduce"),         // 64 join_reduce
     derived_default!("workflow_aggregate"),  // 65 workflow_aggregate
     derived_default!("schema_retry_jitter"), // 66 schema_retry_jitter
-    literal_default!(integer_value!(30)),    // 67 provider_connect_tls_timeout
+    literal_default!(integer_value!(10)),    // 67 provider_connect_tls_timeout
     literal_default!(object_value!(
         "max_images" => integer_value!(8),
         "per_image_raw_bytes" => integer_value!(6_291_456),
@@ -102,7 +102,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "authoritative_overflow" => enum_value!("wait"),
     )), // 69 app_server_sq_eq_backpressure
     literal_default!(object_value!(
-        "eager_budget_milliseconds" => integer_value!(1_500),
+        "eager_budget_milliseconds" => integer_value!(0),
         "positive_ttl_seconds" => integer_value!(900),
         "failure_backoff_base_seconds" => integer_value!(60),
         "failure_backoff_cap_seconds" => integer_value!(86_400),

@@ -266,6 +266,7 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/record/Cargo.toml" },
+        { "kind": "file", "path": "crates/record/src/append_actor.rs" },
         { "kind": "file", "path": "crates/record/src/checkpoint.rs" },
         { "kind": "file", "path": "crates/record/src/content_store.rs" },
         { "kind": "tree", "path": "crates/record/src/content_store" },
@@ -473,11 +474,13 @@
         { "kind": "file", "path": "crates/ctx/src/context_strategy.rs" },
         { "kind": "file", "path": "crates/ctx/src/decision_store.rs" },
         { "kind": "file", "path": "crates/ctx/src/instructions.rs" },
+        { "kind": "file", "path": "crates/ctx/src/incremental.rs" },
         { "kind": "file", "path": "crates/ctx/src/lib.rs" },
         { "kind": "file", "path": "crates/ctx/src/outline.rs" },
         { "kind": "file", "path": "crates/ctx/src/runtime_policy.rs" },
         { "kind": "file", "path": "crates/ctx/src/source.rs" },
-        { "kind": "file", "path": "crates/ctx/src/token_estimator.rs" }
+        { "kind": "file", "path": "crates/ctx/src/token_estimator.rs" },
+        { "kind": "file", "path": "crates/ctx/src/token_calibration.rs" }
       ],
       "contracts": ["untrusted-instruction-framing", "bounded-context", "compaction-policy"],
       "checks": ["cargo test -p iteron-ctx --locked"]
@@ -513,7 +516,8 @@
         { "kind": "file", "path": "crates/agents/Cargo.toml" },
         { "kind": "file", "path": "crates/agents/src/catalog.rs" },
         { "kind": "file", "path": "crates/agents/src/def.rs" },
-        { "kind": "file", "path": "crates/agents/src/lib.rs" }
+        { "kind": "file", "path": "crates/agents/src/lib.rs" },
+        { "kind": "file", "path": "crates/agents/src/snapshot.rs" }
       ],
       "contracts": ["read-only-agent-authority", "agent-definition-trust"],
       "checks": ["cargo test -p iteron-agents --locked"]
@@ -750,9 +754,11 @@
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/agent_config.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/agent_loop.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/activity.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/budget_control.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/compaction.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/compaction_coverage.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/completion_semantics.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/context_runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/decision_observability.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/decomposition.rs" },
@@ -761,6 +767,8 @@
         { "kind": "file", "path": "crates/cli/src/runtime/file_submission.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/failed_action_cache.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/frontend.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/frontend_tests.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/force_cancel.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/inbound_control.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/kernel_error.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/lifecycle_hooks.rs" },

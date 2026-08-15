@@ -12,6 +12,7 @@ mod tunables;
 mod tunables_census;
 mod tunables_invariant_review;
 mod tunables_params;
+mod uiux_conformance;
 mod validate;
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +30,11 @@ fn main() -> Result<()> {
         [group, command] if group == "conformance" && command == "check" => {
             conformance::validate(&root)?;
             println!("kernel structural conformance contract valid");
+            return Ok(());
+        }
+        [group, command] if group == "conformance" && command == "uiux" => {
+            uiux_conformance::validate(&root)?;
+            println!("UI/UX performance SLO contract valid");
             return Ok(());
         }
         [group, command] if group == "docs" && command == "check" => {
@@ -227,7 +233,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|invariant-review-packet|invariant-review-body|check-invariant-reviews [--reviews FILE]|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel|uiux> | docs <check|generate> | lifecycle check | tunables <check|generate|generate-params|check-params|constants-audit|wire-integers|wire-scalars|wire-cross-file|unwire-structural|surface|generate-surface|census-check|generate-census|optimization-census|generate-optimization-census|invariant-review-packet|invariant-review-body|check-invariant-reviews [--reviews FILE]|artifacts-check> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

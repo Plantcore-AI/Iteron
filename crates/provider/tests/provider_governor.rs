@@ -25,7 +25,10 @@ fn unknown_quota_conservatively_reduces_concurrency() {
     };
     assert!(matches!(
         governor.admit("provider:model", now),
-        ProviderAdmission::Rejected(AdmissionReason::Ceiling)
+        ProviderAdmission::Deferred {
+            reason: AdmissionReason::Ceiling,
+            ..
+        }
     ));
     drop(first);
     assert!(matches!(
@@ -128,6 +131,24 @@ fn failover_requires_both_typed_class_and_dispatch_state() {
         governor.failover_class(&error, FailurePoint::PreDispatch),
         None
     );
+}
+
+#[test]
+fn bare_server_error_can_fail_over_but_never_becomes_retryable() {
+    let governor = governor(GovernorPolicy::default());
+    let error = ProviderError::Api {
+        status: 503,
+        body: "not retained".into(),
+    };
+    assert_eq!(
+        error.retry_disposition(),
+        iteron_provider::RetryDisposition::Never
+    );
+    assert_eq!(
+        governor.failover_class(&error, FailurePoint::ProvenTerminal),
+        Some(FailoverClass::Overloaded)
+    );
+    assert_eq!(iteron_provider::default_failover_rules().len(), 5);
 }
 
 #[test]

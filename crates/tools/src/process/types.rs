@@ -18,7 +18,7 @@ pub struct ProcessHealth {
 }
 
 #[derive(Debug)]
-pub(super) enum ActionError {
+pub(crate) enum ActionError {
     Definite(String),
     Unknown(String),
 }
@@ -117,6 +117,21 @@ pub(super) struct ProcessSnapshot {
     pub(super) state: JobState,
     pub(super) stdout: OutputFrame,
     pub(super) stderr: OutputFrame,
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamingExecReceipt {
+    pub(crate) job_id: String,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) stdout_cursor: u64,
+    pub(crate) stderr_cursor: u64,
+    pub(crate) stdout_incomplete: bool,
+    pub(crate) stderr_incomplete: bool,
+    pub(crate) yielded: bool,
+    pub(crate) is_error: bool,
+    pub(crate) terminal: bool,
+    pub(crate) state_json: String,
 }
 
 /// Output-free inventory row. Listing jobs must stay cheap even when every retained output ring is

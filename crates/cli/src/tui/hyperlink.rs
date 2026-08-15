@@ -243,11 +243,7 @@ fn apply_to_buffer_with_chunk_width(
                 if symbol.is_empty() || symbol.chars().any(char::is_control) {
                     break;
                 }
-                let symbol_width = symbol
-                    .chars()
-                    .map(crate::tui::char_width)
-                    .fold(0u16, u16::saturating_add)
-                    .max(1);
+                let symbol_width = crate::tui::text_width(symbol).max(1);
                 if chunk_width.saturating_add(symbol_width) > chunk_width_limit {
                     break;
                 }

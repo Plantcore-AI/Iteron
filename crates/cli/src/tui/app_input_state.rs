@@ -43,6 +43,9 @@ impl App {
                 .retain(|block_id, _| !evicted.contains(block_id));
             self.tool_index.retain(|_, bid| !evicted.contains(bid));
             self.workflow_index.retain(|_, bid| !evicted.contains(bid));
+            if !evicted.is_empty() {
+                self.mark_transcript_changed_from(0);
+            }
         }
     }
 

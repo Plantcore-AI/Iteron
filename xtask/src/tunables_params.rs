@@ -175,7 +175,36 @@ pub(crate) fn check(root: &Path) -> Result<()> {
              `cargo run -p iteron-xtask -- tunables generate-params`."
         );
     }
+    validate_catalog_live_helpers(&committed, &applied_evidence(root)?)?;
     println!("tier-2 parameter catalog matches source ({committed_rows} parameters)");
+    Ok(())
+}
+
+/// Check the generated catalog in the reverse direction as well. Regeneration proves that source
+/// declarations have rows; this proves every row advertised as runtime-settable still has a live
+/// production helper call. Macro-generated calls are deliberately accepted because
+/// [`AppliedEvidenceCollector::collect_macro_tokens`]
+/// records them with the same AST-derived evidence as ordinary calls.
+fn validate_catalog_live_helpers(
+    catalog: &serde_json::Value,
+    live: &BTreeMap<String, Vec<UseSiteRow>>,
+) -> Result<()> {
+    let params = catalog
+        .get("params")
+        .and_then(serde_json::Value::as_array)
+        .context("tier-2 parameter catalog has no params array")?;
+    for row in params {
+        if row.get("disposition").and_then(serde_json::Value::as_str) != Some("runtime_settable") {
+            continue;
+        }
+        let id = row
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .context("runtime-settable catalog row has no string id")?;
+        if live.get(id).is_none_or(Vec::is_empty) {
+            bail!("catalog parameter {id} is advertised but has no live production helper call");
+        }
+    }
     Ok(())
 }
 
@@ -1544,7 +1573,10 @@ fn row_for(
             && matches!(
                 name,
                 "BEARER_TOKEN_BYTES" | "BEARER_TOKEN_HEX_BYTES" | "MAX_BEARER_TOKEN_INPUT_BYTES"
-            ));
+            ))
+        || (krate == "cli"
+            && relative.ends_with("/output.rs")
+            && name == "SENSITIVE_STREAM_PREFIXES");
     let runtime_state = ["OnceLock", "LazyLock", "Atomic", "Mutex", "RwLock"]
         .iter()
         .any(|marker| ty_text.contains(marker));
@@ -1721,6 +1753,14 @@ fn row_for(
         ("tools", "crates/tools/src/shell.rs", "MAX_PER_STREAM_BYTES") => Some(ParamClass::Bounded),
         ("tools", "crates/tools/src/git_observe.rs", "DEFAULT_LOG_COUNT")
         | ("cli", "crates/cli/src/tui/status_line.rs", "SEPARATOR") => Some(ParamClass::Searchable),
+        (
+            "cli",
+            "crates/cli/src/tui/driver_support.rs",
+            "CATCH_UP_EXIT_DEPTH" | "CATCH_UP_EXIT_AGE",
+        ) => Some(ParamClass::Bounded),
+        ("tools", "crates/tools/src/process/mod.rs", "EXIT_TAIL_GRACE_MILLISECONDS") => {
+            Some(ParamClass::Bounded)
+        }
         _ => None,
     };
     let class = if let Some(class) = deliberate_runtime_control {
@@ -2630,5 +2670,25 @@ mod tests {
             "AST helper census dropped a production multiline call; total={} nearby={nearby:?}",
             evidence.len()
         );
+    }
+
+    #[test]
+    fn reverse_catalog_check_rejects_dead_rows_and_accepts_macro_evidence() {
+        let catalog = serde_json::json!({
+            "params": [{"id": "cli.bound", "disposition": "runtime_settable"}]
+        });
+        let mut evidence = BTreeMap::new();
+        evidence.insert(
+            "cli.bound".to_owned(),
+            vec![UseSiteRow {
+                path: "crates/cli/src/lib.rs".to_owned(),
+                line: 7,
+                evidence: "param_integer runtime resolution in macro".to_owned(),
+            }],
+        );
+        validate_catalog_live_helpers(&catalog, &evidence).unwrap();
+        assert!(validate_catalog_live_helpers(&catalog, &BTreeMap::new()).is_err());
+        evidence.insert("unrelated.helper".to_owned(), Vec::new());
+        validate_catalog_live_helpers(&catalog, &evidence).unwrap();
     }
 }

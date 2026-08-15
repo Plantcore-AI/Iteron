@@ -7,6 +7,38 @@ const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v
 const GOVERNOR_ROUTE_BOUND_ABSENT: bool = false;
 
 impl Agent {
+    pub(crate) fn set_last_success_route_path(&mut self, path: Option<std::path::PathBuf>) {
+        self.last_success_route_path = path;
+    }
+
+    pub(super) fn persist_last_success_route(&mut self, turn: TurnId) {
+        let (Some(path), Some(selected)) = (
+            self.last_success_route_path.as_deref(),
+            self.selected_route.as_ref(),
+        ) else {
+            return;
+        };
+        let selection = crate::providers::ModelSelection {
+            provider_id: selected.route.provider_id.clone(),
+            model_id: selected.route.model_id.clone(),
+        };
+        let snapshot = crate::providers::LastSuccessRouteSnapshot::successful(
+            &selection,
+            selected.route.catalog_digest.clone(),
+            selected.route.capability_digest.clone(),
+        );
+        if snapshot.store(path).is_err() {
+            self.lifecycle_event(
+                "model.route_failed",
+                Some(turn),
+                LifecyclePayload {
+                    reason_code: Some("last_success_snapshot_persist_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+    }
+
     /// Record the composition root's already-resolved initial route as one deterministic
     /// `core/model_router` decision before the route itself becomes executable.
     pub(crate) fn record_initial_model_selection(
@@ -534,6 +566,7 @@ impl Agent {
         }
         child.authority_ceiling = self.authority_ceiling;
         child.policy_capabilities = self.policy_capabilities;
+        child.token_calibration = self.token_calibration.clone();
         if let Some(pricing) = &self.pricing_port {
             child.set_pricing_port(pricing.clone());
         }

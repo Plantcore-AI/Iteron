@@ -21,6 +21,18 @@ use verification::*;
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REGISTRY_GENERATIONS: usize = 4096;
 const RETAINED_REGISTRY_GENERATIONS: usize = 32;
+const MAX_VERIFICATION_CACHE_BYTES: usize = 2 * 1024 * 1024;
+
+fn max_verification_cache_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "marketplace.package.max_verification_cache_bytes",
+        iteron_tunables::param_integer(
+            "marketplace.package.max_verification_cache_bytes",
+            MAX_VERIFICATION_CACHE_BYTES,
+        ),
+    )
+    .clamp(1, MAX_VERIFICATION_CACHE_BYTES)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
@@ -290,7 +302,9 @@ impl PluginStore {
         Ok(target)
     }
 
-    /// Load enabled packages for runtime composition, re-verifying cache bytes and signatures.
+    /// Load enabled packages for runtime composition. Installation performed the full signed tree
+    /// verification; unchanged artifacts use the bounded metadata seal and changed artifacts are
+    /// fully reverified before they can enter composition.
     pub fn runtime_packages(&self) -> Result<RuntimePackages, PackageError> {
         let state = self.load_state()?;
         let mut runtime = RuntimePackages::default();
@@ -298,7 +312,7 @@ impl PluginStore {
             if !installed.enabled {
                 continue;
             }
-            match self.verify_cached(&name, &installed.current) {
+            match self.verify_cached_runtime(&name, &installed.current) {
                 Ok(mut verified) if verified.manifest.plugin == name => {
                     verified.manifest.precedence = installed.precedence;
                     runtime.active.push(ActivePlugin {
@@ -342,6 +356,71 @@ impl PluginStore {
         Ok(verified)
     }
 
+    fn verify_cached_runtime(
+        &self,
+        name: &str,
+        artifact: &ArtifactRef,
+    ) -> Result<VerifiedPackage, PackageError> {
+        let path = self.cache_path(name, artifact);
+        let observed_metadata = metadata_digest(&path)?;
+        let seal_path = self.verification_cache_path(name, artifact);
+        if let Ok(bytes) = read_bounded(&seal_path, max_verification_cache_bytes())
+            && let Ok(seal) = serde_json::from_slice::<VerificationCacheEntry>(&bytes)
+            && seal.valid_schema()
+            && seal.artifact_digest == artifact.digest
+            && seal.metadata_digest == observed_metadata
+            && seal.manifest.plugin == name
+            && seal.manifest.version == artifact.version
+            && seal.key_id == artifact.key_id
+        {
+            return Ok(VerifiedPackage {
+                manifest: seal.manifest,
+                digest: seal.artifact_digest,
+                key_id: seal.key_id,
+            });
+        }
+        let verified = self.verify_cached(name, artifact)?;
+        self.write_verification_cache(name, artifact, &verified, observed_metadata)?;
+        Ok(verified)
+    }
+
+    fn verification_cache_path(&self, name: &str, artifact: &ArtifactRef) -> PathBuf {
+        self.root
+            .join("verification-cache")
+            .join(name)
+            .join(format!("{}.json", artifact.digest))
+    }
+
+    fn write_verification_cache(
+        &self,
+        name: &str,
+        artifact: &ArtifactRef,
+        verified: &VerifiedPackage,
+        metadata: String,
+    ) -> Result<(), PackageError> {
+        let path = self.verification_cache_path(name, artifact);
+        let parent = path.parent().expect("verification cache path has parent");
+        fs::create_dir_all(parent)?;
+        let bytes = serde_json::to_vec(&VerificationCacheEntry::from_verified(verified, metadata))
+            .map_err(|error| PackageError::InvalidPackage {
+                path: path.clone(),
+                reason: error.to_string(),
+            })?;
+        if bytes.len() > max_verification_cache_bytes() {
+            return Err(PackageError::InvalidPackage {
+                path,
+                reason: "verification cache exceeds its byte limit".into(),
+            });
+        }
+        let temporary = parent.join(format!(".seal-{}-{}", std::process::id(), artifact.digest));
+        if temporary.exists() {
+            fs::remove_file(&temporary)?;
+        }
+        write_new_private(&temporary, &bytes)?;
+        fs::rename(&temporary, &path)?;
+        sync_dir(parent)
+    }
+
     fn read_key(&self, key_id: &str) -> Result<[u8; 32], PackageError> {
         if !valid_name(key_id) {
             return Err(PackageError::MalformedKey(key_id.to_owned()));
@@ -364,7 +443,9 @@ impl PluginStore {
     ) -> Result<(), PackageError> {
         let destination = self.cache_path(name, artifact);
         if destination.exists() {
-            self.verify_cached(name, artifact)?;
+            let verified = self.verify_cached(name, artifact)?;
+            let metadata = metadata_digest(&destination)?;
+            self.write_verification_cache(name, artifact, &verified, metadata)?;
             return Ok(());
         }
         let parent = destination.parent().expect("cache path has parent");
@@ -391,6 +472,8 @@ impl PluginStore {
         }
         fs::rename(&temp, &destination)?;
         sync_dir(parent)?;
+        let metadata = metadata_digest(&destination)?;
+        self.write_verification_cache(name, artifact, &copied, metadata)?;
         Ok(())
     }
 

@@ -2,6 +2,8 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -19,6 +21,9 @@ pub(super) const MAX_PACKAGE_FILES: usize = 4096;
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKAGE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 8 * 1024;
+/// Heap-backed so verification does not add a quarter-megabyte stack frame. Read granularity is
+/// deliberately outside the signed representation, so changing it cannot alter the tree digest.
+const TREE_DIGEST_BUFFER_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +36,32 @@ pub(super) struct VerifiedPackage {
     pub(super) manifest: Manifest,
     pub(super) digest: String,
     pub(super) key_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VerificationCacheEntry {
+    schema_version: u8,
+    pub(super) artifact_digest: String,
+    pub(super) metadata_digest: String,
+    pub(super) manifest: Manifest,
+    pub(super) key_id: String,
+}
+
+impl VerificationCacheEntry {
+    pub(super) fn from_verified(verified: &VerifiedPackage, metadata_digest: String) -> Self {
+        Self {
+            schema_version: 1,
+            artifact_digest: verified.digest.clone(),
+            metadata_digest,
+            manifest: verified.manifest.clone(),
+            key_id: verified.key_id.clone(),
+        }
+    }
+
+    pub(super) fn valid_schema(&self) -> bool {
+        self.schema_version == 1
+    }
 }
 
 pub(super) fn verify_package<F>(path: &Path, key: F) -> Result<VerifiedPackage, PackageError>
@@ -89,6 +120,10 @@ where
 }
 
 pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
+    tree_digest_with_buffer(root, TREE_DIGEST_BUFFER_BYTES)
+}
+
+fn tree_digest_with_buffer(root: &Path, buffer_bytes: usize) -> Result<[u8; 32], PackageError> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -102,6 +137,7 @@ pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
     }
     let mut total = 0u64;
     let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; buffer_bytes.max(1)].into_boxed_slice();
     for (relative, absolute, size) in files {
         total = total
             .checked_add(size)
@@ -118,7 +154,6 @@ pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
         hash.update(relative.as_bytes());
         hash.update(size.to_be_bytes());
         let mut file = File::open(absolute)?;
-        let mut buffer = [0u8; 16 * 1024];
         loop {
             let read = file.read(&mut buffer)?;
             if read == 0 {
@@ -128,6 +163,47 @@ pub(super) fn tree_digest(root: &Path) -> Result<[u8; 32], PackageError> {
         }
     }
     Ok(hash.finalize().into())
+}
+
+/// Content-free change detector for an already signature-verified immutable artifact. This walks
+/// the bounded file table but does not reopen every body. Any path, type, size, or mtime change
+/// invalidates the cache and forces the full signed tree verification path.
+pub(super) fn metadata_digest(root: &Path) -> Result<String, PackageError> {
+    let mut files = Vec::new();
+    collect_files(root, root, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    if files.len()
+        > iteron_tunables::param_usize(
+            "marketplace.package.verification.max_package_files",
+            MAX_PACKAGE_FILES,
+        )
+    {
+        return Err(invalid(root, "too many files"));
+    }
+    let mut digest = Sha256::new();
+    for (relative, absolute, size) in files {
+        let metadata = fs::metadata(&absolute)?;
+        digest.update((relative.len() as u64).to_be_bytes());
+        digest.update(relative.as_bytes());
+        digest.update(size.to_be_bytes());
+        match metadata.modified()?.duration_since(std::time::UNIX_EPOCH) {
+            Ok(modified) => {
+                digest.update(modified.as_secs().to_be_bytes());
+                digest.update(modified.subsec_nanos().to_be_bytes());
+            }
+            Err(_) => return Err(invalid(&absolute, "file mtime predates the Unix epoch")),
+        }
+        // ctime/inode make a same-size rewrite followed by mtime restoration observable on Unix.
+        // These fields are a change detector only; the signed content digest remains authority.
+        #[cfg(unix)]
+        {
+            digest.update(metadata.dev().to_be_bytes());
+            digest.update(metadata.ino().to_be_bytes());
+            digest.update(metadata.ctime().to_be_bytes());
+            digest.update(metadata.ctime_nsec().to_be_bytes());
+        }
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn collect_files(
@@ -236,5 +312,29 @@ fn invalid(path: &Path, reason: impl Into<String>) -> PackageError {
     PackageError::InvalidPackage {
         path: path.to_path_buf(),
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn tree_digest_is_independent_of_read_chunk_size() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "iteron-tree-digest-buffer-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("manifest.json"), b"manifest").unwrap();
+        std::fs::write(root.join("nested/body.bin"), vec![7u8; 300_001]).unwrap();
+
+        let tiny = tree_digest_with_buffer(&root, 17).unwrap();
+        let production = tree_digest(&root).unwrap();
+        assert_eq!(tiny, production);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

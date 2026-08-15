@@ -1,7 +1,8 @@
 //! Bounded, ignore-aware repository search.
 
 use crate::{
-    Registry, ToolError, boxfut, edit::suspicious_unicode, err_result, ok_result, resolve_in_root,
+    Registry, ToolError, boxfut, edit::suspicious_unicode, err_result, ok_result,
+    resolve_from_canonical_root,
 };
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use iteron_protocol::{Capability, Purity, ToolSpec};
@@ -13,6 +14,11 @@ const MAX_GREP_PATTERN_BYTES: usize = 4 * 1024;
 const MAX_GREP_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GREP_TOTAL_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GREP_ENTRIES: usize = 50_000;
+/// File bodies are the expensive part of grep. Keep traversal and ignore resolution ordered, then
+/// fan only the already-bounded body reads across a small fixed worker set. The hard ceiling is
+/// intentionally not tunable: a bad profile must not turn one tool call into a thread bomb.
+const DEFAULT_GREP_PARALLELISM: usize = 8;
+const MAX_GREP_PARALLELISM: usize = 32;
 /// Owner-directed 2026-08-05: 100 matches was below the size of an ordinary answer ("every call
 /// site of X" in this workspace routinely exceeds it), so the cap was reached on searches whose
 /// results were then silently incomplete. Raised an order of magnitude; still bounded.
@@ -29,6 +35,12 @@ const DEFAULT_GREP_REGEX_MODE: bool = false;
 enum Matcher {
     Literal(String),
     Regex(Regex),
+}
+
+#[derive(Default)]
+struct FileSearchResult {
+    hits: Vec<String>,
+    skipped: bool,
 }
 
 impl Matcher {
@@ -257,7 +269,13 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     .get("path")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or(".");
-                let base = match resolve_in_root(&root, relative) {
+                let root = match root.canonicalize() {
+                    Ok(root) => root,
+                    Err(error) => {
+                        return err_result(id, format!("grep cannot canonicalize workspace root: {error}"));
+                    }
+                };
+                let base = match resolve_from_canonical_root(&root, relative) {
                     Ok(base) => base,
                     Err(error) => return err_result(id, error),
                 };
@@ -280,9 +298,7 @@ fn search(
     matcher: &Matcher,
     policy: crate::GrepPolicy,
 ) -> Result<SearchResult, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("grep cannot canonicalize workspace root: {error}"))?;
+    let root = root.to_path_buf();
     let mut result = SearchResult::default();
     let mut paths = Vec::new();
     let root_ignore = root.join(".gitignore");
@@ -341,7 +357,6 @@ fn search(
     paths.retain(|path| !ignore_rules.is_ignored(path, false));
     paths.sort();
 
-    let mut source_bytes = 0usize;
     let max_file_bytes =
         iteron_tunables::param_usize("tools.grep_tool.max_grep_file_bytes", MAX_GREP_FILE_BYTES);
     let max_total_source_bytes = iteron_tunables::param_usize(
@@ -351,7 +366,12 @@ fn search(
             MAX_GREP_TOTAL_SOURCE_BYTES,
         ),
     );
-    'files: for path in paths {
+    // Admit files against the byte budget in stable path order before doing any concurrent I/O.
+    // That makes both the selected corpus and rendered result independent of worker completion
+    // order, while keeping total resident source bytes and work bounded by the existing policy.
+    let mut source_bytes = 0usize;
+    let mut admitted = Vec::new();
+    for path in paths {
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) | Err(_) => {
@@ -369,51 +389,156 @@ fn search(
             result.skipped_for_budget = result.skipped_for_budget.saturating_add(1);
             continue;
         }
-        // Repository scope keeps the hardening that repo-controlled content needs — containment
-        // under the root and `O_NOFOLLOW` — and it is what every in-workspace hit still uses. A
-        // file the operator reached by naming a path outside the workspace cannot pass that check
-        // by construction, and silently counting it as "skipped as binary or unreadable" was a
-        // wrong answer dressed as a bounded one. Such a file is operator-owned content, which is
-        // exactly what `User` scope is for.
-        let scope = if path.starts_with(&root) {
-            iteron_ctx::source::SourceScope::Repository
-        } else {
-            iteron_ctx::source::SourceScope::User
-        };
-        let content = match iteron_ctx::source::read_bounded_utf8(
-            &root,
-            &path,
-            remaining.min(max_file_bytes),
-            scope,
-        ) {
-            Ok(Some(content)) => content,
-            Ok(None) | Err(_) => {
-                result.skipped_files = result.skipped_files.saturating_add(1);
-                continue;
+        source_bytes = source_bytes.saturating_add(file_bytes);
+        admitted.push(path);
+    }
+
+    let max_workers =
+        iteron_tunables::param_usize("tools.grep_tool.max_grep_parallelism", MAX_GREP_PARALLELISM)
+            .clamp(1, MAX_GREP_PARALLELISM);
+    let requested_workers = iteron_tunables::param_usize(
+        "tools.grep_tool.default_grep_parallelism",
+        DEFAULT_GREP_PARALLELISM,
+    )
+    .clamp(1, max_workers);
+    let available_workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let worker_count = requested_workers
+        .min(available_workers)
+        .min(admitted.len().max(1));
+    // A fixed scoped pool handles the whole call; do not create a fresh OS thread for every file
+    // or wave. At most `worker_count` jobs and results are in flight. Completed results are held in
+    // a bounded reorder map and committed by stable path index, so concurrency cannot change the
+    // output or grow memory with the full repository.
+    std::thread::scope(|scope| -> Result<(), String> {
+        let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(usize, &Path)>(worker_count);
+        let job_rx = std::sync::Arc::new(std::sync::Mutex::new(job_rx));
+        let (result_tx, result_rx) =
+            std::sync::mpsc::sync_channel::<(usize, FileSearchResult)>(worker_count);
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let job_rx = std::sync::Arc::clone(&job_rx);
+            let result_tx = result_tx.clone();
+            let search_root = &root;
+            workers.push(scope.spawn(move || {
+                loop {
+                    let job = job_rx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv();
+                    let Ok((index, path)) = job else { break };
+                    let searched = search_file(search_root, path, matcher, policy, max_file_bytes);
+                    if result_tx.send((index, searched)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(result_tx);
+
+        let mut submitted = 0usize;
+        let mut inflight = 0usize;
+        while submitted < admitted.len() && inflight < worker_count {
+            job_tx
+                .send((submitted, admitted[submitted].as_path()))
+                .map_err(|_| "grep worker pool closed before admission".to_string())?;
+            submitted += 1;
+            inflight += 1;
+        }
+
+        let mut next = 0usize;
+        let mut reordered = std::collections::BTreeMap::new();
+        let mut capped = false;
+        while inflight > 0 {
+            let (index, searched) = result_rx
+                .recv()
+                .map_err(|_| "grep worker pool closed before producing every result".to_string())?;
+            inflight -= 1;
+            reordered.insert(index, searched);
+            while let Some(file) = reordered.remove(&next) {
+                next += 1;
+                if file.skipped {
+                    result.skipped_files = result.skipped_files.saturating_add(1);
+                    continue;
+                }
+                for hit in file.hits {
+                    if !result.push_hit(hit, policy) {
+                        capped = true;
+                        break;
+                    }
+                }
+                if capped {
+                    break;
+                }
             }
-        };
-        if content.as_bytes().contains(&0) || suspicious_unicode(&content).is_some() {
-            result.skipped_files = result.skipped_files.saturating_add(1);
+            while !capped
+                && submitted < admitted.len()
+                && submitted.saturating_sub(next) < worker_count
+            {
+                job_tx
+                    .send((submitted, admitted[submitted].as_path()))
+                    .map_err(|_| "grep worker pool closed during admission".to_string())?;
+                submitted += 1;
+                inflight += 1;
+            }
+        }
+        drop(job_tx);
+        for worker in workers {
+            worker.join().map_err(|_| {
+                "grep worker panicked before producing a complete result".to_string()
+            })?;
+        }
+        Ok(())
+    })?;
+    Ok(result)
+}
+
+fn search_file(
+    root: &Path,
+    path: &Path,
+    matcher: &Matcher,
+    policy: crate::GrepPolicy,
+    max_file_bytes: usize,
+) -> FileSearchResult {
+    let mut result = FileSearchResult::default();
+    let scope = if path.starts_with(root) {
+        iteron_ctx::source::SourceScope::Repository
+    } else {
+        iteron_ctx::source::SourceScope::User
+    };
+    let content = match iteron_ctx::source::read_bounded_utf8(root, path, max_file_bytes, scope) {
+        Ok(Some(content)) => content,
+        Ok(None) | Err(_) => {
+            result.skipped = true;
+            return result;
+        }
+    };
+    if content.as_bytes().contains(&0) || suspicious_unicode(&content).is_some() {
+        result.skipped = true;
+        return result;
+    }
+    let relative = crate::display_path(root, path);
+    if suspicious_unicode(&relative).is_some() {
+        result.skipped = true;
+        return result;
+    }
+    for (line_index, line) in content.lines().enumerate() {
+        if !matcher.is_match(line) {
             continue;
         }
-        source_bytes = source_bytes.saturating_add(content.len());
-        let relative = crate::display_path(&root, &path);
-        if suspicious_unicode(&relative).is_some() {
-            result.skipped_files = result.skipped_files.saturating_add(1);
-            continue;
-        }
-        for (line_index, line) in content.lines().enumerate() {
-            if !matcher.is_match(line) {
-                continue;
-            }
-            let snippet = iteron_protocol::text::head(line.trim(), policy.snippet_max_bytes);
-            let hit = format!("{}:{}: {snippet}", relative, line_index + 1);
-            if !result.push_hit(hit, policy) {
-                break 'files;
-            }
+        let snippet = iteron_protocol::text::head(line.trim(), policy.snippet_max_bytes);
+        result
+            .hits
+            .push(format!("{}:{}: {snippet}", relative, line_index + 1));
+        // Retain one bounded overflow sentinel so the stable-order aggregator can distinguish an
+        // exact N-match result from N+1 and emit the truthful truncation notice. The aggregator
+        // still publishes at most `max_matches` hits.
+        if result.hits.len() > policy.max_matches {
+            break;
         }
     }
-    Ok(result)
+    result
 }
 
 fn load_ignore(
@@ -502,18 +627,7 @@ fn load_ignore(
 }
 
 fn is_default_ignored(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | "target"
-            | "node_modules"
-            | ".venv"
-            | "venv"
-            | "dist"
-            | "build"
-            | "__pycache__"
-            | ".iteron"
-    )
+    name == ".iteron" || iteron_ctx::source::is_default_pruned_component(name)
 }
 
 #[cfg(test)]

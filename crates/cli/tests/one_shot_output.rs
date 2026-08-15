@@ -95,10 +95,21 @@ impl Scratch {
     fn new_glm(label: &str) -> Self {
         let scratch = Self::new(label, "http://127.0.0.1:9/v1");
         let config = json!({
+            "schema_version": 2,
             "provider": "glm",
             "model": "glm-5.2",
             "effort": "low",
-            "max_wall_secs": 5
+            // The fixture requires two physical attempts. Each attempt inherits the canonical
+            // 10-second TLS-connect ceiling, so a five-second run budget could expire after local
+            // context preparation and admit only the first attempt under workspace contention.
+            // The loopback proxy rejects both CONNECTs immediately; this larger authority is
+            // semantic headroom, not an added sleep in the successful test path.
+            "max_wall_secs": 30,
+            "retry": {
+                "base_ms": 1,
+                "cap_ms": 1,
+                "max_attempts": 2
+            }
         });
         fs::write(
             scratch.home().join(".iteron/config.json"),
@@ -1126,15 +1137,20 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
         .unwrap()
         .to_string();
     assert!(scratch.runs().join(format!("{run_id}.meta.json")).is_file());
-    assert!(scratch.runs().join("sessions.index").is_file());
 
     // Listing is deliberately credential-free and exits before provider construction. The
+    // per-run sidecar plus O(1) delta index is now the immediate runtime cache; `sessions.index` is
+    // only a rebuildable compact base and may be published later by background compaction. The
     // iteron-record unit gate instruments this same `list` call and proves covered runs execute zero
-    // `meta_from_replay` calls; this process gate freezes the CLI routing to that fast path.
+    // `meta_from_replay` calls; this process gate freezes the CLI routing to the public fast path.
     let sessions = collect_core(sessions_command(&scratch).spawn().unwrap());
     assert_eq!(sessions.status.code(), Some(0));
     let sessions_stdout = String::from_utf8(sessions.stdout).unwrap();
-    assert!(sessions_stdout.contains(&run_id));
+    assert!(
+        sessions_stdout.contains(&run_id),
+        "just-finished run {run_id} missing from --sessions stdout:\n{sessions_stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&sessions.stderr)
+    );
     assert!(sessions_stdout.contains(DEFAULT_TASK));
 
     let continued = collect_core(spawn_core(&scratch, "json", 2, &["--continue"]));
@@ -1391,13 +1407,20 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
 
         assert_eq!(
             connect_lines,
-            ["CONNECT open.bigmodel.cn:443 HTTP/1.1"],
-            "one durable TurnStart must correspond to exactly one physical CONNECT"
+            [
+                "CONNECT open.bigmodel.cn:443 HTTP/1.1",
+                "CONNECT open.bigmodel.cn:443 HTTP/1.1",
+            ],
+            "one durable TurnStart contains the initial transport attempt and one bounded retry; \
+             format={format}; status={:?}; stderr={} stdout={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
         );
         assert_eq!(
             output.status.code(),
             Some(2),
-            "the deliberately rejected local proxy produces a harness failure"
+            "the deliberately rejected route exhausts its exact two-attempt policy"
         );
 
         let events = iteron_record::replay(&only_rollout_path(&scratch))

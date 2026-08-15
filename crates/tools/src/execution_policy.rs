@@ -106,6 +106,8 @@ pub struct ShellPolicy {
     pub stderr_max_bytes: usize,
 }
 
+const DEFAULT_SHELL_TIMEOUT_SECONDS: u64 = 120;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrepPolicy {
     pub max_matches: usize,
@@ -268,7 +270,10 @@ impl Default for ObservationToolPolicy {
                 crate::WEB_SEARCH_RESULT_CAP,
             ),
             shell: ShellPolicy {
-                timeout_seconds: iteron_sandbox::Confinement::UNCONFINED_TIMEOUT_SECS,
+                timeout_seconds: iteron_tunables::param_u64(
+                    "tools.execution_policy.default_shell_timeout_seconds",
+                    DEFAULT_SHELL_TIMEOUT_SECONDS,
+                ),
                 stdout_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
                 stderr_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
             },

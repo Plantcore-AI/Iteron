@@ -1,6 +1,9 @@
 //! Bounded newline-delimited JSON-RPC response transport.
 
-use crate::{MAX_FRAME_BYTES, MAX_RESPONSE_BYTES, MAX_RESPONSE_FRAMES, McpError, parse_response};
+#[cfg(test)]
+use crate::parse_response;
+use crate::{MAX_FRAME_BYTES, MAX_RESPONSE_BYTES, MAX_RESPONSE_FRAMES, McpError};
+#[cfg(test)]
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
@@ -74,6 +77,7 @@ where
     }
 }
 
+#[cfg(test)]
 pub(super) async fn read_matching_response<R>(
     reader: &mut R,
     id: u64,

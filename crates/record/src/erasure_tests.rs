@@ -308,11 +308,15 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
     drop(rollout);
     session::reindex(&dir).unwrap();
     let sidecar_manifest = std::fs::read(dir.join("run-content.meta.json")).unwrap();
-    let index_manifest = std::fs::read(dir.join("sessions.index"))
-        .unwrap()
-        .split(|byte| *byte == b'\n')
+    let index = std::fs::read(dir.join("sessions.index")).unwrap();
+    let mut index_lines = index.split(|byte| *byte == b'\n');
+    assert_eq!(
+        index_lines.next(),
+        Some(br#"{"version":2,"order":"updated_desc"}"#.as_slice())
+    );
+    let index_manifest = index_lines
         .find(|line| !line.is_empty())
-        .unwrap()
+        .expect("V2 index must contain the run's private manifest after its public header")
         .to_vec();
     assert!(
         !String::from_utf8_lossy(&sidecar_manifest).contains(secret)
@@ -387,9 +391,15 @@ fn content_revocation_shreds_material_and_blocks_replay_and_fork() {
         session::list(&dir, &TenantId::default()).is_empty(),
         "lazy cache rebuild must skip a rollout whose source handle is revoked"
     );
+    let cold_page = session::page(&dir, &TenantId::default(), None, None, Some(1));
+    assert!(
+        !cold_page.index_ready && cold_page.rebuild_recommended,
+        "latency-sensitive reads must request an off-foreground rebuild after invalidation"
+    );
+    assert_eq!(session::reindex(&dir).unwrap(), 0);
     assert!(
         dir.join("sessions.index").exists(),
-        "the next unlocked list must rebuild the bounded index manifest"
+        "explicit maintenance must rebuild the bounded V2 index manifest"
     );
     assert!(matches!(
         crate::replay(&dir.join("run-content.jsonl")),

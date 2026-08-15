@@ -10,15 +10,13 @@
 //! own infrastructure (like the git hooks they wrote), so they run un-sandboxed but with a
 //! default-deny, credential-sanitized helper environment — and only because their PROVENANCE is
 //! the trusted user config. Each run is bounded by a timeout (invariant #1). A `PreToolUse` hook
-//! that exits with code 2 DENIES the tool.
+//! that exits with code 2 DENIES the tool; any handler failure or missing decision also fails that
+//! gate closed.
 //!
 //! Security caveats a hook AUTHOR must know (surfaced per the adversarial review, not hidden):
-//! - **Fail-OPEN.** Only exit code **2** blocks. A hook that times out (bounded at 30s), fails to
-//!   spawn, or exits with any other code (1, 127 from a typo) is "no opinion" → the tool RUNS. A
-//!   PreToolUse hook is a best-effort guardrail, not an airtight sandbox: do not rely on a hook
-//!   whose cost scales with its (model-controlled) input — crafted input can push it past the
-//!   timeout → bypass. The capability gate (ADR-014), not the hook, is the load-bearing control;
-//!   hooks only *tighten* it.
+//! - **Gate fail-closed.** `PreToolUse` requires every configured handler to produce a terminal
+//!   allow or explicit denial. Timeout, spawn failure, cancellation and other non-zero exits deny;
+//!   observer events remain advisory and cannot wedge the turn.
 //! - **Coverage.** PreToolUse fires for every EFFECTING tool. For pure/read-only tools it fires
 //!   ONLY when a `PreToolUse` hook is configured — which then disables their mid-stream early
 //!   dispatch so the hook can speak before the read runs (the kernel handles this). With no
@@ -28,10 +26,13 @@
 //!   hook that logs its stdin captures secrets the rollout's redaction would mask. The hook is
 //!   operator-authored (trusted), so this is the operator's responsibility.
 
+use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use self::journal::HookEffectJournal;
@@ -47,6 +48,59 @@ const MAX_HOOK_COMMAND_BYTES: usize = 4_096;
 /// Per-hook wall bound (invariant #1). A hook that outlives it is "no opinion", so the bound is the
 /// only thing keeping an operator command from wedging the turn.
 const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
+const MAX_PARALLEL_HOOKS: usize = 4;
+const STOP_HOOK_QUEUE_CAPACITY: usize = 8;
+const STOP_HOOK_OBSERVATION_CAPACITY: usize = 16;
+const STOP_HOOK_CONTEXT_BYTES: usize = 4 * 1024;
+const STOP_HOOK_TERMINAL_BUDGET: Duration = Duration::from_secs(3);
+// Process-group termination is TERM (50 ms) -> KILL -> bounded reap (1 s). Starting cancellation
+// before the public terminal deadline leaves room for that existing proven cleanup path.
+const STOP_HOOK_CLEANUP_RESERVE: Duration = Duration::from_millis(1_250);
+
+fn max_parallel_hooks() -> usize {
+    iteron_tunables::param_integer("cli.runtime.hooks.max_parallel_hooks", MAX_PARALLEL_HOOKS)
+        .clamp(1, MAX_PARALLEL_HOOKS)
+}
+
+fn stop_hook_queue_capacity() -> usize {
+    iteron_tunables::param_integer(
+        "cli.runtime.hooks.stop_hook_queue_capacity",
+        STOP_HOOK_QUEUE_CAPACITY,
+    )
+    .clamp(1, STOP_HOOK_QUEUE_CAPACITY)
+}
+
+fn stop_hook_observation_capacity() -> usize {
+    iteron_tunables::param_integer(
+        "cli.runtime.hooks.stop_hook_observation_capacity",
+        STOP_HOOK_OBSERVATION_CAPACITY,
+    )
+    .clamp(1, STOP_HOOK_OBSERVATION_CAPACITY)
+}
+
+fn stop_hook_context_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "cli.runtime.hooks.stop_hook_context_bytes",
+        STOP_HOOK_CONTEXT_BYTES,
+    )
+    .clamp(1, STOP_HOOK_CONTEXT_BYTES)
+}
+
+fn stop_hook_terminal_budget() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.runtime.hooks.stop_hook_terminal_budget",
+        STOP_HOOK_TERMINAL_BUDGET,
+    )
+    .min(STOP_HOOK_TERMINAL_BUDGET)
+}
+
+fn stop_hook_cleanup_reserve() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.runtime.hooks.stop_hook_cleanup_reserve",
+        STOP_HOOK_CLEANUP_RESERVE,
+    )
+    .min(STOP_HOOK_CLEANUP_RESERVE)
+}
 
 /// A lifecycle event a hook can bind to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +140,15 @@ pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
+    /// One process-wide-for-this-config permit pool shared by every clone. Tool-call batches may
+    /// invoke independent hook chains concurrently, so a per-chain `buffer_unordered(4)` alone
+    /// would multiply the process count by the number of tools in the batch.
+    parallelism: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Session-owned, bounded compatibility-Stop observer. This is an execution port rather than
+    /// hook configuration, so it is deliberately excluded from the catalog identity. Cloning
+    /// `Hooks` into workflow children carries the same AppServer-owned observer instead of making
+    /// each child grow a detached finalization task.
+    stop_observer: Option<StopHookDispatcher>,
 }
 
 impl Default for Hooks {
@@ -97,6 +160,8 @@ impl Default for Hooks {
                 DEFAULT_HOOK_TIMEOUT_SECS,
             ),
             sensitive_env_names: Vec::new(),
+            parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
+            stop_observer: None,
         }
     }
 }
@@ -112,10 +177,226 @@ pub(crate) struct HookCatalogIdentity {
 /// What a `PreToolUse` hook decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookDecision {
-    /// No hook, or the hook allowed (exit 0 / errored / timed out — a broken hook does not wedge).
+    /// No hook, or every configured gate hook explicitly allowed (exit 0).
     Allow,
     /// A hook deliberately blocked the tool; the string is the reason (its stderr).
     Deny(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompatibilityHookReport {
+    pub decision: HookDecision,
+    pub matched: u32,
+    pub completed: u32,
+    pub failed: u32,
+    pub timed_out: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StopHookIdentity {
+    pub invocation: u64,
+    pub turn: iteron_protocol::TurnId,
+    pub started_at_unix_ms: u64,
+}
+
+impl StopHookIdentity {
+    pub(crate) fn activity(
+        &self,
+        state: iteron_protocol::ActivityState,
+    ) -> iteron_protocol::ActivityEvent {
+        let updated_at_unix_ms = unix_ms().max(self.started_at_unix_ms);
+        iteron_protocol::ActivityEvent {
+            schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+            id: format!("stop-hook:{}", self.invocation),
+            // A Stop hook is session-owned observational work. Keeping it outside the completed
+            // turn subtree prevents RunEnded from either hiding it or letting a late terminal
+            // resurrect the turn's finalization card.
+            parent_id: None,
+            kind: iteron_protocol::ActivityKind::Finalization,
+            state,
+            owner: iteron_protocol::ActivityOwner::Runtime,
+            started_at_unix_ms: self.started_at_unix_ms,
+            updated_at_unix_ms,
+            attempt: 1,
+            limit: 1,
+            next_retry_at_unix_ms: None,
+            deadline_unix_ms: Some(
+                self.started_at_unix_ms
+                    .saturating_add(duration_ms(stop_hook_terminal_budget())),
+            ),
+            cancelability: iteron_protocol::ActivityCancelability::Strong,
+            detail_code: Some(iteron_protocol::ActivityDetailCode::StopHooks),
+            progress: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopHookTerminal {
+    Completed,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl StopHookTerminal {
+    pub(crate) const fn activity_state(self) -> iteron_protocol::ActivityState {
+        match self {
+            Self::Completed => iteron_protocol::ActivityState::Succeeded,
+            Self::Failed | Self::TimedOut => iteron_protocol::ActivityState::Failed,
+            Self::Cancelled => iteron_protocol::ActivityState::Cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StopHookObservation {
+    pub identity: StopHookIdentity,
+    pub terminal: StopHookTerminal,
+    pub report: CompatibilityHookReport,
+}
+
+#[derive(Debug)]
+struct StopHookRequest {
+    identity: StopHookIdentity,
+    context: String,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StopHookDispatcher {
+    tx: tokio::sync::mpsc::Sender<StopHookRequest>,
+    next_invocation: Arc<AtomicU64>,
+    active: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
+    saturated: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopHookDispatch {
+    Disabled,
+    Queued,
+    Saturated,
+    Closed,
+    ContextTooLarge,
+}
+
+impl StopHookDispatcher {
+    fn try_dispatch(
+        &self,
+        turn: iteron_protocol::TurnId,
+        context: &str,
+    ) -> (StopHookDispatch, Option<StopHookIdentity>) {
+        if context.len() > stop_hook_context_bytes() {
+            return (StopHookDispatch::ContextTooLarge, None);
+        }
+        let invocation = self.next_invocation.fetch_add(1, Ordering::Relaxed);
+        let identity = StopHookIdentity {
+            invocation,
+            turn,
+            started_at_unix_ms: unix_ms(),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(invocation, cancel.clone());
+        let request = StopHookRequest {
+            identity: identity.clone(),
+            context: context.to_owned(),
+            cancel,
+        };
+        match self.tx.try_send(request) {
+            Ok(()) => (StopHookDispatch::Queued, Some(identity)),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&invocation);
+                self.saturated.fetch_add(1, Ordering::Relaxed);
+                (StopHookDispatch::Saturated, None)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&invocation);
+                (StopHookDispatch::Closed, None)
+            }
+        }
+    }
+
+    /// Force every queued/running compatibility Stop hook toward its existing process-group
+    /// cancellation path. The worker does not publish a terminal until each started child has
+    /// been killed and reaped.
+    pub(crate) fn cancel_active(&self) -> usize {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for cancel in active.values() {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        active.len()
+    }
+}
+
+pub(crate) struct StopHookObserverRuntime {
+    pub dispatcher: StopHookDispatcher,
+    pub observations: tokio::sync::mpsc::Receiver<StopHookObservation>,
+    shutdown: tokio::sync::mpsc::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl StopHookObserverRuntime {
+    pub(crate) fn start(hooks: Hooks, journal: HookEffectJournal) -> Self {
+        let (request_tx, request_rx) = tokio::sync::mpsc::channel(stop_hook_queue_capacity());
+        let (observation_tx, observations) =
+            tokio::sync::mpsc::channel(stop_hook_observation_capacity());
+        let (shutdown, shutdown_rx) = tokio::sync::mpsc::channel(1);
+        let active = Arc::new(Mutex::new(BTreeMap::new()));
+        let dispatcher = StopHookDispatcher {
+            tx: request_tx,
+            next_invocation: Arc::new(AtomicU64::new(1)),
+            active: active.clone(),
+            saturated: Arc::new(AtomicU64::new(0)),
+        };
+        let task = tokio::spawn(run_stop_hook_observer(
+            hooks,
+            journal,
+            request_rx,
+            observation_tx,
+            shutdown_rx,
+            active,
+        ));
+        Self {
+            dispatcher,
+            observations,
+            shutdown,
+            task,
+        }
+    }
+
+    /// Stop accepting work, cancel every queued/running command, and retain ownership until the
+    /// worker has published cleanup terminals. The caller may time-bound this future, but must not
+    /// detach the task.
+    pub(crate) async fn shutdown(mut self) -> Result<Vec<StopHookObservation>, &'static str> {
+        self.dispatcher.cancel_active();
+        let _ = self.shutdown.try_send(());
+        match tokio::time::timeout(stop_hook_terminal_budget(), &mut self.task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err("stop hook observer task failed before cleanup terminal"),
+            Err(_) => {
+                self.task.abort();
+                let _ = self.task.await;
+                return Err("stop hook cleanup did not prove terminal within 3s");
+            }
+        }
+        let mut remaining = Vec::new();
+        while let Ok(observation) = self.observations.try_recv() {
+            remaining.push(observation);
+        }
+        Ok(remaining)
+    }
 }
 
 /// Bounded result of a canonical lifecycle hook chain. Augmentations are admitted only for the
@@ -142,6 +423,21 @@ const SIGNAL_TERMINATED_EXIT_CODE: i32 = -1;
 const HOOK_CANCEL_POLL: Duration = Duration::from_millis(25);
 
 impl Hooks {
+    /// Build from the immutable operator config snapshot already parsed by the composition root.
+    /// This is the production path: hooks must not reopen and reparse `config.json` independently.
+    pub(crate) fn from_user_config(commands: Option<&BTreeMap<String, Vec<String>>>) -> Hooks {
+        Hooks {
+            by_event: bounded_hook_map(commands.cloned().unwrap_or_default()),
+            timeout_secs: iteron_tunables::param_integer(
+                "cli.runtime.hooks.default_hook_timeout_secs",
+                DEFAULT_HOOK_TIMEOUT_SECS,
+            ),
+            sensitive_env_names: Vec::new(),
+            parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
+            stop_observer: None,
+        }
+    }
+
     /// Load hooks from the USER config `<home>/.iteron/config.json` only. A project config is
     /// NEVER read here — a cloned repo must not be able to run a command (trust-by-origin). A
     /// missing/malformed file yields no hooks (hooks are opt-in; a broken config does not brick).
@@ -152,14 +448,7 @@ impl Hooks {
             .and_then(|s| serde_json::from_str::<HooksFile>(&s).ok())
             .map(|f| bounded_hook_map(f.hooks))
             .unwrap_or_default();
-        Hooks {
-            by_event,
-            timeout_secs: iteron_tunables::param_integer(
-                "cli.runtime.hooks.default_hook_timeout_secs",
-                DEFAULT_HOOK_TIMEOUT_SECS,
-            ),
-            sensitive_env_names: Vec::new(),
-        }
+        Hooks::from_user_config(Some(&by_event))
     }
 
     /// Append one hook selected from a signature-verified plugin manifest. The plugin runtime has
@@ -293,6 +582,7 @@ impl Hooks {
     ) -> HookDecision {
         self.run_cancellable_inner(event, context_json, cancel, None, None)
             .await
+            .decision
     }
 
     pub(crate) async fn run_cancellable_journaled(
@@ -305,6 +595,19 @@ impl Hooks {
     ) -> HookDecision {
         self.run_cancellable_inner(event, context_json, cancel, drain, Some(journal))
             .await
+            .decision
+    }
+
+    pub(crate) async fn run_cancellable_journaled_report(
+        &self,
+        event: HookEvent,
+        context_json: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        drain: Option<&std::sync::atomic::AtomicBool>,
+        journal: &HookEffectJournal,
+    ) -> CompatibilityHookReport {
+        self.run_cancellable_inner(event, context_json, cancel, drain, Some(journal))
+            .await
     }
 
     async fn run_cancellable_inner(
@@ -314,12 +617,21 @@ impl Hooks {
         cancel: Option<&std::sync::atomic::AtomicBool>,
         drain: Option<&std::sync::atomic::AtomicBool>,
         journal: Option<&HookEffectJournal>,
-    ) -> HookDecision {
+    ) -> CompatibilityHookReport {
         // Compatibility and canonical lifecycle subscriptions are deliberately disjoint. The
         // lifecycle dispatcher owns canonical IDs; chaining their commands here made
         // `tool.call_completed` and `session.idle` execute once through this compatibility path
         // and a second time through the dispatcher.
-        for cmd in self.commands(event) {
+        let commands = self.commands(event);
+        let mut report = CompatibilityHookReport {
+            decision: HookDecision::Allow,
+            matched: u32::try_from(commands.len()).unwrap_or(u32::MAX),
+            completed: 0,
+            failed: 0,
+            timed_out: 0,
+        };
+        let mut prepared = Vec::with_capacity(commands.len());
+        for (index, cmd) in commands.iter().enumerate() {
             let ticket = match journal.map(|journal| journal.begin(event.key())) {
                 Some(Ok(ticket)) => Some(ticket),
                 Some(Err(reason)) => {
@@ -327,19 +639,55 @@ impl Hooks {
                         "warning: {} hook intent was not durable and the command was not started: {reason}",
                         event.key()
                     );
+                    report.failed = report.failed.saturating_add(1);
+                    if event == HookEvent::PreToolUse {
+                        if let Some(journal) = journal {
+                            for (_, _, ticket) in prepared.drain(..) {
+                                if let Some(ticket) = ticket {
+                                    let _ = journal.finish(ticket, event.key(), "cancelled");
+                                }
+                            }
+                        }
+                        report.decision = HookDecision::Deny(
+                            "PreToolUse gate hook intent could not be recorded".into(),
+                        );
+                        return report;
+                    }
                     continue;
                 }
                 None => None,
             };
-            let mut out = run_one_cancellable(
-                cmd,
-                context_json,
-                self.timeout_secs,
-                &self.sensitive_env_names,
-                cancel,
-                drain,
-            )
+            prepared.push((index, cmd.clone(), ticket));
+        }
+        let mut outcomes = stream::iter(prepared)
+            .map(|(index, cmd, ticket)| async move {
+                let _permit = self
+                    .parallelism
+                    .acquire()
+                    .await
+                    .expect("the hook concurrency semaphore is never closed");
+                let out = if cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
+                    || drain.is_some_and(|flag| flag.load(Ordering::Acquire))
+                {
+                    HookRun::Cancelled
+                } else {
+                    run_one_cancellable(
+                        &cmd,
+                        context_json,
+                        self.timeout_secs,
+                        &self.sensitive_env_names,
+                        cancel,
+                        drain,
+                    )
+                    .await
+                };
+                (index, ticket, out)
+            })
+            .buffer_unordered(max_parallel_hooks())
+            .collect::<Vec<_>>()
             .await;
+        outcomes.sort_by_key(|(index, _, _)| *index);
+        for (_index, ticket, mut out) in outcomes {
             if let (Some(journal), Some(ticket)) = (journal, ticket)
                 && journal
                     .finish(ticket, event.key(), hook_run_outcome(&out))
@@ -347,31 +695,62 @@ impl Hooks {
             {
                 out = HookRun::Failed;
             }
-            // A hook that never started is still fail-open, but it is no longer SILENT. The
-            // operator configured a guardrail; if the interpreter or the script is missing the
-            // hook no-ops forever with nothing to see. Say so once per dispatch, on stderr.
+            // A hook that never started is explicit. PreToolUse is a gate and fails closed;
+            // observer hooks retain no-op semantics while still reporting the failed handler.
             if let HookRun::NotStarted(reason) = &out {
                 eprintln!(
                     "warning: {} hook did not start and had no opinion: {reason}",
                     event.key()
                 );
             }
-            // DENY convention (matches the leading agent): ONLY exit code 2 blocks. exit 0 allows;
-            // any OTHER non-zero (1, 127 from a typo'd command, a spawn error, a timeout) is a hook
-            // ERROR, treated as "no opinion" -> allow. This makes a misconfigured hook fail SAFE
-            // (it does not wedge every tool), while a deliberate `exit 2` is respected.
-            if event == HookEvent::PreToolUse
-                && let HookRun::Completed(out) = out
-                && out.code == 2
-            {
-                return HookDecision::Deny(if out.stderr.trim().is_empty() {
-                    "blocked by a PreToolUse hook (exit 2)".to_string()
-                } else {
-                    out.stderr.trim().to_string()
-                });
+            // Exit 2 is an explicit denial and exit 0 is an explicit allow. Any other non-zero,
+            // spawn failure or timeout is a missing gate decision, so PreToolUse fails closed.
+            match out {
+                HookRun::Completed(out) => {
+                    report.completed = report.completed.saturating_add(1);
+                    if event == HookEvent::PreToolUse
+                        && out.code == 2
+                        && matches!(report.decision, HookDecision::Allow)
+                    {
+                        report.decision = HookDecision::Deny(if out.stderr.trim().is_empty() {
+                            "blocked by a PreToolUse hook (exit 2)".to_string()
+                        } else {
+                            out.stderr.trim().to_string()
+                        });
+                    } else if out.code != 0 {
+                        report.failed = report.failed.saturating_add(1);
+                        if event == HookEvent::PreToolUse
+                            && matches!(report.decision, HookDecision::Allow)
+                        {
+                            report.decision = HookDecision::Deny(
+                                "PreToolUse gate hook failed without an allow decision".into(),
+                            );
+                        }
+                    }
+                }
+                HookRun::TimedOut => {
+                    report.timed_out = report.timed_out.saturating_add(1);
+                    if event == HookEvent::PreToolUse
+                        && matches!(report.decision, HookDecision::Allow)
+                    {
+                        report.decision = HookDecision::Deny(
+                            "PreToolUse gate hook timed out without an allow decision".into(),
+                        );
+                    }
+                }
+                HookRun::NotStarted(_) | HookRun::Failed | HookRun::Cancelled => {
+                    report.failed = report.failed.saturating_add(1);
+                    if event == HookEvent::PreToolUse
+                        && matches!(report.decision, HookDecision::Allow)
+                    {
+                        report.decision = HookDecision::Deny(
+                            "PreToolUse gate hook failed without an allow decision".into(),
+                        );
+                    }
+                }
             }
         }
-        HookDecision::Allow
+        report
     }
 
     /// Dispatch one canonical lifecycle event. Every one of the 192 catalog IDs is subscribable;
@@ -451,12 +830,20 @@ impl Hooks {
             timed_out: 0,
             augmentations: Vec::new(),
         };
-        for command in commands {
+        let mut prepared = Vec::with_capacity(commands.len());
+        for (index, command) in commands.iter().enumerate() {
             let ticket = match journal.map(|journal| journal.begin(event_id)) {
                 Some(Ok(ticket)) => Some(ticket),
                 Some(Err(_)) => {
                     report.failed = report.failed.saturating_add(1);
                     if spec.hook_capability == iteron_protocol::HookCapability::Gate {
+                        if let Some(journal) = journal {
+                            for (_, _, ticket) in prepared.drain(..) {
+                                if let Some(ticket) = ticket {
+                                    let _ = journal.finish(ticket, event_id, "cancelled");
+                                }
+                            }
+                        }
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook intent could not be recorded"
                         ));
@@ -466,15 +853,33 @@ impl Hooks {
                 }
                 None => None,
             };
-            let mut outcome = run_one_with_sensitive_env_names_cancellable(
-                command,
-                context_json,
-                timeout,
-                &self.sensitive_env_names,
-                cancel,
-                drain,
-            )
+            prepared.push((index, command.clone(), ticket));
+        }
+        let mut outcomes = stream::iter(prepared)
+            .map(|(index, command, ticket)| async move {
+                let _permit = self
+                    .parallelism
+                    .acquire()
+                    .await
+                    .expect("the hook concurrency semaphore is never closed");
+                let outcome = run_one_with_sensitive_env_names_cancellable(
+                    &command,
+                    context_json,
+                    timeout,
+                    &self.sensitive_env_names,
+                    cancel,
+                    drain,
+                )
+                .await;
+                (index, ticket, outcome)
+            })
+            .buffer_unordered(max_parallel_hooks())
+            .collect::<Vec<_>>()
             .await;
+        // Commands execute independently, but decisions, augmentations and durable terminals are
+        // projected in configured order so concurrency never changes semantics or replay.
+        outcomes.sort_by_key(|(index, _, _)| *index);
+        for (_index, ticket, mut outcome) in outcomes {
             if let (Some(journal), Some(ticket)) = (journal, ticket)
                 && journal
                     .finish(ticket, event_id, hook_run_outcome(&outcome))
@@ -488,12 +893,15 @@ impl Hooks {
                         && spec.hook_capability == iteron_protocol::HookCapability::Gate =>
                 {
                     report.completed = report.completed.saturating_add(1);
-                    report.decision = HookDecision::Deny(if output.stderr.trim().is_empty() {
-                        format!("blocked by {event_id} hook (exit 2)")
-                    } else {
-                        output.stderr.trim().to_owned()
-                    });
-                    return Ok(report);
+                    if matches!(report.decision, HookDecision::Allow) {
+                        report.decision = HookDecision::Deny(if output.stderr.trim().is_empty() {
+                            format!("blocked by {event_id} hook (exit 2)")
+                        } else {
+                            output.stderr.trim().to_owned()
+                        });
+                    }
+                    // Do not early-return: every independently-started handler has already reached
+                    // a terminal and must be journalled/projected in configured order.
                 }
                 HookRun::Completed(output) => {
                     report.completed = report.completed.saturating_add(1);
@@ -526,20 +934,25 @@ impl Hooks {
                 }
                 HookRun::TimedOut => {
                     report.timed_out = report.timed_out.saturating_add(1);
-                    if spec.hook_capability == iteron_protocol::HookCapability::Gate {
+                    if spec.hook_capability == iteron_protocol::HookCapability::Gate
+                        && matches!(report.decision, HookDecision::Allow)
+                    {
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook timed out without an allow decision"
                         ));
-                        return Ok(report);
+                        // Continue consuming already-completed handlers; the first configured
+                        // fail-closed decision remains authoritative.
                     }
                 }
                 HookRun::NotStarted(_) | HookRun::Failed | HookRun::Cancelled => {
                     report.failed = report.failed.saturating_add(1);
-                    if spec.hook_capability == iteron_protocol::HookCapability::Gate {
+                    if spec.hook_capability == iteron_protocol::HookCapability::Gate
+                        && matches!(report.decision, HookDecision::Allow)
+                    {
                         report.decision = HookDecision::Deny(format!(
                             "{event_id} gate hook failed without an allow decision"
                         ));
-                        return Ok(report);
+                        // Continue consuming already-completed handlers for ordered evidence.
                     }
                 }
             }
@@ -561,6 +974,161 @@ impl Hooks {
     pub(crate) fn is_empty_for_lifecycle(&self, event_id: &str) -> bool {
         self.by_event.get(event_id).is_none_or(Vec::is_empty)
     }
+
+    pub(crate) fn install_stop_observer(&mut self, dispatcher: StopHookDispatcher) {
+        self.stop_observer = Some(dispatcher);
+    }
+
+    pub(crate) fn dispatch_stop(
+        &self,
+        turn: iteron_protocol::TurnId,
+        context: &str,
+    ) -> (StopHookDispatch, Option<StopHookIdentity>) {
+        if self.is_empty_for(HookEvent::Stop) {
+            return (StopHookDispatch::Disabled, None);
+        }
+        self.stop_observer
+            .as_ref()
+            .map_or((StopHookDispatch::Closed, None), |observer| {
+                observer.try_dispatch(turn, context)
+            })
+    }
+}
+
+async fn run_stop_hook_observer(
+    hooks: Hooks,
+    journal: HookEffectJournal,
+    mut requests: tokio::sync::mpsc::Receiver<StopHookRequest>,
+    observations: tokio::sync::mpsc::Sender<StopHookObservation>,
+    mut shutdown: tokio::sync::mpsc::Receiver<()>,
+    active: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
+) {
+    loop {
+        let request = tokio::select! {
+            biased;
+            _ = shutdown.recv() => {
+                requests.close();
+                cancel_stop_requests(&active);
+                while let Ok(request) = requests.try_recv() {
+                    settle_stop_request(
+                        &active,
+                        &observations,
+                        request,
+                        StopHookTerminal::Cancelled,
+                        empty_stop_report(),
+                    );
+                }
+                break;
+            }
+            request = requests.recv() => match request {
+                Some(request) => request,
+                None => break,
+            },
+        };
+
+        let cancel_before_deadline = request.cancel.clone();
+        let context = request.context.clone();
+        let run = hooks.run_cancellable_journaled_report(
+            HookEvent::Stop,
+            &context,
+            Some(cancel_before_deadline.as_ref()),
+            None,
+            &journal,
+        );
+        tokio::pin!(run);
+        let command_window = stop_hook_terminal_budget()
+            .checked_sub(stop_hook_cleanup_reserve())
+            .unwrap_or(Duration::ZERO);
+        let deadline = tokio::time::sleep(command_window);
+        tokio::pin!(deadline);
+        let (terminal, report) = tokio::select! {
+            report = &mut run => {
+                let terminal = if cancel_before_deadline.load(Ordering::Acquire) {
+                    StopHookTerminal::Cancelled
+                } else if report.timed_out > 0 {
+                    StopHookTerminal::TimedOut
+                } else if report.failed > 0 {
+                    StopHookTerminal::Failed
+                } else {
+                    StopHookTerminal::Completed
+                };
+                (terminal, report)
+            }
+            () = &mut deadline => {
+                request.cancel.store(true, Ordering::SeqCst);
+                // `run_one_cancellable` publishes Cancelled only after TERM -> KILL -> bounded
+                // direct-child reap. The 1.25s reserve keeps that proof inside the 3s Stop budget.
+                let report = run.await;
+                (StopHookTerminal::TimedOut, report)
+            }
+        };
+        settle_stop_request(&active, &observations, request, terminal, report);
+    }
+
+    // Dropping the receiver rejects late child clones. Cancel and settle anything admitted before
+    // close so the resident task never exits with a live hook process or an unowned request.
+    requests.close();
+    cancel_stop_requests(&active);
+    while let Ok(request) = requests.try_recv() {
+        settle_stop_request(
+            &active,
+            &observations,
+            request,
+            StopHookTerminal::Cancelled,
+            empty_stop_report(),
+        );
+    }
+}
+
+fn cancel_stop_requests(active: &Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>) {
+    let active = active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for cancel in active.values() {
+        cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+fn settle_stop_request(
+    active: &Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
+    observations: &tokio::sync::mpsc::Sender<StopHookObservation>,
+    request: StopHookRequest,
+    terminal: StopHookTerminal,
+    report: CompatibilityHookReport,
+) {
+    active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&request.identity.invocation);
+    // Observation is deliberately best-effort and bounded. Hook journal terminal records remain
+    // durable authority; a stopped frontend cannot make the observer task wait or grow memory.
+    let _ = observations.try_send(StopHookObservation {
+        identity: request.identity,
+        terminal,
+        report,
+    });
+}
+
+fn empty_stop_report() -> CompatibilityHookReport {
+    CompatibilityHookReport {
+        decision: HookDecision::Allow,
+        matched: 0,
+        completed: 0,
+        failed: 0,
+        timed_out: 0,
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn bounded_hook_map(input: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
@@ -692,7 +1260,6 @@ struct HookRunOutput {
     code: i32,
     // stdout remains observational, but retaining its bounded rendering makes the capture contract
     // testable and leaves room for future diagnostics without reintroducing `wait_with_output`.
-    #[allow(dead_code)]
     stdout: String,
     stderr: String,
 }
@@ -708,7 +1275,9 @@ struct BoundedCapture {
 
 impl BoundedCapture {
     fn push(&mut self, bytes: &[u8]) {
-        self.total = self.total.saturating_add(bytes.len() as u64);
+        self.total = self
+            .total
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
 
         let head_bytes = bytes.len().min(
             iteron_tunables::param_integer(
@@ -812,9 +1381,8 @@ where
 }
 
 /// Run one hook command with `ctx` on stdin, bounded by `timeout_secs`. Returns its exit and
-/// bounded, marked output if it ran to completion; spawn/read/wait errors and timeouts remain no
-/// opinion, preserving the existing fail-open hook semantics, but a hook that could not be STARTED
-/// is reported as such rather than collapsing into the same silent `None` as a timeout.
+/// bounded, marked output if it ran to completion. Spawn/read/wait errors, cancellation and timeout
+/// remain typed so the caller can fail gates closed while allowing observers to remain advisory.
 async fn run_one_cancellable(
     cmd: &str,
     ctx: &str,
@@ -1077,7 +1645,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_broken_hook_does_not_wedge_allows() {
+    async fn a_broken_gate_hook_fails_closed() {
         let home = tmp("broken");
         std::fs::write(
             home.join(".iteron").join("config.json"),
@@ -1085,19 +1653,47 @@ mod tests {
         )
         .unwrap();
         let hooks = Hooks::load_user(&home);
-        // the command cannot spawn -> "no opinion" -> allow (a broken hook must not brick the agent)
-        assert_eq!(
+        assert!(matches!(
             hooks.run(HookEvent::PreToolUse, "{}").await,
-            HookDecision::Allow
-        );
+            HookDecision::Deny(_)
+        ));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn independent_handlers_run_concurrently_but_decide_in_configured_order() {
+        let hooks = Hooks {
+            by_event: BTreeMap::from([(
+                HookEvent::PreToolUse.key().to_owned(),
+                vec![
+                    "sleep 0.1; echo first >&2; exit 2".to_owned(),
+                    "sleep 0.1; echo second >&2; exit 2".to_owned(),
+                    "sleep 0.1; exit 0".to_owned(),
+                    "sleep 0.1; exit 0".to_owned(),
+                ],
+            )]),
+            timeout_secs: 2,
+            sensitive_env_names: Vec::new(),
+            parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_HOOKS)),
+            stop_observer: None,
+        };
+        let started = std::time::Instant::now();
+        let decision = hooks.run(HookEvent::PreToolUse, "{}").await;
+        assert!(
+            started.elapsed() < Duration::from_millis(350),
+            "four independent 100ms handlers should share the bounded concurrency window"
+        );
+        assert!(
+            matches!(decision, HookDecision::Deny(reason) if reason == "first"),
+            "the first configured denial must win even when it completes later"
+        );
     }
 
     #[tokio::test]
     async fn a_hook_that_could_not_be_started_is_reported_not_swallowed() {
         // The shell was hardcoded outside any cfg and its spawn error went through `.ok()?`, so on
         // a host without that interpreter every configured hook no-opped with nothing to observe.
-        // Fail-open is still the contract; being silent about it is not.
+        // The executor preserves the typed start failure; gate/observer policy is applied above it.
         let outcome = run_one_with_shell(
             "/nonexistent/interpreter/for/hooks",
             "exit 2",
@@ -1268,6 +1864,89 @@ mod tests {
     #[cfg(unix)]
     fn shell_quote(path: &Path) -> String {
         format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+    }
+
+    fn stop_hooks(command: String) -> Hooks {
+        let mut hooks = Hooks::default();
+        hooks
+            .by_event
+            .insert(HookEvent::Stop.key().to_owned(), vec![command]);
+        hooks
+    }
+
+    #[tokio::test]
+    async fn stop_observer_does_not_hold_terminal_or_input_ready() {
+        let home = tmp("stop-observer-order");
+        let journal = HookEffectJournal::open(&home.join("stop-hooks.jsonl")).unwrap();
+        let mut hooks = stop_hooks("sleep 0.15".to_owned());
+        let mut observer = StopHookObserverRuntime::start(hooks.clone(), journal);
+        hooks.install_stop_observer(observer.dispatcher.clone());
+        let started = std::time::Instant::now();
+        let (receipt, identity) =
+            hooks.dispatch_stop(iteron_protocol::TurnId(7), r#"{"event":"Stop"}"#);
+        assert_eq!(receipt, StopHookDispatch::Queued);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        let identity = identity.unwrap();
+        let mut order = vec!["hook_started", "run_ended", "input_ready"];
+        assert_eq!(
+            identity
+                .activity(iteron_protocol::ActivityState::Running)
+                .state,
+            iteron_protocol::ActivityState::Running
+        );
+        let terminal = tokio::time::timeout(Duration::from_secs(1), observer.observations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        order.push("hook_terminal");
+        assert_eq!(
+            order,
+            ["hook_started", "run_ended", "input_ready", "hook_terminal"]
+        );
+        assert_eq!(terminal.terminal, StopHookTerminal::Completed);
+        observer.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn force_cancelled_stop_observer_kills_and_reaps() {
+        let home = tmp("stop-observer-cancel");
+        let pid_path = home.join("stop-hook.pid");
+        let command = format!(
+            "echo $$ > {}; trap '' TERM; while :; do sleep 1; done",
+            shell_quote(&pid_path)
+        );
+        let journal = HookEffectJournal::open(&home.join("stop-hooks.jsonl")).unwrap();
+        let mut hooks = stop_hooks(command);
+        let mut observer = StopHookObserverRuntime::start(hooks.clone(), journal);
+        hooks.install_stop_observer(observer.dispatcher.clone());
+        assert_eq!(
+            hooks
+                .dispatch_stop(iteron_protocol::TurnId(8), r#"{"event":"Stop"}"#)
+                .0,
+            StopHookDispatch::Queued
+        );
+        let pid = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_path)
+                    && let Ok(pid) = text.trim().parse::<u32>()
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(process_exists(pid));
+        assert_eq!(observer.dispatcher.cancel_active(), 1);
+        let terminal = tokio::time::timeout(Duration::from_secs(2), observer.observations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.terminal, StopHookTerminal::Cancelled);
+        assert!(!process_exists(pid));
+        observer.shutdown().await.unwrap();
     }
 
     #[cfg(unix)]

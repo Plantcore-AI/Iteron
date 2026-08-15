@@ -123,6 +123,7 @@
 /crates/agents/src/policy.rs @fr0m-scratch
 /crates/agents/src/policy_tests.rs @fr0m-scratch
 /crates/agents/src/reduce.rs @fr0m-scratch
+/crates/agents/src/snapshot.rs @fr0m-scratch
 /crates/agents/src/stage.rs @fr0m-scratch
 /crates/cli/src/app_server.rs @fr0m-scratch
 /crates/cli/src/block.rs @fr0m-scratch
@@ -176,6 +177,7 @@
 /crates/ctx/src/context_port.rs @fr0m-scratch
 /crates/ctx/src/context_strategy.rs @fr0m-scratch
 /crates/ctx/src/decision_store.rs @fr0m-scratch
+/crates/ctx/src/incremental.rs @fr0m-scratch
 /crates/ctx/src/instructions.rs @fr0m-scratch
 /crates/ctx/src/lib.rs @fr0m-scratch
 /crates/ctx/src/memory.rs @fr0m-scratch
@@ -186,6 +188,7 @@
 /crates/ctx/src/skills.rs @fr0m-scratch
 /crates/ctx/src/skills_metadata.rs @fr0m-scratch
 /crates/ctx/src/source.rs @fr0m-scratch
+/crates/ctx/src/token_calibration.rs @fr0m-scratch
 /crates/ctx/src/token_estimator.rs @fr0m-scratch
 /crates/ctx/tests/skill_frontmatter.rs @fr0m-scratch
 /crates/kernel/src/admission.rs @fr0m-scratch
@@ -223,6 +226,7 @@
 /crates/provider/src/static_metadata.rs @fr0m-scratch
 /crates/provider/src/usage.rs @fr0m-scratch
 /crates/provider/tests/provider_governor.rs @fr0m-scratch
+/crates/record/src/append_actor.rs @fr0m-scratch
 /crates/record/src/cache_io.rs @fr0m-scratch
 /crates/record/src/checkpoint.rs @fr0m-scratch
 /crates/record/src/content_store.rs @fr0m-scratch
@@ -276,11 +280,13 @@
 /crates/cli/src/runtime/tool_output_spill/** @fr0m-scratch
 /crates/cli/src/runtime/workflow_spawner/** @fr0m-scratch
 /crates/cli/src/tui/experiment_lab/** @fr0m-scratch
+/crates/cli/src/runtime/activity.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_config.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_loop.rs @fr0m-scratch
 /crates/cli/src/runtime/budget_control.rs @fr0m-scratch
 /crates/cli/src/runtime/compaction.rs @fr0m-scratch
 /crates/cli/src/runtime/compaction_coverage.rs @fr0m-scratch
+/crates/cli/src/runtime/completion_semantics.rs @fr0m-scratch
 /crates/cli/src/runtime/context_runtime.rs @fr0m-scratch
 /crates/cli/src/runtime/decision_observability.rs @fr0m-scratch
 /crates/cli/src/runtime/decomposition.rs @fr0m-scratch
@@ -288,7 +294,9 @@
 /crates/cli/src/runtime/durability.rs @fr0m-scratch
 /crates/cli/src/runtime/failed_action_cache.rs @fr0m-scratch
 /crates/cli/src/runtime/file_submission.rs @fr0m-scratch
+/crates/cli/src/runtime/force_cancel.rs @fr0m-scratch
 /crates/cli/src/runtime/frontend.rs @fr0m-scratch
+/crates/cli/src/runtime/frontend_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/inbound_control.rs @fr0m-scratch
 /crates/cli/src/runtime/kernel_error.rs @fr0m-scratch

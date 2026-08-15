@@ -533,9 +533,8 @@ pub(crate) fn render_assistant_doc(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    const GUTTER: u16 = 2;
     if width
-        < iteron_tunables::param_integer("cli.block.render_assistant_doc.gutter", GUTTER)
+        < iteron_tunables::param_integer("cli.block.render_assistant_doc.gutter", 2_u16)
             .saturating_add(1)
     {
         return render_doc(doc, width, theme);
@@ -544,7 +543,7 @@ pub(crate) fn render_assistant_doc(
         doc,
         width.saturating_sub(iteron_tunables::param_integer(
             "cli.block.render_assistant_doc.gutter",
-            GUTTER,
+            2_u16,
         )),
         theme,
     )
@@ -571,29 +570,13 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
     theme: &Theme,
     hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
-    const GUTTER: u16 = 2;
-    if width
-        < iteron_tunables::param_integer(
-            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-            GUTTER,
-        )
-        .saturating_add(1)
-    {
+    let gutter = assistant_gutter(width);
+    if gutter == 0 {
         return render_doc_with_hyperlinks(doc, width, theme, hyperlinks);
     }
-    let mut rendered = render_doc_with_hyperlinks(
-        doc,
-        width.saturating_sub(iteron_tunables::param_integer(
-            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-            GUTTER,
-        )),
-        theme,
-        hyperlinks,
-    );
-    rendered.shift_columns(iteron_tunables::param_integer(
-        "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-        GUTTER,
-    ));
+    let mut rendered =
+        render_doc_with_hyperlinks(doc, width.saturating_sub(gutter), theme, hyperlinks);
+    rendered.shift_columns(gutter);
     for (index, row) in rendered.lines.iter_mut().enumerate() {
         let mut spans = vec![Span::styled(
             if index == 0 { "● " } else { "  " },
@@ -607,6 +590,20 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
         *row = Line::from(spans);
     }
     rendered
+}
+
+/// Width reserved by the assistant marker. Streaming and settled renderers share this exact
+/// decision so switching a live answer to its terminal block never changes wrapping geometry.
+pub(crate) fn assistant_gutter(width: u16) -> u16 {
+    let gutter = iteron_tunables::param_integer(
+        "cli.block.render_assistant_doc_with_hyperlinks.gutter",
+        2_u16,
+    );
+    if width >= gutter.saturating_add(1) {
+        gutter
+    } else {
+        0
+    }
 }
 
 /// How many blank rows to place before `next`, given the `prev` block. Adjacent tool cards / notices
@@ -3334,6 +3331,8 @@ mod tests {
             label: "scan modules".into(),
             phase: Some("Explore".into()),
             model: Some("haiku".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentActivity {
             index: 0,
@@ -3357,6 +3356,8 @@ mod tests {
             label: "probe API".into(),
             phase: Some("Explore".into()),
             model: Some("haiku".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::Log {
             message: "synthesizing findings".into(),
@@ -3370,6 +3371,8 @@ mod tests {
             label: "merge report".into(),
             phase: Some("Synthesize".into()),
             model: Some("sonnet".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentFinished {
             index: 2,
@@ -3623,6 +3626,8 @@ mod tests {
             label: "scan modules".into(),
             phase: Some("Explore".into()),
             model: None,
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentFinished {
             index: 0,
@@ -4017,6 +4022,8 @@ mod tests {
                 label: format!("investigator {index}"),
                 phase: Some("Explore".into()),
                 model: Some("haiku".into()),
+                queued_ms: 0,
+                available_permits: 0,
             });
         }
         assert_eq!(

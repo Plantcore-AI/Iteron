@@ -126,9 +126,19 @@ struct SessionListCursor {
     kind: String,
     tenant: String,
     agent_definition_tag: Option<String>,
-    updated_at: u64,
-    updated_at_subsec_nanos: u32,
-    run_id: String,
+    record: iteron_record::SessionPageCursor,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SessionListError {
+    #[error("invalid session cursor: {0}")]
+    InvalidCursor(String),
+    #[error("session cursor is stale; restart the list without a cursor")]
+    CursorStale,
+    #[error("session index is unavailable after one rebuild attempt")]
+    IndexUnavailable,
+    #[error(transparent)]
+    Record(#[from] iteron_record::RecordError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -209,9 +219,10 @@ pub(crate) fn validate_agent_definition_tag(tag: &str) -> anyhow::Result<()> {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionListDocument {
     pub schema_version: u32,
-    /// How many sessions matched the request, including its repository scope, before the page bound.
+    /// Number of sessions in this bounded response. Exact corpus cardinality is deliberately not
+    /// computed on the foreground path; `truncated` says whether another indexed page exists.
     pub total: usize,
-    /// True when `total` exceeded the page bound, so a client knows the list is a page.
+    /// True when another indexed page exists.
     pub truncated: bool,
     pub sessions: Vec<SessionSummary>,
 }
@@ -233,30 +244,65 @@ pub(crate) struct TranscriptDocument {
 /// asks for "the sessions in this repository" and a continue that picks one of them cannot be
 /// looking at two different sets. `None` lists every repository the runs dir holds.
 ///
-/// Degrades exactly as the human path does: `iteron_record::list_scoped` falls back to replay when
-/// the index is stale or missing, so a client still gets an answer rather than an error.
+/// A missing/corrupt index pays one explicit rebuild. A healthy index never lists run files or
+/// hydrates sessions outside the requested page.
 pub(crate) fn list_sessions(
     runs_dir: &Path,
     tenant: &TenantId,
     repo: Option<&Path>,
     limit: usize,
-) -> SessionListDocument {
-    let metas = iteron_record::session::list_scoped(runs_dir, tenant, repo);
-    let total = metas.len();
+) -> Result<SessionListDocument, SessionListError> {
     let limit = limit.min(iteron_tunables::param_integer(
         "cli.session_view.max_sessions_per_page",
         MAX_SESSIONS_PER_PAGE,
     ));
-    let sessions = metas
+    let page = indexed_page(runs_dir, tenant, repo, None, limit.max(1), true)?;
+    let sessions = page
+        .sessions
         .iter()
-        .take(limit)
         .map(SessionSummary::from_meta)
-        .collect();
-    SessionListDocument {
+        .collect::<Vec<_>>();
+    Ok(SessionListDocument {
         schema_version: SESSION_VIEW_SCHEMA_VERSION,
-        total,
-        truncated: total > limit,
+        total: sessions.len(),
+        truncated: page.has_more,
         sessions,
+    })
+}
+
+/// One bounded metadata page for the human CLI. Normal indexed reads are O(limit); only an absent
+/// or corrupt projection is rebuilt, once, before retrying.
+pub(crate) fn list_session_metas(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    repo: Option<&Path>,
+    limit: usize,
+) -> Result<iteron_record::SessionPage, SessionListError> {
+    indexed_page(runs_dir, tenant, repo, None, limit.max(1), true)
+}
+
+fn indexed_page(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    repo: Option<&Path>,
+    cursor: Option<iteron_record::SessionPageCursor>,
+    limit: usize,
+    allow_rebuild: bool,
+) -> Result<iteron_record::SessionPage, SessionListError> {
+    let mut page = iteron_record::page(runs_dir, tenant, repo, cursor, Some(limit));
+    if page.cursor_stale {
+        return Err(SessionListError::CursorStale);
+    }
+    if !page.index_ready && page.rebuild_recommended && allow_rebuild && cursor.is_none() {
+        iteron_record::reindex(runs_dir)?;
+        page = iteron_record::page(runs_dir, tenant, repo, None, Some(limit));
+    }
+    if page.cursor_stale {
+        Err(SessionListError::CursorStale)
+    } else if page.index_ready {
+        Ok(page)
+    } else {
+        Err(SessionListError::IndexUnavailable)
     }
 }
 
@@ -270,9 +316,10 @@ pub(crate) fn list_sessions_page(
     limit: usize,
     cursor: Option<&str>,
     schema_version: u32,
-) -> anyhow::Result<SessionListPage> {
+) -> Result<SessionListPage, SessionListError> {
     if let Some(tag) = agent_definition_tag {
-        validate_agent_definition_tag(tag)?;
+        validate_agent_definition_tag(tag)
+            .map_err(|error| SessionListError::InvalidCursor(error.to_string()))?;
     }
     let limit = limit.clamp(
         1,
@@ -281,49 +328,65 @@ pub(crate) fn list_sessions_page(
             MAX_SESSIONS_PER_PAGE,
         ),
     );
-    let metas: Vec<_> = iteron_record::list(runs_dir, tenant)
-        .into_iter()
-        .filter(|meta| {
-            agent_definition_tag.is_none_or(|tag| meta.agent_definition_tag.as_deref() == Some(tag))
-        })
-        .collect();
-    let start = if let Some(token) = cursor {
-        let cursor: SessionListCursor = decode_cursor(token)?;
+    let mut record_cursor = if let Some(token) = cursor {
+        let cursor: SessionListCursor = decode_cursor(token)
+            .map_err(|error| SessionListError::InvalidCursor(error.to_string()))?;
         if cursor.version != CURSOR_VERSION
             || cursor.kind != "session_list"
             || cursor.tenant != tenant.0
             || cursor.agent_definition_tag.as_deref() != agent_definition_tag
         {
-            anyhow::bail!("session cursor does not belong to this list query");
+            return Err(SessionListError::InvalidCursor(
+                "cursor does not belong to this list query".into(),
+            ));
         }
-        metas
-            .iter()
-            .position(|meta| {
-                meta.updated_at == cursor.updated_at
-                    && meta.updated_at_subsec_nanos == cursor.updated_at_subsec_nanos
-                    && meta.run_id.0 == cursor.run_id
-            })
-            .map(|index| index + 1)
-            .ok_or_else(|| anyhow::anyhow!("session cursor is stale for the current list"))?
+        Some(cursor.record)
     } else {
-        0
+        None
     };
-    let end = start.saturating_add(limit).min(metas.len());
-    let sessions = metas[start..end]
-        .iter()
-        .map(SessionSummary::from_meta)
-        .collect();
-    let next_cursor = if end < metas.len() {
-        let last = &metas[end - 1];
-        Some(encode_cursor(&SessionListCursor {
-            version: CURSOR_VERSION,
-            kind: "session_list".into(),
-            tenant: tenant.0.clone(),
-            agent_definition_tag: agent_definition_tag.map(str::to_owned),
-            updated_at: last.updated_at,
-            updated_at_subsec_nanos: last.updated_at_subsec_nanos,
-            run_id: last.run_id.0.clone(),
-        })?)
+
+    // A sparse tag filter must not turn one foreground page into a corpus scan. Examine at most
+    // four indexed rows per requested result and return an explicit continuation if more remain.
+    let scan_budget = limit
+        .saturating_mul(4)
+        .clamp(limit, MAX_SESSIONS_PER_PAGE * 4);
+    let mut scanned = 0usize;
+    let mut sessions = Vec::with_capacity(limit);
+    let mut has_more = false;
+    while sessions.len() < limit && scanned < scan_budget {
+        let page = indexed_page(
+            runs_dir,
+            tenant,
+            None,
+            record_cursor,
+            1,
+            cursor.is_none() && record_cursor.is_none(),
+        )?;
+        scanned = scanned.saturating_add(page.examined.max(1));
+        if let Some(meta) = page.sessions.first()
+            && agent_definition_tag
+                .is_none_or(|tag| meta.agent_definition_tag.as_deref() == Some(tag))
+        {
+            sessions.push(SessionSummary::from_meta(meta));
+        }
+        has_more = page.has_more;
+        record_cursor = page.next_cursor;
+        if !has_more || record_cursor.is_none() {
+            break;
+        }
+    }
+    let next_cursor = if has_more {
+        record_cursor
+            .map(|record| SessionListCursor {
+                version: CURSOR_VERSION,
+                kind: "session_list".into(),
+                tenant: tenant.0.clone(),
+                agent_definition_tag: agent_definition_tag.map(str::to_owned),
+                record,
+            })
+            .map(|cursor| encode_cursor(&cursor))
+            .transpose()
+            .map_err(|error| SessionListError::InvalidCursor(error.to_string()))?
     } else {
         None
     };

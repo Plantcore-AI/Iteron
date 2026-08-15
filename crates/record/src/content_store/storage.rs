@@ -10,9 +10,13 @@ use super::{
 };
 use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+
+static READY_LAYOUTS: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
 
 pub(super) struct Layout {
     pub(super) runs_dir: PathBuf,
@@ -20,6 +24,7 @@ pub(super) struct Layout {
     pub(super) keys: PathBuf,
     pub(super) refs: PathBuf,
     pub(super) run_refs: PathBuf,
+    pub(super) run_ref_lookup: PathBuf,
     pub(super) lineage_from: PathBuf,
     pub(super) lineage_to: PathBuf,
     pub(super) owner_locks: PathBuf,
@@ -43,6 +48,7 @@ impl Layout {
             keys: scope.join("keys"),
             refs: scope.join("refs"),
             run_refs: scope.join("run-refs"),
+            run_ref_lookup: scope.join("run-ref-lookup"),
             lineage_from: scope.join("lineage-from"),
             lineage_to: scope.join("lineage-to"),
             owner_locks: scope.join("owner-locks"),
@@ -63,6 +69,11 @@ impl Layout {
             .join(hex::encode(Sha256::digest(run.0.as_bytes())))
     }
 
+    fn run_reference_lookup_dir(&self, run: &RunId) -> PathBuf {
+        self.run_ref_lookup
+            .join(hex::encode(Sha256::digest(run.0.as_bytes())))
+    }
+
     pub(super) fn store_exists(&self) -> Result<bool, ContentStoreError> {
         self.scope.try_exists().map_err(ContentStoreError::from)
     }
@@ -74,6 +85,14 @@ impl Layout {
 }
 
 pub(super) fn ensure_layout(layout: &Layout) -> Result<(), ContentStoreError> {
+    let ready = READY_LAYOUTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if ready
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&layout.scope)
+    {
+        return Ok(());
+    }
     crate::create_state_dir(&layout.runs_dir)?;
     for dir in [
         &layout.scope,
@@ -81,6 +100,7 @@ pub(super) fn ensure_layout(layout: &Layout) -> Result<(), ContentStoreError> {
         &layout.keys,
         &layout.refs,
         &layout.run_refs,
+        &layout.run_ref_lookup,
         &layout.lineage_from,
         &layout.lineage_to,
         &layout.owner_locks,
@@ -89,6 +109,10 @@ pub(super) fn ensure_layout(layout: &Layout) -> Result<(), ContentStoreError> {
         std::fs::create_dir_all(dir)?;
         set_private_dir(dir)?;
     }
+    ready
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(layout.scope.clone());
     Ok(())
 }
 
@@ -148,6 +172,21 @@ pub(super) fn lock_store(layout: &Layout) -> Result<StoreLock, ContentStoreError
         .open(&layout.lock)?;
     set_private_file(&layout.lock)?;
     match file.try_lock() {
+        Ok(()) => Ok(StoreLock(file)),
+        Err(TryLockError::WouldBlock) => Err(ContentStoreError::Busy),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+pub(super) fn lock_store_shared(layout: &Layout) -> Result<StoreLock, ContentStoreError> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&layout.lock)?;
+    set_private_file(&layout.lock)?;
+    match file.try_lock_shared() {
         Ok(()) => Ok(StoreLock(file)),
         Err(TryLockError::WouldBlock) => Err(ContentStoreError::Busy),
         Err(TryLockError::Error(error)) => Err(error.into()),
@@ -300,7 +339,7 @@ pub(super) fn write_edge_locked(
     {
         return Err(ContentStoreError::Corrupt);
     }
-    let id = hex::encode(Sha256::digest(&bytes));
+    let id = reference_edge_id(&bytes);
     // The reverse edge is durable first. The tenant store lock excludes a revoker until both
     // edges exist; after a crash, exact-session cleanup can still discover this incomplete write.
     // No journal marker is appended until this function returns, so an absent forward edge cannot
@@ -333,6 +372,14 @@ pub(super) fn write_edge_locked(
         }
         private_replace(&run_path, &bytes)?;
     }
+    let lookup_dir = layout.run_reference_lookup_dir(run);
+    std::fs::create_dir_all(&lookup_dir)?;
+    set_private_dir(&lookup_dir)?;
+    let lookup_path =
+        reference_lookup_path(layout, digest, run, seq, ordinal, field_class, surface);
+    if !lookup_path.exists() {
+        private_replace(&lookup_path, id.as_bytes())?;
+    }
     let path = dir.join(format!("{id}.json"));
     if !path.exists() {
         let count = std::fs::read_dir(&dir)?
@@ -359,6 +406,100 @@ pub(super) fn write_edge_locked(
         private_replace(&path, &bytes)?;
     }
     Ok(())
+}
+
+pub(super) fn reference_edge_path(
+    layout: &Layout,
+    digest: &ErasureContentDigest,
+    run: &RunId,
+    seq: Seq,
+    ordinal: u16,
+    field_class: &str,
+    surface: ContentReferenceSurface,
+) -> Result<PathBuf, ContentStoreError> {
+    let lookup = reference_lookup_path(layout, digest, run, seq, ordinal, field_class, surface);
+    match read_limited(&lookup, 64) {
+        Ok(id) => {
+            if id.len() != 64 || !id.iter().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(ContentStoreError::Corrupt);
+            }
+            let id = std::str::from_utf8(&id).map_err(|_| ContentStoreError::Corrupt)?;
+            return Ok(layout.run_reference_dir(run).join(format!("{id}.json")));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    // Stores created before the direct lookup index are still replayable. This bounded legacy
+    // path is deliberately absent for newly-written references, so steady-state reads remain one
+    // lookup plus one edge read instead of a directory scan. A subsequent store rebuild can
+    // materialize lookup pointers without changing the durable edge format.
+    let run_dir = layout.run_reference_dir(run);
+    let entries = match std::fs::read_dir(&run_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ContentStoreError::Unresolved {
+                digest: digest.clone(),
+                reason: "reference_missing",
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let limit = iteron_tunables::param_integer(
+        "record.content_store.model.max_content_references",
+        MAX_CONTENT_REFERENCES,
+    );
+    for entry in entries.take(limit.saturating_add(1)) {
+        let path = entry?.path();
+        let bytes = read_limited(
+            &path,
+            iteron_tunables::param_integer(
+                "record.content_store.model.max_reference_edge_bytes",
+                MAX_REFERENCE_EDGE_BYTES,
+            ),
+        )?;
+        let edge: ReferenceEdge = serde_json::from_slice(&bytes)?;
+        if edge.version != STORE_VERSION || edge.run_id != *run {
+            return Err(ContentStoreError::Corrupt);
+        }
+        if edge.digest == *digest
+            && edge.seq == seq.0
+            && edge.ordinal == ordinal
+            && edge.field_class == field_class
+            && edge.surface == surface
+        {
+            return Ok(path);
+        }
+    }
+    Err(ContentStoreError::Unresolved {
+        digest: digest.clone(),
+        reason: "reference_missing",
+    })
+}
+
+fn reference_lookup_path(
+    layout: &Layout,
+    digest: &ErasureContentDigest,
+    run: &RunId,
+    seq: Seq,
+    ordinal: u16,
+    field_class: &str,
+    surface: ContentReferenceSurface,
+) -> PathBuf {
+    let mut hash = Sha256::new();
+    hash.update(b"iteron-content-reference-lookup-v1\0");
+    hash.update(digest.as_str().as_bytes());
+    hash.update(seq.0.to_be_bytes());
+    hash.update(ordinal.to_be_bytes());
+    hash.update(field_class.as_bytes());
+    hash.update(surface.label().as_bytes());
+    layout
+        .run_reference_lookup_dir(run)
+        .join(hex::encode(hash.finalize()))
+}
+
+fn reference_edge_id(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 pub(super) fn read_edges(
@@ -506,13 +647,7 @@ pub(super) fn read_limited(path: &Path, max: usize) -> std::io::Result<Vec<u8>> 
 }
 
 pub(super) fn private_replace(path: &Path, bytes: &[u8]) -> Result<(), ContentStoreError> {
-    crate::cache_io::atomic_replace(path, bytes)?;
-    set_private_file(path)?;
-    File::open(path)?.sync_all()?;
-    if let Some(parent) = path.parent() {
-        crate::cache_io::sync_dir(parent)?;
-    }
-    Ok(())
+    crate::cache_io::atomic_replace_private(path, bytes).map_err(ContentStoreError::from)
 }
 
 fn aad(layout: &Layout, digest: &ErasureContentDigest) -> Vec<u8> {

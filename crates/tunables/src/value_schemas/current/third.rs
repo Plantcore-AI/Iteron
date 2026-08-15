@@ -173,7 +173,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "eager_budget_milliseconds",
                 true,
-                int_domain!(1, 60_000, "milliseconds")
+                int_domain!(0, 60_000, "milliseconds")
             ),
             scalar_field!(
                 "positive_ttl_seconds",

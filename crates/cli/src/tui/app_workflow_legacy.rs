@@ -243,15 +243,15 @@ impl App {
             }
         };
         if changed {
-            if let Some(block_id) = existing_block_id
-                && let Some(block) = self
-                    .transcript
-                    .iter_mut()
-                    .find(|block| block.id == block_id)
-            {
+            let changed_index = existing_block_id.and_then(|block_id| {
+                self.transcript
+                    .iter()
+                    .position(|block| block.id == block_id)
+            });
+            if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
                 Arc::make_mut(block).touch();
             }
-            self.mark_transcript_changed();
+            self.mark_transcript_changed_from(changed_index.unwrap_or(0));
             self.autoscroll();
         }
     }

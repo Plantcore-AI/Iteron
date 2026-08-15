@@ -128,6 +128,10 @@ nav:
       - Research harness protocol (中文): reference/research-harness-protocol.zh-CN.md
       - Replaceable implementation protocol: reference/implementation-protocol.md
       - Runtime service graph: reference/runtime-service-graph.md
+      - UI activity and performance: reference/ui-performance-contract.md
+      - UI 活动与性能契约: reference/ui-performance-contract.zh-CN.md
+      - UI/UX performance closure (2026-08-16): reference/ui-performance-closure-20260816.md
+      - UI/UX 性能工程闭环（2026-08-16）: reference/ui-performance-closure-20260816.zh-CN.md
       - Transactional research hot swap: reference/transactional-hot-swap.md
       - Universal trainer bridge: reference/universal-trainer-protocol.md
       - Cross-harness qualification: reference/cross-harness-qualification.md

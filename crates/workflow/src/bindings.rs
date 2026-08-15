@@ -17,6 +17,7 @@
 //! Per-run state lives in [`RunState`]/[`AgentEnv`] (owned, never a static — a `OnceLock` silently
 //! no-ops on the 2nd run and masks concurrency, per the spike's watch-out).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -51,9 +52,11 @@ use quorum::QuorumGroups;
 /// it, and schema retries consume it one real spawn at a time.
 pub const LIFETIME_CAP: usize = 1000;
 
-/// Live rows are sampled at a human-readable cadence. One hertz keeps the running counters current
-/// while bounding traffic into frontend sinks that commonly forward through unbounded channels.
-const AGENT_ACTIVITY_INTERVAL: Duration = Duration::from_secs(1);
+/// Token-only activity is coalesced at 250ms. State transitions remain immediate, while four hertz
+/// keeps counters feeling live without turning decode tokens into an unbounded event stream.
+const AGENT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_CANCEL_ACK_TIMEOUT: Duration = Duration::from_millis(300);
+const HARD_CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Speculation is never implicit: a call that omits `speculativeSiblings` requests no duplicate
 /// workers at all.
@@ -71,6 +74,19 @@ const RETRY_EVIDENCE_PREVIEW_MAX: usize = 512;
 /// assigned worker, so the call is still made once and the policy only ever adds reassignments.
 const MIN_TASK_ATTEMPTS: usize = 1;
 
+fn cancel_ack_timeout() -> Duration {
+    let hard = iteron_tunables::param_duration(
+        "workflow.bindings.hard_cancel_ack_timeout",
+        HARD_CANCEL_ACK_TIMEOUT,
+    )
+    .clamp(Duration::from_millis(1), HARD_CANCEL_ACK_TIMEOUT);
+    iteron_tunables::param_duration(
+        "workflow.bindings.default_cancel_ack_timeout",
+        DEFAULT_CANCEL_ACK_TIMEOUT,
+    )
+    .clamp(Duration::from_millis(1), hard)
+}
+
 /// The escalation text handed to a fresh assignee after a read-only predecessor settled without
 /// usable evidence. This is the compiled default behind the `prompt/recovery@v1` artifact: an
 /// operator profile may replace the whole template, and with no profile the rendered bytes are
@@ -80,6 +96,8 @@ const MIN_TASK_ATTEMPTS: usize = 1;
 /// Substitution is one left-to-right pass over the TEMPLATE only, so neither spliced value can be
 /// rescanned for placeholders; an unknown `{...}` is copied through verbatim.
 pub const RECOVERY_ESCALATION_PROMPT: &str = "{prompt}\n\nA prior read-only assignee ended without usable evidence: {evidence}\nIndependently complete the original task.";
+const DEFAULT_MAX_LOG_CALLS_PER_RUN: usize = 16_384;
+const HARD_MAX_LOG_CALLS_PER_RUN: usize = 65_536;
 
 /// Render [`RECOVERY_ESCALATION_PROMPT`] (or its profile replacement) against one attempt.
 fn render_recovery_escalation(template: &str, prompt: &str, evidence: &str) -> String {
@@ -109,7 +127,9 @@ pub struct RunState {
     index: AtomicUsize,
     agent_calls: AtomicUsize,
     max_agent_calls: usize,
-    phases: Mutex<Vec<String>>,
+    log_calls: AtomicUsize,
+    max_log_calls: usize,
+    phases: Mutex<HashMap<String, usize>>,
     errors: AtomicUsize,
     tokens: AtomicU64,
     tool_calls: AtomicU64,
@@ -123,7 +143,20 @@ impl RunState {
             index: AtomicUsize::new(0),
             agent_calls: AtomicUsize::new(0),
             max_agent_calls,
-            phases: Mutex::new(Vec::new()),
+            log_calls: AtomicUsize::new(0),
+            max_log_calls: iteron_tunables::param_usize(
+                "workflow.bindings.default_max_log_calls_per_run",
+                DEFAULT_MAX_LOG_CALLS_PER_RUN,
+            )
+            .clamp(
+                1,
+                iteron_tunables::param_usize(
+                    "workflow.bindings.hard_max_log_calls_per_run",
+                    HARD_MAX_LOG_CALLS_PER_RUN,
+                )
+                .clamp(1, HARD_MAX_LOG_CALLS_PER_RUN),
+            ),
+            phases: Mutex::new(HashMap::new()),
             errors: AtomicUsize::new(0),
             tokens: AtomicU64::new(0),
             tool_calls: AtomicU64::new(0),
@@ -166,6 +199,16 @@ impl RunState {
             .is_ok()
     }
 
+    /// Bound host crossings as well as frontend emissions. The sink coalesces ordinary bursts,
+    /// while this hard run ceiling stops a script that deliberately loops around `log()` forever.
+    fn admit_log_call(&self) -> bool {
+        self.log_calls
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |calls| {
+                (calls < self.max_log_calls).then_some(calls + 1)
+            })
+            .is_ok()
+    }
+
     fn begin_quorum(&self, parent: &CancellationToken, members: usize) -> u64 {
         self.quorum.begin(parent, members)
     }
@@ -182,14 +225,19 @@ impl RunState {
         self.quorum.end(group_id);
     }
 
-    /// 1-based first-seen phase index.
-    fn phase_index(&self, title: &str) -> usize {
+    /// 1-based first-seen phase index and whether this call declared the boundary. Duplicate phase
+    /// calls do not re-emit, and unique phases share the already bounded agent-call ceiling.
+    fn phase_index(&self, title: &str) -> Option<(usize, bool)> {
         let mut phases = self.phases.lock().unwrap();
-        if let Some(pos) = phases.iter().position(|p| p == title) {
-            return pos + 1;
+        if let Some(index) = phases.get(title) {
+            return Some((*index, false));
         }
-        phases.push(title.to_string());
-        phases.len()
+        if phases.len() >= self.max_agent_calls {
+            return None;
+        }
+        let index = phases.len() + 1;
+        phases.insert(title.to_string(), index);
+        Some((index, true))
     }
 }
 
@@ -212,6 +260,7 @@ pub struct AgentEnv {
     pub spawner: Arc<dyn AgentSpawner>,
     pub sink: Arc<dyn ProgressSink>,
     pub gov: Governor,
+    pub available_permits: Arc<std::sync::atomic::AtomicUsize>,
     pub cancel: CancellationToken,
     pub journal: Arc<Journal>,
     pub task_dag: Arc<ExecutionLedger>,
@@ -222,6 +271,32 @@ pub struct AgentEnv {
     /// prompt-artifact replacement: it carries model-visible text and reaches no capability,
     /// budget, or tool decision from here.
     pub tunables_profile: Option<Arc<iteron_tunables::ProfileDocument>>,
+}
+
+struct TrackedPermit {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    available: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TrackedPermit {
+    fn new(
+        permit: tokio::sync::OwnedSemaphorePermit,
+        available: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        let _ = available.fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+            Some(slots.saturating_sub(1))
+        });
+        Self {
+            _permit: permit,
+            available,
+        }
+    }
+}
+
+impl Drop for TrackedPermit {
+    fn drop(&mut self) {
+        self.available.fetch_add(1, Ordering::Release);
+    }
 }
 
 // ---- JS <-> Rust envelopes -----------------------------------------------------------------------
@@ -503,6 +578,7 @@ async fn spawn_child(
     call: &AgentCall,
     idx: usize,
     attempt_id: AttemptId,
+    cleanup_timeout: Duration,
 ) -> AttemptRun {
     let spawner = env.spawner.clone();
     let call = call.clone();
@@ -526,8 +602,12 @@ async fn spawn_child(
         tokio::select! {
             biased;
             _ = call_cancel.cancelled() => {
+                env.sink.emit(ProgressEvent::AgentCancelling {
+                    index: idx,
+                    cleanup_deadline_ms: cleanup_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+                });
                 let execution = match tokio::time::timeout(
-                    env.speculative_siblings.cleanup_timeout(),
+                    cleanup_timeout,
                     &mut child,
                 ).await {
                     Ok(Ok(outcome)) => AttemptExecution::Settled(outcome),
@@ -588,7 +668,7 @@ async fn spawn_candidate(
 ) -> Result<CandidateSelection, String> {
     if speculative_siblings == 0 {
         let attempt = prepare_attempt(env, task, call, retry_ordinal, 0, lineage).await?;
-        let run = spawn_child(env, call, idx, attempt).await;
+        let run = spawn_child(env, call, idx, attempt, cancel_ack_timeout()).await;
         return settle_sole_attempt(env, task, run).await;
     }
     if env.spawner.execution_class(call) != crate::AgentExecutionClass::ReadOnly {
@@ -616,7 +696,13 @@ async fn spawn_candidate(
         let env = env.clone();
         let mut sibling = call.clone();
         sibling.cancel = group.child_token();
-        tasks.spawn(async move { (attempt, spawn_child(&env, &sibling, idx, attempt).await) });
+        tasks.spawn(async move {
+            let cleanup_timeout = env.speculative_siblings.cleanup_timeout();
+            (
+                attempt,
+                spawn_child(&env, &sibling, idx, attempt, cleanup_timeout).await,
+            )
+        });
     }
 
     let mut runs = Vec::new();
@@ -1202,6 +1288,48 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         ),
         Err(error) => cachekey::rejected_agent_key(&arg, error.code()),
     };
+
+    // Resume is a pure journal read: do not mint a new task, message, attempt, budget charge or
+    // fsync for work whose durable terminal already exists. This is the first stateful lookup
+    // after bounded parsing/key construction and remains before every live admission boundary.
+    if let Some(record) = env.journal.get(&key) {
+        let (label, visible_record) = match metadata {
+            Ok(()) => (
+                raw.label
+                    .clone()
+                    .unwrap_or_else(|| label_for(&raw.prompt, idx)),
+                record,
+            ),
+            Err(error) => (
+                refusal_label(raw.label.as_deref(), &raw.prompt, idx),
+                Record::null(Some(error.public_reason().to_owned())),
+            ),
+        };
+        env.sink.emit(ProgressEvent::AgentQueued {
+            index: idx,
+            label: label.clone(),
+            phase: raw.phase.clone(),
+            model: progress_model(raw.model.as_deref()),
+        });
+        env.sink.emit(ProgressEvent::AgentStarted {
+            index: idx,
+            label: label.clone(),
+            phase: raw.phase.clone(),
+            model: progress_model(raw.model.as_deref()),
+            queued_ms: 0,
+            available_permits: env.available_permits.load(Ordering::Acquire),
+        });
+        emit_finished(&env, idx, label, &visible_record, 0);
+        env.state.observe_quorum(
+            raw.quorum_group,
+            raw.agent_type.as_deref().unwrap_or("generic"),
+            matches!(
+                &visible_record.outcome,
+                Outcome::Text { .. } | Outcome::Structured { .. }
+            ),
+        );
+        return envelope_for(&visible_record);
+    }
     let input_digest = digest_bytes(arg.as_bytes());
     let task = match env
         .task_dag
@@ -1283,48 +1411,6 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         return null_envelope("schema-validated calls cannot use speculative siblings");
     }
 
-    // --- (1) JOURNAL HIT — before Governor / budget / lifetime cap (B2 invariant) ---------------
-    if let Some(record) = env.journal.get(&key) {
-        if let Err(error) = metadata {
-            // Ignore the stored prose for a rejected request. Core wrote the same static outcome,
-            // but reconstructing it from the validator also stays safe if a journal was replaced.
-            let label = refusal_label(raw.label.as_deref(), &raw.prompt, idx);
-            let envelope =
-                settle_metadata_refusal(&env, idx, task, label, &key, error.public_reason(), false)
-                    .await;
-            env.state.observe_quorum(
-                raw.quorum_group,
-                raw.agent_type.as_deref().unwrap_or("generic"),
-                false,
-            );
-            return envelope;
-        }
-        let label = raw
-            .label
-            .clone()
-            .unwrap_or_else(|| label_for(&raw.prompt, idx));
-        env.sink.emit(ProgressEvent::AgentStarted {
-            index: idx,
-            label: label.clone(),
-            phase: raw.phase.clone(),
-            model: progress_model(raw.model.as_deref()),
-        });
-        if finish_task_for_record(&env, task, &record).await.is_err() {
-            env.cancel.cancel();
-            return null_envelope("task DAG durability failed");
-        }
-        emit_finished(&env, idx, label, &record, 0);
-        env.state.observe_quorum(
-            raw.quorum_group,
-            raw.agent_type.as_deref().unwrap_or("generic"),
-            matches!(
-                &record.outcome,
-                Outcome::Text { .. } | Outcome::Structured { .. }
-            ),
-        );
-        return envelope_for(&record);
-    }
-
     if let Err(error) = metadata {
         let label = refusal_label(raw.label.as_deref(), &raw.prompt, idx);
         let envelope =
@@ -1371,6 +1457,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         phase: raw.phase.clone(),
         model: progress_model(raw.model.as_deref()),
     });
+    let queued_at = Instant::now();
     let permit = tokio::select! {
         biased;
         _ = call.cancel.cancelled() => {
@@ -1388,12 +1475,15 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         }
         permit = env.gov.acquire() => permit,
     };
+    let permit = TrackedPermit::new(permit, env.available_permits.clone());
     let started = Instant::now();
     env.sink.emit(ProgressEvent::AgentStarted {
         index: idx,
         label: label.clone(),
         phase: raw.phase.clone(),
         model: progress_model(raw.model.as_deref()),
+        queued_ms: queued_at.elapsed().as_millis() as u64,
+        available_permits: env.available_permits.load(Ordering::Acquire),
     });
 
     // --- (4) run live (schema validate+retry when a schema was supplied) ------------------------
@@ -1488,8 +1578,12 @@ pub fn install<'js>(ctx: &Ctx<'js>, env: &Arc<AgentEnv>) -> rquickjs::Result<()>
     {
         let env = env.clone();
         let f = Function::new(ctx.clone(), move |title: String| -> i32 {
-            let index = env.state.phase_index(&title);
-            env.sink.emit(ProgressEvent::Phase { index, title });
+            let Some((index, first_seen)) = env.state.phase_index(&title) else {
+                return -1;
+            };
+            if first_seen {
+                env.sink.emit(ProgressEvent::Phase { index, title });
+            }
             index as i32
         })?;
         globals.set("__phase", f)?;
@@ -1498,11 +1592,39 @@ pub fn install<'js>(ctx: &Ctx<'js>, env: &Arc<AgentEnv>) -> rquickjs::Result<()>
     // __log — sync narrator.
     {
         let env = env.clone();
-        let f = Function::new(ctx.clone(), move |message: String| {
-            env.sink.emit(ProgressEvent::Log { message });
-        })?;
+        let f = Function::new(
+            ctx.clone(),
+            move |message: String| -> rquickjs::Result<()> {
+                if !env.state.admit_log_call() {
+                    // Cancellation is an uncatchable QuickJS interrupt at the runtime boundary. A
+                    // script cannot catch this error and continue consuming CPU with another 100k
+                    // narrator calls.
+                    env.cancel.cancel();
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "workflow log",
+                        "bounded narrator",
+                        "workflow log-call ceiling reached",
+                    ));
+                }
+                env.sink.emit(ProgressEvent::Log { message });
+                Ok(())
+            },
+        )?;
         globals.set("__log", f)?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_cancel_ack_is_not_the_speculative_cleanup_tail() {
+        assert!(cancel_ack_timeout() <= Duration::from_millis(300));
+        assert!(
+            cancel_ack_timeout() < crate::SpeculativeSiblingPolicy::default().cleanup_timeout()
+        );
+    }
 }

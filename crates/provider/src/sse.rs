@@ -36,6 +36,12 @@ pub(crate) const ANTHROPIC_CONTENT_BLOCKS_FORMAT: &str = "anthropic.messages.con
 /// What the parser emits as it consumes the stream. The kernel/scheduler reacts to these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamItem {
+    /// Successful response headers arrived. This is not a token and never selects a hedged
+    /// winner; it lets callers separate connect/header time from model prefill.
+    Accepted,
+    /// Fixed, secret-free adapter compatibility diagnostic. Providers must never place response
+    /// body text in this variant.
+    CompatibilityNotice(&'static str),
     /// Incremental assistant text (surface to the operator as it arrives).
     TextDelta(String),
     /// Incremental reasoning (extended thinking).

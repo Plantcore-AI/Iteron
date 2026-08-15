@@ -69,12 +69,18 @@ impl TokenEstimatorProfile {
         if text.is_empty() {
             return 0;
         }
-        // The compatibility spelling predates the v2 behavior. An unidentified route must fail
-        // toward admission safety: one token per UTF-8 byte is an explicit upper bound because a
-        // provider token cannot encode less than one byte of the request. Route-specific
-        // approximations below remain reconciled against authoritative provider usage.
+        // Unknown routes use the industry-compatible four-bytes-per-token baseline with a 15%
+        // admission reserve. Multilingual text gets a separate scalar floor: UTF-8 byte length is
+        // not a useful proxy for CJK/emoji tokenization and previously made the generic profile
+        // either four times too pessimistic for ASCII or unsafe when simply divided by four.
         if self == Self::GenericBytesPerToken35 {
-            return text.len();
+            let byte_estimate = text.len().saturating_mul(115).saturating_add(399) / 400;
+            let unicode_floor = text
+                .chars()
+                .filter(|character| !character.is_ascii())
+                .count()
+                .saturating_mul(2);
+            return byte_estimate.max(unicode_floor);
         }
         let ascii_bytes = text.bytes().filter(u8::is_ascii).count();
         let non_ascii = text
@@ -125,7 +131,7 @@ impl TokenEstimatorProfile {
 
     pub fn identity(self) -> TokenizerIdentity {
         let (catalog_id, version) = match self {
-            Self::GenericBytesPerToken35 => ("iteron.conservative-byte-upper-bound", 2),
+            Self::GenericBytesPerToken35 => ("iteron.generic-bpt4-reserve15", 3),
             Self::OpenAiBpeApprox => ("iteron.openai-bpe-approx", 1),
             Self::AnthropicBpeApprox => ("iteron.anthropic-bpe-approx", 1),
             Self::SentencePieceApprox => ("iteron.sentencepiece-approx", 1),
@@ -155,12 +161,12 @@ mod tests {
         assert_eq!(fallback, TokenEstimatorProfile::GenericBytesPerToken35);
         assert_eq!(
             fallback.identity().catalog_id,
-            "iteron.conservative-byte-upper-bound"
+            "iteron.generic-bpt4-reserve15"
         );
-        assert_eq!(fallback.identity().version, 2);
+        assert_eq!(fallback.identity().version, 3);
         assert!(!fallback.identity().exact);
-        assert_eq!(fallback.estimate("ascii"), "ascii".len());
-        assert_eq!(fallback.estimate("上下文"), "上下文".len());
+        assert_eq!(fallback.estimate("a".repeat(400).as_str()), 115);
+        assert_eq!(fallback.estimate("上下文"), 6);
         assert_eq!(
             fallback.provenance(),
             TokenEstimateProvenance::ConservativeByteUpperBound

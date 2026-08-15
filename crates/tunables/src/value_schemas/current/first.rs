@@ -84,7 +84,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "usable_window_ratio",
                 true,
-                decimal_domain!(1, 2, 9, 1, 4, "ratio")
+                decimal_domain!(1, 2, 1, 0, 4, "ratio")
             ),
             scalar_field!(
                 "fallback_trigger_tokens",
@@ -191,7 +191,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
             scalar_field!(
                 "usable_window_ratio",
                 true,
-                decimal_domain!(1, 2, 9, 1, 4, "ratio")
+                decimal_domain!(1, 2, 1, 0, 4, "ratio")
             ),
             scalar_field!(
                 "keep_recent_messages",

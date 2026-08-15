@@ -12,9 +12,70 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const MAX_BUFFERED_HEDGE_ITEMS: usize = 131_072;
+const HEDGE_LIVE_QUEUE_ITEMS: usize = 4_096;
+/// Includes both the retained semantic copy and the live-forward clone across every physical
+/// attempt in one hedge. The hard ceiling is deliberately not tunable upward: a provider frame may
+/// itself be tens of MiB, so an item-count bound alone can otherwise retain GiB.
+const DEFAULT_HEDGE_AGGREGATE_BYTES: usize = 72 * 1024 * 1024;
+const MAX_HEDGE_AGGREGATE_BYTES: usize = 128 * 1024 * 1024;
+
+struct AttemptLiveItem {
+    index: u8,
+    item: StreamItem,
+    retained_bytes: usize,
+}
+
+struct HedgeByteBudget {
+    used: AtomicUsize,
+    limit: usize,
+}
+
+impl HedgeByteBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            used: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_reserve(&self, bytes: usize) -> bool {
+        self.used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|next| *next <= self.limit)
+            })
+            .is_ok()
+    }
+
+    fn release(&self, bytes: usize) {
+        let previous = self.used.fetch_sub(bytes, Ordering::AcqRel);
+        debug_assert!(previous >= bytes, "hedge byte reservations are balanced");
+    }
+
+    #[cfg(test)]
+    fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HedgeBufferOverflow {
+    AggregateBytes,
+    ItemCount,
+    LiveQueue,
+}
+
+impl HedgeBufferOverflow {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::AggregateBytes => "aggregate byte budget",
+            Self::ItemCount => "retained item budget",
+            Self::LiveQueue => "live forwarding queue",
+        }
+    }
+}
 
 pub(super) struct HedgedProviderDispatch {
     pub result: Result<iteron_provider::TurnResult, KernelError>,
@@ -22,6 +83,9 @@ pub(super) struct HedgedProviderDispatch {
     pub scheduled_attempts: u32,
     /// True only when every scheduled attempt has known cost or proved it never dispatched.
     pub monetary_followup_safe: bool,
+    /// Text/reasoning deltas were forwarded at winner selection, before loser cleanup. The caller
+    /// still replays items through the semantic accumulator but must not render them twice.
+    pub ui_deltas_forwarded: bool,
 }
 
 struct PreparedAttempt {
@@ -33,6 +97,7 @@ struct PreparedAttempt {
     request: TurnRequest,
     deadline: Instant,
     interrupt: Option<Arc<AtomicBool>>,
+    force_cancel: Arc<AtomicBool>,
     drain: Arc<AtomicBool>,
     attempt_cancel: Arc<AtomicBool>,
     ticket: effects::EffectTicket,
@@ -143,6 +208,7 @@ impl Agent {
                 items: Vec::new(),
                 scheduled_attempts: 0,
                 monetary_followup_safe: true,
+                ui_deltas_forwarded: false,
             });
         }
 
@@ -235,6 +301,7 @@ impl Agent {
                 request: request.clone(),
                 deadline,
                 interrupt: self.interrupt.clone(),
+                force_cancel: self.force_cancel.clone(),
                 drain: self.drain.clone(),
                 attempt_cancel,
                 ticket,
@@ -258,16 +325,101 @@ impl Agent {
             closed?;
             return Err(error);
         }
+        let live_capacity = iteron_tunables::param_integer(
+            "cli.runtime.provider_hedge.hedge_live_queue_items",
+            HEDGE_LIVE_QUEUE_ITEMS,
+        )
+        .clamp(
+            1,
+            iteron_tunables::param_integer(
+                "cli.runtime.provider_hedge.max_buffered_hedge_items",
+                MAX_BUFFERED_HEDGE_ITEMS,
+            )
+            .clamp(1, MAX_BUFFERED_HEDGE_ITEMS),
+        );
+        let (live_tx, mut live_rx) = tokio::sync::mpsc::channel(live_capacity);
+        let max_aggregate_bytes = iteron_tunables::param_integer(
+            "cli.runtime.provider_hedge.max_hedge_aggregate_bytes",
+            MAX_HEDGE_AGGREGATE_BYTES,
+        )
+        .clamp(1, MAX_HEDGE_AGGREGATE_BYTES);
+        let byte_budget = Arc::new(HedgeByteBudget::new(
+            iteron_tunables::param_usize(
+                "cli.runtime.provider_hedge.default_hedge_aggregate_bytes",
+                DEFAULT_HEDGE_AGGREGATE_BYTES,
+            )
+            .clamp(1, max_aggregate_bytes),
+        ));
         let mut attempts = prepared
             .into_iter()
-            .map(|attempt| Box::pin(run_attempt(attempt)) as AttemptFuture)
+            .map(|attempt| {
+                let live_tx = live_tx.clone();
+                Box::pin(run_attempt(attempt, live_tx, byte_budget.clone())) as AttemptFuture
+            })
             .collect::<FuturesUnordered<_>>();
+        drop(live_tx);
         let mut winner: Option<(u8, iteron_provider::TurnResult, Vec<StreamItem>)> = None;
+        let mut selected_index = None;
         let mut errors = BTreeMap::new();
         let mut aggregate = UsageAggregate::default();
         let mut monetary_followup_safe = true;
+        let mut ui_deltas_forwarded = false;
 
-        while let Some(terminal) = attempts.next().await {
+        while !attempts.is_empty() {
+            let terminal = tokio::select! {
+                // Deltas win ties with a terminal from the same adapter. This makes TTFT and
+                // rendering independent of loser settlement while retaining terminal evidence in
+                // the FuturesUnordered branch below.
+                biased;
+                live = live_rx.recv() => {
+                    if let Some(live) = live {
+                        byte_budget.release(live.retained_bytes);
+                        let selects_winner = matches!(
+                            &live.item,
+                            StreamItem::TextDelta(_)
+                                | StreamItem::ThinkingDelta(_)
+                                | StreamItem::ToolUseComplete(_)
+                                | StreamItem::TurnComplete { .. }
+                        );
+                        if selected_index.is_none() && selects_winner {
+                            selected_index = Some(live.index);
+                            for (other, cancel) in &cancellation {
+                                if *other != live.index {
+                                    cancel.store(true, Ordering::Release);
+                                }
+                            }
+                        }
+                        if selected_index == Some(live.index)
+                            && let Some(tx) = &self.ui_tx
+                        {
+                            match live.item {
+                                StreamItem::TextDelta(text) => {
+                                    let _ = self.frontend_saturation.try_send_ui(
+                                        tx,
+                                        UiEvent::Text(iteron_record::redact::scrub(&text)),
+                                    );
+                                    ui_deltas_forwarded = true;
+                                }
+                                StreamItem::ThinkingDelta(text) => {
+                                    let _ = self.frontend_saturation.try_send_ui(
+                                        tx,
+                                        UiEvent::Thinking(iteron_record::redact::scrub(&text)),
+                                    );
+                                    ui_deltas_forwarded = true;
+                                }
+                                StreamItem::Accepted
+                                | StreamItem::CompatibilityNotice(_)
+                                | StreamItem::ToolUseComplete(_)
+                                | StreamItem::RateLimit(_)
+                                | StreamItem::TurnComplete { .. } => {}
+                            }
+                        }
+                    }
+                    continue;
+                }
+                terminal = attempts.next() => terminal,
+            };
+            let Some(terminal) = terminal else { break };
             match terminal {
                 AttemptTerminal::Suppressed {
                     index,
@@ -332,12 +484,47 @@ impl Agent {
                     match result {
                         Ok(result) => {
                             aggregate.observe_success(result.usage);
-                            if winner.is_none() {
+                            if selected_index.is_none() {
+                                selected_index = Some(index);
                                 for (other, cancel) in &cancellation {
                                     if *other != index {
                                         cancel.store(true, Ordering::Release);
                                     }
                                 }
+                                // Winner selection is the success terminal for this physical
+                                // stream. Rendering its already-validated deltas must not wait for
+                                // duplicate cancellation/accounting to settle.
+                                if let Some(tx) = &self.ui_tx {
+                                    for item in &items {
+                                        match item {
+                                            StreamItem::TextDelta(text) => {
+                                                let _ = self.frontend_saturation.try_send_ui(
+                                                    tx,
+                                                    UiEvent::Text(iteron_record::redact::scrub(
+                                                        text,
+                                                    )),
+                                                );
+                                                ui_deltas_forwarded = true;
+                                            }
+                                            StreamItem::ThinkingDelta(text) => {
+                                                let _ = self.frontend_saturation.try_send_ui(
+                                                    tx,
+                                                    UiEvent::Thinking(
+                                                        iteron_record::redact::scrub(text),
+                                                    ),
+                                                );
+                                                ui_deltas_forwarded = true;
+                                            }
+                                            StreamItem::Accepted
+                                            | StreamItem::CompatibilityNotice(_)
+                                            | StreamItem::ToolUseComplete(_)
+                                            | StreamItem::RateLimit(_)
+                                            | StreamItem::TurnComplete { .. } => {}
+                                        }
+                                    }
+                                }
+                            }
+                            if selected_index == Some(index) && winner.is_none() {
                                 winner = Some((index, result, items));
                             }
                         }
@@ -353,6 +540,10 @@ impl Agent {
         let (result, items) = if let Some((_index, mut result, items)) = winner {
             result.usage = aggregate.report();
             (Ok(result), items)
+        } else if let Some(index) = selected_index
+            && let Some((error, items)) = errors.remove(&index)
+        {
+            (Err(error), items)
         } else if let Some((_index, (error, items))) = errors.pop_first() {
             (Err(error), items)
         } else {
@@ -370,6 +561,7 @@ impl Agent {
             items,
             scheduled_attempts,
             monetary_followup_safe,
+            ui_deltas_forwarded,
         })
     }
 
@@ -455,12 +647,17 @@ impl Agent {
     }
 }
 
-async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
+async fn run_attempt(
+    attempt: PreparedAttempt,
+    live_tx: tokio::sync::mpsc::Sender<AttemptLiveItem>,
+    byte_budget: Arc<HedgeByteBudget>,
+) -> AttemptTerminal {
     if !attempt.delay.is_zero() {
         tokio::time::sleep(attempt.delay).await;
     }
     if attempt.attempt_cancel.load(Ordering::Acquire)
         || attempt.drain.load(Ordering::Acquire)
+        || attempt.force_cancel.load(Ordering::Acquire)
         || attempt
             .interrupt
             .as_ref()
@@ -477,31 +674,52 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
 
     let mut items = Vec::new();
     let mut rate_limit = None;
-    let result = {
+    let mut buffer_overflow = None;
+    let max_items = iteron_tunables::param_usize(
+        "cli.runtime.provider_hedge.max_buffered_hedge_items",
+        MAX_BUFFERED_HEDGE_ITEMS,
+    )
+    .clamp(1, MAX_BUFFERED_HEDGE_ITEMS);
+    let mut result = {
         let mut on_item = |item: StreamItem| {
             if let StreamItem::RateLimit(snapshot) = &item {
                 rate_limit = Some(*snapshot);
             }
-            if items.len()
-                < iteron_tunables::param_integer(
-                    "cli.runtime.provider_hedge.max_buffered_hedge_items",
-                    MAX_BUFFERED_HEDGE_ITEMS,
+            if buffer_overflow.is_none()
+                && let Err(overflow) = admit_hedge_item(
+                    attempt.index,
+                    item,
+                    &live_tx,
+                    &byte_budget,
+                    &mut items,
+                    max_items,
                 )
             {
-                items.push(item);
+                buffer_overflow = Some(overflow);
             }
         };
         provider_route::execute_admitted_provider_turn(
             attempt.provider,
             attempt.deadline,
-            attempt.interrupt,
-            attempt.drain,
-            Some(attempt.attempt_cancel),
+            provider_route::ProviderCancellation {
+                interrupt: attempt.interrupt,
+                force_cancel: attempt.force_cancel,
+                drain: attempt.drain,
+                attempt: Some(attempt.attempt_cancel),
+            },
             &attempt.request,
             &mut on_item,
         )
         .await
     };
+    if let Some(overflow) = buffer_overflow {
+        result = Err(KernelError::Provider(
+            iteron_provider::ProviderError::Decode(format!(
+                "hedged provider stream exceeded its bounded {}",
+                overflow.reason()
+            )),
+        ));
+    }
     AttemptTerminal::Completed {
         index: attempt.index,
         ordinal: attempt.ordinal,
@@ -512,6 +730,113 @@ async fn run_attempt(attempt: PreparedAttempt) -> AttemptTerminal {
         rate_limit,
         result,
     }
+}
+
+fn admit_hedge_item(
+    index: u8,
+    item: StreamItem,
+    live_tx: &tokio::sync::mpsc::Sender<AttemptLiveItem>,
+    byte_budget: &HedgeByteBudget,
+    items: &mut Vec<StreamItem>,
+    max_items: usize,
+) -> Result<(), HedgeBufferOverflow> {
+    if items.len() >= max_items {
+        return Err(HedgeBufferOverflow::ItemCount);
+    }
+    let retained_bytes = stream_item_retained_bytes(&item);
+    let retained_and_live = retained_bytes
+        .checked_mul(2)
+        .ok_or(HedgeBufferOverflow::AggregateBytes)?;
+    if !byte_budget.try_reserve(retained_and_live) {
+        return Err(HedgeBufferOverflow::AggregateBytes);
+    }
+    let live = AttemptLiveItem {
+        index,
+        item: item.clone(),
+        retained_bytes,
+    };
+    let live_sent = live_tx.try_send(live).is_ok();
+    if !live_sent {
+        // The failed send returns and drops the clone; only the semantic copy retained below still
+        // occupies the shared budget.
+        byte_budget.release(retained_bytes);
+    }
+    items.push(item);
+    if live_sent {
+        Ok(())
+    } else {
+        Err(HedgeBufferOverflow::LiveQueue)
+    }
+}
+
+fn stream_item_retained_bytes(item: &StreamItem) -> usize {
+    let inline = std::mem::size_of::<StreamItem>();
+    let dynamic = match item {
+        StreamItem::Accepted | StreamItem::CompatibilityNotice(_) | StreamItem::RateLimit(_) => 0,
+        StreamItem::TextDelta(text) | StreamItem::ThinkingDelta(text) => text.len(),
+        StreamItem::ToolUseComplete(tool) => tool_use_retained_bytes(tool),
+        StreamItem::TurnComplete { blocks, .. } => blocks.iter().fold(0usize, |total, block| {
+            total.saturating_add(block_retained_bytes(block))
+        }),
+    };
+    // A second inline charge plus fixed allocator/channel-node headroom covers geometric Vec
+    // capacity and the bounded mpsc slot; payload allocations are charged below.
+    inline
+        .saturating_mul(2)
+        .saturating_add(128)
+        .saturating_add(dynamic)
+}
+
+fn block_retained_bytes(block: &Block) -> usize {
+    let inline = std::mem::size_of::<Block>();
+    let dynamic = match block {
+        Block::Text { text } => text.len(),
+        Block::Thinking { thinking } => thinking.len(),
+        Block::ProviderState(state) => state
+            .route_scope
+            .len()
+            .saturating_add(state.format.as_str().len())
+            .saturating_add(json_retained_bytes(&state.payload)),
+        Block::ToolUse(tool) => tool_use_retained_bytes(tool),
+        Block::ToolResult(result) => result
+            .tool_use_id
+            .len()
+            .saturating_add(result.content.len()),
+    };
+    inline
+        .saturating_mul(2)
+        .saturating_add(64)
+        .saturating_add(dynamic)
+}
+
+fn tool_use_retained_bytes(tool: &ToolUse) -> usize {
+    std::mem::size_of::<ToolUse>()
+        .saturating_mul(2)
+        .saturating_add(64)
+        .saturating_add(tool.id.len())
+        .saturating_add(tool.name.len())
+        .saturating_add(json_retained_bytes(&tool.input))
+}
+
+/// Conservative owned-tree charge. Container/node overhead is intentionally over-counted so a
+/// deeply nested object cannot evade the aggregate budget merely because its wire strings are
+/// short.
+fn json_retained_bytes(value: &serde_json::Value) -> usize {
+    let inline = std::mem::size_of::<serde_json::Value>();
+    let dynamic = match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+        serde_json::Value::String(text) => text.len(),
+        serde_json::Value::Array(values) => values.iter().fold(0usize, |total, value| {
+            total.saturating_add(json_retained_bytes(value))
+        }),
+        serde_json::Value::Object(values) => values.iter().fold(0usize, |total, (key, value)| {
+            total
+                .saturating_add(64)
+                .saturating_add(key.len())
+                .saturating_add(json_retained_bytes(value))
+        }),
+    };
+    inline.saturating_mul(2).saturating_add(dynamic)
 }
 
 struct UsageAggregate {
@@ -563,6 +888,41 @@ impl UsageAggregate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn aggregate_byte_budget_rejects_one_large_frame_before_cloning_it() {
+        let (live_tx, mut live_rx) = tokio::sync::mpsc::channel(1);
+        let item = StreamItem::TextDelta("x".repeat(1_024));
+        let one_copy = stream_item_retained_bytes(&item);
+        let budget = HedgeByteBudget::new(one_copy.saturating_mul(2).saturating_sub(1));
+        let mut retained = Vec::new();
+
+        assert_eq!(
+            admit_hedge_item(0, item, &live_tx, &budget, &mut retained, 8),
+            Err(HedgeBufferOverflow::AggregateBytes)
+        );
+        assert!(retained.is_empty(), "the semantic copy was not admitted");
+        assert!(
+            live_rx.try_recv().is_err(),
+            "the live clone was not admitted"
+        );
+        assert_eq!(budget.used(), 0, "a refused frame leaves no reservation");
+    }
+
+    #[tokio::test]
+    async fn live_clone_has_an_independent_released_byte_reservation() {
+        let (live_tx, mut live_rx) = tokio::sync::mpsc::channel(1);
+        let item = StreamItem::TextDelta("bounded".repeat(32));
+        let one_copy = stream_item_retained_bytes(&item);
+        let budget = HedgeByteBudget::new(one_copy.saturating_mul(2));
+        let mut retained = Vec::new();
+
+        admit_hedge_item(0, item, &live_tx, &budget, &mut retained, 8).unwrap();
+        assert_eq!(budget.used(), one_copy * 2);
+        let live = live_rx.try_recv().expect("live copy was admitted");
+        budget.release(live.retained_bytes);
+        assert_eq!(budget.used(), one_copy, "the retained copy remains charged");
+    }
 
     #[test]
     fn hedge_usage_counts_each_success_once_and_preserves_incompleteness() {

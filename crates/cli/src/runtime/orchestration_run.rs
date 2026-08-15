@@ -28,7 +28,7 @@ impl Agent {
             return self.drive_admitted(messages, task, input_images).await;
         }
         let leaves = self.decompose(task, class).await?;
-        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn))? {
+        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await? {
             return Ok(outcome);
         }
         if self.inference_budget_exhaustion()?.is_some() {
@@ -227,7 +227,7 @@ impl Agent {
                 },
             )?;
             if let Some(outcome) =
-                self.collect_and_finish_requested_control(TurnId(self.seq_turn))?
+                self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await?
             {
                 return Ok(outcome);
             }
@@ -264,7 +264,7 @@ impl Agent {
             },
         )?;
         merge_adjacent_user_message(&mut messages, augmented);
-        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn))? {
+        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await? {
             return Ok(outcome);
         }
         self.drive_admitted(messages, task, input_images).await

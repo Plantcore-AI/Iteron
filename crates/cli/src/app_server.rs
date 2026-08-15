@@ -45,10 +45,10 @@
 //!   [`SubmitError::Busy`] so the frontend can tell the operator their keystroke did not land,
 //!   rather than freezing the render loop behind an unbounded queue that grows until the process
 //!   dies.
-//! - **EQ**: a slow reader must never cost the operator the *authoritative* answer. Cosmetic
-//!   deltas — streamed text and thinking — are dropped oldest-first under pressure and the loss is
-//!   reported. Everything else, and `Done` above all, is delivered even if that means waiting for
-//!   the reader.
+//! - **EQ**: a slow reader must never cost the operator the *authoritative* answer. Streamed text
+//!   and thinking are coalesced cumulatively under pressure, with both event and byte ceilings;
+//!   reaching the side-buffer ceiling applies backpressure rather than losing bytes. Everything
+//!   else, and `Done` above all, is delivered even if that means waiting for the reader.
 
 #[path = "app_server/backpressure.rs"]
 mod backpressure;
@@ -72,6 +72,7 @@ use iteron_protocol::{
     ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SqEnvelope,
     SubmissionId, SubmissionLifecycleState, TurnId, TurnLifecycleState,
 };
+use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
@@ -231,7 +232,8 @@ pub(crate) enum ServerEvent {
         state: SubmissionLifecycleState,
         reason_code: Option<&'static str>,
     },
-    /// Cosmetic deltas were dropped to keep the queue bounded.
+    /// Cosmetic updates were dropped only when a checkpoint explicitly selects the legacy Drop
+    /// policy. The owner policy coalesces semantic stream bytes losslessly.
     ///
     /// Reported rather than hidden: a transcript with a silent hole in it is worse than one that
     /// says where the hole is.
@@ -243,6 +245,8 @@ pub(crate) enum ServerEvent {
     /// see `crate::runtime::Agent::workflow_progress_tx`. Both arrive on the same EQ, so the card
     /// still lands in transcript order relative to the assistant text around it.
     WorkflowRun(crate::workflow::WorkflowRunUiEvent),
+    /// Content-free live work projection. Durable `Phase` remains the replay authority.
+    Activity(iteron_protocol::ActivityEvent),
 }
 
 impl ServerEvent {
@@ -259,15 +263,57 @@ impl ServerEvent {
     /// for room like any other authoritative event. Dropping an `AgentFinished` would leave a row
     /// spinning as `Running` for the rest of the session.
     pub(crate) fn is_authoritative(&self) -> bool {
-        !matches!(
-            self,
-            Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_))
-                | Self::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
-                    event: iteron_workflow::events::ProgressEvent::AgentActivity { .. },
-                    ..
-                })
-        )
+        match self {
+            Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_)) => false,
+            Self::Activity(activity) => activity.state.is_terminal(),
+            Self::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
+                event: iteron_workflow::events::ProgressEvent::AgentActivity { .. },
+                ..
+            }) => false,
+            _ => true,
+        }
     }
+}
+
+/// Fixed conservative heap-accounting term. Its distinct type keeps the byte-bound proof outside
+/// the learned plane while still exposing the value as a read-only census row.
+struct EnvelopeAccountingBytes(usize);
+const ENVELOPE: EnvelopeAccountingBytes = EnvelopeAccountingBytes(512);
+
+fn event_heap_bytes(event: &ServerEvent) -> usize {
+    ENVELOPE.0.saturating_add(match event {
+        ServerEvent::Ui(UiEvent::Text(text) | UiEvent::Thinking(text) | UiEvent::Notice(text)) => {
+            text.len()
+        }
+        ServerEvent::Ui(UiEvent::ToolStart { id, name, args }) => id
+            .len()
+            .saturating_add(name.len())
+            .saturating_add(serde_json::to_vec(args).map_or(0, |bytes| bytes.len())),
+        ServerEvent::Ui(UiEvent::ToolEnd {
+            id, output, diff, ..
+        }) => id
+            .len()
+            .saturating_add(output.len())
+            .saturating_add(serde_json::to_vec(diff).map_or(0, |bytes| bytes.len())),
+        ServerEvent::Ui(_) => 4 * 1024,
+        ServerEvent::RunEnded { snapshot, summary } => summary
+            .assistant_text
+            .len()
+            .saturating_add(summary.error.as_ref().map_or(0, String::len))
+            .saturating_add(snapshot.model.len())
+            .saturating_add(snapshot.ledger_summary.len())
+            .saturating_add(
+                snapshot
+                    .unadmitted_steers
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>(),
+            ),
+        ServerEvent::Notice(text) => text.len(),
+        ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
+        ServerEvent::WorkflowRun(_) => 64 * 1024,
+        ServerEvent::Activity(_) => 512,
+    })
 }
 
 /// A control-plane request the frontend makes of the resident runtime.
@@ -496,13 +542,30 @@ pub(crate) struct ControlRequest {
 ///
 /// Deliberately not `iteron_protocol::EqEnvelope` — see the module docs for the four losses that
 /// would force.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct EventEnvelope {
     /// Monotonic live-delivery cursor. This is deliberately not `iteron_protocol::Seq`, which names
     /// the durable hash-chained Rollout order. Reconnect code must never conflate the two.
     pub(crate) seq: u64,
     pub(crate) protocol_version: u32,
     pub(crate) event: ServerEvent,
+    assistant_text_spill: Option<AssistantTextSpill>,
+    /// Releases this envelope's EQ byte charge when every consumer is finished with it.
+    _byte_permit: Option<OwnedSemaphorePermit>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EventEnvelopeError {
+    #[error(transparent)]
+    Protocol(#[from] ProtocolVersionError),
+    #[error("the bounded EQ terminal-text spool could not be read: {0}")]
+    Spill(#[from] std::io::Error),
+}
+
+impl PartialEq<ProtocolVersionError> for EventEnvelopeError {
+    fn eq(&self, other: &ProtocolVersionError) -> bool {
+        matches!(self, Self::Protocol(error) if error == other)
+    }
 }
 
 impl EventEnvelope {
@@ -515,14 +578,154 @@ impl EventEnvelope {
     /// `SqEnvelope::into_current`: the version travels with the payload, so a server that started
     /// emitting a newer shape mid-session is caught at the point of use rather than assumed away by
     /// the connect-time handshake.
-    pub(crate) fn into_current(self) -> Result<ServerEvent, ProtocolVersionError> {
+    pub(crate) fn into_current(mut self) -> Result<ServerEvent, EventEnvelopeError> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(ProtocolVersionError {
                 expected: PROTOCOL_VERSION,
                 actual: self.protocol_version,
-            });
+            }
+            .into());
+        }
+        if let Some(spill) = self.assistant_text_spill.take() {
+            let ServerEvent::RunEnded { summary, .. } = &mut self.event else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "terminal-text spool was attached to a non-terminal EQ event",
+                )
+                .into());
+            };
+            let text = spill.read_to_string(&summary.run_id)?;
+            summary.assistant_text = text;
         }
         Ok(self.event)
+    }
+}
+
+static NEXT_EQ_TERMINAL_TEXT_SPILL: AtomicU64 = AtomicU64::new(0);
+
+fn max_eq_terminal_text_spill_bytes() -> usize {
+    128 * 1024 * 1024
+}
+
+#[derive(Debug)]
+struct AssistantTextSpill {
+    file: std::fs::File,
+    /// `None` after Unix unlinks the name immediately while retaining the private descriptor.
+    path: Option<std::path::PathBuf>,
+    bytes: usize,
+    run_id: String,
+}
+
+impl AssistantTextSpill {
+    /// Return the owned text with every ordinary I/O refusal so the caller can restore the
+    /// `RunEnded` payload instead of turning a spool failure into silent final-answer loss.
+    fn create(run_id: String, text: String) -> Result<Self, (std::io::Error, String)> {
+        if text.len() > max_eq_terminal_text_spill_bytes() {
+            return Err((
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "terminal text exceeds the bounded EQ spool ceiling",
+                ),
+                text,
+            ));
+        }
+        let root = std::env::temp_dir();
+        for _ in 0..16 {
+            let ordinal = NEXT_EQ_TERMINAL_TEXT_SPILL.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "iteron-eq-terminal-{}-{ordinal}.tmp",
+                std::process::id()
+            ));
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+                options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+            }
+            match options.open(&path) {
+                Ok(file) => {
+                    let mut spill = Self {
+                        file,
+                        path: Some(path),
+                        bytes: text.len(),
+                        run_id,
+                    };
+                    let prepared = (|| -> std::io::Result<()> {
+                        spill.file.write_all(text.as_bytes())?;
+                        spill.file.seek(std::io::SeekFrom::Start(0))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::MetadataExt as _;
+                            let metadata = spill.file.metadata()?;
+                            if !metadata.is_file() || metadata.mode() & 0o777 != 0o600 {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::PermissionDenied,
+                                    "bounded EQ terminal spool was not a private regular file",
+                                ));
+                            }
+                            // Keep only the already-open descriptor. A crash cannot strand terminal
+                            // content in the shared temporary directory, and no later path lookup can
+                            // substitute a different file before the consumer reads it.
+                            let Some(path) = spill.path.as_ref() else {
+                                return Err(std::io::Error::other(
+                                    "new terminal spool lost its cleanup identity",
+                                ));
+                            };
+                            std::fs::remove_file(path)?;
+                            spill.path = None;
+                        }
+                        Ok(())
+                    })();
+                    if let Err(error) = prepared {
+                        return Err((error, text));
+                    }
+                    return Ok(spill);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err((error, text)),
+            }
+        }
+        Err((
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique bounded EQ terminal spool",
+            ),
+            text,
+        ))
+    }
+
+    fn read_to_string(mut self, expected_run_id: &str) -> std::io::Result<String> {
+        if self.run_id != expected_run_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bounded EQ terminal spool correlation did not match RunEnded",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(self.bytes);
+        std::io::Read::by_ref(&mut self.file)
+            .take(
+                u64::try_from(self.bytes)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut bytes)?;
+        if bytes.len() != self.bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "bounded EQ terminal spool length changed",
+            ));
+        }
+        String::from_utf8(bytes).map_err(std::io::Error::other)
+    }
+}
+
+impl Drop for AssistantTextSpill {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -782,6 +985,7 @@ impl AppServerClient {
     }
 
     /// The protocol version agreed during the handshake and stamped on every submission.
+    #[cfg(test)]
     pub(crate) fn negotiated_version(&self) -> u32 {
         self.negotiated_version
     }
@@ -1053,6 +1257,8 @@ pub(crate) fn attach(
     let drain = Arc::new(AtomicBool::new(false));
     agent.set_drain(drain.clone());
 
+    // Attach needs three light frontend fields, not owned copies of every full JSON schema.
+    let tool_specs = agent.registry.spec_snapshot();
     let facts = SessionFacts {
         session_id: SessionId(format!("session-{}", agent.rollout.run_id().0)),
         context_ledgers: agent.context_ledgers.clone(),
@@ -1065,13 +1271,12 @@ pub(crate) fn attach(
         compaction_trigger_tokens: agent.compaction.trigger_tokens,
         initial_model_context_window: agent.model_context_window,
         bypass_permissions: agent.bypass_permissions,
-        registry_tools: agent
-            .registry
+        registry_tools: tool_specs
             .specs()
-            .into_iter()
+            .iter()
             .map(|spec| ToolFact {
-                name: spec.name,
-                description: spec.description,
+                name: spec.name.clone(),
+                description: spec.description.clone(),
                 capability: spec.capability,
             })
             .collect(),
@@ -1083,6 +1288,7 @@ pub(crate) fn attach(
     if let Some(telemetry) = handle.lifecycle_otel.clone() {
         agent.set_lifecycle_telemetry(telemetry);
     }
+    agent.set_activity(handle.activity.clone());
 
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
@@ -1106,6 +1312,9 @@ pub(crate) struct AppServerHandle {
     pub(crate) lifecycle: iteron_obs::lifecycle::LifecycleBus,
     pub(crate) lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
+    /// Shared bounded activity ingress. Runtime and composition-root background refreshes publish
+    /// the same content-free vocabulary; the server is the sole EQ projector.
+    pub(crate) activity: mpsc::Sender<iteron_protocol::ActivityEvent>,
     /// The control plane. See [`Control`] for why it is not the SQ.
     pub(crate) control: mpsc::Sender<ControlRequest>,
 }
@@ -1115,6 +1324,7 @@ pub(crate) struct AppServerHandle {
 /// Owns the drop policy so no call site can bypass it.
 pub(crate) struct EventPublisher {
     events: mpsc::Sender<EventEnvelope>,
+    byte_budget: Arc<Semaphore>,
     dropped: usize,
     next_seq: u64,
     lossless: bool,
@@ -1124,10 +1334,118 @@ pub(crate) struct EventPublisher {
     run_id: Option<RunId>,
     workflow_phases: std::collections::BTreeMap<String, String>,
     queue_policy: AppServerQueuePolicy,
-    pending_cosmetic: Option<ServerEvent>,
+    pending_cosmetic: PendingCosmetic,
 }
 
 const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
+const EQ_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
+/// Content-free activity snapshots are independently bounded before they reach the EQ. A stalled
+/// frontend may delay a status tick, but can never let runtime activity telemetry grow without a
+/// ceiling or block the runtime's work path.
+const ACTIVITY_CHANNEL_CAPACITY: usize = 256;
+const KERNEL_INBOUND_CAPACITY: usize = 64;
+const RUNTIME_UI_CAPACITY: usize = 256;
+const WORKFLOW_PROGRESS_CAPACITY: usize = 256;
+const WORKFLOW_SETTLED_CAPACITY: usize = 64;
+const PROCESS_OUTPUT_CAPACITY: usize = 256;
+/// Memory held beside the bounded EQ while the frontend catches up. Reaching the ceiling applies
+/// backpressure and flushes; it never turns assistant/reasoning bytes into a last-write-wins slot.
+const MAX_PENDING_COSMETIC_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_COSMETIC_SEGMENTS: usize = 256;
+
+fn eq_byte_capacity() -> usize {
+    iteron_tunables::param_integer("cli.app_server.eq_byte_capacity", EQ_BYTE_CAPACITY)
+        .clamp(1, EQ_BYTE_CAPACITY)
+}
+
+#[derive(Debug, Default)]
+struct PendingCosmetic {
+    segments: std::collections::VecDeque<ServerEvent>,
+    bytes: usize,
+}
+
+impl PendingCosmetic {
+    fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    fn event_bytes(event: &ServerEvent) -> usize {
+        match event {
+            ServerEvent::Ui(UiEvent::Text(text) | UiEvent::Thinking(text)) => text.len(),
+            // Activity ticks are snapshots. Their strings are bounded at their producer seams;
+            // this conservative charge also accounts for maps/enums/channel allocation.
+            ServerEvent::WorkflowRun(_) => 4 * 1024,
+            ServerEvent::Activity(_) => 512,
+            _ => 0,
+        }
+    }
+
+    /// Merge an exact stream delta or replace a coalescible snapshot. `Some(event)` means the byte
+    /// or segment ceiling would be crossed and the caller must flush before retrying.
+    fn push(&mut self, event: ServerEvent) -> Option<ServerEvent> {
+        let bytes = Self::event_bytes(&event);
+        if self.bytes.saturating_add(bytes)
+            > iteron_tunables::param_integer(
+                "cli.app_server.max_pending_cosmetic_bytes",
+                MAX_PENDING_COSMETIC_BYTES,
+            )
+            .clamp(1, MAX_PENDING_COSMETIC_BYTES)
+        {
+            return Some(event);
+        }
+
+        match (self.segments.back_mut(), &event) {
+            (
+                Some(ServerEvent::Ui(UiEvent::Text(existing))),
+                ServerEvent::Ui(UiEvent::Text(delta)),
+            )
+            | (
+                Some(ServerEvent::Ui(UiEvent::Thinking(existing))),
+                ServerEvent::Ui(UiEvent::Thinking(delta)),
+            ) => {
+                existing.push_str(delta);
+                self.bytes = self.bytes.saturating_add(bytes);
+                return None;
+            }
+            // Same-part workflow activity is already cumulative. Preserve only the newest
+            // snapshot, while terminal/phase events remain authoritative and never enter here.
+            (Some(ServerEvent::WorkflowRun(existing)), ServerEvent::WorkflowRun(next)) => {
+                *existing = next.clone();
+                return None;
+            }
+            (Some(ServerEvent::Activity(existing)), ServerEvent::Activity(next))
+                if existing.id == next.id =>
+            {
+                *existing = next.clone();
+                return None;
+            }
+            _ => {}
+        }
+
+        if self.segments.len()
+            >= iteron_tunables::param_integer(
+                "cli.app_server.max_pending_cosmetic_segments",
+                MAX_PENDING_COSMETIC_SEGMENTS,
+            )
+            .clamp(1, MAX_PENDING_COSMETIC_SEGMENTS)
+        {
+            return Some(event);
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.segments.push_back(event);
+        None
+    }
+
+    fn pop_front(&mut self) -> Option<ServerEvent> {
+        let event = self.segments.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(Self::event_bytes(&event));
+        Some(event)
+    }
+}
 
 impl EventPublisher {
     #[cfg(test)]
@@ -1147,6 +1465,7 @@ impl EventPublisher {
     ) -> Self {
         Self {
             events,
+            byte_budget: Arc::new(Semaphore::new(eq_byte_capacity())),
             dropped: 0,
             next_seq: 1,
             lossless,
@@ -1156,7 +1475,7 @@ impl EventPublisher {
             run_id: None,
             workflow_phases: std::collections::BTreeMap::new(),
             queue_policy,
-            pending_cosmetic: None,
+            pending_cosmetic: PendingCosmetic::default(),
         }
     }
 
@@ -1341,16 +1660,58 @@ impl EventPublisher {
         );
     }
 
-    async fn send(&mut self, event: ServerEvent) -> Result<(), ()> {
+    async fn send(&mut self, mut event: ServerEvent) -> Result<(), ()> {
         let reject_authoritative = !self.lossless
             && event.is_authoritative()
             && self.queue_policy.authoritative_overflow() == AuthoritativeOverflow::Reject;
+        let capacity = eq_byte_capacity();
+        let mut assistant_text_spill = None;
+        if event_heap_bytes(&event).max(1) > capacity {
+            let ServerEvent::RunEnded { summary, .. } = &mut event else {
+                // Exact refusal: a single inline payload may never borrow fewer permits than the
+                // bytes it retains. Producer seams remain responsible for their typed bounds.
+                return Err(());
+            };
+            let run_id = summary.run_id.clone();
+            let text = std::mem::take(&mut summary.assistant_text);
+            let spill =
+                match tokio::task::spawn_blocking(move || AssistantTextSpill::create(run_id, text))
+                    .await
+                    .map_err(|_| ())?
+                {
+                    Ok(spill) => spill,
+                    Err((_error, text)) => {
+                        summary.assistant_text = text;
+                        return Err(());
+                    }
+                };
+            if event_heap_bytes(&event).max(1) > capacity {
+                return Err(());
+            }
+            assistant_text_spill = Some(spill);
+        }
+        let charge = event_heap_bytes(&event).max(1);
+        debug_assert!(charge <= capacity);
+        let permit = if reject_authoritative {
+            self.byte_budget
+                .clone()
+                .try_acquire_many_owned(u32::try_from(charge).map_err(|_| ())?)
+                .map_err(|_| ())?
+        } else {
+            self.byte_budget
+                .clone()
+                .acquire_many_owned(u32::try_from(charge).map_err(|_| ())?)
+                .await
+                .map_err(|_| ())?
+        };
         let seq = self.next_seq;
         self.next_seq = self.next_seq.checked_add(1).ok_or(())?;
         let envelope = EventEnvelope {
             seq,
             protocol_version: PROTOCOL_VERSION,
             event,
+            assistant_text_spill,
+            _byte_permit: Some(permit),
         };
         if reject_authoritative {
             self.events.try_send(envelope).map_err(|_| ())
@@ -1359,41 +1720,59 @@ impl EventPublisher {
         }
     }
 
+    async fn flush_pending_cosmetic(&mut self) -> Result<(), ()> {
+        if self.dropped > 0 {
+            let dropped = std::mem::take(&mut self.dropped);
+            self.send(ServerEvent::Lagged { dropped }).await?;
+        }
+        while let Some(event) = self.pending_cosmetic.pop_front() {
+            self.send(event).await?;
+        }
+        Ok(())
+    }
+
+    async fn retain_cosmetic(&mut self, event: ServerEvent) -> Result<(), ()> {
+        let Some(event) = self.pending_cosmetic.push(event) else {
+            return Ok(());
+        };
+        self.flush_pending_cosmetic().await?;
+        match self.pending_cosmetic.push(event) {
+            None => Ok(()),
+            // A single delta larger than the side-buffer ceiling is delivered directly. This may
+            // wait for the frontend, but it cannot consume unbounded memory or lose bytes.
+            Some(event) => self.send(event).await,
+        }
+    }
+
     /// Publish one event, applying the bounded-queue policy.
     ///
-    /// Authoritative events wait for room. Cosmetic deltas are dropped when there is none, and the
-    /// count is flushed as a `Lagged` notice as soon as the queue drains — so the transcript says
-    /// where it is incomplete instead of quietly being wrong.
+    /// Authoritative events wait for room. The owner policy cumulatively coalesces cosmetic stream
+    /// bytes; the legacy explicit Drop policy reports its gap as `Lagged`.
     pub(crate) async fn publish(&mut self, event: ServerEvent) -> Result<(), ()> {
         let authoritative = event.is_authoritative();
-        if !self.lossless && !authoritative && self.events.capacity() == 0 {
+        let event_bytes = event_heap_bytes(&event).max(1);
+        let byte_saturated = self.byte_budget.available_permits() < event_bytes;
+        if !self.lossless && !authoritative && (self.events.capacity() == 0 || byte_saturated) {
             match self.queue_policy.cosmetic_overflow() {
                 CosmeticOverflow::Drop => self.dropped += 1,
                 CosmeticOverflow::Coalesce => {
-                    if self.pending_cosmetic.replace(event).is_some() {
-                        self.dropped += 1;
-                    }
+                    self.retain_cosmetic(event).await?;
                 }
             }
             return Ok(());
         }
         if !self.lossless
             && !authoritative
-            && self.pending_cosmetic.is_some()
-            && self.events.capacity() <= 1
+            && !self.pending_cosmetic.is_empty()
+            && self.events.capacity() <= self.pending_cosmetic.len()
         {
-            self.pending_cosmetic = Some(event);
-            self.dropped += 1;
+            self.retain_cosmetic(event).await?;
             return Ok(());
         }
-        if self.pending_cosmetic.is_some() && (authoritative || self.events.capacity() > 1) {
-            if self.dropped > 0 {
-                let dropped = std::mem::take(&mut self.dropped);
-                self.send(ServerEvent::Lagged { dropped }).await?;
-            }
-            if let Some(pending) = self.pending_cosmetic.take() {
-                self.send(pending).await?;
-            }
+        if !self.pending_cosmetic.is_empty()
+            && (authoritative || self.events.capacity() > self.pending_cosmetic.len())
+        {
+            self.flush_pending_cosmetic().await?;
         }
         // Report the gap immediately before the event that follows it. A cosmetic event only gets
         // to report when there is spare room — reporting a drop must never itself block the stream.
@@ -1420,6 +1799,7 @@ pub(crate) struct ServerEnds {
     pub(crate) control: mpsc::Receiver<ControlRequest>,
     pub(crate) events: EventPublisher,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
+    pub(crate) activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
 }
 
 /// The protocol version the in-process runtime advertises to a connecting frontend.
@@ -1460,6 +1840,13 @@ fn wire_with_queue_policy(
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
+    let (activity_tx, activity_rx) = mpsc::channel::<iteron_protocol::ActivityEvent>(
+        iteron_tunables::param_integer(
+            "cli.app_server.activity_channel_capacity",
+            ACTIVITY_CHANNEL_CAPACITY,
+        )
+        .max(1),
+    );
     let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
     let lifecycle_emitter = iteron_obs::lifecycle::LifecycleEmitter::new(lifecycle.clone());
     let _ = lifecycle_emitter.emit(
@@ -1490,6 +1877,7 @@ fn wire_with_queue_policy(
             lifecycle_otel,
             hook_health: hook_health.clone(),
             control: control_tx,
+            activity: activity_tx,
         },
         ServerEnds {
             submissions: sq_rx,
@@ -1502,6 +1890,7 @@ fn wire_with_queue_policy(
                 queue_policy,
             ),
             hook_health,
+            activity: activity_rx,
         },
     ))
 }
@@ -1573,7 +1962,8 @@ pub(crate) struct AppServer {
     hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     /// Forwarded to the kernel's inbound queue. The kernel drains it at its own safe points; the
     /// server never reaches into a running turn.
-    to_kernel: mpsc::UnboundedSender<SqEnvelope>,
+    to_kernel: mpsc::Sender<SqEnvelope>,
+    activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
 }
 
 impl AppServer {
@@ -1588,7 +1978,13 @@ impl AppServer {
         let run_id = agent.rollout.run_id().clone();
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
-        let (to_kernel, kernel_rx) = mpsc::unbounded_channel::<SqEnvelope>();
+        let (to_kernel, kernel_rx) = mpsc::channel::<SqEnvelope>(
+            iteron_tunables::param_integer(
+                "cli.app_server.kernel_inbound_capacity",
+                KERNEL_INBOUND_CAPACITY,
+            )
+            .clamp(1, KERNEL_INBOUND_CAPACITY),
+        );
         if interactive_approvals {
             agent.set_approvals(kernel_rx);
         }
@@ -1600,6 +1996,7 @@ impl AppServer {
             events: ends.events,
             hook_health: ends.hook_health,
             to_kernel,
+            activity: ends.activity,
         }
     }
 
@@ -1639,20 +2036,37 @@ impl AppServer {
             mut events,
             hook_health,
             to_kernel,
+            mut activity,
         } = self;
 
-        // The kernel's UI stream stays unbounded: it is already backpressured downstream by the
-        // bounded EQ, and a bound here would make the kernel block on a frontend that stopped
-        // reading — the opposite of what the EQ policy is for.
-        let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
+        // Runtime emitters never await presentation. The finite bridge makes a stopped frontend a
+        // counted/coalesced presentation gap instead of an unbounded heap; terminal authority is
+        // reconciled from `RunEnded` after the turn.
+        let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(
+            iteron_tunables::param_integer(
+                "cli.app_server.runtime_ui_capacity",
+                RUNTIME_UI_CAPACITY,
+            )
+            .clamp(1, RUNTIME_UI_CAPACITY),
+        );
         agent.set_ui(ui_tx);
+        // Shared with the runtime emitter so structural events that meet a full cosmetic lane have
+        // a separately bounded, backpressured path the server can drain while `agent` is borrowed
+        // by the running turn. Text/thinking alone may be omitted and later reconciled.
+        let frontend_channels = agent.frontend_channel_port();
 
-        // The workflow-script progress seam, unbounded for the same reason: `ProgressSink::emit` is
-        // called from the engine's single JS-driver thread and must not block. Installing it here
-        // is what makes a `Workflow` tool call render a live tree instead of a silent minutes-long
-        // turn; the one-shot `--output-format` paths install no such sink and are unaffected.
-        let (workflow_tx, mut workflow_rx) =
-            mpsc::unbounded_channel::<crate::workflow::WorkflowRunUiEvent>();
+        // Runtime and composition-root refreshes share the bounded Activity ingress created by
+        // `wire_with_queue_policy`; neither producer can block model/tool work or bypass the EQ.
+
+        // Engine progress is best-effort and non-blocking, but never unbounded. Background terminal
+        // state travels separately through the awaited settled channel below.
+        let (workflow_tx, mut workflow_rx) = mpsc::channel::<crate::workflow::WorkflowRunUiEvent>(
+            iteron_tunables::param_integer(
+                "cli.app_server.workflow_progress_capacity",
+                WORKFLOW_PROGRESS_CAPACITY,
+            )
+            .clamp(1, WORKFLOW_PROGRESS_CAPACITY),
+        );
         agent.set_workflow_progress(workflow_tx);
         // Runtime and frontend project the same canonical lifecycle stream. Installing this before
         // any session-owned worker starts prevents model/tool/context events from becoming an
@@ -1660,15 +2074,32 @@ impl AppServer {
         agent.set_lifecycle_emitter(events.lifecycle_emitter());
 
         // The session-scoped owner for `Workflow({background: true})` runs. Installed OUTSIDE the
-        // turn's borrow — that placement is the whole point, not an implementation detail: it is
-        // what lets a run be held while the turn that started it returns. Its channel is unbounded
-        // for the same reason the two above are: a reaper task must never block on the frontend.
-        let (settled_tx, mut settled_rx) = mpsc::unbounded_channel::<crate::workflow::RunSettled>();
+        // turn's borrow — that placement is the whole point, not an implementation detail. Unlike
+        // cosmetic progress, every settled message is terminal authority, so its bounded sender
+        // awaits capacity rather than dropping.
+        let (settled_tx, mut settled_rx) = mpsc::channel::<crate::workflow::RunSettled>(
+            iteron_tunables::param_integer(
+                "cli.app_server.workflow_settled_capacity",
+                WORKFLOW_SETTLED_CAPACITY,
+            )
+            .clamp(1, WORKFLOW_SETTLED_CAPACITY),
+        );
         let workflows = crate::workflow::WorkflowSupervisor::new(settled_tx);
+        if let Some(activity) = agent.activity_sender() {
+            workflows.set_activity(activity);
+        }
         agent.set_workflow_launcher(workflows.clone());
         // Clone the job control port before a turn borrows `&mut agent`. It owns no second job
         // table: every operation reaches the supervisor captured by this registry's process tools.
         let processes = agent.registry.process_control();
+        let (process_output_tx, mut process_output_rx) =
+            mpsc::channel::<(String, bool, Vec<u8>, u64)>(
+                iteron_tunables::param_integer(
+                    "cli.app_server.process_output_capacity",
+                    PROCESS_OUTPUT_CAPACITY,
+                )
+                .clamp(1, PROCESS_OUTPUT_CAPACITY),
+            );
         // MCP cancellation/restart/stop must remain reachable while the turn is blocked in an MCP
         // request. This clone addresses the same session-owned actors as the registry proxies.
         let mcp_runtime = agent.mcp_runtime_control();
@@ -1725,6 +2156,21 @@ impl AppServer {
             }
         };
         agent.set_hook_effect_journal(hook_journal.clone());
+        // Compatibility Stop hooks are observers, never terminal authority. Their bounded worker
+        // is owned and joined by this resident session; Agent/workflow-child clones carry only its
+        // non-blocking submission port. No operator command remains on the AnswerComplete ->
+        // RunEnded/InputReady path.
+        let mut stop_hooks = hook_journal.clone().map(|journal| {
+            crate::runtime::hooks::StopHookObserverRuntime::start(
+                lifecycle_gate_hooks.clone(),
+                journal,
+            )
+        });
+        if let Some(observer) = &stop_hooks {
+            agent
+                .hooks
+                .install_stop_observer(observer.dispatcher.clone());
+        }
         let (lifecycle_hooks, mut lifecycle_hook_task) =
             crate::runtime::lifecycle_hooks::LifecycleHookDispatcher::start(
                 agent.hooks.clone(),
@@ -1737,6 +2183,18 @@ impl AppServer {
         events.bind_lifecycle_hooks(lifecycle_hooks.clone());
         agent.set_lifecycle_hooks(lifecycle_hooks);
         if let Some(processes) = &processes {
+            let output_tx = process_output_tx.clone();
+            let output_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            processes.bind_output_observer(move |job_id, stderr, bytes| {
+                let skipped = output_dropped.swap(0, Ordering::AcqRel);
+                match output_tx.try_send((job_id, stderr, bytes, skipped)) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full((_job_id, _stderr, _bytes, skipped))) => {
+                        output_dropped.fetch_add(skipped.saturating_add(1), Ordering::AcqRel);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
+                }
+            });
             let emitter = events.lifecycle_emitter();
             let base_correlation = events.lifecycle_correlation(None, None);
             let dispatcher = events.lifecycle_hooks.clone();
@@ -1932,6 +2390,18 @@ impl AppServer {
                         publish_workflow_progress(&mut events, progress).await;
                         continue
                     }
+                    Some(activity_event) = activity.recv() => {
+                        let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                        continue
+                    }
+                    Some((job_id, stderr, bytes, skipped)) = process_output_rx.recv() => {
+                        publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+                        continue
+                    }
+                    Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
+                        publish_stop_hook_observation(&mut events, observation).await;
+                        continue
+                    }
                     Some(settled) = settled_rx.recv() => {
                         TurnTrigger::Runtime(publish_settled(&mut events, settled).await)
                     }
@@ -2053,6 +2523,38 @@ impl AppServer {
                         let _ = events.publish(ServerEvent::Notice(reason)).await;
                         continue;
                     }
+                    if matches!(op, Op::ForceCancel) {
+                        let cancelled = stop_hooks
+                            .as_ref()
+                            .map_or(0, |observer| observer.dispatcher.cancel_active());
+                        if cancelled > 0 {
+                            events.record_lifecycle(
+                                "cancel.forced",
+                                None,
+                                Some(submission_id),
+                                LifecyclePayload {
+                                    count: Some(u64::try_from(cancelled).unwrap_or(u64::MAX)),
+                                    reason_code: Some("stop_hook_observer".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Admitted,
+                                None,
+                            )
+                            .await;
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Applied,
+                                None,
+                            )
+                            .await;
+                            continue;
+                        }
+                    }
                     if matches!(op, Op::Interrupt | Op::ForceCancel) {
                         publish_submission(
                             &mut events,
@@ -2126,6 +2628,7 @@ impl AppServer {
                 .transition(SessionLifecycleState::Running)
                 .expect("only an idle session admits a turn");
             let live_turn_id = agent.current_turn_id();
+            let activity_overflow = agent.activity_overflow_port();
             let mut run_lifecycle = RunLifecycleState::Created;
             run_lifecycle = run_lifecycle
                 .transition(RunLifecycleState::Admitted)
@@ -2192,6 +2695,7 @@ impl AppServer {
                         // is still producing, not in one lump at the end.
                         biased;
                         Some(ui) = ui_rx.recv() => {
+                            let ui_bytes = frontend_channels.ui_event_bytes(&ui);
                             settle_kernel_submission_events(
                                 &mut events,
                                 &mut pending_kernel_submissions,
@@ -2201,18 +2705,59 @@ impl AppServer {
                                 // The frontend is gone. Keep the turn running to its own
                                 // safe point rather than dropping the future mid-effect.
                             }
+                            frontend_channels.release_ui_bytes(ui_bytes);
+                        }
+                        ui = frontend_channels.recv_authoritative() => {
+                            let ui_bytes = frontend_channels.ui_event_bytes(&ui);
+                            settle_kernel_submission_events(
+                                &mut events,
+                                &mut pending_kernel_submissions,
+                                &ui,
+                            ).await;
+                            if events.publish(ServerEvent::Ui(ui)).await.is_err() {
+                                // The frontend is gone. Draining still releases bounded runtime
+                                // backpressure and lets the turn reach its own safe point.
+                            }
+                            frontend_channels.release_ui_bytes(ui_bytes);
                         }
                         Some(progress) = workflow_rx.recv() => {
                             // Same policy as the UI stream: a frontend that hung up never
                             // aborts a run that is already executing.
                             publish_workflow_progress(&mut events, progress).await;
                         }
+                        Some(activity_event) = activity.recv() => {
+                            // Activity is a bounded, content-free snapshot stream. It shares the
+                            // EQ ordering/byte budget but never holds up the running turn. Merge any
+                            // latest-per-id snapshots retained when the producer channel saturated;
+                            // source timestamps preserve order and an older state cannot resurrect.
+                            let mut ready = activity_overflow.take_pending_snapshots();
+                            ready.push(activity_event);
+                            ready.sort_by_key(|event| event.updated_at_unix_ms);
+                            for activity_event in ready {
+                                let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                            }
+                        }
+                        Some((job_id, stderr, bytes, skipped)) = process_output_rx.recv() => {
+                            publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+                        }
+                        Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
+                            publish_stop_hook_observation(&mut events, observation).await;
+                        }
                         Some(settled) = settled_rx.recv() => {
                             // A run detached by an EARLIER turn can settle during this one.
                             // Its terminal row belongs in the transcript at the moment it
                             // happened, not at the end of whatever turn is running.
                             let notification = publish_settled(&mut events, settled).await;
-                            let _ = to_kernel.send(SqEnvelope::current(Op::Steer { text: notification }));
+                            if to_kernel
+                                .try_send(SqEnvelope::current(Op::Steer {
+                                    text: notification.clone(),
+                                }))
+                                .is_err()
+                            {
+                                // Preserve the model-facing terminal notification outside the
+                                // saturated bridge. It becomes the next runtime-triggered turn.
+                                pending_runtime.push_back(notification);
+                            }
                         }
                         Some(request) = control.recv() => {
                             if is_immediate_control(&request.control) {
@@ -2362,6 +2907,11 @@ impl AppServer {
                                         let _ = events.publish(ServerEvent::Notice(reason)).await;
                                         continue;
                                 }
+                                if matches!(op, Op::ForceCancel)
+                                    && let Some(observer) = &stop_hooks
+                                {
+                                    observer.dispatcher.cancel_active();
+                                }
                                 match &op {
                                     Op::Interrupt => events.record_lifecycle(
                                         "cancel.received",
@@ -2416,12 +2966,27 @@ impl AppServer {
                                         ).await;
                                         let kind = kernel_submission_kind(&op);
                                         let forced = matches!(op, Op::ForceCancel);
-                                        if to_kernel.send(SqEnvelope::with_version_and_id(version, submission_id, op)).is_err() {
+                                        let kernel_send = to_kernel.try_send(
+                                            SqEnvelope::with_version_and_id(
+                                                version,
+                                                submission_id,
+                                                op,
+                                            ),
+                                        );
+                                        if let Err(error) = kernel_send {
+                                            let reason = match error {
+                                                mpsc::error::TrySendError::Full(_) => {
+                                                    "runtime_queue_saturated"
+                                                }
+                                                mpsc::error::TrySendError::Closed(_) => {
+                                                    "runtime_disconnected"
+                                                }
+                                            };
                                             publish_submission(
                                                 &mut events,
                                                 submission_id,
                                                 SubmissionLifecycleState::Rejected,
-                                                Some("runtime_disconnected"),
+                                                Some(reason),
                                             ).await;
                                             match kind {
                                                 Some(KernelSubmissionKind::Steer) => events.record_lifecycle(
@@ -2429,7 +2994,7 @@ impl AppServer {
                                                     Some(live_turn_id),
                                                     Some(submission_id),
                                                     LifecyclePayload {
-                                                        reason_code: Some("runtime_disconnected".into()),
+                                                        reason_code: Some(reason.into()),
                                                         ..LifecyclePayload::default()
                                                     },
                                                 ),
@@ -2438,7 +3003,7 @@ impl AppServer {
                                                     Some(live_turn_id),
                                                     Some(submission_id),
                                                     LifecyclePayload {
-                                                        reason_code: Some("runtime_disconnected".into()),
+                                                        reason_code: Some(reason.into()),
                                                         ..LifecyclePayload::default()
                                                     },
                                                 ),
@@ -2513,9 +3078,18 @@ impl AppServer {
             // still queued here. Draining before the terminal event is what keeps the
             // transcript ordered.
             while let Ok(ui) = ui_rx.try_recv() {
+                let ui_bytes = frontend_channels.ui_event_bytes(&ui);
                 settle_kernel_submission_events(&mut events, &mut pending_kernel_submissions, &ui)
                     .await;
                 let _ = events.publish(ServerEvent::Ui(ui)).await;
+                frontend_channels.release_ui_bytes(ui_bytes);
+            }
+            while let Some(ui) = frontend_channels.try_pop_authoritative() {
+                let ui_bytes = frontend_channels.ui_event_bytes(&ui);
+                settle_kernel_submission_events(&mut events, &mut pending_kernel_submissions, &ui)
+                    .await;
+                let _ = events.publish(ServerEvent::Ui(ui)).await;
+                frontend_channels.release_ui_bytes(ui_bytes);
             }
             // The workflow seam drains with it: an in-turn run settles inside the turn, so
             // its terminal rows and its `Finished` are queued here exactly like the last
@@ -2525,6 +3099,14 @@ impl AppServer {
             }
             while let Ok(settled) = settled_rx.try_recv() {
                 pending_runtime.push_back(publish_settled(&mut events, settled).await);
+            }
+            while let Ok((job_id, stderr, bytes, skipped)) = process_output_rx.try_recv() {
+                publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+            }
+            if let Some(observer) = &mut stop_hooks {
+                while let Ok(observation) = observer.observations.try_recv() {
+                    publish_stop_hook_observation(&mut events, observation).await;
+                }
             }
 
             // The turn's borrow has ended, so the deferred control plane can run — in
@@ -2544,6 +3126,21 @@ impl AppServer {
                 .await;
             }
             operator_status.refresh_runtime(&agent);
+
+            // The run future is complete, so no producer can append another activity for this
+            // turn. Merge the bounded channel tail with terminal snapshots retained when that
+            // channel saturated, then publish in the runtime's monotonic source order before the
+            // authoritative RunEnded barrier. This prevents a stale Finalizing card from
+            // reappearing after the frontend has already returned to input-ready.
+            let mut activity_tail = activity_overflow.take_pending_snapshots();
+            activity_tail.extend(agent.take_pending_activity_terminals());
+            while let Ok(event) = activity.try_recv() {
+                activity_tail.push(event);
+            }
+            activity_tail.sort_by_key(|event| event.updated_at_unix_ms);
+            for event in activity_tail {
+                let _ = events.publish(ServerEvent::Activity(event)).await;
+            }
 
             let mut snapshot = snapshot_of(&mut agent);
             settle_kernel_submissions_at_turn_end(
@@ -2725,6 +3322,12 @@ impl AppServer {
                 );
                 break;
             }
+            // Input is genuinely ready only after the authoritative terminal crossed the EQ.
+            // Provider admission used to emit this semantic before a request even started, which
+            // made a busy session look idle and erased the finalization tail.
+            let _ = events
+                .publish(ServerEvent::Activity(input_ready_activity(live_turn_id)))
+                .await;
         }
 
         // SESSION EXIT WITH A RUN STILL LIVE.
@@ -2744,6 +3347,30 @@ impl AppServer {
             .transition(SessionLifecycleState::Stopping)
             .unwrap_or(SessionLifecycleState::Stopping);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
+        let stop_hook_shutdown_error = if let Some(observer) = stop_hooks.take() {
+            match observer.shutdown().await {
+                Ok(observations) => {
+                    for observation in observations {
+                        publish_stop_hook_observation(&mut events, observation).await;
+                    }
+                    None
+                }
+                Err(reason) => {
+                    events.record_lifecycle(
+                        "hook.failed",
+                        None,
+                        None,
+                        LifecyclePayload {
+                            reason_code: Some("stop_cleanup_unproven".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    Some(reason.to_owned())
+                }
+            }
+        } else {
+            None
+        };
         let mut report = workflows
             .shutdown(
                 &mut settled_rx,
@@ -2753,6 +3380,9 @@ impl AppServer {
                 ),
             )
             .await;
+        if let Some(reason) = stop_hook_shutdown_error {
+            report.lines.push(reason);
+        }
         report
             .lines
             .extend(clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await);
@@ -2866,6 +3496,88 @@ async fn clean_session_owned_tools(
     failures
 }
 
+async fn receive_stop_hook_observation(
+    observer: &mut Option<crate::runtime::hooks::StopHookObserverRuntime>,
+) -> Option<crate::runtime::hooks::StopHookObservation> {
+    match observer {
+        Some(observer) => observer.observations.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn publish_process_output(
+    events: &mut EventPublisher,
+    job_id: String,
+    stderr: bool,
+    bytes: Vec<u8>,
+    skipped: u64,
+) {
+    let stream = if stderr { "stderr" } else { "stdout" };
+    let decoded = String::from_utf8_lossy(&bytes);
+    let scrubbed = iteron_record::redact::scrub(&decoded);
+    let bounded = iteron_protocol::text::head(&scrubbed, 8 * 1024);
+    let gap = if skipped == 0 {
+        String::new()
+    } else {
+        format!(" · {skipped} live chunk(s) coalesced; terminal output remains authoritative")
+    };
+    let _ = events
+        .publish(ServerEvent::Ui(UiEvent::Notice(format!(
+            "process {} {stream}{gap}\n{bounded}",
+            job_id
+        ))))
+        .await;
+}
+
+async fn publish_stop_hook_observation(
+    events: &mut EventPublisher,
+    observation: crate::runtime::hooks::StopHookObservation,
+) {
+    use crate::runtime::hooks::StopHookTerminal;
+
+    let terminal_event = match observation.terminal {
+        StopHookTerminal::Completed => "hook.completed",
+        StopHookTerminal::TimedOut => "hook.timed_out",
+        StopHookTerminal::Failed | StopHookTerminal::Cancelled => "hook.failed",
+    };
+    let reason_code = match observation.terminal {
+        StopHookTerminal::Completed => "compatibility_stop_completed",
+        StopHookTerminal::Failed => "compatibility_stop_failed",
+        StopHookTerminal::TimedOut => "stop_terminal_budget",
+        StopHookTerminal::Cancelled => "stop_observer_cancelled",
+    };
+    events.record_lifecycle(
+        terminal_event,
+        Some(observation.identity.turn),
+        None,
+        LifecyclePayload {
+            count: Some(u64::from(match observation.terminal {
+                StopHookTerminal::Completed => observation.report.completed,
+                StopHookTerminal::TimedOut => observation.report.timed_out.max(1),
+                StopHookTerminal::Failed | StopHookTerminal::Cancelled => {
+                    observation.report.failed.max(1)
+                }
+            })),
+            reason_code: Some(reason_code.into()),
+            ..LifecyclePayload::default()
+        },
+    );
+    let _ = events
+        .publish(ServerEvent::Activity(
+            observation
+                .identity
+                .activity(observation.terminal.activity_state()),
+        ))
+        .await;
+    if observation.terminal != StopHookTerminal::Completed {
+        let _ = events
+            .publish(ServerEvent::Notice(format!(
+                "Stop hook observer {reason_code}; the completed answer and input readiness are unaffected"
+            )))
+            .await;
+    }
+}
+
 fn outcome_name(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::Done => "done",
@@ -2874,6 +3586,31 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Stuck => "stuck",
         Outcome::BudgetExhausted(_) => "budget_exhausted",
         Outcome::HarnessError => "harness_error",
+    }
+}
+
+fn input_ready_activity(turn: TurnId) -> iteron_protocol::ActivityEvent {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    iteron_protocol::ActivityEvent {
+        schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+        id: format!("turn-{}:input-ready", turn.0),
+        parent_id: Some(format!("turn-{}", turn.0)),
+        kind: iteron_protocol::ActivityKind::Finalization,
+        state: iteron_protocol::ActivityState::Succeeded,
+        owner: iteron_protocol::ActivityOwner::Runtime,
+        started_at_unix_ms: now,
+        updated_at_unix_ms: now,
+        attempt: 0,
+        limit: 0,
+        next_retry_at_unix_ms: None,
+        deadline_unix_ms: None,
+        cancelability: iteron_protocol::ActivityCancelability::None,
+        detail_code: Some(iteron_protocol::ActivityDetailCode::InputReady),
+        progress: None,
     }
 }
 
@@ -3328,6 +4065,28 @@ async fn publish_workflow_progress(
                     ..LifecyclePayload::default()
                 },
             ),
+            ProgressEvent::AgentCancelling {
+                index,
+                cleanup_deadline_ms,
+            } => {
+                events.record_workflow_child_lifecycle(
+                    "workflow.child_progress",
+                    run_id,
+                    *index,
+                    LifecyclePayload {
+                        outcome_code: Some("cancelling".into()),
+                        magnitude: Some(*cleanup_deadline_ms),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                let _ = events
+                    .publish(ServerEvent::Activity(workflow_child_cancelling_activity(
+                        run_id,
+                        *index,
+                        *cleanup_deadline_ms,
+                    )))
+                    .await;
+            }
             ProgressEvent::AgentFinished {
                 index,
                 state,
@@ -3388,6 +4147,39 @@ async fn publish_workflow_progress(
         }
     }
     let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+}
+
+fn workflow_child_cancelling_activity(
+    run_id: &str,
+    index: usize,
+    cleanup_deadline_ms: u64,
+) -> iteron_protocol::ActivityEvent {
+    use std::hash::{Hash, Hasher};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    run_id.hash(&mut hasher);
+    let run = hasher.finish();
+    iteron_protocol::ActivityEvent {
+        schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+        id: format!("workflow-{run:x}:child-{index}:cancelling"),
+        parent_id: Some(format!("workflow-{run:x}")),
+        kind: iteron_protocol::ActivityKind::Cancellation,
+        state: iteron_protocol::ActivityState::Cancelling,
+        owner: iteron_protocol::ActivityOwner::Workflow,
+        started_at_unix_ms: now,
+        updated_at_unix_ms: now,
+        attempt: 0,
+        limit: 0,
+        next_retry_at_unix_ms: None,
+        deadline_unix_ms: Some(now.saturating_add(cleanup_deadline_ms)),
+        cancelability: iteron_protocol::ActivityCancelability::Strong,
+        detail_code: None,
+        progress: None,
+    }
 }
 
 /// Publish one settled background run: settle its card, then say what happened.
@@ -3503,12 +4295,8 @@ mod tests {
         assert!(
             matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "first")
         );
-        assert!(matches!(
-            rx.recv().await.unwrap().event,
-            ServerEvent::Lagged { dropped: 1 }
-        ));
         assert!(
-            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "third")
+            matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "secondthird")
         );
         assert!(
             matches!(rx.recv().await.unwrap().event, ServerEvent::Notice(text) if text == "authoritative")
@@ -3542,6 +4330,75 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn saturated_eq_preserves_arbitrary_interleaved_stream_bytes() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 1,
+            1_000_000,
+            1,
+            CosmeticOverflow::Coalesce,
+            AuthoritativeOverflow::Wait,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut publisher = EventPublisher::new_with_policy(
+            tx,
+            false,
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+            policy,
+        );
+
+        let text_chunks = ["α", "b", "🙂", "\n", "tail"];
+        let thinking_chunks = ["r", "理", "\n", "x"];
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text(text_chunks[0].into())))
+            .await
+            .unwrap();
+        for index in 0..64 {
+            publisher
+                .publish(ServerEvent::Ui(UiEvent::Thinking(
+                    thinking_chunks[index % thinking_chunks.len()].into(),
+                )))
+                .await
+                .unwrap();
+            publisher
+                .publish(ServerEvent::Ui(UiEvent::Text(
+                    text_chunks[(index + 1) % text_chunks.len()].into(),
+                )))
+                .await
+                .unwrap();
+        }
+        let flush = tokio::spawn(async move {
+            publisher
+                .publish(ServerEvent::Notice("terminal".into()))
+                .await
+        });
+
+        let mut text = String::new();
+        let mut thinking = String::new();
+        loop {
+            match rx.recv().await.unwrap().event {
+                ServerEvent::Ui(UiEvent::Text(delta)) => text.push_str(&delta),
+                ServerEvent::Ui(UiEvent::Thinking(delta)) => thinking.push_str(&delta),
+                ServerEvent::Notice(value) if value == "terminal" => break,
+                ServerEvent::Lagged { dropped } => panic!("semantic bytes were dropped: {dropped}"),
+                _ => {}
+            }
+        }
+        flush.await.unwrap().unwrap();
+
+        let expected_text = std::iter::once(text_chunks[0])
+            .chain((0..64).map(|index| text_chunks[(index + 1) % text_chunks.len()]))
+            .collect::<String>();
+        let expected_thinking = (0..64)
+            .map(|index| thinking_chunks[index % thinking_chunks.len()])
+            .collect::<String>();
+        assert_eq!(text, expected_text);
+        assert_eq!(thinking, expected_thinking);
     }
 
     #[tokio::test]
@@ -3632,6 +4489,8 @@ mod tests {
                 label: "queued".into(),
                 phase: None,
                 model: None,
+                queued_ms: 0,
+                available_permits: 0,
             }),
             ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
                 run_id: "wf_1".into(),
@@ -3888,7 +4747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_saturated_eq_drops_only_cosmetic_deltas_and_never_the_terminal_event() {
+    async fn a_saturated_eq_coalesces_every_delta_and_never_loses_the_terminal_event() {
         // The acceptance criterion: 0 authoritative drops. A reader that never reads must still be
         // able to learn how the run ended once it starts reading.
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(8);
@@ -3915,7 +4774,7 @@ mod tests {
                 .await
         });
         let mut saw_terminal = false;
-        let mut saw_lag_notice = false;
+        let mut text = String::new();
         while let Some(envelope) = rx.recv().await {
             assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
             match envelope.event {
@@ -3923,19 +4782,21 @@ mod tests {
                     saw_terminal = true;
                     break;
                 }
-                ServerEvent::Lagged { dropped } => {
-                    assert!(dropped > 0);
-                    saw_lag_notice = true;
-                }
+                ServerEvent::Lagged { dropped } => panic!("coalesced bytes were lost: {dropped}"),
+                ServerEvent::Ui(UiEvent::Text(delta)) => text.push_str(&delta),
                 ServerEvent::Ui(_)
                 | ServerEvent::Notice(_)
                 | ServerEvent::Submission { .. }
-                | ServerEvent::WorkflowRun(_) => {}
+                | ServerEvent::WorkflowRun(_)
+                | ServerEvent::Activity(_) => {}
             }
         }
         publish.await.expect("publisher task").expect("delivered");
         assert!(saw_terminal, "the terminal event was dropped");
-        assert!(saw_lag_notice, "dropped deltas were not reported");
+        assert_eq!(
+            text,
+            (0..64).map(|i| format!("chunk {i}")).collect::<String>()
+        );
     }
 
     #[tokio::test]
@@ -3983,6 +4844,7 @@ mod tests {
             .collect();
         let mut seen: Vec<String> = Vec::new();
         let mut deltas = 0usize;
+        let mut text = String::new();
         let mut dropped = 0usize;
         let mut saw_terminal = false;
         let mut last_seq = 0;
@@ -3998,9 +4860,14 @@ mod tests {
             last_seq = envelope.seq;
             match envelope.event {
                 ServerEvent::Notice(text) => seen.push(text),
+                ServerEvent::Ui(UiEvent::Text(delta)) => {
+                    deltas += 1;
+                    text.push_str(&delta);
+                }
                 ServerEvent::Ui(_)
                 | ServerEvent::Submission { .. }
-                | ServerEvent::WorkflowRun(_) => deltas += 1,
+                | ServerEvent::WorkflowRun(_)
+                | ServerEvent::Activity(_) => deltas += 1,
                 ServerEvent::Lagged { dropped: count } => dropped += count,
                 ServerEvent::RunEnded { .. } => {
                     saw_terminal = true;
@@ -4015,11 +4882,13 @@ mod tests {
             seen, expected,
             "every authoritative event must arrive, in order and exactly once"
         );
-        // The other half of "bounded": deltas really were shed rather than buffered. Without this
-        // the test would also pass against an unbounded queue, which is the bug being fixed.
-        assert!(
-            dropped > 0 && deltas < ROUNDS,
-            "a saturated queue must shed cosmetic deltas and report how many ({deltas} delivered, {dropped} reported dropped)"
+        assert_eq!(dropped, 0, "semantic stream bytes are never dropped");
+        assert!(deltas < ROUNDS, "saturation must coalesce queue entries");
+        assert_eq!(
+            text,
+            (0..ROUNDS)
+                .map(|i| format!("delta {i}"))
+                .collect::<String>()
         );
     }
 
@@ -4071,6 +4940,8 @@ mod tests {
             seq: 1,
             protocol_version: PROTOCOL_VERSION + 1,
             event: ServerEvent::Notice("from the future".into()),
+            assistant_text_spill: None,
+            _byte_permit: None,
         };
         assert_eq!(
             envelope.into_current().unwrap_err(),
@@ -4083,8 +4954,35 @@ mod tests {
             seq: 1,
             protocol_version: PROTOCOL_VERSION,
             event: ServerEvent::Notice("now".into()),
+            assistant_text_spill: None,
+            _byte_permit: None,
         };
         assert!(matches!(current.into_current(), Ok(ServerEvent::Notice(_))));
+    }
+
+    #[test]
+    fn bounded_terminal_text_spill_round_trips_and_unlinks() {
+        let expected = "terminal authority survives the EQ heap ceiling".repeat(32);
+        let spill = AssistantTextSpill::create("run-spill".into(), expected.clone()).unwrap();
+        let path = spill.path.clone();
+        #[cfg(unix)]
+        assert!(
+            path.is_none(),
+            "Unix removes the name immediately after open"
+        );
+        #[cfg(not(unix))]
+        assert!(path.as_ref().is_some_and(|path| path.exists()));
+        assert_eq!(spill.read_to_string("run-spill").unwrap(), expected);
+        assert!(path.as_ref().is_none_or(|path| !path.exists()));
+    }
+
+    #[test]
+    fn terminal_text_spill_refuses_a_different_run_identity() {
+        let spill = AssistantTextSpill::create("run-a".into(), "answer".into()).unwrap();
+        assert_eq!(
+            spill.read_to_string("run-b").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
@@ -4247,6 +5145,18 @@ mod tests {
             ),
             required_values: None,
             preferred: Some(context_window),
+        };
+        let context_ceiling = input
+            .constraint_evidence
+            .iter_mut()
+            .find(|evidence| {
+                evidence.family == "context_window_override_reserve"
+                    && evidence.field == "model_window_tokens"
+                    && evidence.ceiling == iteron_tunables::ExternalCeiling::ContextWindow
+            })
+            .expect("context-window local ceiling");
+        context_ceiling.value = iteron_tunables::ConstraintValue::UpperBound {
+            value: iteron_tunables::ResolutionValue::Integer { value: 120_000 },
         };
 
         let graph = iteron_workflow::workflow_graph_runtime_identity();
@@ -4699,7 +5609,7 @@ mod tests {
             server: "docs".into(),
         })));
 
-        let (settled_tx, _settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (settled_tx, _settled_rx) = tokio::sync::mpsc::channel(16);
         let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         apply_immediate_workflow_control(
@@ -4760,6 +5670,7 @@ mod tests {
             lifecycle: _,
             lifecycle_otel: _,
             hook_health: _,
+            activity: _,
             control,
         } = handle;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();

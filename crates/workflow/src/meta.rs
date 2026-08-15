@@ -8,6 +8,12 @@
 //!     context and read `name`/`description`/`phases`. This is the "real parse, not a fragile regex"
 //!     the review demanded: braces inside strings/templates/comments never miscount.
 
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
+
+const DEFAULT_COMPILE_CACHE_ENTRIES: usize = 256;
+
 /// The parsed workflow header (best-effort; every field is optional).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct Meta {
@@ -17,6 +23,91 @@ pub struct Meta {
     pub description: Option<String>,
     #[serde(default)]
     pub phases: Option<Vec<String>>,
+}
+
+/// One immutable parse product shared by metadata discovery and execution.
+#[derive(Debug)]
+pub struct CompiledWorkflow {
+    body: Arc<str>,
+    meta: Option<Meta>,
+}
+
+impl CompiledWorkflow {
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub fn meta(&self) -> Option<&Meta> {
+        self.meta.as_ref()
+    }
+}
+
+#[derive(Default)]
+struct CompileCache {
+    entries: HashMap<String, Arc<CompiledWorkflow>>,
+    order: VecDeque<String>,
+}
+
+/// Parse a workflow once per source digest. The cache is bounded and contains only source-derived
+/// metadata/body; execution state and authority never enter it.
+pub fn compile(src: &str) -> Arc<CompiledWorkflow> {
+    static CACHE: OnceLock<Mutex<CompileCache>> = OnceLock::new();
+    let key = hex::encode(Sha256::digest(src.as_bytes()));
+    let cache = CACHE.get_or_init(|| Mutex::new(CompileCache::default()));
+    if let Some(compiled) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .get(&key)
+        .cloned()
+    {
+        return compiled;
+    }
+
+    let (body, meta) = compile_uncached(src);
+    let compiled = Arc::new(CompiledWorkflow {
+        body: Arc::from(body),
+        meta,
+    });
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = cache.entries.get(&key) {
+        return Arc::clone(existing);
+    }
+    let limit = iteron_tunables::param_usize(
+        "workflow.meta.default_compile_cache_entries",
+        DEFAULT_COMPILE_CACHE_ENTRIES,
+    )
+    .clamp(1, 4_096);
+    while cache.entries.len() >= limit {
+        if let Some(oldest) = cache.order.pop_front() {
+            cache.entries.remove(&oldest);
+        } else {
+            break;
+        }
+    }
+    cache.order.push_back(key.clone());
+    cache.entries.insert(key, Arc::clone(&compiled));
+    compiled
+}
+
+fn compile_uncached(src: &str) -> (String, Option<Meta>) {
+    let Some((literal, range)) = locate_meta(src) else {
+        return (src.to_owned(), None);
+    };
+    let mut body = String::with_capacity(src.len());
+    body.push_str(&src[..range.start]);
+    body.push_str(&src[range.end..]);
+    let meta = rquickjs::Runtime::new().ok().and_then(|rt| {
+        let ctx = rquickjs::Context::full(&rt).ok()?;
+        ctx.with(|ctx| {
+            let code = format!("JSON.stringify(({literal}))");
+            let json: String = ctx.eval(code.as_bytes()).ok()?;
+            serde_json::from_str::<Meta>(&json).ok()
+        })
+    });
+    (body, meta)
 }
 
 /// Locate the `export const meta = { … }` object literal and return `(literal_slice, byte_range)`
@@ -133,29 +224,13 @@ fn match_object(bytes: &[u8], open: usize) -> Option<usize> {
 /// lines) and everything after it are concatenated — the meta is the first statement, so the result
 /// is the runnable body. Returns the input unchanged when there is no meta statement.
 pub fn strip_meta(src: &str) -> String {
-    match locate_meta(src) {
-        Some((_literal, range)) => {
-            let mut out = String::with_capacity(src.len());
-            out.push_str(&src[..range.start]);
-            out.push_str(&src[range.end..]);
-            out
-        }
-        None => src.to_string(),
-    }
+    compile(src).body().to_owned()
 }
 
 /// Evaluate the isolated meta object literal in a throwaway QuickJS context (no host globals) and
 /// read the header fields. Best-effort: any parse/eval failure yields `None`.
 pub fn extract_meta(src: &str) -> Option<Meta> {
-    let (literal, _range) = locate_meta(src)?;
-    let rt = rquickjs::Runtime::new().ok()?;
-    let ctx = rquickjs::Context::full(&rt).ok()?;
-    ctx.with(|ctx| {
-        // Wrap in parens so `{...}` is an expression, not a block; JSON.stringify normalizes it.
-        let code = format!("JSON.stringify(({literal}))");
-        let json: String = ctx.eval(code.as_bytes()).ok()?;
-        serde_json::from_str::<Meta>(&json).ok()
-    })
+    compile(src).meta().cloned()
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ impl Agent {
             system: sys.into(),
             messages: vec![Message::user_text(prompt)],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 1024,
             // The decomposition prefix is a fixed literal and therefore cache-eligible, but the
             // immutable family-23/family-158 policy remains the only authority that enables it.

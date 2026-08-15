@@ -171,11 +171,34 @@ impl LifecycleTelemetryRuntime {
             dropped_open_spans: state.dropped_open_spans,
         }
     }
+
+    /// Atomically take the bounded export batch. Logs and completed spans are drained so repeated
+    /// exporter polls do not clone and resend the same ring; metrics remain cumulative by OTel
+    /// convention and open spans stay resident until their terminal arrives.
+    ///
+    /// This acquires a standard mutex and may clone the metric catalog. Async callers must invoke
+    /// it through their executor's blocking pool (`tokio::task::spawn_blocking` in the CLI), never
+    /// on the renderer or agent-loop task.
+    pub fn take_snapshot(&self) -> LifecycleTelemetrySnapshot {
+        let mut state = self
+            .projection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        LifecycleTelemetrySnapshot {
+            logs: state.logs.drain(..).collect(),
+            metrics: state.metrics.values().cloned().collect(),
+            spans: state.spans.drain(..).collect(),
+            open_spans: state.open.len(),
+            dropped_logs: std::mem::take(&mut state.dropped_logs),
+            dropped_spans: std::mem::take(&mut state.dropped_spans),
+            dropped_open_spans: std::mem::take(&mut state.dropped_open_spans),
+        }
+    }
 }
 
 fn project_loop(
     projection: Weak<Mutex<Projection>>,
-    receiver: std::sync::mpsc::Receiver<LifecycleEventEnvelope>,
+    receiver: crate::lifecycle::LifecycleSubscriber,
 ) {
     loop {
         let Some(projection) = projection.upgrade() else {
@@ -198,7 +221,7 @@ fn project_loop(
 }
 
 impl Projection {
-    fn record(&mut self, event: LifecycleEventEnvelope) {
+    fn record(&mut self, event: Arc<LifecycleEventEnvelope>) {
         let traceparent = traceparent(&event);
         if self.logs.len()
             == iteron_tunables::param_integer("obs.otel.lifecycle.max_live_logs", MAX_LIVE_LOGS)
@@ -975,11 +998,11 @@ mod tests {
         let mut projection = Projection::default();
         let mut ordinal = 0;
         for spec in iteron_protocol::lifecycle::events() {
-            projection.record(event(spec.id, None, false, ordinal));
+            projection.record(Arc::new(event(spec.id, None, false, ordinal)));
             ordinal = ordinal.saturating_add(1);
         }
         for (event_id, reason_code, has_effect) in route_variants() {
-            projection.record(event(event_id, reason_code, has_effect, ordinal));
+            projection.record(Arc::new(event(event_id, reason_code, has_effect, ordinal)));
             ordinal = ordinal.saturating_add(1);
         }
 
@@ -1030,15 +1053,15 @@ mod tests {
         let mut projection = Projection::default();
         let mut ordinal = 0;
         for spec in iteron_protocol::lifecycle::events() {
-            projection.record(event(spec.id, None, false, ordinal));
+            projection.record(Arc::new(event(spec.id, None, false, ordinal)));
             ordinal = ordinal.saturating_add(1);
         }
-        projection.record(event(
+        projection.record(Arc::new(event(
             "context.source.classified",
             Some("file_attachment"),
             false,
             ordinal,
-        ));
+        )));
         let projected = projection
             .spans
             .iter()

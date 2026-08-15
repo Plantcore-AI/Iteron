@@ -5,8 +5,10 @@ use syn::visit::Visit;
 
 pub(super) fn validate(root: &Path) -> Result<()> {
     let file = parse(root, "crates/record/src/lib.rs")?;
+    let append_file = parse(root, "crates/record/src/append_actor.rs")?;
     reject_json_shadowing(&file)?;
-    validate_append(&file)?;
+    reject_json_shadowing(&append_file)?;
+    validate_append(&append_file)?;
     validate_replay(&file)?;
     // Every replay path, not just the canonical one. `replay_timed` decodes the same payload for
     // the timeline reader (#104); a second reader that skipped the seq stamp or dropped an event
@@ -26,23 +28,27 @@ pub(super) fn validate(root: &Path) -> Result<()> {
 }
 
 fn validate_append(file: &syn::File) -> Result<()> {
-    let method = unique_method(file, "Rollout", "append")?;
+    let method = unique_method(file, "Rollout", "append_batch")?;
     if method
         .attrs
         .iter()
         .any(|attribute| !attribute.path().is_ident("doc"))
     {
-        bail!("Rollout::append cannot be conditional or attributed");
+        bail!("Rollout::append_batch cannot be conditional or attributed");
     }
     let mut probe = AppendProbe::default();
     probe.visit_block(&method.block);
     if probe.event_payloads != 1
         || probe.other_payloads != 0
+        || probe.redacted_events != 1
+        || probe.other_redacted_events != 0
+        || probe.seq_stamps != 1
+        || probe.other_seq_stamps != 0
         || probe.chain_payloads != 1
         || probe.other_chain_payloads != 0
     {
         bail!(
-            "Rollout::append no longer binds Event -> serde_json::to_value -> ChainLine.payload exactly"
+            "Rollout::append_batch no longer binds source Event -> exact redaction/seq -> serde_json::to_value -> ChainLine.payload exactly"
         );
     }
     Ok(())
@@ -201,20 +207,47 @@ fn unique_method<'a>(file: &'a syn::File, target: &str, name: &str) -> Result<&'
 struct AppendProbe {
     event_payloads: usize,
     other_payloads: usize,
+    redacted_events: usize,
+    other_redacted_events: usize,
+    seq_stamps: usize,
+    other_seq_stamps: usize,
     chain_payloads: usize,
     other_chain_payloads: usize,
 }
 
 impl<'ast> Visit<'ast> for AppendProbe {
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "payload") {
+        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "event") {
             let exact = local.init.as_ref().is_some_and(|initializer| {
                 initializer.diverge.is_none()
-                    && matches!(initializer.expr.as_ref(), syn::Expr::Try(expression)
-                        if matches!(expression.expr.as_ref(), syn::Expr::Call(call)
-                            if expr_path(&call.func, &["serde_json", "to_value"])
-                                && call.args.len() == 1
-                                && expr_path(&call.args[0], &["event"])))
+                    && matches!(initializer.expr.as_ref(), syn::Expr::Call(call)
+                        if expr_path(&call.func, &["redact", "redact_event"])
+                            && call.args.len() == 1
+                            && expr_path(&call.args[0], &["source"]))
+            });
+            if exact {
+                self.redacted_events = self.redacted_events.saturating_add(1);
+            } else {
+                self.other_redacted_events = self.other_redacted_events.saturating_add(1);
+            }
+        }
+        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "payload") {
+            let exact = local.init.as_ref().is_some_and(|initializer| {
+                if initializer.diverge.is_some() {
+                    return false;
+                }
+                let syn::Expr::Try(expression) = initializer.expr.as_ref() else {
+                    return false;
+                };
+                let syn::Expr::Call(call) = expression.expr.as_ref() else {
+                    return false;
+                };
+                expr_path(&call.func, &["serde_json", "to_value"])
+                    && call.args.len() == 1
+                    && (expr_path(&call.args[0], &["event"])
+                        || matches!(&call.args[0], syn::Expr::Reference(reference)
+                            if reference.mutability.is_none()
+                                && expr_path(&reference.expr, &["event"])))
             });
             if exact {
                 self.event_payloads = self.event_payloads.saturating_add(1);
@@ -223,6 +256,17 @@ impl<'ast> Visit<'ast> for AppendProbe {
             }
         }
         syn::visit::visit_local(self, local);
+    }
+
+    fn visit_expr_assign(&mut self, assignment: &'ast syn::ExprAssign) {
+        if is_field(&assignment.left, "event", "seq") {
+            if expr_path(&assignment.right, &["next_seq"]) {
+                self.seq_stamps = self.seq_stamps.saturating_add(1);
+            } else {
+                self.other_seq_stamps = self.other_seq_stamps.saturating_add(1);
+            }
+        }
+        syn::visit::visit_expr_assign(self, assignment);
     }
 
     fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {

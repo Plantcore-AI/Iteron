@@ -815,6 +815,54 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
     cleanup(&root);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn dropping_exec_yield_kills_and_reaps_the_process_group() {
+    let root = temp_root("exec-yield-drop");
+    let marker = root.join("escaped.txt");
+    let supervisor = std::sync::Arc::new(Supervisor::new().unwrap());
+    let armed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let armed_observer = std::sync::Arc::clone(&armed);
+    supervisor.bind_output_observer(std::sync::Arc::new(move |_job_id, stderr, bytes| {
+        assert!(!stderr);
+        if String::from_utf8_lossy(&bytes).contains("armed") {
+            armed_observer.notify_one();
+        }
+    }));
+    let running_supervisor = std::sync::Arc::clone(&supervisor);
+    let running_root = root.clone();
+    let mut running = tokio::spawn(async move {
+        running_supervisor
+            .exec_yield(
+                &running_root,
+                "printf armed; (sleep 1; printf escaped > escaped.txt) & wait",
+                installed_launch(&running_root),
+                true,
+                Duration::from_secs(30),
+                30,
+            )
+            .await
+    });
+    tokio::select! {
+        () = armed.notified() => {}
+        result = &mut running => match result.unwrap() {
+            Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+                cleanup(&root);
+                return;
+            }
+            other => panic!("exec_yield ended before producing live output: {other:?}"),
+        },
+    }
+    running.abort();
+    let _ = running.await;
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !marker.exists(),
+        "dropping exec_yield leaked a descendant after runtime cancellation"
+    );
+    cleanup(&root);
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn persistent_process_keeps_writes_inside_the_workspace_boundary() {
@@ -886,4 +934,32 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
     };
     assert!(error.contains("previous or different runtime"));
     cleanup(&root);
+}
+
+#[test]
+fn model_visible_result_has_independent_deterministic_utf8_head_tail_ceiling() {
+    let head = "HEAD\n";
+    let tail = "\nTAIL-故障";
+    let source = format!("{head}{}{tail}", "中间输出".repeat(20_000));
+    assert!(source.len() > super::default_model_visible_result_bytes());
+
+    let first = super::bound_model_visible_result(
+        source.clone(),
+        "call process_poll with the returned cursors",
+    );
+    let second =
+        super::bound_model_visible_result(source, "call process_poll with the returned cursors");
+
+    assert_eq!(first, second, "the same evidence must frame byte-for-byte");
+    assert!(first.starts_with(head));
+    assert!(first.ends_with(tail));
+    assert!(first.contains("model-visible output omitted"));
+    assert!(first.contains("resumeHint: call process_poll"));
+    assert!(first.len() <= super::model_visible_result_bytes());
+    assert_eq!(super::default_model_visible_result_bytes(), 30_000);
+    let hard_ceiling = std::hint::black_box(super::max_model_visible_result_bytes());
+    assert!(
+        hard_ceiling > super::default_model_visible_result_bytes(),
+        "operator profiles may only widen toward the immutable hard ceiling"
+    );
 }
