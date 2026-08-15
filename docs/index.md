@@ -6,7 +6,7 @@
 
 Iteron is an open-source, terminal-native coding agent and a modular Rust
 substrate for bounded, recoverable, and observable agent runtimes. The current
-workspace version is **v0.0.6**.
+workspace version is **v0.0.7**.
 
 Created and led by [Jamal Cao
 (@fr0m-scratch)](https://github.com/fr0m-scratch), Creator and Project Lead.

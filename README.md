@@ -37,7 +37,7 @@
 Iteron combines a focused full-screen coding experience with a modular Rust
 runtime. It supports interactive work, bounded one-shot automation, explicit
 permissions, provider routing, durable sessions, verification, and
-machine-readable output. The current workspace version is **v0.0.6**.
+machine-readable output. The current workspace version is **v0.0.7**.
 
 ## Install
 

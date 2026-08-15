@@ -7,7 +7,22 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-08-15
+
+### Fixed
+
+- Advanced the public schema chronology exactly once from the published
+  `v0.0.5` base. The immutable `v0.0.6` tag failed this check before release or
+  asset creation; `v0.0.7` is the first downloadable release carrying the
+  changes listed below.
+
 ## [0.0.6] - 2026-08-15
+
+### Release status
+
+- This tag was not published and has no release assets because the release
+  workflow rejected its unchanged public schema chronology before any release
+  mutation.
 
 ### Added
 
