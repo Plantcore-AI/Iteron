@@ -52167,6 +52167,11 @@
           "path": "crates/record/src/lib.rs",
           "line": 797,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1516,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id record.lib.max_rollout_bytes is resolved at every listed production helper call"
@@ -52217,6 +52222,11 @@
           "path": "crates/record/src/lib.rs",
           "line": 1381,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1444,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id record.lib.max_rollout_events is resolved at every listed production helper call"
@@ -52266,6 +52276,11 @@
         {
           "path": "crates/record/src/lib.rs",
           "line": 1360,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1448,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52331,12 +52346,12 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1537,
+          "line": 1625,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1595,
+          "line": 1683,
           "evidence": "param_str runtime resolution"
         }
       ],

@@ -7,7 +7,11 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
-## [0.0.8] - 2026-08-16
+## [0.0.9] - 2026-08-17
+
+There is no 0.0.8. That tag was cut and its release validation failed, and release
+tags are immutable by rule, so the version was retired rather than reused. It
+names a commit that was never published.
 
 ### Fixed
 

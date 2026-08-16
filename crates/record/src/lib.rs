@@ -1437,7 +1437,95 @@ impl Rollout {
     /// poisoned; only a successful durability barrier clears it. An I/O error therefore requires
     /// close + reopen, where tail recovery establishes the authoritative chain head.
     pub fn append(&mut self, event: &Event) -> Result<Seq, RecordError> {
-        self.append_batch(std::slice::from_ref(event))?
+        if self.poisoned {
+            return Err(RecordError::WriterPoisoned);
+        }
+        let event_limit =
+            iteron_tunables::param_integer("record.lib.max_rollout_events", MAX_ROLLOUT_EVENTS);
+        if self.event_count >= event_limit {
+            return Err(RecordError::TooManyEvents { max: event_limit });
+        }
+        let physical_limit = iteron_tunables::param_integer(
+            "record.lib.max_rollout_physical_lines",
+            MAX_ROLLOUT_PHYSICAL_LINES,
+        );
+        if self.physical_line_count >= physical_limit {
+            return Err(RecordError::TooManyRecordLines {
+                max: physical_limit,
+            });
+        }
+        if matches!(&event.kind, EventKind::PolicyBundleSnapshot { .. }) && self.seq != Seq(2) {
+            return Err(policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
+                "policy checkpoint must be physical sequence two",
+            )
+            .into());
+        }
+        event
+            .kind
+            .validate_compatibility_tag()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        validate_terminal_identity(&event.kind)
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        validate_event_bounds(event)?;
+        // Scrub known-secret shapes from tool output before it enters the durable record
+        // (ADR-008 §1). The caller's live copy (the model context) is untouched.
+        let mut event = redact::redact_event(event);
+        validate_event_bounds(&event)?;
+        // Stamp the authoritative seq into the payload before hashing so the on-disk record is
+        // self-consistent going forward (the caller emits a placeholder seq; see `replay`). The
+        // hash then covers the true seq. `replay` still overwrites from the chain line, so legacy
+        // rollouts written before this fix remain correct.
+        let seq = self.seq;
+        event.seq = seq;
+        let event = &event;
+        let mut payload = serde_json::to_value(event)?;
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        content_store::externalize_event_payload(
+            runs_dir,
+            &self.tenant,
+            &self.run,
+            seq,
+            &mut payload,
+        )?;
+        let hash = hash_line(&self.last_hash, seq.0, &payload);
+        let chain_line = ChainLine {
+            seq: seq.0,
+            tenant: self.tenant.0.clone(),
+            prev: self.last_hash.clone(),
+            hash: hash.clone(),
+            // Read AFTER hashing and BEFORE the write, so the stamp is as close to the durable
+            // write as the sequence allows without being inside it. It is deliberately not part of
+            // `hash`: see `ChainLine::ts_us`.
+            ts_us: Some(u64::try_from(self.opened_at.elapsed().as_micros()).unwrap_or(u64::MAX)),
+            payload,
+        };
+        let mut line = serde_json::to_string(&chain_line)?;
+        line.push('\n');
+        ensure_record_line_size(line.len())?;
+        let current_bytes = self.durable_bytes;
+        let next_bytes =
+            current_bytes
+                .checked_add(line.len() as u64)
+                .ok_or(RecordError::RolloutTooLarge {
+                    bytes: u64::MAX,
+                    max: iteron_tunables::param_integer(
+                        "record.lib.max_rollout_bytes",
+                        MAX_ROLLOUT_BYTES,
+                    ),
+                })?;
+        ensure_rollout_size(next_bytes)?;
+        let prepared = vec![append_actor::PreparedAppend {
+            event: event.clone(),
+            seq,
+            hash: hash.clone(),
+            line,
+        }];
+        self.commit_prepared(prepared, current_bytes, hash, seq.next(), next_bytes)?
             .into_iter()
             .next()
             .ok_or(RecordError::InvalidAppendBatch {
