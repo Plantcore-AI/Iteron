@@ -45,11 +45,11 @@ fn append_queue_capacity() -> usize {
     .clamp(1, hard)
 }
 
-struct PreparedAppend {
-    event: Event,
-    seq: Seq,
-    hash: String,
-    line: String,
+pub(crate) struct PreparedAppend {
+    pub(crate) event: Event,
+    pub(crate) seq: Seq,
+    pub(crate) hash: String,
+    pub(crate) line: String,
 }
 
 struct WriteBatch {
@@ -183,6 +183,26 @@ impl Rollout {
             next_seq = next_seq.next();
         }
 
+        self.commit_prepared(prepared, current_bytes, next_hash, next_seq, next_bytes)
+    }
+
+    /// Write one prepared batch under exactly one durability barrier and advance the descriptor's
+    /// committed state.
+    ///
+    /// Shared with `Rollout::append`. The single-event path prepares its own line rather than
+    /// calling `append_batch`, because the binding `Event -> serde_json::to_value ->
+    /// ChainLine.payload` is a frozen surface that has to be readable in the method that owns it.
+    /// Preparation is therefore stated twice; committing is not, so there remains exactly one place
+    /// where bytes reach the device and exactly one place that advances seq, hash, and the
+    /// projection.
+    pub(crate) fn commit_prepared(
+        &mut self,
+        prepared: Vec<PreparedAppend>,
+        current_bytes: u64,
+        next_hash: String,
+        next_seq: Seq,
+        next_bytes: u64,
+    ) -> Result<Vec<Seq>, RecordError> {
         self.poisoned = true;
         let batch_bytes = prepared
             .iter()
