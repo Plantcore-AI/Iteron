@@ -230,7 +230,7 @@ impl ActivitySink {
                         } else {
                             if pending.len()
                                 == iteron_tunables::param_integer(
-                                    "cli.runtime.activity.max_pending_activity_terminals",
+                                    "cli.runtime.turn_activity.max_pending_activity_terminals",
                                     MAX_PENDING_ACTIVITY_TERMINALS,
                                 )
                                 .clamp(1, MAX_PENDING_ACTIVITY_TERMINALS)
@@ -245,7 +245,7 @@ impl ActivitySink {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         let ceiling = iteron_tunables::param_integer(
-                            "cli.runtime.activity.max_pending_activity_snapshots",
+                            "cli.runtime.turn_activity.max_pending_activity_snapshots",
                             MAX_PENDING_ACTIVITY_SNAPSHOTS,
                         )
                         .clamp(1, MAX_PENDING_ACTIVITY_SNAPSHOTS);

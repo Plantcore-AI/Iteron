@@ -1592,7 +1592,7 @@
         },
         {
           "kind": "file",
-          "path": "crates/cli/src/runtime/activity.rs"
+          "path": "crates/cli/src/runtime/turn_activity.rs"
         },
         {
           "kind": "file",

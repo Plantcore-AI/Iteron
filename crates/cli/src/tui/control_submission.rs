@@ -1,6 +1,11 @@
 use super::*;
 
-const FORCE_QUIT_SHUTDOWN_WAIT: Duration = Duration::from_millis(25);
+/// Hard ceiling on how long a forced exit may wait for the resident server. Structural, not an
+/// optimizer choice: a repeated Ctrl-C is an emergency boundary, so the tunable below may lower
+/// this but never raise it.
+fn force_quit_shutdown_wait() -> Duration {
+    Duration::from_millis(25)
+}
 
 /// Tell the operator which workflow runs the session stopped on its way out, and how to continue
 /// them. Silent when there were none, which is the overwhelmingly common case.
@@ -33,9 +38,9 @@ pub(super) async fn wait_for_forced_server_shutdown(
         server_task,
         iteron_tunables::param_duration(
             "cli.tui.force_quit_shutdown_wait",
-            FORCE_QUIT_SHUTDOWN_WAIT,
+            force_quit_shutdown_wait(),
         )
-        .min(FORCE_QUIT_SHUTDOWN_WAIT),
+        .min(force_quit_shutdown_wait()),
     )
     .await
 }

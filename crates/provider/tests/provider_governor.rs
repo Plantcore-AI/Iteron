@@ -148,7 +148,7 @@ fn bare_server_error_can_fail_over_but_never_becomes_retryable() {
         governor.failover_class(&error, FailurePoint::ProvenTerminal),
         Some(FailoverClass::Overloaded)
     );
-    assert_eq!(iteron_provider::default_failover_rules().len(), 5);
+    assert_eq!(iteron_provider::GovernorPolicy::default().failover.len(), 5);
 }
 
 #[test]

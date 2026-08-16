@@ -5,10 +5,7 @@ use crate::attempts::{
 };
 use crate::contract::parse_final_result;
 use crate::corpus::{CorpusManifest, CorpusTask};
-use crate::process::{
-    ProcessCancellation, ProcessOutput, ProcessSpec, find_core, run_process,
-    scope_process_cancellation,
-};
+use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
 use crate::report::{aggregate, compare, selection_summaries};
 use crate::types::{
     CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
@@ -388,7 +385,7 @@ pub async fn run_evaluation_parallel_with_activity(
         &crate::attempts::sidecar_path(&options.output_path),
     )?));
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(options.workers));
-    let process_cancellation = ProcessCancellation::default();
+    let process_cancellation = crate::process::ProcessCancellation::default();
     let mut running = tokio::task::JoinSet::new();
     let mut cells = Vec::with_capacity(total_cells);
     while !pending.is_empty() || !running.is_empty() {
@@ -426,7 +423,7 @@ pub async fn run_evaluation_parallel_with_activity(
             let semaphore = std::sync::Arc::clone(&semaphore);
             let attempt_ledger = std::sync::Arc::clone(&attempt_ledger);
             let worker_cancellation = process_cancellation.clone();
-            running.spawn(scope_process_cancellation(
+            running.spawn(crate::process::scope_process_cancellation(
                 worker_cancellation,
                 async move {
                     let _permit = semaphore

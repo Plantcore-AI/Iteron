@@ -1,9 +1,7 @@
 //! `iteron-eval` — fixed-model, component-toggle evaluation over pinned real repositories.
 
 use clap::{Parser, ValueEnum};
-use iteron_eval::runner::{
-    EvalOptions, ParallelEvalOptions, run_evaluation_parallel_with_activity,
-};
+use iteron_eval::runner::{EvalOptions, run_evaluation};
 use iteron_eval::types::EvaluationPurpose;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -111,32 +109,7 @@ async fn main() -> std::process::ExitCode {
         max_turns: cli.max_turns,
         max_attempts: cli.max_attempts,
     };
-    let (activity, activity_rx) = iteron_eval::activity_channel(None);
-    let activity_output = std::thread::spawn(move || {
-        while let Ok(event) = activity_rx.recv() {
-            eprintln!(
-                "activity={} state={:?} progress={}",
-                event.id,
-                event.state,
-                event
-                    .progress
-                    .map(|progress| format!("{}/{}", progress.completed, progress.total))
-                    .unwrap_or_else(|| "-".into())
-            );
-        }
-    });
-    let cancellation = activity.cancellation();
-    let signal_owner = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            cancellation.cancel();
-        }
-    });
-    let parallel = ParallelEvalOptions::from(&options);
-    let outcome = run_evaluation_parallel_with_activity(&parallel, Some(&activity)).await;
-    signal_owner.abort();
-    drop(activity);
-    let _ = activity_output.join();
-    match outcome {
+    match run_evaluation(&options).await {
         Ok(manifest) => {
             print_summary(&manifest);
             std::process::ExitCode::SUCCESS

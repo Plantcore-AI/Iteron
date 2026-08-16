@@ -47,7 +47,7 @@ pub use governor::{
 pub use governor_policy::{
     CircuitPolicy, FailoverClass, FailoverRule, FailurePoint, GovernorPolicy, GovernorPolicyError,
     HedgePolicy, MAX_GOVERNED_ROUTES, MAX_HEDGE_DUPLICATES, ObjectiveWeights, RateAdmissionPolicy,
-    RouteObjectiveScores, UnknownQuotaPolicy, default_failover_rules,
+    RouteObjectiveScores, UnknownQuotaPolicy,
 };
 pub use governor_snapshot::{
     ProviderGovernorSnapshot, RouteCircuitSnapshot, RouteGovernorSnapshot,

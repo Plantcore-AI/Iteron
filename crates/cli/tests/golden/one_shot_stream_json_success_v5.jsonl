@@ -1,9 +1,9 @@
 {"phase":"context","schema_version":5,"type":"phase"}
 {"phase":"model","schema_version":5,"type":"phase"}
-{"message":"provider transport negotiated below required HTTP/2; continuing with explicit compatibility evidence","schema_version":5,"type":"notice"}
-{"delta":"golden reply","schema_version":5,"type":"assistant_text"}
+{"delta":"golden ","schema_version":5,"type":"assistant_text"}
 {"cache_hit":0.0,"context":{"compaction_trigger_tokens":0,"estimator":"heuristic_bytes_per_token_3_5","framing_tokens":0,"input_tokens":0,"kind":"estimate","model_context_window":null,"reserved_output_tokens":0,"system_tokens":0,"tool_tokens":0,"transcript_tokens":0},"cost_reason":"no_verified_rate_card","cost_status":"unknown","cost_usd":null,"cumulative_cost_usd":null,"effort":{"capability_proven_by_catalog":false,"enforcement":"unsupported","requested":"low"},"schema_version":5,"turn":1,"type":"turn_end","usage":{"cache_creation":0,"cache_read":0,"input":11,"output":2,"thinking":0}}
 {"phase":"tools","schema_version":5,"type":"phase"}
 {"phase":"idle","schema_version":5,"type":"phase"}
+{"delta":"reply","schema_version":5,"type":"assistant_text"}
 {"schema_version":5,"type":"run_done"}
 {"assistant_text":"golden reply","cost_reason":"no_verified_rate_card","cost_status":"unknown","cost_usd":null,"error":null,"exit_code":0,"outcome":"done","reason":null,"run_id":"<RUN_ID>","schema_version":5,"success":true,"turns":1,"type":"result","kernel_tax":{"admission_latency_us":0,"broker_latency_us":0,"record_fsync_latency_us":0,"estimated_tokens":0,"failed_runs":0}}

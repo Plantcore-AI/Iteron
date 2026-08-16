@@ -281,7 +281,6 @@
 /crates/cli/src/runtime/tool_output_spill/** @fr0m-scratch
 /crates/cli/src/runtime/workflow_spawner/** @fr0m-scratch
 /crates/cli/src/tui/experiment_lab/** @fr0m-scratch
-/crates/cli/src/runtime/activity.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_config.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_loop.rs @fr0m-scratch
 /crates/cli/src/runtime/budget_control.rs @fr0m-scratch
@@ -331,6 +330,7 @@
 /crates/cli/src/runtime/tool_output_spill.rs @fr0m-scratch
 /crates/cli/src/runtime/transcript.rs @fr0m-scratch
 /crates/cli/src/runtime/tunables_pin.rs @fr0m-scratch
+/crates/cli/src/runtime/turn_activity.rs @fr0m-scratch
 /crates/cli/src/runtime/verification.rs @fr0m-scratch
 /crates/cli/src/runtime/workflow_collect.rs @fr0m-scratch
 /crates/cli/src/runtime/workflow_fan_progress.rs @fr0m-scratch
