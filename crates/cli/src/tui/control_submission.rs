@@ -1,5 +1,7 @@
 use super::*;
 
+const FORCE_QUIT_SHUTDOWN_WAIT: Duration = Duration::from_millis(25);
+
 /// Tell the operator which workflow runs the session stopped on its way out, and how to continue
 /// them. Silent when there were none, which is the overwhelmingly common case.
 pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport) {
@@ -31,8 +33,9 @@ pub(super) async fn wait_for_forced_server_shutdown(
         server_task,
         iteron_tunables::param_duration(
             "cli.tui.force_quit_shutdown_wait",
-            std::time::Duration::from_millis(250),
-        ),
+            FORCE_QUIT_SHUTDOWN_WAIT,
+        )
+        .min(FORCE_QUIT_SHUTDOWN_WAIT),
     )
     .await
 }

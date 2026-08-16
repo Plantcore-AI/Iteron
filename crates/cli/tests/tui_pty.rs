@@ -2177,8 +2177,8 @@ fn double_ctrl_c_forces_exit_while_a_bash_tool_is_still_running() {
     let status = pty.wait_for_exit();
     assert!(status.success(), "forced TUI exit failed: {status}");
     assert!(
-        forced_at.elapsed() < Duration::from_secs(2),
-        "double Ctrl-C waited through the normal workflow shutdown grace"
+        forced_at.elapsed() < Duration::from_millis(750),
+        "double Ctrl-C did not return the terminal promptly"
     );
     assert_termios_restored(&pty);
     pty.close_and_drain();

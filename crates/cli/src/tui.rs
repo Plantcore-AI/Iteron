@@ -3306,19 +3306,37 @@ pub async fn run(
     .await;
     startup.flush();
 
-    // teardown (the guard also restores on drop; show_cursor is the only extra step).
-    let tui_result = transcript_effects.finish(tui_result).await;
+    // A repeated Ctrl-C is an emergency operator boundary. Restore the physical terminal before
+    // any bounded cleanup so process/history durability work cannot look like a frozen UI. The
+    // ordinary exit path still joins every local effect before restoration.
+    let force_quit_requested = app.force_quit_requested;
+    if force_quit_requested {
+        let _ = term.show_cursor();
+        restore_terminal(&guard.keyboard_restorer());
+        let _ = transcript_effects.cancel();
+    }
+    let tui_result = if force_quit_requested {
+        tui_result
+    } else {
+        transcript_effects.finish(tui_result).await
+    };
     if termination_exit.is_none() {
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    let history_flushed =
-        if let Some(active_run) = prompt_history::source_run_from_rollout(session.rollout_path()) {
-            history_writer.finish_bounded(app.editor.persistence_state(), active_run)
-        } else {
-            drop(history_writer);
-            true
-        };
+    let active_run = prompt_history::source_run_from_rollout(session.rollout_path());
+    let history_flushed = if force_quit_requested {
+        if let Some(active_run) = active_run {
+            history_writer.schedule(app.editor.persistence_state(), active_run);
+        }
+        drop(history_writer);
+        true
+    } else if let Some(active_run) = active_run {
+        history_writer.finish_bounded(app.editor.persistence_state(), active_run)
+    } else {
+        drop(history_writer);
+        true
+    };
     if let Some(exit_code) = termination_exit {
         drop(session);
         // A catchable termination still gives the server its shutdown: that is where a live
@@ -3341,7 +3359,7 @@ pub async fn run(
     // the session still owned) happens in there, and returning before it completes would race the
     // process exit against the record on disk.
     drop(session);
-    let stopped = if app.force_quit_requested {
+    let stopped = if force_quit_requested {
         wait_for_forced_server_shutdown(&mut server_task).await
     } else {
         server_task.await.unwrap_or_default()
