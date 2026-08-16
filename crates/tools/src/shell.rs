@@ -402,7 +402,7 @@ fn finish_sandbox_run_with_budget(
             // durable process handle and workspace reconciliation, replay is unsafe.
             return ToolExecution::Unknown(tool_result(
                 tool_use_id,
-                "sandbox process outcome is unknown; Core will not retry automatically".into(),
+                "sandbox process outcome is unknown; Iteron will not retry automatically".into(),
                 true,
             ));
         }

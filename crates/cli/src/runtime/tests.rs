@@ -15210,7 +15210,7 @@ ant-api03-SuperSecretModelToken12345"
             .unwrap_err();
         assert!(
             second.contains(
-                "route pricing evidence failed validation; Core will not invent a dollar amount"
+                "route pricing evidence failed validation; Iteron will not invent a dollar amount"
             ),
             "unexpected sibling admission refusal: {second}"
         );

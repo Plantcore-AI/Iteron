@@ -446,7 +446,7 @@ fn spawn_error(error: SandboxError) -> ActionError {
             ActionError::Definite(error.to_string())
         }
         SandboxError::Spawn(_) => ActionError::Unknown(format!(
-            "persistent process spawn outcome is unknown; Core will not retry automatically: {error}"
+            "persistent process spawn outcome is unknown; Iteron will not retry automatically: {error}"
         )),
     }
 }

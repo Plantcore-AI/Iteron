@@ -1519,7 +1519,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1849,
+          "line": 1865,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1576,7 +1576,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1362,
+          "line": 1378,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1628,7 +1628,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1987,
+          "line": 2003,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1655,7 +1655,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3453,
+          "line": 3492,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -1685,7 +1685,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1397,
+          "line": 1413,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1715,7 +1715,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1435,
+          "line": 1451,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1745,7 +1745,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1597,
+          "line": 1613,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1824,11 +1824,116 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2102,
+          "line": 2118,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.app_server.process_output_capacity is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.app_server.process_output_head_bytes",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "8 * 1024",
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server.rs",
+        "symbol": "PROCESS_OUTPUT_HEAD_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 3601,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.app_server.process_output_head_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.app_server.process_output_partial_line_bytes",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "8 * 1024",
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server.rs",
+        "symbol": "PROCESS_OUTPUT_PARTIAL_LINE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 3609,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.app_server.process_output_partial_line_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.app_server.process_output_partial_line_grace",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "duration",
+      "rust_type": "std::time::Duration",
+      "unit": "milliseconds",
+      "default": "std::time::Duration::from_millis(200)",
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server.rs",
+        "symbol": "PROCESS_OUTPUT_PARTIAL_LINE_GRACE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 3678,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.app_server.process_output_partial_line_grace is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.app_server.process_output_tracked_streams",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64",
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server.rs",
+        "symbol": "PROCESS_OUTPUT_TRACKED_STREAMS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 3617,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.app_server.process_output_tracked_streams is resolved at every listed production helper call"
     },
     {
       "id": "cli.app_server.runtime_ui_capacity",
@@ -1850,7 +1955,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2051,
+          "line": 2067,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2047,7 +2152,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2069,
+          "line": 2085,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2073,7 +2178,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2086,
+          "line": 2102,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2125,7 +2230,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1076,
+          "line": 1093,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -2182,7 +2287,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1213,
+          "line": 1230,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2208,22 +2313,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1635,
+          "line": 1652,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1639,
+          "line": 1656,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1646,
+          "line": 1663,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1653,
+          "line": 1670,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6417,22 +6522,22 @@
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 380,
+          "line": 395,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 429,
+          "line": 444,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 457,
+          "line": 472,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/setup.rs",
-          "line": 464,
+          "line": 479,
           "evidence": "Rust path reference"
         },
         {
@@ -7418,17 +7523,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3473,
+          "line": 3559,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3763,
+          "line": 3866,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3783,
+          "line": 3886,
           "evidence": "Rust path reference"
         }
       ]
@@ -7454,12 +7559,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 693,
+          "line": 770,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1511,
+          "line": 1588,
           "evidence": "Rust path reference"
         }
       ]
@@ -7484,12 +7589,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 697,
+          "line": 774,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1515,
+          "line": 1592,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7516,17 +7621,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 676,
+          "line": 753,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 742,
+          "line": 819,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1708,
+          "line": 1785,
           "evidence": "Rust path reference"
         }
       ]
@@ -7551,12 +7656,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1205,
+          "line": 1282,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1279,
+          "line": 1356,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7583,47 +7688,47 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 413,
+          "line": 490,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1389,
+          "line": 1466,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1502,
+          "line": 1579,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1648,
+          "line": 1725,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1668,
+          "line": 1745,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1692,
+          "line": 1769,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1693,
+          "line": 1770,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1695,
+          "line": 1772,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1701,
+          "line": 1778,
           "evidence": "Rust path reference"
         }
       ]
@@ -7649,7 +7754,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1495,
+          "line": 1572,
           "evidence": "Rust path reference"
         }
       ]
@@ -7675,17 +7780,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1376,
+          "line": 1453,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1377,
+          "line": 1454,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1386,
+          "line": 1463,
           "evidence": "Rust path reference"
         }
       ]
@@ -7710,7 +7815,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1274,
+          "line": 1351,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7737,22 +7842,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 369,
+          "line": 446,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 593,
+          "line": 670,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 657,
+          "line": 734,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 746,
+          "line": 823,
           "evidence": "Rust path reference"
         }
       ]
@@ -7778,12 +7883,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1183,
+          "line": 1260,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1202,
+          "line": 1279,
           "evidence": "Rust path reference"
         }
       ]
@@ -7809,12 +7914,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3439,
+          "line": 3525,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3684,
+          "line": 3781,
           "evidence": "Rust path reference"
         }
       ]
@@ -7866,7 +7971,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3082,
+          "line": 3168,
           "evidence": "Rust path reference"
         }
       ]
@@ -7892,7 +7997,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3081,
+          "line": 3167,
           "evidence": "Rust path reference"
         }
       ]
@@ -7979,12 +8084,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1609,
+          "line": 1686,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1659,
+          "line": 1736,
           "evidence": "Rust path reference"
         },
         {
@@ -8018,7 +8123,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1211,
+          "line": 1288,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8048,7 +8153,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1216,
+          "line": 1293,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8078,12 +8183,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 607,
+          "line": 684,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 642,
+          "line": 719,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8113,22 +8218,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1228,
+          "line": 1305,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1235,
+          "line": 1312,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1244,
+          "line": 1321,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1362,
+          "line": 1439,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8158,22 +8263,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 541,
+          "line": 618,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 569,
+          "line": 646,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 579,
+          "line": 656,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 661,
+          "line": 738,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8200,12 +8305,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 593,
+          "line": 670,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 640,
+          "line": 717,
           "evidence": "Rust path reference"
         }
       ]
@@ -8234,22 +8339,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 898,
+          "line": 975,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 926,
+          "line": 1003,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 936,
+          "line": 1013,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1017,
+          "line": 1094,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8276,12 +8381,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 950,
+          "line": 1027,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1007,
+          "line": 1084,
           "evidence": "Rust path reference"
         }
       ]
@@ -8310,7 +8415,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1059,
+          "line": 1136,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8340,17 +8445,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2317,
+          "line": 2394,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2342,
+          "line": 2419,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2349,
+          "line": 2426,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8377,12 +8482,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3453,
+          "line": 3539,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3701,
+          "line": 3798,
           "evidence": "Rust path reference"
         }
       ]
@@ -8408,12 +8513,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3432,
+          "line": 3518,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3703,
+          "line": 3800,
           "evidence": "Rust path reference"
         }
       ]
@@ -8439,17 +8544,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3095,
+          "line": 3181,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3102,
+          "line": 3188,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3109,
+          "line": 3195,
           "evidence": "Rust path reference"
         }
       ]
@@ -8475,17 +8580,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3094,
+          "line": 3180,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3101,
+          "line": 3187,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3108,
+          "line": 3194,
           "evidence": "Rust path reference"
         }
       ]
@@ -8511,12 +8616,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1609,
+          "line": 1686,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1659,
+          "line": 1736,
           "evidence": "Rust path reference"
         },
         {
@@ -8603,12 +8708,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1032,
+          "line": 1109,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1713,
+          "line": 1790,
           "evidence": "Rust path reference"
         }
       ]
@@ -8660,17 +8765,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 768,
+          "line": 845,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 950,
+          "line": 1027,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1013,
+          "line": 1090,
           "evidence": "Rust path reference"
         }
       ]
@@ -8696,7 +8801,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 2528,
+          "line": 2605,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -9132,7 +9237,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1720,
+          "line": 1797,
           "evidence": "Rust path reference"
         }
       ]
@@ -9158,7 +9263,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 1728,
+          "line": 1805,
           "evidence": "Rust path reference"
         }
       ]
@@ -9915,12 +10020,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 788,
+          "line": 818,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 789,
+          "line": 819,
           "evidence": "macro token reference"
         }
       ]
@@ -10831,7 +10936,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 6667,
+          "line": 6676,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10940,12 +11045,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 970,
+          "line": 1000,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 983,
+          "line": 1013,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11257,7 +11362,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"[Core runtime memory-added — operator-authored]\"",
+      "default": "\"[Iteron runtime memory-added — operator-authored]\"",
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs",
       "applied": false,
@@ -11432,42 +11537,42 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 425,
+          "line": 430,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 432,
+          "line": 437,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 449,
+          "line": 454,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 452,
+          "line": 457,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 462,
+          "line": 467,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 469,
+          "line": 474,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 487,
+          "line": 492,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 493,
+          "line": 498,
           "evidence": "Rust path reference"
         },
         {
@@ -12206,7 +12311,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 270,
+          "line": 275,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12233,22 +12338,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 427,
+          "line": 432,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 455,
+          "line": 460,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 464,
+          "line": 469,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 489,
+          "line": 494,
           "evidence": "Rust path reference"
         }
       ]
@@ -12259,7 +12364,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"[Core runtime notification — not an operator instruction]\"",
+      "default": "\"[Iteron runtime notification — not an operator instruction]\"",
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs",
       "applied": false,
@@ -12274,12 +12379,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3158,
+          "line": 3193,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 4202,
+          "line": 4427,
           "evidence": "macro token reference"
         },
         {
@@ -12784,7 +12889,7 @@
       "class": "searchable",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"submission rejected: this Core build does not support that operation\"",
+      "default": "\"submission rejected: this Iteron build does not support that operation\"",
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs",
       "applied": true,
@@ -12798,7 +12903,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 6758,
+          "line": 6767,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12837,7 +12942,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"submission rejected: the frontend and Core use different SQ/EQ protocol versions\"",
+      "default": "\"submission rejected: the frontend and Iteron use different SQ/EQ protocol versions\"",
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs",
       "applied": false,
@@ -12852,7 +12957,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 6683,
+          "line": 6692,
           "evidence": "Rust path reference"
         },
         {
@@ -21550,7 +21655,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3382,
+          "line": 3421,
           "evidence": "param_duration runtime resolution"
         },
         {

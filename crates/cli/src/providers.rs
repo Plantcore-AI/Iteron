@@ -315,12 +315,44 @@ impl CatalogProvenance {
     }
 }
 
+/// Who put this provider entry in the directory.
+///
+/// The directory is a known-endpoints catalog first and an offer second. Without this fact the two
+/// are indistinguishable: an operator opening `/model` on a fresh machine sees six vendors he never
+/// named and cannot tell which line he is responsible for. Display surfaces read this to decide
+/// what to offer and how to label it; routing never reads it, because a named route must resolve
+/// exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderOrigin {
+    /// Shipped in `BUILTINS`. A known endpoint this binary knows how to speak to, which is not the
+    /// same as an endpoint this machine can use.
+    Builtin,
+    /// Declared by the operator in the `providers` array of their config document.
+    OperatorConfigured,
+}
+
+impl ProviderOrigin {
+    /// Short enough to sit inside the existing ` · `-joined status suffix without rewriting it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Builtin => "built-in",
+            Self::OperatorConfigured => "your config",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderEntry {
     pub instance: ProviderInstance,
     /// Where this instance's credential is declared. Only the NAME (an environment variable or a
     /// file path) lives here; the value is resolved per turn inside the provider instance.
     pub credential: ProviderCredential,
+    origin: ProviderOrigin,
+    /// Whether a credential actually resolved at construction, which `credential` cannot answer:
+    /// for a built-in with neither variable nor file, `builtin_credential` deliberately still
+    /// reports the variable an operator would export, so the "missing credential" line stays
+    /// actionable. That makes the declared source a hint, not evidence of presence.
+    credential_present: bool,
     pub enabled: bool,
     pub catalog_enabled: bool,
     pub catalog: Option<CatalogSnapshot>,
@@ -354,6 +386,51 @@ impl ProviderEntry {
     pub fn catalog_provenance_label(&self) -> String {
         self.catalog_provenance.label()
     }
+
+    /// Who put this entry in the directory.
+    pub fn origin(&self) -> ProviderOrigin {
+        self.origin
+    }
+
+    /// Whether a credential resolved for this entry when the directory was composed.
+    pub fn credential_present(&self) -> bool {
+        self.credential_present
+    }
+
+    /// Whether this entry should be OFFERED on a display surface (`/model`, `iteron auth status`
+    /// with no argument). Reachability is a separate question and is never gated on this: an
+    /// explicit `provider:model` still resolves, and `iteron setup` still lists everything.
+    ///
+    /// A built-in with no credential is a known endpoint the operator cannot use, so listing it
+    /// only adds noise he must learn to ignore. An operator-configured entry is always offered even
+    /// with no credential, because he asked for it by name and hiding it would hide his own typo.
+    pub fn is_offerable(&self) -> bool {
+        self.credential_present() || matches!(self.origin, ProviderOrigin::OperatorConfigured)
+    }
+
+    /// The underlying service two entries share, derived from the api_root host rather than from a
+    /// hand-maintained table: `DeepSeek`, `DeepSeek OpenAI-compatible (IOB pin)` and
+    /// `DeepSeek Anthropic-compatible (IOB pin)` are three access methods for `api.deepseek.com`,
+    /// and three display names saying the same word read as a bug until they are grouped by it.
+    pub fn service_key(&self) -> &str {
+        api_root_host(self.instance.api_root().as_str())
+    }
+}
+
+/// Host component of an already-parsed, normalized api_root (`scheme://host[:port]/path`).
+///
+/// `ApiRoot::parse` guarantees an absolute HTTP(S) URL with a host and no user information, so this
+/// is a slice, not a re-parse. The port is kept: two ports on one host are two endpoints, and
+/// collapsing them would group routes that are not the same service instance.
+fn api_root_host(api_root: &str) -> &str {
+    let after_scheme = api_root
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(api_root);
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,7 +535,7 @@ impl CachedSelectability {
                 "Fireworks model has no serverless deployment" => {
                     Some(Self::FireworksNoServerlessDeployment)
                 }
-                "private model has no healthy default deployment; Core does not infer #deployment routing" => {
+                "private model has no healthy default deployment; Iteron does not infer #deployment routing" => {
                     Some(Self::FireworksPrivateNoHealthyDeployment)
                 }
                 "Fireworks public catalog model is not marked public" => {
@@ -506,7 +583,7 @@ impl CachedSelectability {
                 reason: "Fireworks model has no serverless deployment",
             },
             Self::FireworksPrivateNoHealthyDeployment => Selectability::Disabled {
-                reason: "private model has no healthy default deployment; Core does not infer #deployment routing",
+                reason: "private model has no healthy default deployment; Iteron does not infer #deployment routing",
             },
             Self::FireworksNotPublic => Selectability::Disabled {
                 reason: "Fireworks public catalog model is not marked public",
@@ -2594,6 +2671,15 @@ impl ProviderDirectory {
         &self.entries
     }
 
+    /// The entries a display surface should OFFER, in the same order `entries` returns them.
+    ///
+    /// This is strictly a presentation filter. Everything dropped here stays fully routable through
+    /// `entry`, `resolve_model` and an explicit `provider:model`, and stays offered by
+    /// `configured_provider_ids` so `iteron setup` can give it the credential it is missing.
+    pub fn offerable_entries(&self) -> impl Iterator<Item = &ProviderEntry> {
+        self.entries.iter().filter(|entry| entry.is_offerable())
+    }
+
     pub fn entry(&self, provider_id: &str) -> Option<&ProviderEntry> {
         self.entries.iter().find(|entry| entry.id() == provider_id)
     }
@@ -3506,9 +3592,14 @@ fn builtin_entries_with_metadata(
             } else {
                 CatalogProvenance::Unavailable
             };
+            // Resolved once here, through exactly the source a turn would use, so the display
+            // filter never re-reads a credential file per rendered frame.
+            let credential_present = instance.has_credential();
             Ok(ProviderEntry {
                 instance,
                 credential,
+                origin: ProviderOrigin::Builtin,
+                credential_present,
                 enabled: true,
                 catalog_enabled,
                 catalog,
@@ -3591,9 +3682,15 @@ fn entry_from_config_with_metadata(
     } else {
         CatalogProvenance::Unavailable
     };
+    // Same fact as for a built-in, computed from whatever source the operator declared. It never
+    // gates this entry's visibility — an operator-configured provider is always offered — but it
+    // keeps `credential_present` meaning one thing across both origins.
+    let credential_present = instance.has_credential();
     Ok(ProviderEntry {
         instance,
         credential,
+        origin: ProviderOrigin::OperatorConfigured,
+        credential_present,
         enabled: config.enabled,
         catalog_enabled,
         catalog,
@@ -3759,6 +3856,12 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
 /// Every provider id this configuration can route to, built-ins first. `iteron setup` offers these
 /// and refuses anything else, so a typo is caught before a credential is written for a route that
 /// does not exist.
+///
+/// DELIBERATELY UNFILTERED, and it must stay that way. `/model` and `iteron auth status` hide a
+/// built-in with no credential (see [`ProviderEntry::is_offerable`]); this list must not, because
+/// `iteron setup` exists precisely to give a credential to a provider that has none. Applying the
+/// display filter here would make every uncredentialed provider permanently unconfigurable — the
+/// only way to get a credential would be to already have one. The inconsistency is the point.
 pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
     let mut ids: Vec<String> = BUILTINS
         .iter()
@@ -3825,7 +3928,7 @@ pub(crate) async fn validate_credential(
         .map_err(|error| format!("cannot build a request for `{provider_id}`: {error}"))?;
     if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
         return Err(
-            "credential validation refused a provider with opaque internal retries; every physical setup attempt must cross Core's durable boundary"
+            "credential validation refused a provider with opaque internal retries; every physical setup attempt must cross Iteron's durable boundary"
                 .into(),
         );
     }
@@ -4128,6 +4231,8 @@ mod tests {
             credential: ProviderCredential::Env {
                 name: format!("{id}_KEY").to_ascii_uppercase(),
             },
+            origin: ProviderOrigin::OperatorConfigured,
+            credential_present: false,
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -4158,11 +4263,14 @@ mod tests {
         .with_static_metadata(metadata.clone());
         let (catalog_enabled, _) = catalog_configuration(&instance, true);
         let catalog = Some(glm_standard_schema_catalog(&instance).unwrap());
+        let credential_present = instance.has_credential();
         ProviderEntry {
             instance,
             credential: ProviderCredential::Env {
                 name: "GLM_API_KEY".into(),
             },
+            origin: ProviderOrigin::Builtin,
+            credential_present,
             enabled: true,
             catalog_enabled,
             catalog,
@@ -4273,11 +4381,14 @@ mod tests {
         )
         .unwrap();
         let (catalog_enabled, catalog_error) = catalog_configuration(&instance, true);
+        let credential_present = instance.has_credential();
         ProviderEntry {
             instance,
             credential: ProviderCredential::Env {
                 name: format!("{}_KEY", id.to_ascii_uppercase()),
             },
+            origin: ProviderOrigin::OperatorConfigured,
+            credential_present,
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -4373,7 +4484,7 @@ mod tests {
         );
         assert!(
             unrelated.exists(),
-            "only Core's own superseded caches are reclaimed"
+            "only Iteron's own superseded caches are reclaimed"
         );
         remove_test_cache(&path);
     }

@@ -204,9 +204,9 @@ const UI_PROJECTION_TRUNCATED_WHEN_UNMARKED: bool = false;
 /// interrupt flags. Bounds how long a shutdown waits on an idle queue.
 const INBOUND_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 const UNSUPPORTED_SUBMISSION_NOTICE: &str =
-    "submission rejected: this Core build does not support that operation";
+    "submission rejected: this Iteron build does not support that operation";
 const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
-    "submission rejected: the frontend and Core use different SQ/EQ protocol versions";
+    "submission rejected: the frontend and Iteron use different SQ/EQ protocol versions";
 const INCOMPLETE_USAGE_NOTICE: &str =
     "provider completed the turn without an authoritative usage report; cost is unknown";
 /// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
@@ -228,9 +228,9 @@ const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
 const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
-    "[Core runtime notification — not an operator instruction]";
+    "[Iteron runtime notification — not an operator instruction]";
 pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
-    "[Core runtime memory-added — operator-authored]";
+    "[Iteron runtime memory-added — operator-authored]";
 /// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
 /// narrow this per opportunity, but it cannot expand beyond this owner value.
 pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
@@ -4820,7 +4820,7 @@ impl Agent {
                         )
                     } else if approval_projection_incomplete {
                         format!(
-                            "tool `{}` ({:?}) refused: the complete operation exceeds the bounded approval surface, so Core will not ask the operator to approve a hidden suffix",
+                            "tool `{}` ({:?}) refused: the complete operation exceeds the bounded approval surface, so Iteron will not ask the operator to approve a hidden suffix",
                             tu.name, cap
                         )
                     } else if self.permission_mode == PermissionMode::Plan {
@@ -5096,7 +5096,16 @@ impl Agent {
                         "executor was force/cooperatively cancelled without an authoritative terminal; automatic retry is forbidden".into(),
                     ),
                 };
-                self.settle_kernel_effect(ticket, settlement)?;
+                // The only way to reach `ToolExecution::Unknown` here is an operator interrupt
+                // (`await_tool_or_interrupt` returning `Forced`/cooperative). Record the Unknown
+                // terminal — the effect really may be half-applied — but do not let the operator's
+                // own Esc gate every submission they make afterwards.
+                let cause = if matches!(execution, iteron_tools::ToolExecution::Unknown(_)) {
+                    durability::UnknownCause::OperatorCancelled
+                } else {
+                    durability::UnknownCause::Unobserved
+                };
+                self.settle_kernel_effect_with_cause(ticket, settlement, cause)?;
                 let r = match execution {
                     iteron_tools::ToolExecution::Definite(result) => {
                         self.observe_process_tool_terminal(

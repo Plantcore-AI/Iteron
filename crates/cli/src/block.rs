@@ -722,13 +722,30 @@ fn render_notice(level: NoticeLevel, text: &str, width: u16, theme: &Theme) -> V
         NoticeLevel::Err => crate::semantic_text::Tone::Error,
         _ => crate::semantic_text::Tone::Body,
     };
-    let content = crate::semantic_text::spans(text, tone, theme);
-    marker_wrap(
-        &format!("{} ", primary_marker()),
-        Style::default().fg(color),
-        &content,
-        width,
-    )
+    // Wrap each LOGICAL line separately. `wrap_spans` breaks rows on display width only, and
+    // `char_width('\n')` is 0, so a newline inside a notice occupied no cell and produced no row
+    // break: a multi-line notice (streamed process output, most of all) rendered as one run-on
+    // line with its own line endings silently eaten.
+    let marker = format!("{} ", primary_marker());
+    let marker_width = marker.chars().map(crate::tui::char_width).sum::<u16>();
+    let indent = " ".repeat(marker_width as usize);
+    let body_width = width.saturating_sub(marker_width);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for logical in text.split('\n') {
+        let content = crate::semantic_text::spans(logical, tone, theme);
+        // An empty logical line still yields one row, which is what preserves blank lines.
+        for row in wrap_spans(&content, body_width) {
+            let lead = if out.is_empty() {
+                Span::styled(marker.clone(), Style::default().fg(color))
+            } else {
+                Span::raw(indent.clone())
+            };
+            let mut spans = vec![lead];
+            spans.extend(row.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 pub(crate) fn workflow_status_label(status: WorkflowStatus) -> &'static str {

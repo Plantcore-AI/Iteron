@@ -4,6 +4,17 @@ use super::*;
 /// snapshot at all, so the audit argument stays present and content-free.
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
 
+/// Why an effect settled `Unknown`. Only `Unobserved` gates future submissions; see
+/// [`Agent::settle_kernel_effect_with_cause`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UnknownCause {
+    /// Nobody observed a terminal — the crash window the at-most-once gate exists for.
+    Unobserved,
+    /// The operator cancelled it. Recorded, never auto-retried, but not a reason to refuse
+    /// everything they type next.
+    OperatorCancelled,
+}
+
 impl Agent {
     /// Admit the compatibility Stop hook to the session-owned observer without putting arbitrary
     /// operator code between AnswerComplete and RunEnded/InputReady. The activity start is emitted
@@ -364,7 +375,26 @@ impl Agent {
         ticket: effects::EffectTicket,
         settlement: effects::Settlement,
     ) -> Result<(), KernelError> {
-        let became_unknown = matches!(&settlement, effects::Settlement::Unknown(..));
+        self.settle_kernel_effect_with_cause(ticket, settlement, UnknownCause::Unobserved)
+    }
+
+    /// Same terminal, but says WHY an `Unknown` is unknown.
+    ///
+    /// The blocking latch exists to refuse blind replay across a crash window: a process died
+    /// between a durable intent and its terminal, so nobody can say whether the effect landed.
+    /// An operator who pressed Esc twice is none of that. They are present, they caused the stop,
+    /// and they are explicitly asking to keep working. Latching on their own cancellation bricked
+    /// every later submission in the process — the journal still records the Unknown terminal, so
+    /// nothing is hidden and automatic retry stays forbidden; only the gate on FUTURE operator
+    /// work is lifted.
+    pub(super) fn settle_kernel_effect_with_cause(
+        &mut self,
+        ticket: effects::EffectTicket,
+        settlement: effects::Settlement,
+        cause: UnknownCause,
+    ) -> Result<(), KernelError> {
+        let became_unknown = matches!(&settlement, effects::Settlement::Unknown(..))
+            && matches!(cause, UnknownCause::Unobserved);
         match effects::settle_effect(&mut self.rollout, ticket, settlement) {
             Ok(()) => {
                 if became_unknown {

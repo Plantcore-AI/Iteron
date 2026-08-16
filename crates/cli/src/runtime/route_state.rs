@@ -242,12 +242,17 @@ impl Agent {
             self.record_model_router_abstention(turn, source, "invalid_route_metadata")?;
             return Err(error);
         }
+        // The session's request controls are resolved once, against the launch route, and are
+        // immutable afterwards; every route the session may use has to be able to put them on the
+        // wire. A route the operator picks from `/model` is not in the composed route set, so it
+        // can be the first one that cannot — say which control it is and what would let this route
+        // in, because "unattested" alone leaves the operator with nothing to do.
         provider
             .control_capabilities()
             .validate(&self.provider_controls)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
+            .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
-                reason: "new provider route does not attest the immutable request controls",
+                reason: unattested_control_reason(error),
             })
             .or_else(|error| {
                 self.record_model_router_abstention(turn, source, "unsupported_request_controls")?;
@@ -314,9 +319,9 @@ impl Agent {
         provider
             .control_capabilities()
             .validate(&self.provider_controls)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
+            .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
-                reason: "new provider route does not attest the immutable request controls",
+                reason: unattested_control_reason(error),
             })?;
         let selected = self.append_model_selection(
             &provider,
@@ -602,6 +607,59 @@ impl Agent {
             return Err(KernelError::UnpricedUsdCeiling);
         }
         Ok(())
+    }
+}
+
+/// Operator-facing explanation of the one request control a candidate route cannot send.
+///
+/// Each arm names the control that failed and the single configuration knob that would let this
+/// route in, because the controls themselves cannot be relaxed while the session is running: they
+/// are part of the resolved, durably recorded settings, so the repair is always at the next launch.
+fn unattested_control_reason(error: iteron_provider::ControlError) -> &'static str {
+    use iteron_provider::ControlError;
+
+    match error {
+        ControlError::UnsupportedServiceTier(_) => {
+            "the selected route does not offer this session's service tier; request controls are \
+             fixed for the life of a session, so relaunch with provider_governor.service_tier at \
+             the provider default to use this route"
+        }
+        ControlError::UnsupportedVerbosity(_) => {
+            "the selected route does not accept this session's response verbosity; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.response_verbosity at the model default to use this route"
+        }
+        ControlError::UnsupportedCompression(_) => {
+            "the selected route does not accept this session's request compression; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.request_compression set to none to use this route"
+        }
+        ControlError::UnsupportedCacheBreakpoint(_) => {
+            "the selected route cannot mark prompt-cache breakpoints, which this session sends; \
+             request controls are fixed for the life of a session, so relaunch with \
+             provider_governor.prompt_cache.breakpoint set to none to use this route"
+        }
+        ControlError::UnsupportedCacheTtl(_) => {
+            "the selected route does not offer this session's prompt-cache lifetime; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.prompt_cache.ttl_seconds set to 0 to use this route"
+        }
+        ControlError::UnsupportedCacheScope(_) => {
+            "the selected route cannot preserve this session's prompt-cache scope; request \
+             controls are fixed for the life of a session, so relaunch with a \
+             provider_governor.prompt_cache.scope this route supports to use it"
+        }
+        ControlError::CacheToolInvalidationNotAttested => {
+            "the selected route does not invalidate its prompt cache when the tool catalog \
+             changes, which this session requires; request controls are fixed for the life of a \
+             session, so relaunch with provider_governor.prompt_cache.invalidate_on_tool_change \
+             set to false to use this route"
+        }
+        ControlError::IdempotencyNotAttested => {
+            "the selected route does not attest duplicate-safe requests, which this session's \
+             hedging requires; request controls are fixed for the life of a session, so relaunch \
+             with provider_governor.hedge.enabled set to false to use this route"
+        }
     }
 }
 

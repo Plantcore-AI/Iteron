@@ -114,7 +114,7 @@ impl KernelError {
                     .into()
             }
             Self::Pricing(_) | Self::PricingLedger(_) => {
-                "route pricing evidence failed validation; Core will not invent a dollar amount"
+                "route pricing evidence failed validation; Iteron will not invent a dollar amount"
                     .into()
             }
             Self::InvalidPermissionPolicy(reason) => {
@@ -127,22 +127,23 @@ impl KernelError {
                 "initial runtime policy was changed after the session record began".into()
             }
             Self::UnknownEffects { count } => format!(
-                "{count} external effect(s) have an unknown outcome; Core will not retry them"
+                "{count} external effect(s) have an unknown outcome; Iteron will not retry them"
             ),
             Self::EffectJournal(_) => {
-                "the durable effect journal is inconsistent; Core will not execute".into()
+                "the durable effect journal is inconsistent; Iteron will not execute".into()
             }
             Self::EffectBoundary(reason) => {
                 format!("effect boundary refused the dispatch: {reason}")
             }
             Self::IdentityExhausted(kind) => {
-                format!("{kind} identity space is exhausted; Core will not reuse an id")
+                format!("{kind} identity space is exhausted; Iteron will not reuse an id")
             }
             Self::InferenceBudgetExhausted(reason) => {
                 format!("provider request budget is exhausted: {reason}")
             }
             Self::OpaqueProviderRetries => {
-                "provider retry policy cannot be durably attributed; Core will not dispatch".into()
+                "provider retry policy cannot be durably attributed; Iteron will not dispatch"
+                    .into()
             }
             Self::ContextWindowExceeded {
                 estimated_input_tokens,

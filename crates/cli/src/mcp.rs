@@ -595,7 +595,7 @@ fn mcp_tool_execution(
         iteron_mcp::McpToolOutcome::Unknown { evidence, .. } => {
             iteron_tools::ToolExecution::Unknown(iteron_protocol::ToolResult {
                 tool_use_id,
-                content: "MCP request was dispatched but no authoritative terminal response was observed; remote outcome is unknown and Core will not retry it automatically".into(),
+                content: "MCP request was dispatched but no authoritative terminal response was observed; remote outcome is unknown and Iteron will not retry it automatically".into(),
                 is_error: true,
                 trust: iteron_protocol::Trust::Untrusted,
                 latency_ms: evidence.dispatch_to_terminal_ms.get(),

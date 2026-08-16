@@ -567,7 +567,7 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
         Err(error) => {
             let _ = try_input_control(input_control, InputThreadControl::Resume);
             return Err(format!(
-                "could not suspend the Core terminal for editing: {error}"
+                "could not suspend the Iteron terminal for editing: {error}"
             ));
         }
     };
@@ -581,7 +581,7 @@ pub(super) async fn external_edit_round_trip<B: ratatui::backend::Backend>(
     .await;
     let resumed = guard
         .resume_after_external_editor(desired_mouse)
-        .map_err(|error| format!("could not restore the Core terminal after editing: {error}"));
+        .map_err(|error| format!("could not restore the Iteron terminal after editing: {error}"));
     let _ = try_input_control(input_control, InputThreadControl::Resume);
     resumed?;
     term.clear()

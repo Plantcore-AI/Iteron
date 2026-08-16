@@ -1353,6 +1353,22 @@ const RUNTIME_UI_CAPACITY: usize = 256;
 const WORKFLOW_PROGRESS_CAPACITY: usize = 256;
 const WORKFLOW_SETTLED_CAPACITY: usize = 64;
 const PROCESS_OUTPUT_CAPACITY: usize = 256;
+/// Head bound on one published block of streamed process output. The producer already truncates
+/// each delta; this is the display-side ceiling that survives line reassembly.
+const PROCESS_OUTPUT_HEAD_BYTES: usize = 8 * 1024;
+/// Ceiling on the trailing partial line held back while waiting for its newline. A producer that
+/// never emits one — a prompt, a progress bar, a single enormous line — must still reach the
+/// transcript, so the hold is bounded rather than unbounded.
+const PROCESS_OUTPUT_PARTIAL_LINE_BYTES: usize = 8 * 1024;
+/// How long a held partial line waits for its newline before it is published unterminated. This is
+/// also what covers job exit: output deltas and process lifecycle notices travel on different
+/// channels, so an `Exited` notice can be observed BEFORE the job's last output chunk and flushing
+/// on it would split exactly the line this holds together.
+const PROCESS_OUTPUT_PARTIAL_LINE_GRACE: std::time::Duration =
+    std::time::Duration::from_millis(200);
+/// Ceiling on the number of `(job, stream)` pairs holding a partial line at once. Past it, deltas
+/// are published as they arrive rather than growing a per-job table with the job count.
+const PROCESS_OUTPUT_TRACKED_STREAMS: usize = 64;
 /// Memory held beside the bounded EQ while the frontend catches up. Reaching the ceiling applies
 /// backpressure and flushes; it never turns assistant/reasoning bytes into a last-write-wins slot.
 const MAX_PENDING_COSMETIC_BYTES: usize = 1024 * 1024;
@@ -2105,6 +2121,9 @@ impl AppServer {
                 )
                 .clamp(1, PROCESS_OUTPUT_CAPACITY),
             );
+        // Streamed process output must read like a terminal, so line assembly is session state:
+        // the producer's chunk boundaries are byte budgets, not line boundaries.
+        let mut process_output = ProcessOutputAssembler::default();
         // MCP cancellation/restart/stop must remain reachable while the turn is blocked in an MCP
         // request. This clone addresses the same session-owned actors as the registry proxies.
         let mcp_runtime = agent.mcp_runtime_control();
@@ -2350,6 +2369,7 @@ impl AppServer {
             } else if let Some(notification) = pending_runtime.pop_front() {
                 TurnTrigger::Runtime(notification)
             } else {
+                let process_output_flush_at = process_output.next_flush();
                 tokio::select! {
                     biased;
                     Some(queued) = priority_submissions.recv() => {
@@ -2400,7 +2420,14 @@ impl AppServer {
                         continue
                     }
                     Some((job_id, stderr, bytes, skipped)) = process_output_rx.recv() => {
-                        publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+                        process_output.accept(&mut events, job_id, stderr, bytes, skipped).await;
+                        continue
+                    }
+                    // A line that never got its newline still has to reach the transcript. Polled
+                    // after the delta arm so newly arrived bytes always get the chance to complete
+                    // it first, and inert (an always-pending future) while nothing is held.
+                    () = process_output_flush_due(process_output_flush_at) => {
+                        process_output.flush_due(&mut events).await;
                         continue
                     }
                     Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
@@ -2694,6 +2721,7 @@ impl AppServer {
                 };
                 tokio::pin!(running);
                 loop {
+                    let process_output_flush_at = process_output.next_flush();
                     tokio::select! {
                         // Biased so the event stream is served before the turn is polled
                         // again: a burst of deltas must reach the frontend while the turn
@@ -2743,7 +2771,10 @@ impl AppServer {
                             }
                         }
                         Some((job_id, stderr, bytes, skipped)) = process_output_rx.recv() => {
-                            publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+                            process_output.accept(&mut events, job_id, stderr, bytes, skipped).await;
+                        }
+                        () = process_output_flush_due(process_output_flush_at) => {
+                            process_output.flush_due(&mut events).await;
                         }
                         Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
                             publish_stop_hook_observation(&mut events, observation).await;
@@ -3105,8 +3136,12 @@ impl AppServer {
             while let Ok(settled) = settled_rx.try_recv() {
                 pending_runtime.push_back(publish_settled(&mut events, settled).await);
             }
+            // Drain, but do NOT force a flush here: a turn boundary is not a line boundary, and
+            // the grace deadline in the outer loop publishes whatever is still held.
             while let Ok((job_id, stderr, bytes, skipped)) = process_output_rx.try_recv() {
-                publish_process_output(&mut events, job_id, stderr, bytes, skipped).await;
+                process_output
+                    .accept(&mut events, job_id, stderr, bytes, skipped)
+                    .await;
             }
             if let Some(observer) = &mut stop_hooks {
                 while let Ok(observation) = observer.observations.try_recv() {
@@ -3335,6 +3370,10 @@ impl AppServer {
                 .await;
         }
 
+        // A held partial line is real output, not scratch state. Publish whatever line assembly is
+        // still holding before the session's terminal record closes.
+        process_output.flush_all(&mut events).await;
+
         // SESSION EXIT WITH A RUN STILL LIVE.
         //
         // The three candidate policies were: refuse to exit, kill, or let it finish alone. The
@@ -3510,28 +3549,214 @@ async fn receive_stop_hook_observation(
     }
 }
 
-async fn publish_process_output(
-    events: &mut EventPublisher,
-    job_id: String,
-    stderr: bool,
-    bytes: Vec<u8>,
-    skipped: u64,
-) {
-    let stream = if stderr { "stderr" } else { "stdout" };
-    let decoded = String::from_utf8_lossy(&bytes);
-    let scrubbed = iteron_record::redact::scrub(&decoded);
-    let bounded = iteron_protocol::text::head(&scrubbed, 8 * 1024);
-    let gap = if skipped == 0 {
-        String::new()
-    } else {
-        format!(" · {skipped} live chunk(s) coalesced; terminal output remains authoritative")
-    };
-    let _ = events
-        .publish(ServerEvent::Ui(UiEvent::Notice(format!(
-            "process {} {stream}{gap}\n{bounded}",
-            job_id
-        ))))
-        .await;
+/// Wait until a held partial process-output line is due, or forever when nothing is held. Mirrors
+/// [`receive_stop_hook_observation`]: an always-pending future keeps the `select!` arm inert rather
+/// than making every caller carry a conditional guard.
+async fn process_output_flush_due(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// One live process stream's line-assembly state.
+#[derive(Debug, Default)]
+struct ProcessOutputStream {
+    /// Raw bytes after the last newline seen so far.
+    ///
+    /// Held back for two reasons. The obvious one: the producer chunks on an 8 KiB read budget
+    /// (`crates/tools/src/process/actor.rs`), so a chunk boundary lands wherever the pipe happened
+    /// to fill, and publishing it verbatim splits a line across two transcript blocks. The second:
+    /// that same boundary can fall inside a UTF-8 sequence, and decoding a half sequence turns it
+    /// into a replacement character permanently. Deferring both the split and the decode until the
+    /// newline arrives fixes them together.
+    partial: Vec<u8>,
+    /// When the held bytes must be published even without their newline.
+    publish_by: Option<tokio::time::Instant>,
+}
+
+/// Reassembles byte-budgeted process-output deltas into whole lines, and names each job once
+/// instead of once per chunk.
+#[derive(Debug, Default)]
+struct ProcessOutputAssembler {
+    streams: std::collections::BTreeMap<(String, bool), ProcessOutputStream>,
+    /// The `(job, stream)` the transcript last carried a header for.
+    ///
+    /// The transcript model has no "append to the previous block" event: `UiEvent::Notice` always
+    /// pushes a NEW block (`crates/cli/src/tui/event_projection.rs`), and the frozen `UiEvent`
+    /// vocabulary lives in `crates/cli/src/runtime.rs`, outside this seam. So the job id cannot be
+    /// written once above a growing block. The least noisy alternative available here is to label
+    /// the block that OPENS a run of one stream's output and stay silent while that same stream
+    /// keeps producing — the header returns the moment the stream changes, which is exactly what
+    /// keeps stderr distinguishable from stdout.
+    labelled: Option<(String, bool)>,
+}
+
+impl ProcessOutputAssembler {
+    fn stream_name(stderr: bool) -> &'static str {
+        if stderr { "stderr" } else { "stdout" }
+    }
+
+    fn head_bytes() -> usize {
+        iteron_tunables::param_integer(
+            "cli.app_server.process_output_head_bytes",
+            PROCESS_OUTPUT_HEAD_BYTES,
+        )
+        .clamp(1, PROCESS_OUTPUT_HEAD_BYTES)
+    }
+
+    fn partial_line_bytes() -> usize {
+        iteron_tunables::param_integer(
+            "cli.app_server.process_output_partial_line_bytes",
+            PROCESS_OUTPUT_PARTIAL_LINE_BYTES,
+        )
+        .clamp(1, PROCESS_OUTPUT_PARTIAL_LINE_BYTES)
+    }
+
+    fn tracked_streams() -> usize {
+        iteron_tunables::param_integer(
+            "cli.app_server.process_output_tracked_streams",
+            PROCESS_OUTPUT_TRACKED_STREAMS,
+        )
+        .clamp(1, PROCESS_OUTPUT_TRACKED_STREAMS)
+    }
+
+    /// The earliest moment a held partial line must be published, or `None` when nothing is held.
+    fn next_flush(&self) -> Option<tokio::time::Instant> {
+        self.streams
+            .values()
+            .filter_map(|stream| stream.publish_by)
+            .min()
+    }
+
+    /// Take one delta from the producer and publish whatever complete lines it completes.
+    async fn accept(
+        &mut self,
+        events: &mut EventPublisher,
+        job_id: String,
+        stderr: bool,
+        bytes: Vec<u8>,
+        skipped: u64,
+    ) {
+        if bytes.is_empty() && skipped == 0 {
+            return;
+        }
+        let key = (job_id, stderr);
+        if skipped > 0 {
+            // Bytes were dropped between what is held and what just arrived, so the two are no
+            // longer one line. Publish the held prefix on its own rather than splicing together a
+            // line that was never written.
+            self.flush(events, &key).await;
+        }
+        let mut stream = self.streams.remove(&key).unwrap_or_default();
+        if stream.partial.is_empty() && self.streams.len() >= Self::tracked_streams() {
+            // More concurrently unterminated streams than the table admits. Publishing the delta
+            // as it arrived is the degraded, still-bounded behaviour.
+            self.emit(events, &key, skipped, bytes).await;
+            return;
+        }
+        stream.partial.extend_from_slice(&bytes);
+        let ready = match stream.partial.iter().rposition(|byte| *byte == b'\n') {
+            Some(last) => {
+                let held = stream.partial.split_off(last + 1);
+                std::mem::replace(&mut stream.partial, held)
+            }
+            // No newline yet, and the hold has reached its ceiling: a line this long, or a producer
+            // that never terminates one, is published unterminated rather than buffered forever.
+            None if stream.partial.len() >= Self::partial_line_bytes() => {
+                std::mem::take(&mut stream.partial)
+            }
+            None => Vec::new(),
+        };
+        stream.publish_by = if stream.partial.is_empty() {
+            None
+        } else {
+            // Keep the ORIGINAL deadline: a trickle of newline-free bytes must not postpone the
+            // flush indefinitely.
+            Some(stream.publish_by.unwrap_or_else(|| {
+                tokio::time::Instant::now()
+                    + iteron_tunables::param_duration(
+                        "cli.app_server.process_output_partial_line_grace",
+                        PROCESS_OUTPUT_PARTIAL_LINE_GRACE,
+                    )
+            }))
+        };
+        if !stream.partial.is_empty() {
+            self.streams.insert(key.clone(), stream);
+        }
+        if !ready.is_empty() || skipped > 0 {
+            self.emit(events, &key, skipped, ready).await;
+        }
+    }
+
+    /// Publish every partial line whose grace period has expired.
+    async fn flush_due(&mut self, events: &mut EventPublisher) {
+        let now = tokio::time::Instant::now();
+        let due: Vec<(String, bool)> = self
+            .streams
+            .iter()
+            .filter(|(_, stream)| stream.publish_by.is_some_and(|at| at <= now))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in due {
+            self.flush(events, &key).await;
+        }
+    }
+
+    /// Publish everything still held. Used at session exit so a job's last line is not lost.
+    async fn flush_all(&mut self, events: &mut EventPublisher) {
+        let keys: Vec<(String, bool)> = self.streams.keys().cloned().collect();
+        for key in keys {
+            self.flush(events, &key).await;
+        }
+    }
+
+    async fn flush(&mut self, events: &mut EventPublisher, key: &(String, bool)) {
+        let Some(stream) = self.streams.remove(key) else {
+            return;
+        };
+        if stream.partial.is_empty() {
+            return;
+        }
+        self.emit(events, key, 0, stream.partial).await;
+    }
+
+    async fn emit(
+        &mut self,
+        events: &mut EventPublisher,
+        key: &(String, bool),
+        skipped: u64,
+        payload: Vec<u8>,
+    ) {
+        let decoded = String::from_utf8_lossy(&payload);
+        let scrubbed = iteron_record::redact::scrub(&decoded);
+        let bounded = iteron_protocol::text::head(&scrubbed, Self::head_bytes());
+        // Complete lines carry their terminator; it would render as a trailing blank row.
+        let body = bounded.strip_suffix('\n').unwrap_or(bounded.as_str());
+        let mut message = String::new();
+        if self.labelled.as_ref() != Some(key) {
+            message.push_str("process ");
+            message.push_str(&key.0);
+            message.push(' ');
+            message.push_str(Self::stream_name(key.1));
+            self.labelled = Some(key.clone());
+            if skipped > 0 || !body.is_empty() {
+                message.push('\n');
+            }
+        }
+        if skipped > 0 {
+            message.push_str(&format!(
+                "· {skipped} live chunk(s) coalesced; terminal output remains authoritative"
+            ));
+            if !body.is_empty() {
+                message.push('\n');
+            }
+        }
+        message.push_str(body);
+        let _ = events
+            .publish(ServerEvent::Ui(UiEvent::Notice(message)))
+            .await;
+    }
 }
 
 async fn publish_stop_hook_observation(
