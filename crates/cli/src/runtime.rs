@@ -1856,6 +1856,21 @@ pub struct Agent {
     verification_quarantine_restored: bool,
     latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
     last_workspace_checkpoint_turn: Option<u32>,
+    /// Did anything in THIS operator turn actually write to the workspace?
+    ///
+    /// Cleared when a submission is admitted, latched by every tool effect this turn admitted that
+    /// is not provably read-only (see [`Agent::note_tool_effect_capability`]). Only the
+    /// BEST-EFFORT end-of-turn checkpoint consults it, so a pure question-and-answer turn performs
+    /// no Git work at all. Every `required` checkpoint — the drain recovery point, verification
+    /// recovery — remains unconditional: those promise a resumable workspace, not a diff.
+    turn_mutated_workspace: bool,
+    /// Did the operator ASK for orchestration in the words of this submission?
+    ///
+    /// Set from the operator-typed text only — never from rendered file attachments, whose bytes
+    /// the operator did not choose. A keyword opts THIS turn in; it deliberately does not touch
+    /// the session's persisted effort or its thinking budget, because a word in a prompt must not
+    /// silently move the operator to a different billing tier.
+    turn_orchestration_requested: bool,
     /// Most recent pre-submission workspace state eligible for an operator-authorised verification
     /// rollback. The append-only journal records the snapshot identity; this handle never rewrites
     /// conversation history.
@@ -2156,6 +2171,8 @@ impl Agent {
         content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
         let input_images = content.images().cloned().collect();
+        self.turn_orchestration_requested =
+            crate::keyword_trigger::requests_orchestration(content.text());
         self.run_with_images(content.text(), input_images).await
     }
 
@@ -2274,8 +2291,9 @@ impl Agent {
         })?;
         let input_images = staged_images.images();
         let orchestrate = allow_orchestration
-            && self.effort_orchestration(self.effort)
-                == iteron_protocol::OrchestrationMode::Orchestrated
+            && (self.turn_orchestration_requested
+                || self.effort_orchestration(self.effort)
+                    == iteron_protocol::OrchestrationMode::Orchestrated)
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
@@ -2549,6 +2567,10 @@ impl Agent {
         // merged into its trailing user message by `admit_submission`. One full pass per SUBMISSION
         // is the price of constant-time accounting per TURN.
         self.context_estimator.invalidate_transcript();
+        // Per-OPERATOR-turn, not per model round: the tools run in one iteration of the loop below
+        // and the terminal checkpoint happens in a later one, so clearing this inside the loop
+        // would discard exactly the writes the checkpoint exists to capture.
+        self.turn_mutated_workspace = false;
 
         loop {
             let mut agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
@@ -4062,6 +4084,10 @@ impl Agent {
                         // is configured, run it (strong oracle) ourselves; on failure, refuse the
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
+                            // The strong oracle runs repo-controlled code (build, test, install).
+                            // It is not a tool effect, but it is a write path, so the turn that
+                            // ran it is never treated as read-only for checkpoint purposes.
+                            self.turn_mutated_workspace = true;
                             agent_loop.transition(AgentLoopState::Verifying)?;
                             let max_verify_attempts = self.verification_policy.retry.max_attempts;
                             // Defensive guard for re-entry with an already-exhausted Agent. A
@@ -4981,6 +5007,7 @@ impl Agent {
                     },
                 );
                 let intent = proposal.admit(CapabilitySet::only(base_cap));
+                self.note_tool_effect_capability(cap);
                 let effect = effects::BrokeredEffect {
                     turn: turn_id,
                     effect_id: registry_effect_id.clone(),
@@ -5323,6 +5350,10 @@ impl Agent {
                     .into(),
             )
         })?;
+        // A hook command is repo-controlled code, so it can write even around a read-only tool.
+        // This line is only reachable from a turn that already made tool calls, so counting it
+        // never costs a pure question-and-answer turn its zero-Git-work property.
+        self.turn_mutated_workspace = true;
         let class = effect_class::EffectClass::Hook;
         let hook_activity = self
             .activity
@@ -5525,6 +5556,9 @@ impl Agent {
                     .into(),
             )
         })?;
+        // Same reasoning as the pre-tool gate: a PostToolUse hook (a formatter, a codegen step) is
+        // repo-controlled code that can write behind a read-only tool.
+        self.turn_mutated_workspace = true;
         let class = effect_class::EffectClass::Hook;
         let mut tickets = Vec::with_capacity(completed.len());
         for (index, _) in completed.iter().enumerate() {
@@ -5659,6 +5693,7 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
+            self.note_tool_effect_capability(capability);
             let effect = effects::BrokeredEffect {
                 turn: turn_id,
                 effect_id: effect_id.clone(),
@@ -5970,6 +6005,17 @@ impl Agent {
     /// The specialised inner effects stay exactly where they are: `spawn_subagent` still opens its
     /// `Subagent` effect around the child, and the workflow branch still opens its `Workflow`
     /// effect around the launch. This admits the *tool call*, which is a different fact.
+    /// Latch "this turn touched the workspace" from the capability a tool effect was admitted
+    /// under. This is the ONE place the classification is made, and it is deliberately
+    /// conservative: only [`Capability::ReadOnly`] is *proven* not to write. `CodeExecuting` covers
+    /// an opaque shell command, and `IrreversibleExternal` can still leave a local artifact behind
+    /// the egress, so both count. Latched at admission rather than at completion so a tool that
+    /// crossed the boundary and then died mid-write — the case that most wants a recovery point —
+    /// still earns the end-of-turn checkpoint.
+    fn note_tool_effect_capability(&mut self, capability: Capability) {
+        self.turn_mutated_workspace |= capability != Capability::ReadOnly;
+    }
+
     fn open_tool_call_effect(
         &mut self,
         turn: TurnId,
@@ -5977,6 +6023,7 @@ impl Agent {
         call: &ToolUse,
         capability: Capability,
     ) -> Result<effects::EffectTicket, KernelError> {
+        self.note_tool_effect_capability(capability);
         let effect_id =
             effect_class::effect_id(turn, effect_class::EffectClass::RegistryTool, ordinal);
         self.tool_lifecycle_event(
@@ -6385,6 +6432,14 @@ impl Agent {
         tokio::task::yield_now().await;
         if outcome != Outcome::Drained
             && self.verification_policy.checkpoint.turn_boundary
+            // A checkpoint of an unchanged tree costs a full workspace copy and produces a
+            // snapshot identical to the previous one. A question-and-answer turn admitted no
+            // effect that could write, so there is nothing to recover to that is not already
+            // recovered; it does no Git work at all. Required checkpoints do not consult this.
+            // An interrupt is exempt: it can land mid-effect, so "this process observed no
+            // completed write" does not prove the tree is unchanged, and an interrupted turn's
+            // recoverability is a stated boundary guarantee, not a best-effort convenience.
+            && (self.turn_mutated_workspace || outcome == Outcome::Interrupted)
             && self.verification_checkpoint_interval_elapsed(turn)
         {
             // Ordinary turns already have an authoritative append-only conversation record. A
@@ -6393,10 +6448,19 @@ impl Agent {
             // harness failure. Explicit Drain remains fail-closed in `finish_drained` because its
             // promise is specifically a resumable workspace checkpoint.
             if self.checkpoint_at_turn_end(turn, false).is_err() {
-                self.ui(UiEvent::Notice(
-                    "automatic workspace checkpoint was unavailable; the conversation record is intact"
-                        .into(),
-                ));
+                // Not the operator's problem and not their decision: nothing they can do differs
+                // whether this snapshot exists, and every comparator harness is silent here. It is
+                // still not swallowed — the refused snapshot already settled a durable FAILED
+                // effect terminal in the run record, and this names the boundary that gave up on
+                // the same lifecycle plane every other non-user-facing failure reports on.
+                self.lifecycle_event(
+                    "checkpoint.failed",
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some("best_effort_turn_boundary".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
             }
         }
         if self.frontend_saturation.take_structural_refusal() {

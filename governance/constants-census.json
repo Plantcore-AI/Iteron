@@ -68,7 +68,7 @@
     "record": {
       "bounded": 30,
       "searchable": 22,
-      "structural": 46
+      "structural": 50
     },
     "sandbox": {
       "bounded": 6,
@@ -113,6 +113,6 @@
   },
   "schema_version": 1,
   "settable": 1380,
-  "structural": 760,
-  "total": 2140
+  "structural": 764,
+  "total": 2144
 }

@@ -343,6 +343,7 @@ impl Session {
                 mode: iteron_protocol::PermissionMode::default(),
                 effort: iteron_protocol::Effort::default(),
                 model: "test-model".into(),
+                provider_id: "test-provider".into(),
                 cost: iteron_obs::CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -550,18 +551,16 @@ fn visual_selected_effort(effort: Effort) -> String {
 
 /// Claude-style effort symbol, but derived from the adapter's observed application rather than the
 /// picker alone. Mapping and non-exact enforcement stay visible instead of being prettified away.
+///
+/// The ultracode suffix is decided ONCE, against the label the match produced, instead of being
+/// re-spelled inside each arm. It used to be spelled out in only two of the five arms, so
+/// `BudgetBased` — what the Anthropic adapter emits whenever there is extended thinking but no
+/// semantic effort knob — rendered `Effort::Max` and `Effort::Ultracode` byte-identically.
 fn effort_status_label(app: &App) -> String {
-    match app.effort_application {
-        Some(EffortApplication::Exact { requested }) => {
-            let exact = visual_reasoning_effort(requested);
-            if app.effort == Effort::Ultracode {
-                format!("{exact} · ultracode")
-            } else {
-                exact
-            }
-        }
+    let base = match app.effort_application {
+        Some(EffortApplication::Exact { requested }) => visual_reasoning_effort(requested),
         Some(EffortApplication::Mapped { requested, sent }) => {
-            let mapped = if requested == sent {
+            if requested == sent {
                 visual_reasoning_effort(sent)
             } else {
                 format!(
@@ -569,11 +568,6 @@ fn effort_status_label(app: &App) -> String {
                     visual_reasoning_effort(sent),
                     requested.label()
                 )
-            };
-            if app.effort == Effort::Ultracode {
-                format!("{mapped} · ultracode")
-            } else {
-                mapped
             }
         }
         Some(EffortApplication::BudgetBased { requested, .. }) => {
@@ -588,6 +582,14 @@ fn effort_status_label(app: &App) -> String {
             format!("{} · not enforced", visual_reasoning_effort(requested))
         }
         None => visual_selected_effort(app.effort),
+    };
+    // `visual_selected_effort` already carries the suffix for the no-application case (it is also
+    // the picker's renderer, which must stand alone), so the guard is what keeps the single
+    // application point from producing `… · ultracode · ultracode`.
+    if app.effort == Effort::Ultracode && !base.ends_with("· ultracode") {
+        format!("{base} · ultracode")
+    } else {
+        base
     }
 }
 
@@ -1820,6 +1822,7 @@ pub async fn run(
                 &mut notification_writer,
                 &interrupt,
                 &drain,
+                Some(&providers),
             );
             redraw = true;
         }
@@ -3019,6 +3022,40 @@ pub async fn run(
                                         app.editor.insert_str(&trimmed);
                                     }
                                 } else {
+                                    // The operator may ask for multi-agent orchestration in the
+                                    // prompt itself, not only through `/effort ultracode`. The
+                                    // detector reads the DRAFT — what was typed — rather than the
+                                    // expanded submission: pasted blocks are inert by design (see
+                                    // `submit_prepared_composer`), and bytes the operator did not
+                                    // write must never be able to escalate a turn.
+                                    //
+                                    // What this seam can and cannot do today: the request is
+                                    // detected and said out loud, but the turn is NOT re-routed,
+                                    // because there is no per-turn orchestration hook to set.
+                                    // Orchestration is decided in the resident runtime from the
+                                    // SESSION effort (`runtime.rs`: `let orchestrate =
+                                    // allow_orchestration && self.effort_orchestration(self.effort)
+                                    // == OrchestrationMode::Orchestrated && …`), and the only lever
+                                    // the frontend holds is `app_server::Control::SetEffort`, which
+                                    // moves the operator's persisted effort for every later turn
+                                    // too — and would race the submission besides, since the
+                                    // control channel and the SQ are separate. Closing this needs
+                                    // one boolean carried with the submission and OR'd into that
+                                    // predicate, in `app_server`/`runtime`.
+                                    if crate::keyword_trigger::requests_orchestration(&trimmed) {
+                                        let already = app.effort == Effort::Ultracode;
+                                        app.note(
+                                            block::NoticeLevel::Info,
+                                            if already {
+                                                "orchestration requested in the prompt · this \
+                                                 session is already ultracode"
+                                            } else {
+                                                "orchestration requested in the prompt · this turn \
+                                                 still runs at the session effort — `/effort \
+                                                 ultracode` enables internal fan-out"
+                                            },
+                                        );
+                                    }
                                     submit_composer(&mut app, &session, &mut notifier);
                                 }
                             }
@@ -4130,6 +4167,13 @@ fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line:
     // Keep it near the high-priority end, while effort remains an Iteron-specific semantic beside
     // it rather than being smuggled into the model field.
     groups.push(Group::single(canonical_statusline(app), Accent::Metadata));
+    // Ultracode is a harness MODE (internal fan-out orchestration), not just a thinking level, so
+    // it announces itself the way the permission mode does — its own segment, in the mode accent —
+    // immediately before the effort segment. The effort segment keeps its own ` · ultracode`
+    // suffix: this one says which mode is running, that one says what the adapter did with it.
+    if app.effort == Effort::Ultracode {
+        groups.push(Group::single("✦ ultracode", Accent::Mode));
+    }
     let effort = effort_status_label(app);
     groups.push(Group::single(effort, effort_status_accent(app)));
     groups
@@ -5459,8 +5503,11 @@ fn draw(f: &mut Frame, app: &mut App) {
             .track_symbol(Some("│"))
             .begin_symbol(None)
             .end_symbol(None)
+            // The track is a hairline BEHIND the thumb, so it must be the dimmer of the two.
+            // `code_bg` is a background token — `Color::Reset` in the default theme — and using it
+            // as a foreground painted the track brighter than the `muted` thumb.
             .thumb_style(Style::default().fg(app.theme.muted))
-            .track_style(Style::default().fg(app.theme.code_bg));
+            .track_style(Style::default().fg(app.theme.border));
         f.render_stateful_widget(sb, surface.scrollbar, &mut sb_state);
     }
 

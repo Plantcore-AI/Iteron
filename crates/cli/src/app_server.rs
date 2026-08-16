@@ -188,6 +188,11 @@ pub(crate) struct SessionSnapshot {
     pub(crate) mode: iteron_protocol::PermissionMode,
     pub(crate) effort: iteron_protocol::Effort,
     pub(crate) model: String,
+    /// The provider half of the live route. `model` alone cannot identify a route, so a runtime
+    /// failover that moved the turn to another provider was invisible to the status line: it kept
+    /// rendering the route selected at init (or by the last `/model`) forever. Empty means the
+    /// route is unbound and the frontend must keep whatever it already resolved.
+    pub(crate) provider_id: String,
     pub(crate) cost: iteron_obs::CostState,
     pub(crate) last_turn_usage: Option<iteron_protocol::Usage>,
     pub(crate) unadmitted_steers: Vec<String>,
@@ -4514,6 +4519,7 @@ mod tests {
             mode: iteron_protocol::PermissionMode::default(),
             effort: iteron_protocol::Effort::default(),
             model: "test-model".into(),
+            provider_id: "test-provider".into(),
             cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),

@@ -4,6 +4,12 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     literal_default!(list_value!()), // 86 model_fallback_chain
     literal_default!(list_value!(
         object_value!(
+            "error_class" => text_value!("provider.connect_failed"),
+            "eligible" => boolean_value!(true),
+            "dispatch_state" => enum_value!("pre_dispatch"),
+            "version" => text_value!("1.0.0"),
+        ),
+        object_value!(
             "error_class" => text_value!("provider.rate_limited"),
             "eligible" => boolean_value!(true),
             "dispatch_state" => enum_value!("post_dispatch"),

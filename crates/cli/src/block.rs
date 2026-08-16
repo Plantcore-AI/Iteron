@@ -1660,12 +1660,28 @@ fn hunk_start(header: &str) -> (u32, u32) {
     (old, new)
 }
 
-/// The lexer language hint for a file path — its extension, passed straight to the highlighter (its
-/// `spec_for` matches `rs`/`py`/`ts`/… directly). `None` → the generic lexer.
+/// The lexer language hint for a file path — normally its extension, passed straight to the
+/// highlighter (its `spec_for` matches `rs`/`py`/`ts`/… directly). `None` → no highlighting at all,
+/// which is the deliberate answer whenever we cannot NAME the language.
+///
+/// Extensionless build/config files are named, not suffixed, so a basename table is consulted
+/// FIRST: `Makefile`, `Dockerfile` and friends otherwise reach the extension split, find nothing,
+/// and render plain. Only names the highlighter actually has a `LangSpec` for are mapped; the rest
+/// (`Justfile`, `CMakeLists.txt`, the ignore files) map to `None` on purpose — a plain render beats
+/// a plausible-looking wrong lexer.
 fn lang_for_path(path: &str) -> Option<&str> {
-    path.rsplit('.')
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match base {
+        "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
+        "Dockerfile" | "Containerfile" => return Some("dockerfile"),
+        "Cargo.lock" => return Some("toml"),
+        // `just`, `cmake` and the gitignore grammar have no LangSpec — do not guess a near neighbor.
+        "Justfile" | "justfile" | "CMakeLists.txt" | ".gitignore" | ".dockerignore" => return None,
+        _ => {}
+    }
+    base.rsplit('.')
         .next()
-        .filter(|e| !e.is_empty() && *e != path)
+        .filter(|e| !e.is_empty() && *e != base)
 }
 
 /// The diff hunks: a dim `@@` header, then each row = a right-aligned `old│new` line-number gutter
@@ -1945,6 +1961,25 @@ fn fmt_dur(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::render::line_width;
+
+    #[test]
+    fn lang_for_path_reads_named_files_not_just_extensions() {
+        // Extensionless build files are NAMED, so the basename table runs before the extension split.
+        assert_eq!(lang_for_path("Makefile"), Some("make"));
+        assert_eq!(lang_for_path("sub/dir/GNUmakefile"), Some("make"));
+        assert_eq!(lang_for_path("docker/Dockerfile"), Some("dockerfile"));
+        assert_eq!(lang_for_path("Containerfile"), Some("dockerfile"));
+        assert_eq!(lang_for_path("Cargo.lock"), Some("toml"));
+        // Named, but with no LangSpec behind the name: plain, never a near-neighbor guess.
+        assert_eq!(lang_for_path("justfile"), None);
+        assert_eq!(lang_for_path("CMakeLists.txt"), None);
+        assert_eq!(lang_for_path(".gitignore"), None);
+        // Extensions still win everywhere else.
+        assert_eq!(lang_for_path("crates/cli/src/block.rs"), Some("rs"));
+        assert_eq!(lang_for_path("a/b.py"), Some("py"));
+        assert_eq!(lang_for_path("README"), None);
+        assert_eq!(lang_for_path("dir.d/README"), None);
+    }
 
     fn card(name: &str, args: serde_json::Value, status: ToolStatus, output: &str) -> Block {
         Block::new(

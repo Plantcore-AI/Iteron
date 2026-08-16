@@ -687,6 +687,13 @@ pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
         mode: agent.permission_mode(),
         effort: agent.effort(),
         model: agent.model.clone(),
+        // The provider half of the live route. A durable route commit (including the one a
+        // failover performs) republishes `agent.provider`, and admission proves that instance id
+        // equals the selected route's `provider_id`, so this is the selected route's provider.
+        // An unbound route reports the empty string rather than a guess.
+        provider_id: iteron_provider::Provider::provider_instance_id(agent.provider.as_ref())
+            .unwrap_or_default()
+            .to_owned(),
         cost: agent.ledger.cost_state(),
         last_turn_usage: agent.ledger.last_turn_usage,
         unadmitted_steers: agent.take_unadmitted_steers(),

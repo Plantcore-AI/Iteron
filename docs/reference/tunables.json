@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "dc588bbeb9ba589888a7617f928bdf25b91942e7a6d06faf795b7e7866d2034c"
+    "value": "888709a96acca2151b94e0276e80597d70aa6e2317947d53aa544b26a550b467"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 18,
+    "registry_revision": 19,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -11729,7 +11729,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "83c06ba06becea9439eb4608232f4b4197ccfd845d5e3617eced2bf22ed6e1af"
+          "value": "c593dda1a4b41f8305f74bff44404505c14876fc24835b5b78c56e2112a35169"
         },
         "schema_version": 3,
         "ordinal": 87,
@@ -11762,6 +11762,39 @@
           "value": {
             "type": "list",
             "items": [
+              {
+                "type": "object",
+                "fields": [
+                  {
+                    "name": "error_class",
+                    "value": {
+                      "type": "text",
+                      "value": "provider.connect_failed"
+                    }
+                  },
+                  {
+                    "name": "eligible",
+                    "value": {
+                      "type": "boolean",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "dispatch_state",
+                    "value": {
+                      "type": "enum",
+                      "value": "pre_dispatch"
+                    }
+                  },
+                  {
+                    "name": "version",
+                    "value": {
+                      "type": "text",
+                      "value": "1.0.0"
+                    }
+                  }
+                ]
+              },
               {
                 "type": "object",
                 "fields": [

@@ -1,6 +1,9 @@
 {
   "schema_version": 1,
-  "enforcement": { "mode": "bootstrap", "project_owner": "core-owner" },
+  "enforcement": {
+    "mode": "bootstrap",
+    "project_owner": "core-owner"
+  },
   "people": [
     {
       "id": "core-owner",
@@ -20,15 +23,40 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": ".github/CODEOWNERS" },
-        { "kind": "file", "path": "AGENTS.md" },
-        { "kind": "file", "path": "GOVERNANCE.md" },
-        { "kind": "file", "path": "LICENSE" },
-        { "kind": "file", "path": "OWNERSHIP.md" },
-        { "kind": "tree", "path": "governance" }
+        {
+          "kind": "file",
+          "path": ".github/CODEOWNERS"
+        },
+        {
+          "kind": "file",
+          "path": "AGENTS.md"
+        },
+        {
+          "kind": "file",
+          "path": "GOVERNANCE.md"
+        },
+        {
+          "kind": "file",
+          "path": "LICENSE"
+        },
+        {
+          "kind": "file",
+          "path": "OWNERSHIP.md"
+        },
+        {
+          "kind": "tree",
+          "path": "governance"
+        }
       ],
-      "contracts": ["owner-override", "one-human-one-agent", "dynamic-boundary-registry", "open-source-license"],
-      "checks": ["iteron-xtask boundaries check"]
+      "contracts": [
+        "owner-override",
+        "one-human-one-agent",
+        "dynamic-boundary-registry",
+        "open-source-license"
+      ],
+      "checks": [
+        "iteron-xtask boundaries check"
+      ]
     },
     {
       "id": "community-entry",
@@ -39,16 +67,42 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": ".github/ISSUE_TEMPLATE" },
-        { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
-        { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
-        { "kind": "file", "path": "CONTRIBUTING.md" },
-        { "kind": "file", "path": "README.md" },
-        { "kind": "file", "path": "README.zh-CN.md" },
-        { "kind": "file", "path": "SUPPORT.md" }
+        {
+          "kind": "tree",
+          "path": ".github/ISSUE_TEMPLATE"
+        },
+        {
+          "kind": "file",
+          "path": ".github/PULL_REQUEST_TEMPLATE.md"
+        },
+        {
+          "kind": "file",
+          "path": "CODE_OF_CONDUCT.md"
+        },
+        {
+          "kind": "file",
+          "path": "CONTRIBUTING.md"
+        },
+        {
+          "kind": "file",
+          "path": "README.md"
+        },
+        {
+          "kind": "file",
+          "path": "README.zh-CN.md"
+        },
+        {
+          "kind": "file",
+          "path": "SUPPORT.md"
+        }
       ],
-      "contracts": ["issue-to-boundary-to-pr", "human-accountability"],
-      "checks": ["iteron-xtask boundaries check"]
+      "contracts": [
+        "issue-to-boundary-to-pr",
+        "human-accountability"
+      ],
+      "checks": [
+        "iteron-xtask boundaries check"
+      ]
     },
     {
       "id": "security-policy",
@@ -59,10 +113,18 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "SECURITY.md" }
+        {
+          "kind": "file",
+          "path": "SECURITY.md"
+        }
       ],
-      "contracts": ["responsible-disclosure", "security-support-boundary"],
-      "checks": ["iteron-xtask boundaries check"]
+      "contracts": [
+        "responsible-disclosure",
+        "security-support-boundary"
+      ],
+      "checks": [
+        "iteron-xtask boundaries check"
+      ]
     },
     {
       "id": "architecture-roadmap",
@@ -73,13 +135,30 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "docs/architecture.md" },
-        { "kind": "tree", "path": "docs/concepts" },
-        { "kind": "file", "path": "docs/roadmap.md" },
-        { "kind": "tree", "path": "docs/spec" }
+        {
+          "kind": "file",
+          "path": "docs/architecture.md"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/concepts"
+        },
+        {
+          "kind": "file",
+          "path": "docs/roadmap.md"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/spec"
+        }
       ],
-      "contracts": ["current-implementation-truth", "microkernel-roadmap"],
-      "checks": ["iteron-xtask boundaries check"]
+      "contracts": [
+        "current-implementation-truth",
+        "microkernel-roadmap"
+      ],
+      "checks": [
+        "iteron-xtask boundaries check"
+      ]
     },
     {
       "id": "documentation-site",
@@ -90,19 +169,58 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "docs/_mkdocs_hooks.py" },
-        { "kind": "tree", "path": "docs/assets" },
-        { "kind": "tree", "path": "docs/development" },
-        { "kind": "tree", "path": "docs/getting-started" },
-        { "kind": "file", "path": "docs/index.md" },
-        { "kind": "file", "path": "docs/maintainer-onboarding.md" },
-        { "kind": "tree", "path": "docs/project" },
-        { "kind": "tree", "path": "docs/reference" },
-        { "kind": "file", "path": "docs/repository-enforcement.md" },
-        { "kind": "tree", "path": "docs/using" },
-        { "kind": "file", "path": "mkdocs.yml" },
-        { "kind": "file", "path": "requirements-docs.in" },
-        { "kind": "file", "path": "requirements-docs.lock" }
+        {
+          "kind": "file",
+          "path": "docs/_mkdocs_hooks.py"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/assets"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/development"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/getting-started"
+        },
+        {
+          "kind": "file",
+          "path": "docs/index.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/maintainer-onboarding.md"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/project"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/reference"
+        },
+        {
+          "kind": "file",
+          "path": "docs/repository-enforcement.md"
+        },
+        {
+          "kind": "tree",
+          "path": "docs/using"
+        },
+        {
+          "kind": "file",
+          "path": "mkdocs.yml"
+        },
+        {
+          "kind": "file",
+          "path": "requirements-docs.in"
+        },
+        {
+          "kind": "file",
+          "path": "requirements-docs.lock"
+        }
       ],
       "contracts": [
         "documentation-build-reproducibility",
@@ -124,18 +242,54 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": ".github/actionlint.yaml" },
-        { "kind": "file", "path": ".github/dependabot.yml" },
-        { "kind": "tree", "path": ".github/workflows" },
-        { "kind": "file", "path": ".gitattributes" },
-        { "kind": "file", "path": ".gitleaksignore" },
-        { "kind": "file", "path": ".gitignore" },
-        { "kind": "file", "path": "CHANGELOG.md" },
-        { "kind": "file", "path": "Cargo.lock" },
-        { "kind": "file", "path": "Cargo.toml" },
-        { "kind": "file", "path": "install.sh" },
-        { "kind": "tree", "path": "release-tools" },
-        { "kind": "tree", "path": "xtask" }
+        {
+          "kind": "file",
+          "path": ".github/actionlint.yaml"
+        },
+        {
+          "kind": "file",
+          "path": ".github/dependabot.yml"
+        },
+        {
+          "kind": "tree",
+          "path": ".github/workflows"
+        },
+        {
+          "kind": "file",
+          "path": ".gitattributes"
+        },
+        {
+          "kind": "file",
+          "path": ".gitleaksignore"
+        },
+        {
+          "kind": "file",
+          "path": ".gitignore"
+        },
+        {
+          "kind": "file",
+          "path": "CHANGELOG.md"
+        },
+        {
+          "kind": "file",
+          "path": "Cargo.lock"
+        },
+        {
+          "kind": "file",
+          "path": "Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "install.sh"
+        },
+        {
+          "kind": "tree",
+          "path": "release-tools"
+        },
+        {
+          "kind": "tree",
+          "path": "xtask"
+        }
       ],
       "contracts": [
         "workspace-dependency-baseline",
@@ -144,7 +298,11 @@
         "verified-release-supply-chain",
         "atomic-no-sudo-install"
       ],
-      "checks": ["cargo fmt --all -- --check", "iteron-xtask boundaries check", "release-tools/validate.sh"]
+      "checks": [
+        "cargo fmt --all -- --check",
+        "iteron-xtask boundaries check",
+        "release-tools/validate.sh"
+      ]
     },
     {
       "id": "protocol-compat",
@@ -155,9 +313,17 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/protocol" }
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        }
       ],
-      "contracts": ["runtime-protocol", "durable-event-schema", "permission-schema", "sqeq-version-lockstep"],
+      "contracts": [
+        "runtime-protocol",
+        "durable-event-schema",
+        "permission-schema",
+        "sqeq-version-lockstep"
+      ],
       "checks": [
         "cargo test -p iteron-protocol --locked",
         "iteron-xtask boundaries check-base --base <rev>",
@@ -173,16 +339,43 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/kernel/src/driver.rs" },
-        { "kind": "file", "path": "crates/kernel/src/driver_tests.rs" },
-        { "kind": "file", "path": "crates/kernel/src/reducer.rs" },
-        { "kind": "file", "path": "crates/kernel/src/reducer_tests.rs" },
-        { "kind": "file", "path": "crates/kernel/src/turn_action.rs" },
-        { "kind": "file", "path": "crates/kernel/src/turn_command.rs" },
-        { "kind": "file", "path": "crates/kernel/src/turn_protocol.rs" },
-        { "kind": "file", "path": "crates/kernel/src/turn_state.rs" }
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/driver.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/driver_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/reducer.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/reducer_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/turn_action.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/turn_command.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/turn_protocol.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/turn_state.rs"
+        }
       ],
-      "contracts": ["pure-reduction", "bounded-queues"],
+      "contracts": [
+        "pure-reduction",
+        "bounded-queues"
+      ],
       "checks": [
         "cargo test -p iteron-kernel reducer --locked",
         "cargo test -p iteron-kernel driver --locked"
@@ -197,14 +390,35 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/kernel/Cargo.toml" },
-        { "kind": "file", "path": "crates/kernel/src/admission.rs" },
-        { "kind": "file", "path": "crates/kernel/src/diagnostics.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/kernel/src/ports.rs" }
+        {
+          "kind": "file",
+          "path": "crates/kernel/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/diagnostics.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/ports.rs"
+        }
       ],
-      "contracts": ["turn-state-machine", "bounded-run", "single-writer"],
-      "checks": ["cargo test -p iteron-kernel --locked"]
+      "contracts": [
+        "turn-state-machine",
+        "bounded-run",
+        "single-writer"
+      ],
+      "checks": [
+        "cargo test -p iteron-kernel --locked"
+      ]
     },
     {
       "id": "kernel-effects",
@@ -215,13 +429,31 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/kernel/src/effect_admission.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_boundary_tests.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_class.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_journal.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effects.rs" }
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_boundary_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_class.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effects.rs"
+        }
       ],
-      "contracts": ["intent-execute-terminal", "unknown-effect-block"],
+      "contracts": [
+        "intent-execute-terminal",
+        "unknown-effect-block"
+      ],
       "checks": [
         "cargo test -p iteron-kernel effect --locked"
       ]
@@ -235,11 +467,22 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/runtime/telemetry.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime/telemetry" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/telemetry.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/telemetry"
+        }
       ],
-      "contracts": ["trusted-hook-origin", "bounded-hook-process"],
-      "checks": ["cargo test -p iteron-cli telemetry --locked"]
+      "contracts": [
+        "trusted-hook-origin",
+        "bounded-hook-process"
+      ],
+      "checks": [
+        "cargo test -p iteron-cli telemetry --locked"
+      ]
     },
     {
       "id": "kernel-hooks",
@@ -250,11 +493,22 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/runtime/hooks.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime/hooks" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/hooks.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/hooks"
+        }
       ],
-      "contracts": ["trusted-hook-origin", "bounded-hook-process"],
-      "checks": ["cargo test -p iteron-cli hooks --locked"]
+      "contracts": [
+        "trusted-hook-origin",
+        "bounded-hook-process"
+      ],
+      "checks": [
+        "cargo test -p iteron-cli hooks --locked"
+      ]
     },
     {
       "id": "record-core",
@@ -265,24 +519,76 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/record/Cargo.toml" },
-        { "kind": "file", "path": "crates/record/src/append_actor.rs" },
-        { "kind": "file", "path": "crates/record/src/checkpoint.rs" },
-        { "kind": "file", "path": "crates/record/src/content_store.rs" },
-        { "kind": "tree", "path": "crates/record/src/content_store" },
-        { "kind": "file", "path": "crates/record/src/erasure.rs" },
-        { "kind": "file", "path": "crates/record/src/erasure_tests.rs" },
-        { "kind": "file", "path": "crates/record/src/lib.rs" },
-        { "kind": "file", "path": "crates/record/src/policy_bundle.rs" },
-        { "kind": "file", "path": "crates/record/src/redact.rs" },
-        { "kind": "file", "path": "crates/record/src/resolved_fixture.rs" },
-        { "kind": "file", "path": "crates/record/src/tunables.rs" },
-        { "kind": "tree", "path": "crates/record/src/tunables" },
-        { "kind": "file", "path": "crates/record/src/tunables_tests.rs" },
-        { "kind": "tree", "path": "crates/record/tests" }
+        {
+          "kind": "file",
+          "path": "crates/record/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/append_actor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/checkpoint.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/content_store.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record/src/content_store"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/erasure.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/erasure_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/policy_bundle.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/redact.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/resolved_fixture.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/tunables.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record/src/tunables"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/tunables_tests.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record/tests"
+        }
       ],
-      "contracts": ["append-only-record", "hash-chain", "torn-tail-recovery", "secret-redaction"],
-      "checks": ["cargo test -p iteron-record --locked"]
+      "contracts": [
+        "append-only-record",
+        "hash-chain",
+        "torn-tail-recovery",
+        "secret-redaction"
+      ],
+      "checks": [
+        "cargo test -p iteron-record --locked"
+      ]
     },
     {
       "id": "record-sessions",
@@ -293,12 +599,26 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/record/src/cache_io.rs" },
-        { "kind": "file", "path": "crates/record/src/session.rs" },
-        { "kind": "file", "path": "crates/record/src/session_private_cache.rs" }
+        {
+          "kind": "file",
+          "path": "crates/record/src/cache_io.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/session.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/session_private_cache.rs"
+        }
       ],
-      "contracts": ["fork-aware-replay", "tenant-scoped-session"],
-      "checks": ["cargo test -p iteron-record session --locked"]
+      "contracts": [
+        "fork-aware-replay",
+        "tenant-scoped-session"
+      ],
+      "checks": [
+        "cargo test -p iteron-record session --locked"
+      ]
     },
     {
       "id": "observability",
@@ -309,10 +629,19 @@
       "primary": "core-owner",
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/obs" }
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        }
       ],
-      "contracts": ["cost-state", "usage-ledger", "no-invented-price"],
-      "checks": ["cargo test -p iteron-obs --locked"]
+      "contracts": [
+        "cost-state",
+        "usage-ledger",
+        "no-invented-price"
+      ],
+      "checks": [
+        "cargo test -p iteron-obs --locked"
+      ]
     },
     {
       "id": "scheduler",
@@ -323,10 +652,19 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/sched" }
+        {
+          "kind": "tree",
+          "path": "crates/sched"
+        }
       ],
-      "contracts": ["bounded-retry", "bounded-concurrency", "pre-stream-retry-only"],
-      "checks": ["cargo test -p iteron-sched --locked"]
+      "contracts": [
+        "bounded-retry",
+        "bounded-concurrency",
+        "pre-stream-retry-only"
+      ],
+      "checks": [
+        "cargo test -p iteron-sched --locked"
+      ]
     },
     {
       "id": "provider-core",
@@ -337,22 +675,67 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/provider/Cargo.toml" },
-        { "kind": "file", "path": "crates/provider/static-provider-metadata-v1.json" },
-        { "kind": "file", "path": "crates/provider/src/catalog.rs" },
-        { "kind": "file", "path": "crates/provider/src/controls.rs" },
-        { "kind": "file", "path": "crates/provider/src/governor.rs" },
-        { "kind": "file", "path": "crates/provider/src/governor_policy.rs" },
-        { "kind": "file", "path": "crates/provider/src/governor_snapshot.rs" },
-        { "kind": "file", "path": "crates/provider/src/lib.rs" },
-        { "kind": "file", "path": "crates/provider/src/sse.rs" },
-        { "kind": "file", "path": "crates/provider/src/static_metadata.rs" },
-        { "kind": "file", "path": "crates/provider/src/static_metadata/support.rs" },
-        { "kind": "file", "path": "crates/provider/src/usage.rs" },
-        { "kind": "file", "path": "crates/provider/tests/provider_governor.rs" }
+        {
+          "kind": "file",
+          "path": "crates/provider/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/static-provider-metadata-v1.json"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/catalog.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/controls.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/governor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/governor_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/governor_snapshot.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/sse.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/static_metadata.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/static_metadata/support.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/usage.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/tests/provider_governor.rs"
+        }
       ],
-      "contracts": ["provider-port", "catalog-truth", "typed-provider-error"],
-      "checks": ["cargo test -p iteron-provider --locked"]
+      "contracts": [
+        "provider-port",
+        "catalog-truth",
+        "typed-provider-error"
+      ],
+      "checks": [
+        "cargo test -p iteron-provider --locked"
+      ]
     },
     {
       "id": "provider-adapters",
@@ -363,12 +746,27 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/provider/src/anthropic.rs" },
-        { "kind": "file", "path": "crates/provider/src/openai.rs" },
-        { "kind": "file", "path": "crates/provider/src/responses.rs" }
+        {
+          "kind": "file",
+          "path": "crates/provider/src/anthropic.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/openai.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/responses.rs"
+        }
       ],
-      "contracts": ["stream-to-turn-result", "native-state-scope", "effort-application"],
-      "checks": ["cargo test -p iteron-provider --locked"]
+      "contracts": [
+        "stream-to-turn-result",
+        "native-state-scope",
+        "effort-application"
+      ],
+      "checks": [
+        "cargo test -p iteron-provider --locked"
+      ]
     },
     {
       "id": "mcp-interop",
@@ -379,10 +777,19 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/mcp" }
+        {
+          "kind": "tree",
+          "path": "crates/mcp"
+        }
       ],
-      "contracts": ["mcp-framing", "bounded-mcp-lifecycle", "unknown-external-effect"],
-      "checks": ["cargo test -p iteron-mcp --locked"]
+      "contracts": [
+        "mcp-framing",
+        "bounded-mcp-lifecycle",
+        "unknown-external-effect"
+      ],
+      "checks": [
+        "cargo test -p iteron-mcp --locked"
+      ]
     },
     {
       "id": "language-server-lifecycle",
@@ -393,10 +800,18 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/lsp" }
+        {
+          "kind": "tree",
+          "path": "crates/lsp"
+        }
       ],
-      "contracts": ["bounded-lsp-framing", "versioned-diagnostics"],
-      "checks": ["cargo test -p iteron-lsp --locked"]
+      "contracts": [
+        "bounded-lsp-framing",
+        "versioned-diagnostics"
+      ],
+      "checks": [
+        "cargo test -p iteron-lsp --locked"
+      ]
     },
     {
       "id": "workspace-change-set",
@@ -407,10 +822,17 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/changeset" }
+        {
+          "kind": "tree",
+          "path": "crates/changeset"
+        }
       ],
-      "contracts": ["complete-change-truth"],
-      "checks": ["cargo test -p iteron-changeset --locked"]
+      "contracts": [
+        "complete-change-truth"
+      ],
+      "checks": [
+        "cargo test -p iteron-changeset --locked"
+      ]
     },
     {
       "id": "status-surface",
@@ -421,10 +843,18 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/statusline" }
+        {
+          "kind": "tree",
+          "path": "crates/statusline"
+        }
       ],
-      "contracts": ["no-control-sequence-injection", "unknown-is-not-zero"],
-      "checks": ["cargo test -p iteron-statusline --locked"]
+      "contracts": [
+        "no-control-sequence-injection",
+        "unknown-is-not-zero"
+      ],
+      "checks": [
+        "cargo test -p iteron-statusline --locked"
+      ]
     },
     {
       "id": "support-bundle",
@@ -435,10 +865,18 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/support" }
+        {
+          "kind": "tree",
+          "path": "crates/support"
+        }
       ],
-      "contracts": ["allowlisted-environment-capture", "deterministic-redacted-bundle"],
-      "checks": ["cargo test -p iteron-support --locked"]
+      "contracts": [
+        "allowlisted-environment-capture",
+        "deterministic-redacted-bundle"
+      ],
+      "checks": [
+        "cargo test -p iteron-support --locked"
+      ]
     },
     {
       "id": "plugin-marketplace",
@@ -449,10 +887,18 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/marketplace" }
+        {
+          "kind": "tree",
+          "path": "crates/marketplace"
+        }
       ],
-      "contracts": ["fail-closed-signature-gate", "no-silent-downgrade"],
-      "checks": ["cargo test -p iteron-marketplace --locked"]
+      "contracts": [
+        "fail-closed-signature-gate",
+        "no-silent-downgrade"
+      ],
+      "checks": [
+        "cargo test -p iteron-marketplace --locked"
+      ]
     },
     {
       "id": "context-core",
@@ -463,27 +909,87 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/ctx/Cargo.toml" },
-        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
-        { "kind": "file", "path": "crates/ctx/src/compact_obligations.rs" },
-        { "kind": "file", "path": "crates/ctx/src/compaction_runtime.rs" },
-        { "kind": "file", "path": "crates/ctx/src/context_assembly.rs" },
-        { "kind": "file", "path": "crates/ctx/src/context_ledger.rs" },
-        { "kind": "file", "path": "crates/ctx/src/context_materialization.rs" },
-        { "kind": "file", "path": "crates/ctx/src/context_port.rs" },
-        { "kind": "file", "path": "crates/ctx/src/context_strategy.rs" },
-        { "kind": "file", "path": "crates/ctx/src/decision_store.rs" },
-        { "kind": "file", "path": "crates/ctx/src/instructions.rs" },
-        { "kind": "file", "path": "crates/ctx/src/incremental.rs" },
-        { "kind": "file", "path": "crates/ctx/src/lib.rs" },
-        { "kind": "file", "path": "crates/ctx/src/outline.rs" },
-        { "kind": "file", "path": "crates/ctx/src/runtime_policy.rs" },
-        { "kind": "file", "path": "crates/ctx/src/source.rs" },
-        { "kind": "file", "path": "crates/ctx/src/token_estimator.rs" },
-        { "kind": "file", "path": "crates/ctx/src/token_calibration.rs" }
+        {
+          "kind": "file",
+          "path": "crates/ctx/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/compact.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/compact_obligations.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/compaction_runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/context_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/context_ledger.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/context_materialization.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/context_port.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/context_strategy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/decision_store.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/instructions.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/incremental.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/outline.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/runtime_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/source.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/token_estimator.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/token_calibration.rs"
+        }
       ],
-      "contracts": ["untrusted-instruction-framing", "bounded-context", "compaction-policy"],
-      "checks": ["cargo test -p iteron-ctx --locked"]
+      "contracts": [
+        "untrusted-instruction-framing",
+        "bounded-context",
+        "compaction-policy"
+      ],
+      "checks": [
+        "cargo test -p iteron-ctx --locked"
+      ]
     },
     {
       "id": "context-knowledge",
@@ -494,15 +1000,39 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/ctx/src/memory.rs" },
-        { "kind": "file", "path": "crates/ctx/src/memory_runtime.rs" },
-        { "kind": "file", "path": "crates/ctx/src/memory_trace.rs" },
-        { "kind": "file", "path": "crates/ctx/src/skills.rs" },
-        { "kind": "file", "path": "crates/ctx/src/skills_metadata.rs" },
-        { "kind": "file", "path": "crates/ctx/tests/skill_frontmatter.rs" }
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/memory.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/memory_runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/memory_trace.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/skills.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/skills_metadata.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/tests/skill_frontmatter.rs"
+        }
       ],
-      "contracts": ["memory-provenance", "bounded-recall", "skill-progressive-disclosure"],
-      "checks": ["cargo test -p iteron-ctx --locked"]
+      "contracts": [
+        "memory-provenance",
+        "bounded-recall",
+        "skill-progressive-disclosure"
+      ],
+      "checks": [
+        "cargo test -p iteron-ctx --locked"
+      ]
     },
     {
       "id": "agent-catalog",
@@ -513,14 +1043,34 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/agents/Cargo.toml" },
-        { "kind": "file", "path": "crates/agents/src/catalog.rs" },
-        { "kind": "file", "path": "crates/agents/src/def.rs" },
-        { "kind": "file", "path": "crates/agents/src/lib.rs" },
-        { "kind": "file", "path": "crates/agents/src/snapshot.rs" }
+        {
+          "kind": "file",
+          "path": "crates/agents/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/catalog.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/def.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/snapshot.rs"
+        }
       ],
-      "contracts": ["read-only-agent-authority", "agent-definition-trust"],
-      "checks": ["cargo test -p iteron-agents --locked"]
+      "contracts": [
+        "read-only-agent-authority",
+        "agent-definition-trust"
+      ],
+      "checks": [
+        "cargo test -p iteron-agents --locked"
+      ]
     },
     {
       "id": "agent-orchestration",
@@ -531,16 +1081,42 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/agents/src/decompose.rs" },
-        { "kind": "file", "path": "crates/agents/src/planner.rs" },
-        { "kind": "file", "path": "crates/agents/src/policy.rs" },
-        { "kind": "file", "path": "crates/agents/src/policy_tests.rs" },
-        { "kind": "file", "path": "crates/agents/src/reduce.rs" },
-        { "kind": "file", "path": "crates/agents/src/stage.rs" },
-        { "kind": "tree", "path": "crates/agents/tests" }
+        {
+          "kind": "file",
+          "path": "crates/agents/src/decompose.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/planner.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/policy_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/reduce.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/stage.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents/tests"
+        }
       ],
-      "contracts": ["single-writer-fan-reduce", "declaration-order-reduction"],
-      "checks": ["cargo test -p iteron-agents --locked"]
+      "contracts": [
+        "single-writer-fan-reduce",
+        "declaration-order-reduction"
+      ],
+      "checks": [
+        "cargo test -p iteron-agents --locked"
+      ]
     },
     {
       "id": "evolution-control",
@@ -551,10 +1127,19 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/evolve" }
+        {
+          "kind": "tree",
+          "path": "crates/evolve"
+        }
       ],
-      "contracts": ["no-runtime-activation", "immutable-policy-reference", "governed-promotion"],
-      "checks": ["cargo test -p iteron-evolve --locked"]
+      "contracts": [
+        "no-runtime-activation",
+        "immutable-policy-reference",
+        "governed-promotion"
+      ],
+      "checks": [
+        "cargo test -p iteron-evolve --locked"
+      ]
     },
     {
       "id": "sandbox",
@@ -565,10 +1150,19 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/sandbox" }
+        {
+          "kind": "tree",
+          "path": "crates/sandbox"
+        }
       ],
-      "contracts": ["selectable-workspace-confinement", "operator-selected-egress", "bounded-child-process"],
-      "checks": ["cargo test -p iteron-sandbox --locked"]
+      "contracts": [
+        "selectable-workspace-confinement",
+        "operator-selected-egress",
+        "bounded-child-process"
+      ],
+      "checks": [
+        "cargo test -p iteron-sandbox --locked"
+      ]
     },
     {
       "id": "tools-core",
@@ -579,38 +1173,131 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/tools/Cargo.toml" },
-        { "kind": "file", "path": "crates/tools/src/edit.rs" },
-        { "kind": "file", "path": "crates/tools/src/execution_policy.rs" },
-        { "kind": "file", "path": "crates/tools/src/fs_tools.rs" },
-        { "kind": "file", "path": "crates/tools/src/fs_tools_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/git.rs" },
-        { "kind": "file", "path": "crates/tools/src/git_changes.rs" },
-        { "kind": "file", "path": "crates/tools/src/git_filters.rs" },
-        { "kind": "file", "path": "crates/tools/src/git_harness.rs" },
-        { "kind": "file", "path": "crates/tools/src/git_observe.rs" },
-        { "kind": "file", "path": "crates/tools/src/git_observe_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/grep_tool.rs" },
-        { "kind": "file", "path": "crates/tools/src/grep_tool_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/lib.rs" },
-        { "kind": "file", "path": "crates/tools/src/mcp_timing.rs" },
-        { "kind": "file", "path": "crates/tools/src/memo.rs" },
-        { "kind": "file", "path": "crates/tools/src/memo_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/multi_file_patch.rs" },
-        { "kind": "file", "path": "crates/tools/src/multi_file_patch_error.rs" },
-        { "kind": "file", "path": "crates/tools/src/multi_file_patch_input.rs" },
-        { "kind": "file", "path": "crates/tools/src/multi_file_patch_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/schema.rs" },
-        { "kind": "file", "path": "crates/tools/src/schema_error.rs" },
-        { "kind": "file", "path": "crates/tools/src/schema_tests.rs" },
-        { "kind": "file", "path": "crates/tools/src/tool_search.rs" },
-        { "kind": "file", "path": "crates/tools/src/tool_policy.rs" },
-        { "kind": "file", "path": "crates/tools/src/write_file.rs" },
-        { "kind": "file", "path": "crates/tools/src/workspace_boundary.rs" },
-        { "kind": "file", "path": "crates/tools/src/write_file_tests.rs" }
+        {
+          "kind": "file",
+          "path": "crates/tools/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/edit.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/execution_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/fs_tools.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/fs_tools_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git_changes.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git_filters.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git_harness.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git_observe.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/git_observe_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/grep_tool.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/grep_tool_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/mcp_timing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/memo.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/memo_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/multi_file_patch.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/multi_file_patch_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/multi_file_patch_input.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/multi_file_patch_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/schema.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/schema_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/schema_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/tool_search.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/tool_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/write_file.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/workspace_boundary.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/write_file_tests.rs"
+        }
       ],
-      "contracts": ["tool-abi", "host-path-authority", "purity-capability-coupling"],
-      "checks": ["cargo test -p iteron-tools --locked"]
+      "contracts": [
+        "tool-abi",
+        "host-path-authority",
+        "purity-capability-coupling"
+      ],
+      "checks": [
+        "cargo test -p iteron-tools --locked"
+      ]
     },
     {
       "id": "tools-execution",
@@ -621,15 +1308,39 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/tools/src/egress.rs" },
-        { "kind": "file", "path": "crates/tools/src/shell.rs" },
-        { "kind": "tree", "path": "crates/tools/src/lsp" },
-        { "kind": "tree", "path": "crates/tools/src/process" },
-        { "kind": "file", "path": "crates/tools/src/web.rs" },
-        { "kind": "file", "path": "crates/tools/src/workflow_tool.rs" }
+        {
+          "kind": "file",
+          "path": "crates/tools/src/egress.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/shell.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/lsp"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/process"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/web.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/workflow_tool.rs"
+        }
       ],
-      "contracts": ["selectable-code-confinement", "ssrf-boundary", "external-effect-classification"],
-      "checks": ["cargo test -p iteron-tools --locked"]
+      "contracts": [
+        "selectable-code-confinement",
+        "ssrf-boundary",
+        "external-effect-classification"
+      ],
+      "checks": [
+        "cargo test -p iteron-tools --locked"
+      ]
     },
     {
       "id": "tools-context",
@@ -640,11 +1351,22 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/tools/src/mem.rs" },
-        { "kind": "file", "path": "crates/tools/src/skill.rs" }
+        {
+          "kind": "file",
+          "path": "crates/tools/src/mem.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/skill.rs"
+        }
       ],
-      "contracts": ["memory-tool-trust", "skill-tool-read-only"],
-      "checks": ["cargo test -p iteron-tools --locked"]
+      "contracts": [
+        "memory-tool-trust",
+        "skill-tool-read-only"
+      ],
+      "checks": [
+        "cargo test -p iteron-tools --locked"
+      ]
     },
     {
       "id": "verification",
@@ -655,10 +1377,19 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/verify" }
+        {
+          "kind": "tree",
+          "path": "crates/verify"
+        }
       ],
-      "contracts": ["oracle-strength", "strong-veto", "deterministic-selection"],
-      "checks": ["cargo test -p iteron-verify --locked"]
+      "contracts": [
+        "oracle-strength",
+        "strong-veto",
+        "deterministic-selection"
+      ],
+      "checks": [
+        "cargo test -p iteron-verify --locked"
+      ]
     },
     {
       "id": "workflow-engine",
@@ -669,10 +1400,19 @@
       "primary": "core-owner",
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/workflow" }
+        {
+          "kind": "tree",
+          "path": "crates/workflow"
+        }
       ],
-      "contracts": ["bounded-agent-fanout", "deterministic-replay", "journal-durability"],
-      "checks": ["cargo test -p iteron-workflow --locked"]
+      "contracts": [
+        "bounded-agent-fanout",
+        "deterministic-replay",
+        "journal-durability"
+      ],
+      "checks": [
+        "cargo test -p iteron-workflow --locked"
+      ]
     },
     {
       "id": "evaluation",
@@ -683,12 +1423,27 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/eval" },
-        { "kind": "file", "path": "scripts/cross_harness_qualification.py" },
-        { "kind": "file", "path": "scripts/test_cross_harness_qualification.py" }
+        {
+          "kind": "tree",
+          "path": "crates/eval"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/cross_harness_qualification.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_cross_harness_qualification.py"
+        }
       ],
-      "contracts": ["fixed-model-comparison", "ground-truth-check", "honest-quality-claim"],
-      "checks": ["cargo check -p iteron-eval --all-targets --locked"]
+      "contracts": [
+        "fixed-model-comparison",
+        "ground-truth-check",
+        "honest-quality-claim"
+      ],
+      "checks": [
+        "cargo check -p iteron-eval --all-targets --locked"
+      ]
     },
     {
       "id": "tunability-registry",
@@ -699,7 +1454,10 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "crates/tunables" }
+        {
+          "kind": "tree",
+          "path": "crates/tunables"
+        }
       ],
       "contracts": [
         "stable-semantic-family-identity",
@@ -728,95 +1486,362 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/Cargo.toml" },
-        { "kind": "file", "path": "crates/cli/src/app_server.rs" },
-        { "kind": "tree", "path": "crates/cli/src/app_server" },
-        { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "tree", "path": "crates/cli/src/config" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
-        { "kind": "file", "path": "crates/cli/src/effective_config.rs" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/file_input.rs" },
-        { "kind": "file", "path": "crates/cli/src/paste_input.rs" },
-        { "kind": "file", "path": "crates/cli/src/image_input.rs" },
-        { "kind": "tree", "path": "crates/cli/src/image_input" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/maintenance.rs" },
-        { "kind": "file", "path": "crates/cli/src/mcp.rs" },
-        { "kind": "tree", "path": "crates/cli/src/mcp" },
-        { "kind": "file", "path": "crates/cli/src/plugin.rs" },
-        { "kind": "file", "path": "crates/cli/src/plugin_runtime.rs" },
-        { "kind": "tree", "path": "crates/cli/src/plugin_runtime" },
-        { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/providers.rs" },
-        { "kind": "tree", "path": "crates/cli/src/providers" },
-        { "kind": "file", "path": "crates/cli/src/route.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/agent_config.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/agent_loop.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/activity.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/budget_control.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/compaction.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/compaction_coverage.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/completion_semantics.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/context_runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/decision_observability.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/decomposition.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/deferred_tools.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/durability.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/file_submission.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/failed_action_cache.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/frontend.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/frontend_tests.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/force_cancel.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/inbound_control.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/kernel_error.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/lifecycle_hooks.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/mcp_control.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/operator_status.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/orchestration_route.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/orchestration_run.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/permission_policy.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/private_attachments.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/policy_evidence.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/policy_evidence_recorder.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime/policy_evidence_recorder" },
-        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/provider_accounting.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/provider_governor_state.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/provider_hedge.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/provider_route.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/route_attempt_accounting.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/resume.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/route_state.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/route_validation.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/runtime_policy_overlay.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/session_spawn_ledger.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/side_conversation.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/strategy_ports.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/strategy_runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/subagent_control.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/tests.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/tool_interrupt.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/tool_output_spill.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime/tool_output_spill" },
-        { "kind": "file", "path": "crates/cli/src/runtime/transcript.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/tunables_pin.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/verification.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/workflow_collect.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/workflow_fan_progress.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/workflow_fan_run.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/workflow_prepare.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime/workflow_spawner" },
-        { "kind": "tree", "path": "crates/cli/src/runtime_tunables" },
-        { "kind": "file", "path": "crates/cli/src/session_isolation.rs" },
-        { "kind": "file", "path": "crates/cli/src/setup.rs" },
-        { "kind": "file", "path": "crates/cli/src/startup.rs" },
-        { "kind": "file", "path": "crates/cli/src/tunables.rs" },
-        { "kind": "file", "path": "crates/cli/src/workflow.rs" },
-        { "kind": "tree", "path": "crates/cli/src/workflow" },
-        { "kind": "file", "path": "crates/cli/src/workspace_review.rs" }
+        {
+          "kind": "file",
+          "path": "crates/cli/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/app_server.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/app_server"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/commands.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/config"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/config.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/effective_config.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/file_input.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/paste_input.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/image_input.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/image_input"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/maintenance.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/mcp.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/plugin.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/plugin_runtime.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/plugin_runtime"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/providers.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/providers"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/route.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/agent_config.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/agent_loop.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/activity.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/budget_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/compaction.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/compaction_coverage.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/completion_semantics.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/decision_observability.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/decomposition.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/deferred_tools.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/durability.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/file_submission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/failed_action_cache.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/frontend.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/frontend_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/force_cancel.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/inbound_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/mcp_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/operator_status.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/orchestration_route.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/orchestration_run.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/permission_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/private_attachments.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/policy_evidence.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/policy_evidence_recorder.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/policy_evidence_recorder"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_accounting.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_governor_state.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_hedge.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_route.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/route_attempt_accounting.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/resume.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/route_state.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/route_validation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/runtime_policy_overlay.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/session_spawn_ledger.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/side_conversation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/strategy_ports.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/strategy_runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/subagent_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_interrupt.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_output_spill.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/tool_output_spill"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/transcript.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tunables_pin.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_collect.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_fan_progress.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_fan_run.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_prepare.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/workflow_spawner"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime_tunables"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/session_isolation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/setup.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/startup.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tunables.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/workflow.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/workflow"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/workspace_review.rs"
+        }
       ],
       "contracts": [
         "trusted-config-precedence",
@@ -825,7 +1850,9 @@
         "provider-free-tunables-simulation",
         "stable-bounded-simulation-output"
       ],
-      "checks": ["cargo test -p iteron-cli --locked"]
+      "checks": [
+        "cargo test -p iteron-cli --locked"
+      ]
     },
     {
       "id": "cli-tui",
@@ -836,19 +1863,62 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/external_editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/keymap.rs" },
-        { "kind": "file", "path": "crates/cli/src/keymap_tests.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "tree", "path": "crates/cli/src/prompt_history" },
-        { "kind": "file", "path": "crates/cli/src/surface.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" },
-        { "kind": "tree", "path": "crates/cli/src/tui" },
-        { "kind": "tree", "path": "crates/cli/tests" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/external_editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keymap.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keymap_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keyword_trigger.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/surface.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/prompt_history"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/tui"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/tests"
+        }
       ],
-      "contracts": ["single-enter-input", "terminal-restoration", "permission-decision-surface", "semantic-transcript", "streaming-redaction"],
-      "checks": ["cargo test -p iteron-cli tui --locked", "cargo test -p iteron-cli --test tui_pty --locked"]
+      "contracts": [
+        "single-enter-input",
+        "terminal-restoration",
+        "permission-decision-surface",
+        "semantic-transcript",
+        "streaming-redaction"
+      ],
+      "checks": [
+        "cargo test -p iteron-cli tui --locked",
+        "cargo test -p iteron-cli --test tui_pty --locked"
+      ]
     },
     {
       "id": "cli-render",
@@ -859,17 +1929,47 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/block.rs" },
-        { "kind": "tree", "path": "crates/cli/src/block" },
-        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
-        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
-        { "kind": "file", "path": "crates/cli/src/render.rs" },
-        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
-        { "kind": "file", "path": "crates/cli/src/theme.rs" },
-        { "kind": "tree", "path": "crates/cli/src/theme" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/block.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/block"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/highlight.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/markdown.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/render.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/semantic_text.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/theme.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/theme"
+        }
       ],
-      "contracts": ["terminal-cell-bounds", "semantic-transcript", "accessible-theme"],
-      "checks": ["cargo test -p iteron-cli --locked"]
+      "contracts": [
+        "terminal-cell-bounds",
+        "semantic-transcript",
+        "accessible-theme"
+      ],
+      "checks": [
+        "cargo test -p iteron-cli --locked"
+      ]
     },
     {
       "id": "cli-output",
@@ -880,17 +1980,47 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/bundle_adapter.rs" },
-        { "kind": "tree", "path": "crates/cli/src/bundle_adapter" },
-        { "kind": "file", "path": "crates/cli/src/bundle_adapter_tests.rs" },
-        { "kind": "file", "path": "crates/cli/src/client_event.rs" },
-        { "kind": "file", "path": "crates/cli/src/client_event_tests.rs" },
-        { "kind": "file", "path": "crates/cli/src/session_view.rs" },
-        { "kind": "file", "path": "crates/cli/src/session_view_tests.rs" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/bundle_adapter.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/bundle_adapter"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/bundle_adapter_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/client_event.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/client_event_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/session_view.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/session_view_tests.rs"
+        }
       ],
-      "contracts": ["machine-output-schema", "stable-exit-code", "streaming-redaction"],
-      "checks": ["cargo test -p iteron-cli output --locked"]
+      "contracts": [
+        "machine-output-schema",
+        "stable-exit-code",
+        "streaming-redaction"
+      ],
+      "checks": [
+        "cargo test -p iteron-cli output --locked"
+      ]
     }
   ],
   "overlays": [
@@ -902,21 +2032,66 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "governance" },
-        { "kind": "tree", "path": "xtask" },
-        { "kind": "file", "path": ".github/actionlint.yaml" },
-        { "kind": "file", "path": ".github/CODEOWNERS" },
-        { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
-        { "kind": "file", "path": ".github/ISSUE_TEMPLATE/ownership_claim.yml" },
-        { "kind": "tree", "path": ".github/workflows" },
-        { "kind": "file", "path": "docs/development/review-process.md" },
-        { "kind": "file", "path": "docs/maintainer-onboarding.md" },
-        { "kind": "file", "path": "docs/project/governance.md" },
-        { "kind": "file", "path": "docs/repository-enforcement.md" },
-        { "kind": "file", "path": "AGENTS.md" },
-        { "kind": "file", "path": "GOVERNANCE.md" },
-        { "kind": "file", "path": "LICENSE" },
-        { "kind": "file", "path": "OWNERSHIP.md" }
+        {
+          "kind": "tree",
+          "path": "governance"
+        },
+        {
+          "kind": "tree",
+          "path": "xtask"
+        },
+        {
+          "kind": "file",
+          "path": ".github/actionlint.yaml"
+        },
+        {
+          "kind": "file",
+          "path": ".github/CODEOWNERS"
+        },
+        {
+          "kind": "file",
+          "path": ".github/PULL_REQUEST_TEMPLATE.md"
+        },
+        {
+          "kind": "file",
+          "path": ".github/ISSUE_TEMPLATE/ownership_claim.yml"
+        },
+        {
+          "kind": "tree",
+          "path": ".github/workflows"
+        },
+        {
+          "kind": "file",
+          "path": "docs/development/review-process.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/maintainer-onboarding.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/project/governance.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/repository-enforcement.md"
+        },
+        {
+          "kind": "file",
+          "path": "AGENTS.md"
+        },
+        {
+          "kind": "file",
+          "path": "GOVERNANCE.md"
+        },
+        {
+          "kind": "file",
+          "path": "LICENSE"
+        },
+        {
+          "kind": "file",
+          "path": "OWNERSHIP.md"
+        }
       ]
     },
     {
@@ -927,27 +2102,90 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "tree", "path": "crates/agents" },
-        { "kind": "tree", "path": "crates/cli/src/config" },
-        { "kind": "tree", "path": "crates/ctx" },
-        { "kind": "tree", "path": "crates/evolve" },
-        { "kind": "tree", "path": "crates/kernel" },
-        { "kind": "tree", "path": "crates/cli/src/runtime" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "tree", "path": "crates/mcp" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "tree", "path": "crates/protocol" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "tree", "path": "crates/sandbox" },
-        { "kind": "tree", "path": "crates/sched" },
-        { "kind": "tree", "path": "crates/tools" },
-        { "kind": "tree", "path": "crates/tunables" },
-        { "kind": "tree", "path": "crates/verify" },
-        { "kind": "tree", "path": "crates/workflow" }
+        {
+          "kind": "file",
+          "path": "crates/cli/src/commands.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/config.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/config"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/ctx"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/evolve"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/kernel"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/mcp"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sandbox"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sched"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tunables"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/verify"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/workflow"
+        }
       ]
     },
     {
@@ -958,27 +2196,90 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "file", "path": "crates/protocol/src/permission.rs" },
-        { "kind": "file", "path": "crates/protocol/src/tool.rs" },
-        { "kind": "file", "path": "crates/protocol/src/trust.rs" },
-        { "kind": "tree", "path": "crates/kernel" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "tree", "path": "crates/sandbox" },
-        { "kind": "tree", "path": "crates/tools" },
-        { "kind": "tree", "path": "crates/mcp" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
-        { "kind": "tree", "path": "crates/cli/src/config" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/external_editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/keymap.rs" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/mcp.rs" },
-        { "kind": "tree", "path": "crates/cli/src/mcp" },
-        { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/permission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/tool.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/trust.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/kernel"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sandbox"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/config.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/config"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/external_editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keymap.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/mcp.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        }
       ]
     },
     {
@@ -989,21 +2290,66 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "file", "path": "crates/protocol/src/event.rs" },
-        { "kind": "file", "path": "crates/protocol/src/ids.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_admission.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_boundary_tests.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_class.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effect_journal.rs" },
-        { "kind": "file", "path": "crates/kernel/src/effects.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" }
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/event.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/ids.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_boundary_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_class.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effect_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/effects.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        }
       ]
     },
     {
@@ -1014,29 +2360,98 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/protocol" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/tools" },
-        { "kind": "tree", "path": "crates/ctx" },
-        { "kind": "tree", "path": "crates/agents" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
-        { "kind": "tree", "path": "crates/cli/src/config" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/external_editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/mcp.rs" },
-        { "kind": "tree", "path": "crates/cli/src/mcp" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "file", "path": "crates/cli/src/providers.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" },
-        { "kind": "file", "path": "crates/record/src/lib.rs" },
-        { "kind": "file", "path": "crates/record/src/redact.rs" },
-        { "kind": "file", "path": "crates/record/src/session.rs" },
-        { "kind": "tree", "path": "crates/sandbox" },
-        { "kind": "tree", "path": "crates/mcp" },
-        { "kind": "file", "path": "crates/cli/src/runtime/hooks.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/ctx"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/config.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/config"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/external_editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/mcp.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/providers.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/redact.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/session.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sandbox"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/hooks.rs"
+        }
       ]
     },
     {
@@ -1047,38 +2462,134 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/kernel" },
-        { "kind": "tree", "path": "crates/sched" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/tools" },
-        { "kind": "tree", "path": "crates/mcp" },
-        { "kind": "tree", "path": "crates/sandbox" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "tree", "path": "crates/ctx" },
-        { "kind": "tree", "path": "crates/agents" },
-        { "kind": "tree", "path": "crates/evolve" },
-        { "kind": "file", "path": "crates/cli/src/block.rs" },
-        { "kind": "tree", "path": "crates/cli/src/block" },
-        { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "file", "path": "crates/cli/src/editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/external_editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
-        { "kind": "file", "path": "crates/cli/src/image_input.rs" },
-        { "kind": "tree", "path": "crates/cli/src/image_input" },
-        { "kind": "file", "path": "crates/cli/src/keymap.rs" },
-        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
-        { "kind": "file", "path": "crates/cli/src/mcp.rs" },
-        { "kind": "tree", "path": "crates/cli/src/mcp" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "file", "path": "crates/cli/src/render.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "tree", "path": "crates/cli/src/runtime" },
-        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
-        { "kind": "file", "path": "crates/cli/src/surface.rs" },
-        { "kind": "file", "path": "crates/cli/src/theme.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/kernel"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sched"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/mcp"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sandbox"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/ctx"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/evolve"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/block.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/block"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/commands.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/external_editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/highlight.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/image_input.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/image_input"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keymap.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/markdown.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/mcp.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/mcp"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/render.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/semantic_text.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/surface.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/theme.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        }
       ]
     },
     {
@@ -1089,20 +2600,62 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/protocol" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/sched" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "tree", "path": "crates/ctx" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/providers.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sched"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/ctx"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/providers.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        }
       ]
     },
     {
@@ -1113,34 +2666,118 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/protocol" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
-        { "kind": "file", "path": "crates/ctx/src/lib.rs" },
-        { "kind": "file", "path": "crates/cli/src/block.rs" },
-        { "kind": "tree", "path": "crates/cli/src/block" },
-        { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "file", "path": "crates/cli/src/environment.rs" },
-        { "kind": "file", "path": "crates/cli/src/external_editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/editor.rs" },
-        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
-        { "kind": "file", "path": "crates/cli/src/image_input.rs" },
-        { "kind": "tree", "path": "crates/cli/src/image_input" },
-        { "kind": "file", "path": "crates/cli/src/keymap.rs" },
-        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
-        { "kind": "file", "path": "crates/cli/src/mcp.rs" },
-        { "kind": "file", "path": "crates/cli/src/providers.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
-        { "kind": "file", "path": "crates/cli/src/render.rs" },
-        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
-        { "kind": "file", "path": "crates/cli/src/surface.rs" },
-        { "kind": "file", "path": "crates/cli/src/theme.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/compact.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/block.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/block"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/commands.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/environment.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/external_editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/editor.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/highlight.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/image_input.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/image_input"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/keymap.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/markdown.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/mcp.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/providers.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/prompt_history.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/render.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/semantic_text.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/surface.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/theme.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        }
       ]
     },
     {
@@ -1151,19 +2788,58 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/protocol" },
-        { "kind": "tree", "path": "crates/provider" },
-        { "kind": "tree", "path": "crates/sched" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "tree", "path": "crates/record" },
-        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
-        { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" },
-        { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/protocol"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/sched"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/pricing.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/src/compact.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/main.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/pricing.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui.rs"
+        }
       ]
     },
     {
@@ -1174,13 +2850,34 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/eval" },
-        { "kind": "tree", "path": "crates/tunables" },
-        { "kind": "tree", "path": "crates/verify" },
-        { "kind": "tree", "path": "crates/obs" },
-        { "kind": "tree", "path": "crates/cli/src/tui/experiment_lab" },
-        { "kind": "file", "path": "crates/cli/src/tui/experiment_lab.rs" },
-        { "kind": "file", "path": ".github/workflows/ci.yml" }
+        {
+          "kind": "tree",
+          "path": "crates/eval"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tunables"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/verify"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/obs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/tui/experiment_lab"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui/experiment_lab.rs"
+        },
+        {
+          "kind": "file",
+          "path": ".github/workflows/ci.yml"
+        }
       ]
     },
     {
@@ -1191,15 +2888,42 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "tree", "path": "crates/evolve" },
-        { "kind": "tree", "path": "crates/eval" },
-        { "kind": "tree", "path": "crates/tunables" },
-        { "kind": "tree", "path": "crates/verify" },
-        { "kind": "tree", "path": "crates/cli/src/tui/experiment_lab" },
-        { "kind": "file", "path": "crates/cli/src/tui/experiment_lab.rs" },
-        { "kind": "file", "path": "crates/protocol/src/event.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/cli/src/runtime.rs" }
+        {
+          "kind": "tree",
+          "path": "crates/evolve"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/eval"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tunables"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/verify"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/tui/experiment_lab"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/tui/experiment_lab.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/event.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime.rs"
+        }
       ]
     },
     {
@@ -1210,43 +2934,154 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "file", "path": "Cargo.toml" },
-        { "kind": "file", "path": "Cargo.lock" },
-        { "kind": "file", "path": "CHANGELOG.md" },
-        { "kind": "file", "path": "LICENSE" },
-        { "kind": "file", "path": ".github/actionlint.yaml" },
-        { "kind": "file", "path": ".github/dependabot.yml" },
-        { "kind": "tree", "path": ".github/workflows" },
-        { "kind": "file", "path": ".gitignore" },
-        { "kind": "file", "path": "README.md" },
-        { "kind": "file", "path": "README.zh-CN.md" },
-        { "kind": "file", "path": "crates/agents/Cargo.toml" },
-        { "kind": "file", "path": "crates/cli/Cargo.toml" },
-        { "kind": "file", "path": "crates/ctx/Cargo.toml" },
-        { "kind": "file", "path": "crates/eval/Cargo.toml" },
-        { "kind": "file", "path": "crates/evolve/Cargo.toml" },
-        { "kind": "file", "path": "crates/kernel/Cargo.toml" },
-        { "kind": "file", "path": "crates/mcp/Cargo.toml" },
-        { "kind": "file", "path": "crates/obs/Cargo.toml" },
-        { "kind": "file", "path": "crates/protocol/Cargo.toml" },
-        { "kind": "file", "path": "crates/provider/Cargo.toml" },
-        { "kind": "file", "path": "crates/record/Cargo.toml" },
-        { "kind": "file", "path": "crates/sandbox/Cargo.toml" },
-        { "kind": "file", "path": "crates/sched/Cargo.toml" },
-        { "kind": "file", "path": "crates/tools/Cargo.toml" },
-        { "kind": "file", "path": "crates/tunables/Cargo.toml" },
-        { "kind": "file", "path": "crates/verify/Cargo.toml" },
-        { "kind": "file", "path": "docs/_mkdocs_hooks.py" },
-        { "kind": "file", "path": "docs/development/releasing.md" },
-        { "kind": "file", "path": "docs/getting-started/installation.md" },
-        { "kind": "file", "path": "docs/project/releases.md" },
-        { "kind": "file", "path": "docs/reference/platforms.md" },
-        { "kind": "file", "path": "install.sh" },
-        { "kind": "file", "path": "mkdocs.yml" },
-        { "kind": "tree", "path": "release-tools" },
-        { "kind": "file", "path": "requirements-docs.in" },
-        { "kind": "file", "path": "requirements-docs.lock" },
-        { "kind": "file", "path": "xtask/Cargo.toml" }
+        {
+          "kind": "file",
+          "path": "Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "Cargo.lock"
+        },
+        {
+          "kind": "file",
+          "path": "CHANGELOG.md"
+        },
+        {
+          "kind": "file",
+          "path": "LICENSE"
+        },
+        {
+          "kind": "file",
+          "path": ".github/actionlint.yaml"
+        },
+        {
+          "kind": "file",
+          "path": ".github/dependabot.yml"
+        },
+        {
+          "kind": "tree",
+          "path": ".github/workflows"
+        },
+        {
+          "kind": "file",
+          "path": ".gitignore"
+        },
+        {
+          "kind": "file",
+          "path": "README.md"
+        },
+        {
+          "kind": "file",
+          "path": "README.zh-CN.md"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/ctx/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/eval/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/evolve/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/kernel/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/mcp/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/obs/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/sandbox/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/sched/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tunables/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "crates/verify/Cargo.toml"
+        },
+        {
+          "kind": "file",
+          "path": "docs/_mkdocs_hooks.py"
+        },
+        {
+          "kind": "file",
+          "path": "docs/development/releasing.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/getting-started/installation.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/project/releases.md"
+        },
+        {
+          "kind": "file",
+          "path": "docs/reference/platforms.md"
+        },
+        {
+          "kind": "file",
+          "path": "install.sh"
+        },
+        {
+          "kind": "file",
+          "path": "mkdocs.yml"
+        },
+        {
+          "kind": "tree",
+          "path": "release-tools"
+        },
+        {
+          "kind": "file",
+          "path": "requirements-docs.in"
+        },
+        {
+          "kind": "file",
+          "path": "requirements-docs.lock"
+        },
+        {
+          "kind": "file",
+          "path": "xtask/Cargo.toml"
+        }
       ]
     },
     {
@@ -1257,17 +3092,50 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
-        { "kind": "file", "path": "CHANGELOG.md" },
-        { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
-        { "kind": "file", "path": "CONTRIBUTING.md" },
-        { "kind": "file", "path": "README.md" },
-        { "kind": "file", "path": "README.zh-CN.md" },
-        { "kind": "file", "path": "GOVERNANCE.md" },
-        { "kind": "file", "path": "LICENSE" },
-        { "kind": "file", "path": "mkdocs.yml" },
-        { "kind": "file", "path": "SECURITY.md" },
-        { "kind": "file", "path": "SUPPORT.md" },
-        { "kind": "tree", "path": "docs" }
+        {
+          "kind": "file",
+          "path": "CHANGELOG.md"
+        },
+        {
+          "kind": "file",
+          "path": "CODE_OF_CONDUCT.md"
+        },
+        {
+          "kind": "file",
+          "path": "CONTRIBUTING.md"
+        },
+        {
+          "kind": "file",
+          "path": "README.md"
+        },
+        {
+          "kind": "file",
+          "path": "README.zh-CN.md"
+        },
+        {
+          "kind": "file",
+          "path": "GOVERNANCE.md"
+        },
+        {
+          "kind": "file",
+          "path": "LICENSE"
+        },
+        {
+          "kind": "file",
+          "path": "mkdocs.yml"
+        },
+        {
+          "kind": "file",
+          "path": "SECURITY.md"
+        },
+        {
+          "kind": "file",
+          "path": "SUPPORT.md"
+        },
+        {
+          "kind": "tree",
+          "path": "docs"
+        }
       ]
     }
   ],
@@ -1275,7 +3143,11 @@
     "mode": "exact",
     "packages": {
       "iteron-agents": {
-        "normal": ["iteron-ctx", "iteron-protocol", "iteron-tunables"],
+        "normal": [
+          "iteron-ctx",
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
@@ -1302,11 +3174,16 @@
           "iteron-verify",
           "iteron-workflow"
         ],
-        "dev": ["iteron-record"],
+        "dev": [
+          "iteron-record"
+        ],
         "build": []
       },
       "iteron-ctx": {
-        "normal": ["iteron-protocol", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
@@ -1324,7 +3201,11 @@
         "build": []
       },
       "iteron-evolve": {
-        "normal": ["iteron-protocol", "iteron-record", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-record",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
@@ -1337,67 +3218,109 @@
         "build": []
       },
       "iteron-lsp": {
-        "normal": ["iteron-tunables"],
+        "normal": [
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-mcp": {
-        "normal": ["iteron-protocol", "iteron-sandbox", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-sandbox",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-obs": {
-        "normal": ["iteron-protocol", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-changeset": {
-        "normal": ["iteron-tunables"],
+        "normal": [
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-marketplace": {
-        "normal": ["iteron-protocol", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-statusline": {
-        "normal": ["iteron-tunables"],
+        "normal": [
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-support": {
-        "normal": ["iteron-record", "iteron-tunables"],
+        "normal": [
+          "iteron-record",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-protocol": {
-        "normal": ["iteron-tunables"],
+        "normal": [
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-provider": {
-        "normal": ["iteron-protocol", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-record": {
-        "normal": ["iteron-obs", "iteron-protocol", "iteron-tunables"],
-        "dev": ["iteron-tunables"],
+        "normal": [
+          "iteron-obs",
+          "iteron-protocol",
+          "iteron-tunables"
+        ],
+        "dev": [
+          "iteron-tunables"
+        ],
         "build": []
       },
       "iteron-sandbox": {
-        "normal": ["iteron-tunables"],
+        "normal": [
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-sched": {
-        "normal": ["iteron-protocol", "iteron-provider", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-provider",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-tools": {
-        "normal": ["iteron-ctx", "iteron-lsp", "iteron-protocol", "iteron-sandbox", "iteron-tunables"],
+        "normal": [
+          "iteron-ctx",
+          "iteron-lsp",
+          "iteron-protocol",
+          "iteron-sandbox",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
@@ -1407,21 +3330,38 @@
         "build": []
       },
       "iteron-verify": {
-        "normal": ["iteron-protocol", "iteron-sandbox", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-sandbox",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-workflow": {
-        "normal": ["iteron-protocol", "iteron-sched", "iteron-tunables"],
+        "normal": [
+          "iteron-protocol",
+          "iteron-sched",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       },
       "iteron-xtask": {
-        "normal": ["iteron-agents", "iteron-ctx", "iteron-protocol", "iteron-tools", "iteron-tunables"],
+        "normal": [
+          "iteron-agents",
+          "iteron-ctx",
+          "iteron-protocol",
+          "iteron-tools",
+          "iteron-tunables"
+        ],
         "dev": [],
         "build": []
       }
     }
   },
-  "generated": { "ownership": "OWNERSHIP.md", "codeowners": ".github/CODEOWNERS" }
+  "generated": {
+    "ownership": "OWNERSHIP.md",
+    "codeowners": ".github/CODEOWNERS"
+  }
 }

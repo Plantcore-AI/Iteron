@@ -21,6 +21,11 @@ fn activity_started_at(event: &iteron_protocol::ActivityEvent) -> Instant {
 /// The frontend's whole view of the runtime arrives through here. `RunEnded` carries what the
 /// `handle.await` reclaim used to read straight off the `Agent`; there is no join any more, so the
 /// terminal event is also the refresh point.
+///
+/// `directory` is the resolver `RunEnded` needs to re-render the route the runtime actually ended
+/// on. It is optional only so a caller with no directory in hand (tests, and any frontend that
+/// never rebinds a route) stays source-compatible; `None` keeps the previously resolved route
+/// rather than resolving a blocked one.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
     app: &mut App,
@@ -30,6 +35,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
     writer: &mut T,
     interrupt: &Arc<AtomicBool>,
     drain: &Arc<AtomicBool>,
+    directory: Option<&ProviderDirectory>,
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
@@ -226,6 +232,21 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.mode = snapshot.mode;
             app.effort = snapshot.effort;
             app.model = snapshot.model.clone();
+            // The status line renders the resolved route, not `app.model`, and until now nothing
+            // reassigned it after init or `/model`. A runtime failover commits a different route
+            // mid-run, so re-resolve it here through the same one construction `/model` uses.
+            // An unbound provider is skipped rather than resolved into a blocked route.
+            if let Some(directory) = directory
+                && !snapshot.provider_id.is_empty()
+            {
+                app.route = app.route.reselect(
+                    directory,
+                    &ModelSelection {
+                        provider_id: snapshot.provider_id.clone(),
+                        model_id: snapshot.model.clone(),
+                    },
+                );
+            }
             app.cost = snapshot.cost.clone();
             app.last_turn_usage = snapshot.last_turn_usage;
             session.adopt(*snapshot);

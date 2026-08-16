@@ -28,9 +28,16 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(
         ToolSpec {
             name: iteron_tunables::param_str("tools.workflow_tool.workflow_tool", WORKFLOW_TOOL).into(),
-            description: "Run a model-directed, task-specific workflow. Call Workflow only when \
-                          task-specific delegation or execution topology adds value; direct work is \
-                          valid and preferred otherwise. Provide exactly one ESM source, either \
+            description: "Run a model-directed, task-specific workflow, but only when the operator \
+                          has opted into multi-agent orchestration: a turn directive in this turn \
+                          requests orchestration, the operator asked for it in their own words \
+                          (\"use a workflow\", \"run these in parallel\", \"fan out agents\", \
+                          \"并行\", \"编排\", \"动态工作流\"), or a skill or slash command you were \
+                          told to follow instructs you to call it. Never infer that opt-in from a \
+                          task merely looking parallelizable; a workflow can spawn many agents and \
+                          spend a large share of the run's budget, so for anything else work \
+                          directly or use one bounded dispatch_agent investigation, and ask the \
+                          operator first if a workflow would genuinely help. Provide exactly one ESM source, either \
                           inline (`script`) or by path (`scriptPath`), plus optional `args` exposed \
                           to the script as the ambient `args`. Topology is task-specific and may use \
                           any bounded composition of agent()/parallel()/pipeline()/phase()/log(); \
@@ -161,9 +168,15 @@ mod tests {
                 .expect("background description")
                 .contains("prerequisites for the current turn")
         );
+        // The gating rule lives closest to the call site, so the description must carry the same
+        // opt-in the system prompt states, including the refusal to infer it from parallel shape.
         assert!(
             spec.description
-                .contains("direct work is valid and preferred otherwise")
+                .contains("only when the operator has opted into multi-agent orchestration")
+        );
+        assert!(
+            spec.description
+                .contains("Never infer that opt-in from a task merely looking parallelizable")
         );
         assert!(spec.description.contains("Topology is task-specific"));
         assert!(

@@ -16,6 +16,7 @@ mod file_input;
 mod highlight;
 mod image_input;
 mod keymap;
+mod keyword_trigger;
 mod maintenance;
 mod markdown;
 mod mcp;
@@ -377,13 +378,23 @@ chain with `&&`. Use it to run the build, tests, or a linter.
 out; it returns a summary. Use `use_skill` when a listed skill fits, and `read_memory` for project notes.
 
 Dynamic workflows
-- `Workflow` is optional. Use it only when a task-specific agent topology adds value; direct work is \
-preferred when one model turn can do the job. Supply an inline ESM script that composes only the \
-bounded agent()/parallel()/pipeline()/phase()/log() operations the task needs. Do not force a fixed \
-stage sequence. Handle a failed agent's `null` result explicitly.
+- Call `Workflow` only when the operator has opted into multi-agent orchestration. A workflow can \
+spawn many agents and spend a large share of the run's budget, so the operator asks for that \
+scale; you never infer it. Opted in means one of: a turn directive in this turn says orchestration \
+is requested; the operator asked for it in their own words (\"use a workflow\", \"run these in \
+parallel\", \"fan out agents\", \"并行\", \"编排\", \"动态工作流\"); or a skill or slash command \
+you were told to follow instructs you to call it.
+- For any other task, including one that would clearly benefit from parallelism, do not call \
+`Workflow`. Work directly, or use `dispatch_agent` for one bounded read-only investigation. If a \
+workflow would genuinely help, say in one line what it would do and ask the operator; tell them \
+they can say \"use a workflow\" next time to skip the ask.
+- When you do call it, scout inline first (locate the files, scope the diff) so you know the real \
+work list, then supply an inline ESM script composing only the bounded \
+agent()/parallel()/pipeline()/phase()/log() operations that list needs. Do not force a fixed stage \
+sequence. Handle a failed agent's `null` result explicitly.
 - Omit `background`, or set it to false, when the current turn needs the workflow result before it \
 can continue. Set `background: true` only for independent work; that returns a task id and the \
-runtime later delivers a bounded `<task-notification>`. Never sleep or poll for a pending workflow; \
+runtime later delivers a bounded task notification. Never sleep or poll for a pending workflow; \
 use `/workflows` to inspect, stop, or resume runs, and never imply success before it settles.
 - Workflow agents receive only catalog-granted tools. A write-capable isolated writer edits a \
 host-owned worktree; the host verifies and serially merges its patch. A script cannot grant \
@@ -395,6 +406,9 @@ untouched code. If the task is ambiguous, ask one concise clarifying question in
 - Make the smallest change that solves the task. Do not invent files, APIs, flags, or config you \
 have not verified exist.
 - In plan mode you are read-only: investigate and write the plan as text; do not edit or run anything.
+- The harness snapshots the workspace at every turn boundary onto its own ref, so your work is \
+already recoverable. Do not `git commit`, create branches, or stash to make it so, and never run \
+`git reset --hard`, `git checkout --`, or `git clean -fd` unless the operator asks for it.
 
 Verify before you claim
 - After changing code, build and run the relevant tests when code execution is on. If a check fails, \
@@ -3204,8 +3218,6 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     agent.telemetry = configured_telemetry;
 
-    eprintln!("permission mode: {}", agent.permission_mode().label());
-
     if let Some(LocalCommand::Serve { listen }) = &cli.command {
         let attached = app_server::attach(agent, false, true)?;
         tui::headless::serve(attached, *listen).await?;
@@ -3217,32 +3229,45 @@ async fn run_cli() -> anyhow::Result<u8> {
         // The alternate screen intentionally replaces the primary-screen startup transcript.
         // Replay the execution posture after the first frame so the operator never loses the
         // exact authority, effort, verification and permission facts that govern this session.
+        //
+        // One dot-separated line, not five notices: each fact is also permanently readable in the
+        // footer, so the startup replay only has to name the posture once. A field is omitted
+        // rather than printed as an empty value, so the line stays short enough not to wrap.
         let mut initial_notices = Vec::new();
+        let code_posture = match agent
+            .permission_rules()
+            .cap_rule(iteron_protocol::Capability::CodeExecuting)
+        {
+            Some(iteron_protocol::Verdict::Auto) if cli.confine => "code:on/confined",
+            Some(iteron_protocol::Verdict::Auto) => "code:on",
+            _ => "code:off",
+        };
+        let mut posture = vec![
+            if agent.bypass_permissions {
+                "bypass".to_owned()
+            } else {
+                "ask".to_owned()
+            },
+            code_posture.to_owned(),
+            format!("effort:{}", agent.effort().label()),
+        ];
+        // The default mode is what the footer also stays silent about; only a mode the operator
+        // chose (plan, acceptEdits, yolo) is worth a field here.
+        if agent.permission_mode() != iteron_protocol::PermissionMode::Default {
+            posture.push(format!("mode:{}", agent.permission_mode().label()));
+        }
+        if let Some(command) = &agent.verify_command {
+            posture.push(format!("verify:{command}"));
+        }
+        initial_notices.push(posture.join(" · "));
+        // Not folded into the line above: bypass is the built-in default, so an operator who never
+        // asked for it has to be told what it means, in full, on every run that has it (see the
+        // primary-screen banner this replays).
         if agent.bypass_permissions {
             initial_notices.push(
                 "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)".to_owned(),
             );
         }
-        if let Some(command) = &agent.verify_command {
-            initial_notices.push(format!(
-                "verify gate: harness will run `{command}` before accepting 'done'"
-            ));
-        }
-        initial_notices.push(format!("effort: {}", agent.effort().label()));
-        initial_notices.push(
-            match agent
-                .permission_rules()
-                .cap_rule(iteron_protocol::Capability::CodeExecuting)
-            {
-                Some(iteron_protocol::Verdict::Auto) if cli.confine => "code execution: ON (--confine: egress-off sandbox, network denied, writes confined to workspace)".to_owned(),
-                Some(iteron_protocol::Verdict::Auto) => "code execution: ON (your own authority: network reachable, writes anywhere your account can; --confine restores the sandbox)".to_owned(),
-                _ => "code execution: OFF (bash/build/test refused). Pass --allow-code to enable.".to_owned(),
-            },
-        );
-        initial_notices.push(format!(
-            "permission mode: {}",
-            agent.permission_mode().label()
-        ));
         let attached = match app_server::attach(agent, true, false) {
             Ok(attached) => attached,
             Err(error) => {

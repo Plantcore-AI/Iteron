@@ -15743,8 +15743,9 @@ ant-api03-SuperSecretModelToken12345"
             .collect::<Vec<_>>();
         assert_eq!(
             checkpoints.len(),
-            2,
-            "the drain and the following completed turn each own a rewind point"
+            1,
+            "the drain owns its required rewind point; the follow-up turn wrote nothing to the \
+             workspace, so the best-effort end-of-turn checkpoint correctly did no Git work"
         );
         assert_eq!(checkpoints[0].0, checkpoints[0].1);
         let checkpoint_position = events

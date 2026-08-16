@@ -114,6 +114,7 @@ fn decode_failover(
             "provider.overloaded" => FailoverClass::Overloaded,
             "model.unavailable" => FailoverClass::ModelUnavailable,
             "account.unavailable" => FailoverClass::AccountUnavailable,
+            "provider.connect_failed" => FailoverClass::ConnectFailed,
             value => return Err(unknown(family, value)),
         };
         let point = match enumeration(fields, family, "dispatch_state")? {

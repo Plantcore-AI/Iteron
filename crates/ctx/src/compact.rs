@@ -19,12 +19,31 @@
 
 use iteron_protocol::{Block, Message, Role, ToolSpec};
 
-/// Fallback admission trigger used when no model window is proven and no window-relative
-/// threshold can be derived.
+/// Last-resort admission trigger, used ONLY when no model context window is proven and no
+/// window-relative threshold can be derived.
+///
+/// It MUST be read as an UPPER BOUND on a blind guess, never as a target, and any proven window
+/// OVERRIDES it — see [`CompactionPolicy::effective_trigger_tokens`], which derives the trigger
+/// from `window - reserved_output` and does not consult this constant at all. The bound is not
+/// theoretical: this number is LARGER than the entire context window of many models the harness
+/// can be pointed at, and a run on a model whose window was absent from every catalog compacted
+/// zero times across seven turns and then died on a provider context error, precisely because
+/// 120_000 could never be reached before that model's real window was.
 const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
-/// A non-zero value is an explicit legacy message-count floor. The shipped policy is token based:
-/// retaining a fixed six messages made one huge tool result radically different from six short
-/// conversational turns.
+
+/// Fraction of the usable window at which admission-side compaction becomes mandatory.
+///
+/// 80%: the remaining fifth absorbs both this estimator's error against the provider's real
+/// tokenizer and the growth of one more assistant answer plus its tool results before the next
+/// admission check. 85% leaves too little for a single large tool result to land without
+/// overshooting into a hard refusal; 75% is already what the end-of-turn hysteresis applies ON TOP
+/// of this number, and stacking two 75% ratios makes a long-window model compact far earlier than
+/// its window warrants. The percentage is optimizable; that it is strictly below 100 is not — a
+/// trigger at the full usable window fires only once the request has already been refused.
+fn trigger_usable_ratio_percent() -> u64 {
+    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 80_u64).clamp(1, 100)
+}
+
 /// Hard context-retention bounds. They are structural memory/admission ceilings rather than
 /// optimizer choices; the ratio inside them remains tunable.
 fn min_recent_retention_tokens() -> usize {
@@ -421,6 +440,19 @@ impl CompactionPolicy {
     /// produces the same threshold. The provider output reservation is never counted as available
     /// input space; routine end-of-turn compaction applies its own hysteresis below this hard
     /// admission trigger.
+    ///
+    /// Precedence, highest first:
+    /// 1. an operator-authored fixed trigger ([`Self::set_fixed_trigger_tokens`]) — an exact
+    ///    instruction outranks every derivation;
+    /// 2. a PROVEN model window — the trigger is a fraction of the usable window and the absolute
+    ///    fallback is not consulted, in either direction;
+    /// 3. [`DEFAULT_TRIGGER_TOKENS`], the blind upper bound, only when the window is genuinely
+    ///    unknown.
+    ///
+    /// The reservation subtracted here is the SAME one the kernel is about to send, not a capped
+    /// approximation of it. That is load-bearing: it keeps this trigger strictly below the local
+    /// admission refusal (`estimated_input + reserved > window`), so a model that reserves a large
+    /// output cannot end up refused before it was ever offered a compaction.
     pub fn effective_trigger_tokens(
         &self,
         model_context_window: Option<u64>,
@@ -432,8 +464,11 @@ impl CompactionPolicy {
         let Some(window) = model_context_window.filter(|window| *window > 0) else {
             return self.trigger_tokens;
         };
-        let usable = window.saturating_sub(u64::from(reserved_output_tokens));
-        usize::try_from(usable).unwrap_or(usize::MAX).max(1)
+        let usable = window
+            .saturating_sub(u64::from(reserved_output_tokens))
+            .max(1);
+        let trigger = usable.saturating_mul(trigger_usable_ratio_percent()) / 100;
+        usize::try_from(trigger).unwrap_or(usize::MAX).max(1)
     }
 
     /// Verbatim recent-tail budget derived from the same replayed model-window and output-reserve
@@ -1088,13 +1123,13 @@ mod tests {
     #[test]
     fn adaptive_trigger_is_a_pure_function_of_window_and_output_reservation() {
         let policy = CompactionPolicy::default();
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 24_576);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
         assert_eq!(
             policy.effective_trigger_tokens(Some(1_000_000), 8_192),
-            991_808
+            793_446
         );
         assert_eq!(policy.effective_trigger_tokens(None, 8_192), 120_000);
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 24_576);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
     }
 
     #[test]
@@ -1212,7 +1247,7 @@ mod tests {
         let policy = CompactionPolicy::default();
         assert_eq!(
             policy.approaching_trigger_tokens(Some(32_768), 8_192),
-            18_432
+            14_745
         );
         assert_eq!(policy.approaching_trigger_tokens(None, 8_192), 90_000);
         let mut fixed = CompactionPolicy::default();

@@ -142,6 +142,7 @@
 /crates/cli/src/image_input.rs @fr0m-scratch
 /crates/cli/src/keymap.rs @fr0m-scratch
 /crates/cli/src/keymap_tests.rs @fr0m-scratch
+/crates/cli/src/keyword_trigger.rs @fr0m-scratch
 /crates/cli/src/main.rs @fr0m-scratch
 /crates/cli/src/maintenance.rs @fr0m-scratch
 /crates/cli/src/markdown.rs @fr0m-scratch

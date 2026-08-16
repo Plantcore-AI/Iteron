@@ -3270,6 +3270,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: summary.cost.clone(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3297,7 +3298,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         (
             app.last_result
@@ -3430,6 +3432,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3455,7 +3458,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert_eq!(app.last_result.as_ref(), Some(&expected));
         assert_eq!(app.status, "idle · last: done");
@@ -3481,6 +3485,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3516,7 +3521,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert!(!app.running, "RunEnded returns the composer to idle");
         assert!(!app.interrupting);
@@ -3541,6 +3547,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3576,7 +3583,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
@@ -5253,7 +5261,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
     }
 
@@ -5310,7 +5319,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
         let op = rx
             .try_recv()
@@ -5352,7 +5362,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert_eq!(
             app.transcript
                 .iter()
@@ -5408,7 +5419,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
         assert_eq!(app.editor.chip_count(), 0);
 
@@ -6375,6 +6387,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             mode: iteron_protocol::PermissionMode::default(),
             effort: iteron_protocol::Effort::default(),
             model: "claude-opus-5".into(),
+            provider_id: "test-provider".into(),
             cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
@@ -6868,7 +6881,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
     assert_eq!(app.status, "answer complete · finalizing…");
     apply_server_event(
         &mut app,
@@ -6882,7 +6896,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
     assert!(app.activities.contains_key("turn-1-finalizing"));
 
     app.retired_activity_ids
@@ -6901,7 +6916,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
     assert!(
         app.activities.is_empty(),
         "late old-turn activity stayed retired"
@@ -6921,7 +6937,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
     assert_eq!(app.status, "idle · input ready");
 }
 
@@ -6964,7 +6981,8 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
 
     assert!(
         !app.provider_accepted,
@@ -6997,7 +7015,8 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         &mut writer,
         &interrupt,
         &drain,
-    );
+    
+            None,);
     assert!(
         app.provider_accepted,
         "only Accepted advances the presentation label"

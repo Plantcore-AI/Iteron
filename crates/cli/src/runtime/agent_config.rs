@@ -195,6 +195,8 @@ impl Agent {
             verification_quarantine_restored: false,
             latest_workspace_checkpoint: None,
             last_workspace_checkpoint_turn: None,
+            turn_mutated_workspace: false,
+            turn_orchestration_requested: false,
             verification_rollback_point: None,
             bypass_permissions: false,
             sensitive_env_names: Vec::new(),

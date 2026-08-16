@@ -48,6 +48,9 @@ impl Agent {
             )
         });
         task.push_str(text);
+        // Only the operator's own words may opt a turn into orchestration; `task` also carries the
+        // rendered attachments, whose bytes the operator did not type.
+        self.turn_orchestration_requested = crate::keyword_trigger::requests_orchestration(text);
         self.run_with_images_mode(&task, images.to_vec(), true, evidence)
             .await
     }

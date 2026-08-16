@@ -124,6 +124,16 @@ pub(crate) fn builtin_failover_rules() -> BTreeSet<FailoverRule> {
             class: FailoverClass::ModelUnavailable,
             point: FailurePoint::PreDispatch,
         },
+        // A transport that never connected proved nothing about the request, so this stays a
+        // PreDispatch classification: no effect can have been applied by a route the process
+        // could not reach. Omitting it made `FailoverClass::ConnectFailed` unreachable — the
+        // taxonomy classified it and the eligible set never held it, so a dead route could not
+        // fail over. This adds no retry and does not touch the bare-5xx rule, so the
+        // at-most-once effects invariant is unchanged.
+        FailoverRule {
+            class: FailoverClass::ConnectFailed,
+            point: FailurePoint::PreDispatch,
+        },
     ])
 }
 
@@ -150,6 +160,7 @@ pub enum FailoverClassConfig {
     Overloaded,
     ModelUnavailable,
     AccountUnavailable,
+    ConnectFailed,
 }
 
 impl FailoverClassConfig {
@@ -159,6 +170,7 @@ impl FailoverClassConfig {
             Self::Overloaded => FailoverClass::Overloaded,
             Self::ModelUnavailable => FailoverClass::ModelUnavailable,
             Self::AccountUnavailable => FailoverClass::AccountUnavailable,
+            Self::ConnectFailed => FailoverClass::ConnectFailed,
         }
     }
 }
