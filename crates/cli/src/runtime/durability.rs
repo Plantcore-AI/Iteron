@@ -466,7 +466,7 @@ impl Agent {
         );
         let hook_activity = self
             .activity
-            .span(activity::ActivityStage::Hook, Some(turn));
+            .span(turn_activity::ActivityStage::Hook, Some(turn));
         let class = effect_class::EffectClass::Hook;
         let ordinal = self.next_effect_ordinal(turn, class);
         let effect = KernelEffect {
@@ -643,7 +643,7 @@ impl Agent {
         self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
         let hook_activity = self
             .activity
-            .span(activity::ActivityStage::Hook, Some(turn));
+            .span(turn_activity::ActivityStage::Hook, Some(turn));
         let context = serde_json::json!({
             "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
             "event_id": event_id,

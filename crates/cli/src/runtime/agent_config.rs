@@ -235,7 +235,7 @@ impl Agent {
             session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
             frontend_saturation: super::frontend::FrontendChannelHealth::default(),
-            activity: super::activity::ActivitySink::default(),
+            activity: super::turn_activity::ActivitySink::default(),
             workflow_progress_tx: None,
             workflow_launcher: None,
             mcp_runtime: None,

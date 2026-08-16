@@ -624,7 +624,7 @@ impl Agent {
         let limit = self.verification_policy.retry.max_attempts;
         let timeout = Duration::from_secs(self.verification_policy.verifier_timeout_secs);
         let verification_activity = self.activity.span_attempt(
-            activity::ActivityStage::Verification,
+            turn_activity::ActivityStage::Verification,
             turn,
             attempt,
             limit,
@@ -902,7 +902,7 @@ impl Agent {
                         )));
                         let elapsed = verification_started.elapsed();
                         self.activity.heartbeat(
-                            activity::ActivityStage::Verification,
+                            turn_activity::ActivityStage::Verification,
                             TurnId(self.seq_turn),
                             elapsed.as_secs().max(1),
                             self.verification_policy.verifier_timeout_secs.max(1),
@@ -930,7 +930,7 @@ impl Agent {
                         let elapsed_secs = elapsed.as_secs().max(1);
                         let total_secs = self.verification_policy.verifier_timeout_secs.max(1);
                         self.activity.heartbeat(
-                            activity::ActivityStage::Verification,
+                            turn_activity::ActivityStage::Verification,
                             TurnId(self.seq_turn),
                             elapsed_secs,
                             total_secs,

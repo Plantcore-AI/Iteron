@@ -571,7 +571,7 @@ impl Agent {
             fallback_index = index.saturating_add(1);
             let failover_activity = self
                 .activity
-                .span(super::activity::ActivityStage::Failover, Some(turn));
+                .span(super::turn_activity::ActivityStage::Failover, Some(turn));
             let next = self.activate_fallback_provider_route(turn, index, failover_class)?;
             failover_activity.complete();
             provider = next.provider.clone();

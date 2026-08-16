@@ -267,7 +267,7 @@ pub struct KernelSpawnerContext {
     pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
     /// Shared content-free live activity projection. Children and host-owned writer settlement use
     /// the same bounded sink as the parent; no workflow status waits on frontend consumption.
-    pub(super) activity: super::activity::ActivitySink,
+    pub(super) activity: super::turn_activity::ActivitySink,
     /// Trusted operator Hook policy and its session-owned external-effect journal. A read-only
     /// child cannot run model-requested code, but operator Hooks remain host policy and therefore
     /// apply uniformly to every model/tool/context boundary in the lineage.
@@ -434,7 +434,7 @@ impl KernelSpawnerContext {
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
-            activity: super::activity::ActivitySink::default(),
+            activity: super::turn_activity::ActivitySink::default(),
             hooks: Hooks::default(),
             hook_effect_journal: None,
             environment_context: None,

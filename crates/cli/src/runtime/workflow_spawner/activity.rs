@@ -214,7 +214,7 @@ impl KernelSpawner {
         }
 
         let preparing = self.cx.activity.span(
-            crate::runtime::activity::ActivityStage::PreparingPatch,
+            crate::runtime::turn_activity::ActivityStage::PreparingPatch,
             None,
         );
         let receipt = match worktree.prepare_patch().await {
@@ -243,7 +243,7 @@ impl KernelSpawner {
         }
 
         let verification = self.cx.activity.span(
-            crate::runtime::activity::ActivityStage::HostVerification,
+            crate::runtime::turn_activity::ActivityStage::HostVerification,
             None,
         );
         if let Err(error) = worktree
@@ -264,7 +264,7 @@ impl KernelSpawner {
         let merging = self
             .cx
             .activity
-            .span(crate::runtime::activity::ActivityStage::Merging, None);
+            .span(crate::runtime::turn_activity::ActivityStage::Merging, None);
         match worktree.merge(&receipt).await {
             Ok(()) => {
                 merging.complete();
@@ -294,10 +294,10 @@ impl KernelSpawner {
         &self,
         worktree: &mut WriterWorktree,
     ) -> Result<(), super::worktree::MergeFailure> {
-        let discarding = self
-            .cx
-            .activity
-            .span(crate::runtime::activity::ActivityStage::Discarding, None);
+        let discarding = self.cx.activity.span(
+            crate::runtime::turn_activity::ActivityStage::Discarding,
+            None,
+        );
         let result = worktree.discard().await;
         if result.is_ok() {
             discarding.complete();

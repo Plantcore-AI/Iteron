@@ -192,7 +192,7 @@ impl Agent {
         let total_permits = u64::try_from(governor.policy().max_in_flight_per_route)
             .unwrap_or(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS)
             .min(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS);
-        let mut queued_activity: Option<activity::ActivitySpan> = None;
+        let mut queued_activity: Option<turn_activity::ActivitySpan> = None;
         loop {
             match governor.admit(route_id, Instant::now()) {
                 Admission::Admitted(permit) => {
@@ -239,7 +239,7 @@ impl Agent {
                             .saturating_sub(in_flight);
                         let mut activity = self
                             .activity
-                            .span(activity::ActivityStage::QueuedForProvider, Some(turn));
+                            .span(turn_activity::ActivityStage::QueuedForProvider, Some(turn));
                         activity
                             .progress(u64::try_from(available).unwrap_or(u64::MAX), total_permits);
                         queued_activity = Some(activity);

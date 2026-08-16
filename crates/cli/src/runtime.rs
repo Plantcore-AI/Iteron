@@ -27,7 +27,6 @@ type PureToolInFlight = (
     Instant,
 );
 
-pub(crate) mod activity;
 mod agent_config;
 mod agent_loop;
 mod budget_control;
@@ -40,6 +39,7 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+pub(crate) mod turn_activity;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod file_submission;
 pub(crate) mod force_cancel;
@@ -2281,7 +2281,7 @@ pub struct Agent {
     frontend_saturation: frontend::FrontendChannelHealth,
     /// Compile-local typed activity plane. The protocol owner bridges this sink into the additive
     /// versioned frontend event without making runtime timing depend on renderer work.
-    activity: activity::ActivitySink,
+    activity: turn_activity::ActivitySink,
     /// Optional frontend sink for QuickJS workflow-script progress (ADR-0001 step 1).
     ///
     /// Deliberately NOT a `UiEvent` variant. `UiEvent` is the published CLI stream/event-queue
@@ -3110,7 +3110,7 @@ impl Agent {
             );
             let local_prepare_activity = self
                 .activity
-                .span(activity::ActivityStage::LocalPrepare, Some(turn_id));
+                .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
             agent_loop.transition(AgentLoopState::AwaitingModel)?;
             self.ledger.record_kernel_tokens(
                 u64::try_from(
@@ -3220,7 +3220,7 @@ impl Agent {
             // unchanged.
             let admission_activity = self
                 .activity
-                .span(activity::ActivityStage::AdmissionWait, Some(turn_id));
+                .span(turn_activity::ActivityStage::AdmissionWait, Some(turn_id));
             let admission = self.admit_provider_dispatch(turn_id, &req).await?;
             admission_activity.complete();
             let usd_attempt = admission.attempt_guard;
@@ -3340,10 +3340,11 @@ impl Agent {
                 // between), keeping origin skew below the five-millisecond contract.
                 stream_start = Instant::now();
                 running_provider_activity = Some(
-                    activity_sink.span(activity::ActivityStage::RunningProvider, Some(turn_id)),
+                    activity_sink
+                        .span(turn_activity::ActivityStage::RunningProvider, Some(turn_id)),
                 );
                 connect_activity =
-                    Some(activity_sink.span(activity::ActivityStage::Connect, Some(turn_id)));
+                    Some(activity_sink.span(turn_activity::ActivityStage::Connect, Some(turn_id)));
                 self.lifecycle_event(
                     "context.request.submitted",
                     Some(turn_id),
@@ -3484,7 +3485,7 @@ impl Agent {
                                 }
                                 if waiting_first_token_activity.is_none() {
                                     waiting_first_token_activity = Some(activity_sink.span(
-                                        activity::ActivityStage::AwaitingFirstToken,
+                                        turn_activity::ActivityStage::AwaitingFirstToken,
                                         Some(turn_id),
                                     ));
                                 }
@@ -3527,7 +3528,7 @@ impl Agent {
                                 }
                                 if waiting_first_token_activity.is_none() {
                                     waiting_first_token_activity = Some(activity_sink.span(
-                                        activity::ActivityStage::AwaitingFirstToken,
+                                        turn_activity::ActivityStage::AwaitingFirstToken,
                                         Some(turn_id),
                                     ));
                                 }
@@ -3560,7 +3561,7 @@ impl Agent {
                             }
                             if waiting_first_token_activity.is_none() {
                                 waiting_first_token_activity = Some(activity_sink.span(
-                                    activity::ActivityStage::AwaitingFirstToken,
+                                    turn_activity::ActivityStage::AwaitingFirstToken,
                                     Some(turn_id),
                                 ));
                             }
@@ -3568,7 +3569,8 @@ impl Agent {
                                 span.complete();
                             }
                             decode_activity = Some(
-                                activity_sink.span(activity::ActivityStage::Decode, Some(turn_id)),
+                                activity_sink
+                                    .span(turn_activity::ActivityStage::Decode, Some(turn_id)),
                             );
                             if let Some(emitter) = &model_lifecycle {
                                 let payload = LifecyclePayload {
@@ -3951,7 +3953,7 @@ impl Agent {
                     fallback_index = index.saturating_add(1);
                     let failover_activity = self
                         .activity
-                        .span(activity::ActivityStage::Failover, Some(turn_id));
+                        .span(turn_activity::ActivityStage::Failover, Some(turn_id));
                     let next =
                         self.activate_fallback_provider_route(turn_id, index, failover_class)?;
                     failover_activity.complete();
@@ -4016,7 +4018,7 @@ impl Agent {
                 }
                 stream_start = Instant::now();
                 connect_activity =
-                    Some(activity_sink.span(activity::ActivityStage::Connect, Some(turn_id)));
+                    Some(activity_sink.span(turn_activity::ActivityStage::Connect, Some(turn_id)));
                 self.lifecycle_event(
                     "model.request_sent",
                     Some(turn_id),
@@ -5032,11 +5034,11 @@ impl Agent {
                 // PostProcessing -> Settled. Run both operator and canonical gate hooks before an
                 // approval prompt so a denied hook never asks the operator to approve dead work.
                 self.activity
-                    .span(activity::ActivityStage::ToolProposed, Some(turn_id))
+                    .span(turn_activity::ActivityStage::ToolProposed, Some(turn_id))
                     .complete();
                 let hook_activity = self
                     .activity
-                    .span(activity::ActivityStage::ToolHook, Some(turn_id));
+                    .span(turn_activity::ActivityStage::ToolHook, Some(turn_id));
                 {
                     let ctx =
                         serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
@@ -5337,7 +5339,7 @@ impl Agent {
                 };
                 let queued_activity = self
                     .activity
-                    .span(activity::ActivityStage::ToolQueued, Some(turn_id));
+                    .span(turn_activity::ActivityStage::ToolQueued, Some(turn_id));
                 let opened = {
                     let Agent {
                         rollout,
@@ -5362,7 +5364,7 @@ impl Agent {
                 );
                 let running_activity = self
                     .activity
-                    .span(activity::ActivityStage::ToolRunning, Some(turn_id));
+                    .span(turn_activity::ActivityStage::ToolRunning, Some(turn_id));
                 let registry = &self.registry;
                 let spill_store = self.ordinary_tool_spill_store(&tu.name);
                 let interrupt = self.interrupt.clone();
@@ -5389,9 +5391,10 @@ impl Agent {
                     }
                 };
                 running_activity.complete();
-                let post_activity = self
-                    .activity
-                    .span(activity::ActivityStage::ToolPostProcessing, Some(turn_id));
+                let post_activity = self.activity.span(
+                    turn_activity::ActivityStage::ToolPostProcessing,
+                    Some(turn_id),
+                );
                 let managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
                 let (mut execution, mut result_spill_lease) =
@@ -5683,7 +5686,7 @@ impl Agent {
         let class = effect_class::EffectClass::Hook;
         let hook_activity = self
             .activity
-            .span(activity::ActivityStage::ToolHook, Some(turn));
+            .span(turn_activity::ActivityStage::ToolHook, Some(turn));
         let mut prepared = Vec::with_capacity(batch.len());
         for admitted in batch {
             let compatibility_ticket = if compatibility_enabled {
@@ -6220,9 +6223,10 @@ impl Agent {
             .iter()
             .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
             .collect::<Vec<_>>();
-        let post_activity = self
-            .activity
-            .span(activity::ActivityStage::ToolPostProcessing, Some(turn_id));
+        let post_activity = self.activity.span(
+            turn_activity::ActivityStage::ToolPostProcessing,
+            Some(turn_id),
+        );
         let post_result = self
             .observe_concurrent_post_tool_hooks(turn_id, &post_inputs)
             .await;
@@ -6467,7 +6471,7 @@ impl Agent {
             InboundControl::ForceCancel => {
                 let cancellation_activity = self
                     .activity
-                    .span(activity::ActivityStage::Cancellation, Some(turn));
+                    .span(turn_activity::ActivityStage::Cancellation, Some(turn));
                 let proof = if let Some(seam) = self.force_cancel_seam.as_mut() {
                     // A ForceCancel may arrive through the shared atomic rather than the SQ. In
                     // that case no request has crossed the process-owner seam yet; enqueue it now
@@ -6543,7 +6547,7 @@ impl Agent {
             InboundControl::Interrupt => {
                 let cancellation_activity = self
                     .activity
-                    .span(activity::ActivityStage::Cancellation, Some(turn));
+                    .span(turn_activity::ActivityStage::Cancellation, Some(turn));
                 cancellation_activity.complete();
                 let outcome = self.finish(turn, Outcome::Interrupted).await?;
                 // The shared signal remains asserted until the Interrupted terminal is durable.
@@ -6670,7 +6674,7 @@ impl Agent {
         );
         let checkpoint_activity = self
             .activity
-            .span(activity::ActivityStage::Checkpoint, Some(turn));
+            .span(turn_activity::ActivityStage::Checkpoint, Some(turn));
         let ticket = self.open_kernel_effect(
             turn,
             class,
@@ -6751,12 +6755,12 @@ impl Agent {
         // the durability tail to the model or leaves its final token looking stalled.
         if outcome == Outcome::Done {
             self.activity
-                .span(activity::ActivityStage::AnswerComplete, Some(turn))
+                .span(turn_activity::ActivityStage::AnswerComplete, Some(turn))
                 .complete();
         }
         let evidence_activity = self
             .activity
-            .span(activity::ActivityStage::FinalizingEvidence, Some(turn));
+            .span(turn_activity::ActivityStage::FinalizingEvidence, Some(turn));
         // `finish` previously performed every checkpoint/fsync synchronously in the same poll that
         // accepted EndTurn. Yield after publishing the semantic boundary so the resident server
         // can forward and paint “answer complete · finalizing” before durability work begins.
@@ -6872,7 +6876,7 @@ impl Agent {
         evidence_activity.complete();
         let finalization_activity = self
             .activity
-            .span(activity::ActivityStage::Finalization, Some(turn));
+            .span(turn_activity::ActivityStage::Finalization, Some(turn));
         self.ui(UiEvent::Phase(Phase::Idle));
         self.ui(UiEvent::Done(format!("{outcome:?}")));
         finalization_activity.complete();
@@ -6940,7 +6944,7 @@ impl Agent {
         }
         let approval_activity = self
             .activity
-            .span(activity::ActivityStage::AwaitingApproval, Some(turn));
+            .span(turn_activity::ActivityStage::AwaitingApproval, Some(turn));
         let approval_visible = self.ui(UiEvent::ApprovalRequest {
             id,
             tool: tool.to_string(),

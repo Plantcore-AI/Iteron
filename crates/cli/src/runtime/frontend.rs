@@ -436,7 +436,7 @@ impl Agent {
 
     pub(crate) fn set_activity(
         &mut self,
-        tx: tokio::sync::mpsc::Sender<super::activity::ActivityEvent>,
+        tx: tokio::sync::mpsc::Sender<super::turn_activity::ActivityEvent>,
     ) {
         self.activity.install(tx);
     }
@@ -445,7 +445,7 @@ impl Agent {
         self.activity.take_pending_terminals()
     }
 
-    pub(crate) fn activity_overflow_port(&self) -> super::activity::ActivitySink {
+    pub(crate) fn activity_overflow_port(&self) -> super::turn_activity::ActivitySink {
         self.activity.clone()
     }
 
