@@ -753,6 +753,42 @@ impl PtyHarness {
         theme_fixture: ThemeFixture,
         keyboard_fixture: KeyboardFixture,
     ) -> Self {
+        Self::spawn_with_terminal_options(
+            scratch,
+            cols,
+            rows,
+            link_fixture,
+            theme_fixture,
+            keyboard_fixture,
+            None,
+            true,
+        )
+    }
+
+    fn spawn_resume_fixture(scratch: &Scratch, run_id: &str, cols: u16, rows: u16) -> Self {
+        Self::spawn_with_terminal_options(
+            scratch,
+            cols,
+            rows,
+            true,
+            ThemeFixture::TerminalOverride,
+            KeyboardFixture::Unsupported,
+            Some(run_id),
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_with_terminal_options(
+        scratch: &Scratch,
+        cols: u16,
+        rows: u16,
+        link_fixture: bool,
+        theme_fixture: ThemeFixture,
+        keyboard_fixture: KeyboardFixture,
+        resume_run: Option<&str>,
+        submit_initial_task: bool,
+    ) -> Self {
         let permit = PtyPermit::acquire();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -800,6 +836,10 @@ impl PtyHarness {
         command.arg(scratch.repo());
         command.arg("--runs-dir");
         command.arg(scratch.runs());
+        if let Some(run_id) = resume_run {
+            command.arg("--resume");
+            command.arg(run_id);
+        }
         command.arg("--provider");
         command.arg(if link_fixture {
             LINK_PROVIDER_ID
@@ -818,7 +858,9 @@ impl PtyHarness {
             command.env("TERM_PROGRAM", "WezTerm");
             command.env("NO_PROXY", "127.0.0.1,localhost");
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
-            command.arg(CLIENT_PARITY_TASK.trim());
+            if submit_initial_task {
+                command.arg(CLIENT_PARITY_TASK.trim());
+            }
         } else {
             // These fixtures exercise only terminal and local-tool paths, but production route
             // admission still requires the bundled GLM credential owner to be present. Keep the
@@ -2010,6 +2052,53 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     provider.finish();
 }
 
+#[test]
+fn startup_resume_projects_the_recorded_conversation_into_the_real_terminal() {
+    let provider = LinkProvider::spawn_client_parity_fixture();
+    let scratch = Scratch::new("resume-history");
+    scratch.configure_link_provider(&provider.api_root);
+    let mut first = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+    first.wait_until("the first session records an assistant answer", |pty| {
+        pty.screen_text().contains("parity reply") && pty.screen_text().contains("idle")
+    });
+    first.send(b"\x1b");
+    assert!(first.wait_for_exit().success());
+    assert_termios_restored(&first);
+    first.close_and_drain();
+    first.assert_terminal_restored();
+    provider.finish();
+
+    let run_id = std::fs::read_dir(scratch.runs())
+        .expect("read resume fixture rollouts")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            (entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl"))
+            .then(|| entry.path().file_stem()?.to_str().map(str::to_owned))
+            .flatten()
+        })
+        .expect("the first session persisted one rollout");
+    let mut resumed = PtyHarness::spawn_resume_fixture(&scratch, &run_id, 96, 26);
+    resumed.wait_until("the resumed first frame contains the prior answer", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("parity reply") && screen.contains(CLIENT_PARITY_TASK.trim())
+    });
+    assert!(
+        !resumed
+            .screen_text()
+            .contains("Iteron · Build, explain, and verify"),
+        "the fresh-session welcome must be replaced by durable history:\n{}",
+        resumed.screen_text()
+    );
+    resumed.send(b"\x1b");
+    assert!(resumed.wait_for_exit().success());
+    assert_termios_restored(&resumed);
+    resumed.close_and_drain();
+    resumed.assert_terminal_restored();
+}
+
 fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
     let scratch = Scratch::new(label);
     let provider = BlockingBashToolProvider::spawn(&scratch.repo());
@@ -2070,6 +2159,37 @@ fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
 #[test]
 fn ctrl_c_interrupts_a_running_bash_tool_and_kills_its_descendants() {
     interrupt_running_bash_tool_from_real_pty(b"\x03", "ctrl-c-bash-tool");
+}
+
+#[test]
+fn double_ctrl_c_forces_exit_while_a_bash_tool_is_still_running() {
+    let scratch = Scratch::new("double-ctrl-c-bash-tool");
+    let provider = BlockingBashToolProvider::spawn(&scratch.repo());
+    let escaped = provider.escaped.clone();
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+    pty.wait_until("the model-declared bash child is running", |pty| {
+        provider.started.is_file() && pty.screen_text().contains("Bash")
+    });
+
+    let forced_at = Instant::now();
+    pty.send(b"\x03\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "forced TUI exit failed: {status}");
+    assert!(
+        forced_at.elapsed() < Duration::from_secs(2),
+        "double Ctrl-C waited through the normal workflow shutdown grace"
+    );
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
+
+    thread::sleep(Duration::from_millis(2200));
+    assert!(
+        !escaped.exists(),
+        "bounded forced shutdown left the bash descendant alive"
+    );
 }
 
 #[test]

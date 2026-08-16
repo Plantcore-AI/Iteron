@@ -54,6 +54,8 @@ impl App {
             last_total_rows: 0,
             last_view_h: 0,
             quit: false,
+            force_quit_requested: false,
+            ctrl_c_quit_deadline: None,
             keymap_status: "keys:standard".into(),
             vim_anchor: None,
             cur_text: String::new(),
@@ -133,6 +135,13 @@ impl App {
 
     pub(super) fn schedule_completion(&mut self) {
         self.completion_generation = self.completion_generation.wrapping_add(1);
+        let text = self.editor.text();
+        if commands::slash_prefix(&text).is_some() {
+            self.completion_due = None;
+            self.completion =
+                build_completion(&text, self.editor.cursor(), std::path::Path::new("."));
+            return;
+        }
         self.completion_due = Some(
             Instant::now()
                 + iteron_tunables::param_duration(

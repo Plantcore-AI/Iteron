@@ -58,6 +58,7 @@ pub use execution_policy::{
     SpeculativeWinnerEvidence, TaskFailureAction, TaskPrioritySchedulingPolicy, TaskRetryPolicy,
     WriterMergePolicy,
 };
+pub use host::validate_script;
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{CompiledWorkflow, Meta, compile, extract_meta, strip_meta};
 pub use quorum::{EarlyStopQuorumPolicy, MAX_EARLY_STOP_QUORUM};

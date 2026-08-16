@@ -527,20 +527,7 @@ pub(super) fn apply_transcript_effect_event(
                     blocked,
                 }),
             ) => {
-                clear_transcript_for_adoption(app);
-                let (blocks, total) = adopted_transcript_blocks(&events);
-                let rendered = blocks.len();
-                if rendered < total {
-                    app.note(
-                        block::NoticeLevel::Info,
-                        format!(
-                            "showing the last {rendered} of {total} recorded transcript blocks; the model continues from all of them"
-                        ),
-                    );
-                }
-                for kind in blocks {
-                    app.push_block(kind);
-                }
+                project_recorded_transcript(app, &events);
                 session.adopt_run(
                     adopted.rollout_path.clone(),
                     *tunables_checkpoint,
@@ -604,6 +591,7 @@ pub(super) fn apply_transcript_effect_event(
                 if let Some(reason) = blocked {
                     app.note(block::NoticeLevel::Err, reason);
                     app.prepare_resume_handoff(&adopted.run_id);
+                    app.status = "idle · resume needs a new terminal".into();
                 }
             }
             (
@@ -612,6 +600,14 @@ pub(super) fn apply_transcript_effect_event(
             ) => {
                 app.note(block::NoticeLevel::Err, reason);
                 app.prepare_resume_handoff(&run_id);
+                app.status = "idle · resume needs a new terminal".into();
+            }
+            (transcript_effect::ControlKind::Adopt { .. }, _) => {
+                app.status = "idle · session not resumed".into();
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "session adoption ended without a usable runtime reply",
+                );
             }
             (
                 transcript_effect::ControlKind::OperatorStatus {

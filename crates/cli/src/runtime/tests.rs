@@ -2643,7 +2643,9 @@ mod gate_integration_tests {
         let mut agent = workflow_seam_agent(&ws);
 
         let prepared = agent
-            .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+            .prepare_workflow(&serde_json::json!({
+                "script": format!("```javascript\n{SEAM_SCRIPT}```")
+            }))
             .expect("an inline script under a bound route prepares");
 
         assert_eq!(prepared.name, "seam");
@@ -2655,6 +2657,11 @@ mod gate_integration_tests {
         assert_eq!(manifest.name, "seam");
         assert_eq!(manifest.model, "model-a");
         assert_eq!(manifest.provider_id, "provider-a");
+        assert_eq!(
+            crate::workflow::load_script(&prepared.workflows_dir, &prepared.run_id)
+                .expect("the normalized script is persisted"),
+            SEAM_SCRIPT.trim_end()
+        );
         // And nothing has run: no journal, no terminal sidecar.
         assert!(crate::workflow::load_result(&prepared.workflows_dir, &prepared.run_id).is_none());
         assert!(
@@ -2962,6 +2969,24 @@ mod gate_integration_tests {
                 .prepare_workflow(&serde_json::json!({ "scriptPath": "nope/missing.mjs" }))
                 .is_err(),
             "an unreadable scriptPath fails the tool call, not the run"
+        );
+        let malformed = match agent.prepare_workflow(&serde_json::json!({
+            "script": "```js\nreturn { broken: ;\n```"
+        })) {
+            Ok(_) => panic!("a malformed fenced script must fail before launch"),
+            Err(error) => error,
+        };
+        assert!(
+            malformed.contains("Workflow: script rejected before launch")
+                && malformed.contains("no run started"),
+            "{malformed}"
+        );
+        assert!(
+            crate::workflow::list_runs(
+                &agent.runtime_state_dir.join("subagents").join("workflows")
+            )
+            .is_empty(),
+            "invalid source must not mint a pending workflow"
         );
         // Every refusal above happened before anything was recorded, so the only run
         // `iteron workflow list` can see is the one that was actually admitted.
@@ -4132,6 +4157,9 @@ mod gate_integration_tests {
 
         assert_eq!(outcome.unwrap(), Outcome::Interrupted);
         assert!(cancelled.load(Ordering::SeqCst));
+        agent
+            .guard_unresolved_effects()
+            .expect("operator cancellation must not poison later submissions");
         assert_eq!(
             recorded_events(&ws, &run)
                 .iter()

@@ -458,3 +458,25 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.resume_handoff = None;
     app.follow_latest();
 }
+
+/// Replace the visible conversation with the bounded projection of one durable rollout.
+///
+/// Both startup `--resume` and in-process `/resume` use this seam so the operator sees the same
+/// history regardless of how the runtime acquired the rollout. The model still receives the full
+/// reconstructed transcript; only this display projection is bounded.
+pub(super) fn project_recorded_transcript(app: &mut App, events: &[iteron_protocol::Event]) {
+    clear_transcript_for_adoption(app);
+    let (blocks, total) = adopted_transcript_blocks(events);
+    let rendered = blocks.len();
+    if rendered < total {
+        app.note(
+            block::NoticeLevel::Info,
+            format!(
+                "showing the last {rendered} of {total} recorded transcript blocks; the model continues from all of them"
+            ),
+        );
+    }
+    for kind in blocks {
+        app.push_block(kind);
+    }
+}

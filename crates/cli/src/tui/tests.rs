@@ -719,6 +719,38 @@ mod tests {
     }
 
     #[test]
+    fn startup_resume_replaces_the_welcome_with_recorded_history() {
+        use iteron_protocol::EventKind;
+        let events = vec![
+            adopted_event(
+                1,
+                EventKind::Message {
+                    message: iteron_protocol::Message::user_text("previous question"),
+                },
+            ),
+            adopted_event(
+                2,
+                EventKind::Message {
+                    message: adopted_message(
+                        iteron_protocol::Role::Assistant,
+                        vec![iteron_protocol::Block::Text {
+                            text: "previous answer".into(),
+                        }],
+                    ),
+                },
+            ),
+        ];
+        let mut app = App::new();
+
+        project_recorded_transcript(&mut app, &events);
+
+        assert_eq!(app.transcript.len(), 2);
+        assert!(matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question"));
+        assert!(matches!(&app.transcript[1].kind, block::BlockKind::Assistant(_)));
+        assert!(app.transcript.iter().all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. })));
+    }
+
+    #[test]
     fn the_route_to_bind_comes_from_the_records_last_durable_selection() {
         use iteron_protocol::EventKind;
         let selection = |provider: &str, model: &str| EventKind::ModelSelected {
@@ -2210,7 +2242,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.effort = Effort::Ultracode;
-        assert_eq!(effort_status_label(&app), "◉ max · ultracode");
+        assert_eq!(effort_status_label(&app), "◉ max");
+        let bits = status_right_bits(&app, surface::Density::Wide);
+        assert_eq!(
+            bits.iter()
+                .filter(|bit| bit.as_str() == "✦ ultracode")
+                .count(),
+            1
+        );
+        assert!(bits.iter().all(|bit| bit != "◉ max · ultracode"));
         app.effort = Effort::High;
         app.effort_application = Some(EffortApplication::Mapped {
             requested: ReasoningEffort::High,
@@ -2221,6 +2261,57 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             requested: ReasoningEffort::High,
         });
         assert_eq!(effort_status_label(&app), "● high · not enforced");
+    }
+
+    #[test]
+    fn double_ctrl_c_arms_then_forces_exit_inside_the_bounded_window() {
+        let now = Instant::now();
+        let mut deadline = None;
+        assert_eq!(
+            running_ctrl_c_action(&mut deadline, now, Duration::from_secs(1)),
+            RunningCtrlCAction::InterruptAndArm
+        );
+        assert!(deadline.is_some());
+        assert_eq!(
+            running_ctrl_c_action(
+                &mut deadline,
+                now + Duration::from_millis(500),
+                Duration::from_secs(1),
+            ),
+            RunningCtrlCAction::ForceQuit
+        );
+        assert!(deadline.is_none());
+        assert_eq!(
+            running_ctrl_c_action(
+                &mut deadline,
+                now + Duration::from_secs(2),
+                Duration::from_secs(1),
+            ),
+            RunningCtrlCAction::InterruptAndArm
+        );
+    }
+
+    #[test]
+    fn slash_completion_is_ready_without_waiting_for_a_worker_wakeup() {
+        let mut app = App::new();
+        app.editor.insert('/');
+
+        app.schedule_completion();
+
+        assert!(app.completion.is_some());
+        assert!(app.completion_due.is_none());
+    }
+
+    #[test]
+    fn local_workers_add_only_a_bounded_active_wakeup() {
+        let now = Instant::now();
+        assert_eq!(local_job_wake(None, now, false), None);
+        assert_eq!(
+            local_job_wake(None, now, true),
+            Some(now + LOCAL_JOB_POLL)
+        );
+        let earlier = now + Duration::from_millis(1);
+        assert_eq!(local_job_wake(Some(earlier), now, true), Some(earlier));
     }
 
     #[test]

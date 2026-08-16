@@ -179,6 +179,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.interrupting = false;
             app.force_cancelling = false;
             app.cancel_requested_at = None;
+            app.ctrl_c_quit_deadline = None;
             app.draining = false;
             app.last_run_latency = app.run_started.take().map(|started| started.elapsed());
             app.awaiting_first_token_since = None;

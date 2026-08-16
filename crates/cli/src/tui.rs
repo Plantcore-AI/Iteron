@@ -3,7 +3,7 @@
 //! Layout: a full-width semantic transcript; an on-demand activity shelf and explicit steer/after-
 //! turn lanes; one framed composer; contextual help; and a stable bottom status line. Metrics
 //! progressively disclose instead of becoming permanent dashboard chrome. Ctrl-C/Esc request a
-//! safe-point stop; Ctrl-D drains active work (or quits when idle); wheel/trackpad input scrolls the
+//! safe-point stop; a second Ctrl-C exits; Ctrl-D drains active work (or quits when idle); wheel/trackpad input scrolls the
 //! in-session transcript by default, while Ctrl-T releases mouse capture for native selection; Esc
 //! quits when idle.
 //!
@@ -543,7 +543,7 @@ fn visual_reasoning_effort(effort: ReasoningEffort) -> String {
 
 fn visual_selected_effort(effort: Effort) -> String {
     if effort == Effort::Ultracode {
-        "◉ max · ultracode".into()
+        "◉ max".into()
     } else {
         visual_reasoning_effort(effort.reasoning_effort())
     }
@@ -552,12 +552,8 @@ fn visual_selected_effort(effort: Effort) -> String {
 /// Claude-style effort symbol, but derived from the adapter's observed application rather than the
 /// picker alone. Mapping and non-exact enforcement stay visible instead of being prettified away.
 ///
-/// The ultracode suffix is decided ONCE, against the label the match produced, instead of being
-/// re-spelled inside each arm. It used to be spelled out in only two of the five arms, so
-/// `BudgetBased` — what the Anthropic adapter emits whenever there is extended thinking but no
-/// semantic effort knob — rendered `Effort::Max` and `Effort::Ultracode` byte-identically.
 fn effort_status_label(app: &App) -> String {
-    let base = match app.effort_application {
+    match app.effort_application {
         Some(EffortApplication::Exact { requested }) => visual_reasoning_effort(requested),
         Some(EffortApplication::Mapped { requested, sent }) => {
             if requested == sent {
@@ -582,14 +578,6 @@ fn effort_status_label(app: &App) -> String {
             format!("{} · not enforced", visual_reasoning_effort(requested))
         }
         None => visual_selected_effort(app.effort),
-    };
-    // `visual_selected_effort` already carries the suffix for the no-application case (it is also
-    // the picker's renderer, which must stand alone), so the guard is what keeps the single
-    // application point from producing `… · ultracode · ultracode`.
-    if app.effort == Effort::Ultracode && !base.ends_with("· ultracode") {
-        format!("{base} · ultracode")
-    } else {
-        base
     }
 }
 
@@ -1126,6 +1114,12 @@ const SELECTION_OFFSCREEN_ROW: usize = 0;
 /// Slack added to `workflow::SHUTDOWN_GRACE` when waiting out the server task on a catchable
 /// termination, so the wait outlives the grace it is supposed to observe rather than racing it.
 const SHUTDOWN_WAIT_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
+/// Codex-style bounded second-press window: one Ctrl-C interrupts, a second exits even while a
+/// workflow or tool is still settling. Outside this window Ctrl-C simply arms the gesture again.
+const CTRL_C_QUIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+/// Local workers do not publish on the runtime EQ. Poll only while one exists so completion,
+/// session loading and attachment work cannot finish silently while an otherwise-idle TUI sleeps.
+const LOCAL_JOB_POLL: std::time::Duration = std::time::Duration::from_millis(16);
 /// How long a clipboard-image capture subprocess may run before it is killed. Bounded because a
 /// wedged helper must not hang the paste path.
 const CLIPBOARD_CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1138,6 +1132,34 @@ const MIN_LIST_ROWS_ON_OVERFLOW: u16 = 2;
 enum FirstTokenState {
     Slow,
     Stalled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunningCtrlCAction {
+    InterruptAndArm,
+    ForceQuit,
+}
+
+fn running_ctrl_c_action(
+    deadline: &mut Option<Instant>,
+    now: Instant,
+    window: Duration,
+) -> RunningCtrlCAction {
+    if deadline.is_some_and(|deadline| now <= deadline) {
+        *deadline = None;
+        RunningCtrlCAction::ForceQuit
+    } else {
+        *deadline = Some(now + window);
+        RunningCtrlCAction::InterruptAndArm
+    }
+}
+
+fn local_job_wake(wake: Option<Instant>, now: Instant, active: bool) -> Option<Instant> {
+    if !active {
+        return wake;
+    }
+    let job_wake = now + iteron_tunables::param_duration("cli.tui.local_job_poll", LOCAL_JOB_POLL);
+    Some(wake.map_or(job_wake, |scheduled| scheduled.min(job_wake)))
 }
 
 /// A first-token wait long enough to say something about.
@@ -1249,8 +1271,12 @@ struct App {
     unread_updates: u32,
     last_total_rows: u16,
     last_view_h: u16,
-    /// true once the user asks to quit and no run is active.
+    /// True once the user asks to quit; a forced double-Ctrl-C may set it during an active run.
     quit: bool,
+    /// A bounded double-Ctrl-C exits the client even while the runtime owns active work. Teardown
+    /// still gives the server one bounded grace period to terminalize workflows and flush records.
+    force_quit_requested: bool,
+    ctrl_c_quit_deadline: Option<Instant>,
     /// Truthful projection of the live keymap/Vim state; updated before routing each key.
     keymap_status: String,
     /// Char index the visual selection is anchored at; `None` outside visual mode.
@@ -1420,6 +1446,10 @@ pub(crate) struct RunConfig {
     /// Human-readable, credential-free startup posture lines printed before attachment. The
     /// alternate screen hides the primary transcript, so replay them after first paint as well.
     pub(crate) initial_notices: Vec<String>,
+    /// Durable transcript authority for a startup `--resume`/`--continue` invocation. The runtime
+    /// already resumes the full model history; this copy exists only so the first TUI frame shows
+    /// the same conversation instead of a fresh-session welcome surface.
+    pub(crate) initial_transcript_events: Option<Vec<iteron_protocol::Event>>,
 }
 
 pub async fn run(
@@ -1438,10 +1468,11 @@ pub async fn run(
         sensitive_env_names,
         initial_diagnostics,
         initial_notices,
+        initial_transcript_events,
     } = config;
     let app_server::Attached {
         handle,
-        task: server_task,
+        task: mut server_task,
         facts,
         initial_state,
         interrupt,
@@ -1585,6 +1616,9 @@ pub async fn run(
         app.mark_transcript_changed();
     } else if !terminal_capabilities.may_use_color() {
         app.set_theme(theme::Theme::mono());
+    }
+    if let Some(events) = initial_transcript_events.as_deref() {
+        project_recorded_transcript(&mut app, events);
     }
     if let Some(warning) = initial_keymap_warning {
         app.note(block::NoticeLevel::Warn, warning);
@@ -1956,6 +1990,7 @@ pub async fn run(
                             block::NoticeLevel::Warn,
                             "session adoption not started: another local effect is pending",
                         );
+                        app.status = "idle · session not resumed".into();
                     }
                 }
                 Ok(PreparedAdoptionResult::Failed {
@@ -1966,12 +2001,18 @@ pub async fn run(
                     if let Some(run_id) = handoff_run {
                         app.prepare_resume_handoff(&run_id);
                     }
+                    app.status = "idle · session not resumed".into();
                 }
-                Err(error) if error.is_cancelled() => {}
-                Err(error) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("session adoption worker failed: {error}"),
-                ),
+                Err(error) if error.is_cancelled() => {
+                    app.status = "idle · session loading cancelled".into();
+                }
+                Err(error) => {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        format!("session adoption worker failed: {error}"),
+                    );
+                    app.status = "idle · session not resumed".into();
+                }
             }
             redraw = true;
         }
@@ -2248,6 +2289,13 @@ pub async fn run(
         if let Some(due) = resize_due {
             wake = Some(wake.map_or(due, |scheduled| scheduled.min(due)));
         }
+        let local_job_active = app.session_picker_job.is_some()
+            || app.session_preview_job.is_some()
+            || app.session_adoption_job.is_some()
+            || app.completion_job.is_some()
+            || app.workspace_command_job.is_some()
+            || app.attachment_job.is_some();
+        wake = local_job_wake(wake, now, local_job_active);
         let mut next_input = None;
         let effect_active = transcript_effects.is_active();
         tokio::select! {
@@ -2760,32 +2808,50 @@ pub async fn run(
                     let mut refresh = false;
                     match k.code {
                         KeyCode::Char('c') if ctrl => {
-                            if transcript_effects.is_active() {
-                                let _ = transcript_effects.cancel();
-                                cancel_local_effect_then_turn(
-                                    &mut app,
-                                    &session,
-                                    &interrupt,
-                                );
-                            } else if app.running {
-                                if app.interrupting {
-                                    // Second Ctrl-C: the cooperative interrupt did not land.
-                                    //
-                                    // This used to `abort()` the task that held the `Agent`,
-                                    // destroying the runtime and leaving the session in an
-                                    // unrecoverable "no agent — Esc to quit" state. The runtime is
-                                    // Escalation drops only the in-flight turn future. It neither
-                                    // drains the session nor cleans session-owned background jobs.
-                                    force_cancel_turn(&mut app, &session);
-                                } else {
-                                    request_interrupt(&mut app, &session, &interrupt);
-                                    app.push(bold(Color::Yellow), "interrupting now… (Ctrl-C again for stronger cancellation)");
+                            if app.running {
+                                match running_ctrl_c_action(
+                                    &mut app.ctrl_c_quit_deadline,
+                                    Instant::now(),
+                                    iteron_tunables::param_duration(
+                                        "cli.tui.ctrl_c_quit_window",
+                                        CTRL_C_QUIT_WINDOW,
+                                    ),
+                                ) {
+                                    RunningCtrlCAction::InterruptAndArm => {
+                                        if transcript_effects.is_active() {
+                                            let _ = transcript_effects.cancel();
+                                        }
+                                        request_interrupt(&mut app, &session, &interrupt);
+                                        app.push(
+                                            bold(Color::Yellow),
+                                            "interrupting now… (Ctrl-C again to exit)",
+                                        );
+                                    }
+                                    RunningCtrlCAction::ForceQuit => {
+                                        if transcript_effects.is_active() {
+                                            let _ = transcript_effects.cancel();
+                                        }
+                                        if app.interrupting {
+                                            force_cancel_turn(&mut app, &session);
+                                        }
+                                        app.force_quit_requested = true;
+                                        app.quit = true;
+                                        app.status = "shutting down…".into();
+                                    }
                                 }
+                            } else if transcript_effects.is_active() {
+                                let _ = transcript_effects.cancel();
+                                app.note(
+                                    block::NoticeLevel::Warn,
+                                    "local transcript effect cancelled",
+                                );
                             } else if app.editor.has_submission() {
                                 app.editor.clear_recoverable();
                                 app.completion = None;
                                 app.resume_handoff = None;
                             } else {
+                                app.force_quit_requested = app.workflow_monitor.live_count() > 0
+                                    || !app.activities.is_empty();
                                 app.quit = true;
                             }
                         }
@@ -2948,6 +3014,12 @@ pub async fn run(
                         KeyCode::Esc if !app.running && transcript_effects.is_active() => {
                             let _ = transcript_effects.cancel();
                             app.note(block::NoticeLevel::Warn, "cancelling local effect…");
+                        }
+                        KeyCode::Esc if !app.running && app.session_adoption_job.is_some() => {
+                            if let Some(job) = app.session_adoption_job.take() {
+                                job.abort();
+                            }
+                            app.status = "idle · session loading cancelled".into();
                         }
                         KeyCode::Esc if !app.running && app.editor.has_submission() => {
                             app.editor.clear_recoverable();
@@ -3161,11 +3233,18 @@ pub async fn run(
                             } else if app.interrupting {
                                 force_cancel_turn(&mut app, &session);
                             } else {
+                                let pending = app
+                                    .steer_previews
+                                    .len()
+                                    .saturating_add(app.queued.len());
                                 request_interrupt(&mut app, &session, &interrupt);
-                                app.push(
-                                    bold(Color::Yellow),
-                                    "interrupting now… (Esc again for stronger cancellation)",
-                                );
+                                app.push(bold(Color::Yellow), if pending == 0 {
+                                    "interrupting now… (Esc again for stronger cancellation)".into()
+                                } else {
+                                    format!(
+                                        "interrupting now… {pending} pending submission(s) will send next"
+                                    )
+                                });
                             }
                         }
                         KeyCode::Char('?')
@@ -3192,7 +3271,7 @@ pub async fn run(
             }
         }
 
-        if app.quit && !app.running {
+        if app.quit {
             break;
         }
 
@@ -3247,17 +3326,7 @@ pub async fn run(
         // would otherwise kill the run's thread mid-flight and leave it listing as `running`
         // forever. Bounded, because a signal must not be answered by hanging — with no live run
         // this resolves immediately, so the wait exists exactly when it is earning something.
-        let stopped = tokio::time::timeout(
-            iteron_tunables::param_duration(
-                "cli.workflow.shutdown_grace",
-                crate::workflow::SHUTDOWN_GRACE,
-            ) + iteron_tunables::param_duration("cli.tui.shutdown_wait_slack", SHUTDOWN_WAIT_SLACK),
-            server_task,
-        )
-        .await
-        .ok()
-        .and_then(|joined| joined.ok())
-        .unwrap_or_default();
+        let stopped = wait_for_server_shutdown(&mut server_task).await;
         restore_terminal(&guard.keyboard_restorer());
         if !history_flushed {
             eprintln!(
@@ -3272,7 +3341,11 @@ pub async fn run(
     // the session still owned) happens in there, and returning before it completes would race the
     // process exit against the record on disk.
     drop(session);
-    let stopped = server_task.await.unwrap_or_default();
+    let stopped = if app.force_quit_requested {
+        wait_for_forced_server_shutdown(&mut server_task).await
+    } else {
+        server_task.await.unwrap_or_default()
+    };
     // The terminal modes go back to normal BEFORE this prints. A run the operator was never told
     // about is the failure this report exists to prevent, so cleanup and reporting stay ordered.
     drop(guard);
@@ -4168,9 +4241,8 @@ fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line:
     // it rather than being smuggled into the model field.
     groups.push(Group::single(canonical_statusline(app), Accent::Metadata));
     // Ultracode is a harness MODE (internal fan-out orchestration), not just a thinking level, so
-    // it announces itself the way the permission mode does — its own segment, in the mode accent —
-    // immediately before the effort segment. The effort segment keeps its own ` · ultracode`
-    // suffix: this one says which mode is running, that one says what the adapter did with it.
+    // it announces itself once, the way the permission mode does. The adjacent effort segment
+    // reports only the adapter's reasoning level/application.
     if app.effort == Effort::Ultracode {
         groups.push(Group::single("✦ ultracode", Accent::Mode));
     }

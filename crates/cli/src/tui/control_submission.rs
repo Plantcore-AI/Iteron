@@ -11,6 +11,47 @@ pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport
     }
 }
 
+pub(super) async fn wait_for_server_shutdown(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+) -> crate::workflow::ShutdownReport {
+    wait_for_server_shutdown_for(
+        server_task,
+        iteron_tunables::param_duration(
+            "cli.workflow.shutdown_grace",
+            crate::workflow::SHUTDOWN_GRACE,
+        ) + iteron_tunables::param_duration("cli.tui.shutdown_wait_slack", SHUTDOWN_WAIT_SLACK),
+    )
+    .await
+}
+
+pub(super) async fn wait_for_forced_server_shutdown(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+) -> crate::workflow::ShutdownReport {
+    wait_for_server_shutdown_for(
+        server_task,
+        iteron_tunables::param_duration(
+            "cli.tui.force_quit_shutdown_wait",
+            std::time::Duration::from_millis(250),
+        ),
+    )
+    .await
+}
+
+async fn wait_for_server_shutdown_for(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+    wait: Duration,
+) -> crate::workflow::ShutdownReport {
+    match tokio::time::timeout(wait, &mut *server_task).await {
+        Ok(Ok(report)) => report,
+        Ok(Err(_)) => crate::workflow::ShutdownReport::default(),
+        Err(_) => {
+            server_task.abort();
+            let _ = server_task.await;
+            crate::workflow::ShutdownReport::default()
+        }
+    }
+}
+
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
 /// completion use this path, so completion activation cannot drift into a second dispatch path.
 pub(super) fn dispatch_slash_command(
@@ -402,6 +443,7 @@ pub(super) fn submit_operation(
             app.interrupting = false;
             app.force_cancelling = false;
             app.cancel_requested_at = None;
+            app.ctrl_c_quit_deadline = None;
             app.draining = false;
             app.status = "running…".into();
             app.run_started = Some(Instant::now());

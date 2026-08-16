@@ -2225,6 +2225,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         "versioned_default"
     };
     let mut route_fallback_reason: Option<String> = None;
+    let mut resumed_transcript_events = None;
     if let Some(resume) = &resume_id {
         let recorded = iteron_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
         resumed_tunables_checkpoint = Some(
@@ -2306,6 +2307,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             requested_model = Some(legacy_model);
             model_origin = Some(config::ConfigOrigin::UserConfig);
         }
+        resumed_transcript_events = Some(recorded);
     }
 
     // With no operator or resume authority, prefer the last route that completed a real provider
@@ -3317,6 +3319,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 sensitive_env_names: credential_env_names,
                 initial_diagnostics: diagnostic_drain.take(),
                 initial_notices,
+                initial_transcript_events: resumed_transcript_events,
             },
             startup,
         )
