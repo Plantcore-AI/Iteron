@@ -1610,11 +1610,10 @@ impl Provider for OpenAiResponses {
                     ProviderError::Http(error.to_string())
                 }
             })?;
-        if self.client.observe_response_version(response.version()) {
-            on_item(StreamItem::CompatibilityNotice(
-                "provider transport negotiated below required HTTP/2; continuing with explicit compatibility evidence",
-            ));
-        }
+        // The downgrade is recorded on the client (a once-only flag) but is NOT put on the
+        // stream: this stream is a frozen machine contract, and a transport diagnostic is not part
+        // of the model's answer. A lifecycle exporter can read the flag; the wire stays stable.
+        let _ = self.client.observe_response_version(response.version());
         if !response.status().is_success() {
             return Err(tokio::time::timeout(
                 remaining_timeout(

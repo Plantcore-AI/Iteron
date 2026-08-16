@@ -936,11 +936,10 @@ impl Provider for OpenAiCompat {
                     ProviderError::Http(e.to_string())
                 }
             })?;
-        if self.client.observe_response_version(resp.version()) {
-            on_item(StreamItem::CompatibilityNotice(
-                "provider transport negotiated below required HTTP/2; continuing with explicit compatibility evidence",
-            ));
-        }
+        // The downgrade is recorded on the client (a once-only flag) but is NOT put on the
+        // stream: this stream is a frozen machine contract, and a transport diagnostic is not part
+        // of the model's answer. A lifecycle exporter can read the flag; the wire stays stable.
+        let _ = self.client.observe_response_version(resp.version());
         let status = resp.status();
         let response_retry_after = crate::retry_after_from_headers(resp.headers());
         let response_request_id = crate::request_id_from_headers(resp.headers());
