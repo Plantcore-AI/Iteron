@@ -767,7 +767,7 @@ pub(super) fn handle_registered_command(
             let mut rows: Vec<block::PanelRow> = cat
                 .defs()
                 .iter()
-                .map(|s| item("◇", &s.name, &s.description))
+                .map(|s| item("◇", &s.name, &skill_hint(&s.description)))
                 .collect();
             if rows.is_empty() {
                 rows.push(block::PanelRow::Note(
@@ -1022,4 +1022,27 @@ pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryContro
             app.push(fg(Color::Red), format!("no memory {id}"));
         }
     }
+}
+
+/// One scannable line for a `/skills` row.
+///
+/// A `SKILL.md` description is prose written for the model — several sentences, and in CJK a
+/// "120 character" description is ~360 bytes. Rendered verbatim, every row wrapped to three or
+/// more lines and the panel stopped being a list. opencode truncates its list rows for the same
+/// reason; the full text is one `use_skill` away. Counts CHARACTERS, so the budget means the same
+/// thing in every script.
+fn skill_hint(description: &str) -> String {
+    // Roughly one row at a common terminal width, minus the label column.
+    let skill_hint_chars =
+        iteron_tunables::param_usize("cli.tui.command_dispatch.skill_hint_chars", 88);
+    let flat: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= skill_hint_chars {
+        return flat;
+    }
+    let mut out: String = flat
+        .chars()
+        .take(skill_hint_chars.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
 }

@@ -4,7 +4,7 @@
   "registry_revision": 19,
   "registry_digest": "888709a96acca2151b94e0276e80597d70aa6e2317947d53aa544b26a550b467",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "3be17ad6e17b2af10b10e16a628a851136e4290ea5213dfe204dddfefdd5876b",
+  "param_registry_digest": "77a2f31352c6f6c1b9f0254378896c74621d4e3ca0679e870b3898159803178f",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -7081,22 +7081,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1652,
+          "line": 1767,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1656,
+          "line": 1771,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1663,
+          "line": 1778,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1670,
+          "line": 1785,
           "evidence": "param_integer runtime resolution"
         }
       ],
